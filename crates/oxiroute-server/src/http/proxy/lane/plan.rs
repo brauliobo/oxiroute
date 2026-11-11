@@ -13,6 +13,9 @@ pub(crate) enum LaneRoute {
     Classic,
     /// A fixed response written from a rendered head.
     Direct,
+    /// A file of a static route the cache holds: answered from the entry the cache filled, with the head it
+    /// rendered. A request the cache cannot answer, or one that carries a condition or a range, is the classic path's.
+    Static,
     /// A request forwarded to an HTTP/1.1 server of a pool, with header rules the codec can apply, retries and a
     /// queue class: no rescue pool, no cache, no affinity, no rewriting.
     Proxy,
@@ -34,6 +37,7 @@ impl LaneRoute {
             {
                 Self::Direct
             }
+            HttpActionPlan::Static(_) => Self::Static,
             HttpActionPlan::Proxy(proxy) if forwards_plainly(proxy, policy) => Self::Proxy,
             _ => Self::Classic,
         }
@@ -62,7 +66,9 @@ mod tests {
     use oxiroute_config::{HttpLiteralHeader, HttpRedirectLocation, HttpRoutePolicy};
 
     use super::*;
-    use crate::http::action::{FixedResponsePlan, RedirectPlan};
+    use crate::http::action::{
+        FixedResponsePlan, RedirectPlan, StaticFilesBlueprint, StaticFilesPlan,
+    };
 
     fn header(name: &str, value: &str) -> HttpLiteralHeader {
         HttpLiteralHeader {
@@ -106,6 +112,23 @@ mod tests {
         assert_eq!(served.rendered_head, fixed.rendered_head);
         assert!(served.body.is_empty());
         assert_eq!(served.status, 301);
+    }
+
+    #[test]
+    fn a_static_route_is_served_from_the_cache() {
+        let root = tempfile::tempdir().expect("static root");
+        let blueprint = StaticFilesBlueprint::compile(
+            "/static",
+            &serde_json::from_value(
+                serde_json::json!({ "type": "static_files", "root_directory": root.path() }),
+            )
+            .expect("static files action"),
+        )
+        .expect("blueprint");
+        let action = HttpActionPlan::Static(
+            StaticFilesPlan::acquire(&blueprint).expect("static files plan"),
+        );
+        assert_eq!(lane_of(&action), LaneRoute::Static);
     }
 
     #[test]

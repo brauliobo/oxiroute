@@ -6,18 +6,22 @@
 //! The decision only ever shortcuts to the classic path, which is the reference: whatever the line or the host say
 //! that the lane cannot use, the classic path reads the request.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use http::{Method, uri::Authority};
 
 use super::{LaneRoute, head};
-use crate::{HttpServicePlan, http::action::HttpRoutePlan};
+use crate::{
+    HttpServicePlan,
+    http::action::{CachedFile, HttpRoutePlan},
+};
 
 /// A request the lane may serve, as far as its first lines say.
 pub(super) struct Early<'a> {
     pub(super) line: head::Line,
-    /// The route selected for the request line and host, when the lines were enough to select it.
-    route: Option<Arc<HttpRoutePlan>>,
+    /// The route selected for the request line and host, when the lines were enough to select it, and the file of a
+    /// static route that the cache holds.
+    route: Option<(Arc<HttpRoutePlan>, Option<Arc<CachedFile>>)>,
     /// The host the route was selected for, when the host takes part in the selection.
     host: Option<&'a str>,
 }
@@ -43,11 +47,40 @@ pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Option<
     let route = service
         .select_route_path(authority.as_ref(), line.path(buffer), &method)
         .filter(|route| route.lane != LaneRoute::Classic)?;
+    let file = cached_file(&route, line.path(buffer), &method).ok()?;
     Some(Early {
         line,
-        route: Some(route),
+        route: Some((route, file)),
         host: host.flatten(),
     })
+}
+
+/// The classic path serves the request: the cache does not hold the file or the lane does not serve the method.
+pub(super) struct Classic;
+
+/// What the cache holds for the request of a static route: nothing for a route that is not static, the file the
+/// cache answers with otherwise. A miss costs one lookup, not a scan of the head, and the classic path fills the
+/// cache.
+pub(super) fn cached_file(
+    route: &HttpRoutePlan,
+    path: &str,
+    method: &Method,
+) -> Result<Option<Arc<CachedFile>>, Classic> {
+    let Some(files) = route
+        .action
+        .static_files()
+        .filter(|_| route.lane == LaneRoute::Static)
+    else {
+        return Ok(None);
+    };
+    if method != Method::GET && method != Method::HEAD {
+        return Err(Classic);
+    }
+    files
+        .cached(path, Instant::now())
+        .filter(|cached| cached.head.is_some())
+        .map(Some)
+        .ok_or(Classic)
 }
 
 impl Early<'_> {
@@ -56,7 +89,7 @@ impl Early<'_> {
         self,
         buffer: &[u8],
         request: &head::Request,
-    ) -> Option<Arc<HttpRoutePlan>> {
+    ) -> Option<(Arc<HttpRoutePlan>, Option<Arc<CachedFile>>)> {
         let host = self.host;
         self.route
             .filter(|_| host.is_none_or(|host| Some(host) == request.host(buffer)))

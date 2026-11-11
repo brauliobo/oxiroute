@@ -70,7 +70,7 @@ fn request(target: &str) -> String {
 
 /// The route the first lines selected: `None` when the classic path serves the request or the lines did not select.
 fn lane_route(service: &HttpServicePlan, bytes: &[u8]) -> Option<LaneRoute> {
-    decide(service, bytes)?.route.map(|route| route.lane)
+    decide(service, bytes)?.route.map(|(route, _)| route.lane)
 }
 
 #[test]
@@ -200,4 +200,77 @@ fn the_selected_route_does_not_stand_for_another_host() {
     let other = b"GET /a HTTP/1.1\r\nHost: static.example.test\r\n\r\n";
     let request = scanned(other, &early, &mut RequestHead::new());
     assert!(early.route(other, &request).is_none());
+}
+
+/// A service whose only route serves the files of `root` under `/static`.
+fn static_service(root: &std::path::Path) -> (HttpServicePlan, Arc<HttpRoutePlan>) {
+    let blueprint = crate::http::action::StaticFilesBlueprint::compile(
+        "/static",
+        &serde_json::from_value(
+            serde_json::json!({ "type": "static_files", "root_directory": root }),
+        )
+        .expect("static files action"),
+    )
+    .expect("blueprint");
+    let route = Arc::new(HttpRoutePlan {
+        access: None,
+        lane: LaneRoute::Static,
+        edits: crate::http::proxy::lane::RouteEdits::default(),
+        action: HttpActionPlan::Static(
+            crate::http::action::StaticFilesPlan::acquire(&blueprint).expect("static files plan"),
+        ),
+        policy: RoutePolicyPlan::compile(HttpRoutePolicy::default()),
+        route_id: "0".into(),
+    });
+    let path = HttpPathSelector::SegmentPrefix {
+        value: "/static".into(),
+    };
+    let routes = vec![Route::new(None, path, None, "0".to_owned()).expect("route")];
+    let plans = HashMap::from([("0".to_owned(), Arc::clone(&route))]);
+    let service =
+        HttpServicePlan::new(None, plans, Duration::from_secs(1), RouteTable::new(routes));
+    (service, route)
+}
+
+fn cached(service: &HttpServicePlan, bytes: &[u8]) -> Option<bool> {
+    decide(service, bytes).map(|early| early.route.is_some_and(|(_, file)| file.is_some()))
+}
+
+#[tokio::test]
+async fn a_static_file_is_the_lanes_only_once_the_cache_holds_it() {
+    let root = tempfile::tempdir().expect("static root");
+    std::fs::create_dir(root.path().join("static")).expect("directory");
+    std::fs::write(root.path().join("static/a.txt"), b"hello").expect("file");
+    let (service, route) = static_service(root.path());
+    let get = request("/static/a.txt");
+    assert_eq!(
+        cached(&service, get.as_bytes()),
+        None,
+        "a miss is decided before any scan"
+    );
+
+    let files = route.action.static_files().expect("a static route");
+    files
+        .serve("/static/a.txt")
+        .await
+        .expect("the classic path fills the cache");
+    assert_eq!(cached(&service, get.as_bytes()), Some(true));
+    let head = "HEAD /static/a.txt HTTP/1.1\r\nHost: example.test\r\n\r\n";
+    assert_eq!(cached(&service, head.as_bytes()), Some(true));
+    let query = request("/static/a.txt?v=2");
+    assert_eq!(cached(&service, query.as_bytes()), Some(true));
+    let other = request("/static/b.txt");
+    assert_eq!(cached(&service, other.as_bytes()), None);
+}
+
+#[tokio::test]
+async fn a_method_other_than_get_or_head_is_the_classic_paths_even_for_a_cached_file() {
+    let root = tempfile::tempdir().expect("static root");
+    std::fs::create_dir(root.path().join("static")).expect("directory");
+    std::fs::write(root.path().join("static/a.txt"), b"hello").expect("file");
+    let (service, route) = static_service(root.path());
+    let files = route.action.static_files().expect("a static route");
+    files.serve("/static/a.txt").await.expect("fill");
+    let post = "POST /static/a.txt HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n";
+    assert_eq!(cached(&service, post.as_bytes()), None);
 }

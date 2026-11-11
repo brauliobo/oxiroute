@@ -9,6 +9,7 @@
 pub(in crate::http::proxy) mod buffers;
 mod direct;
 pub(in crate::http::proxy) mod head;
+mod local;
 mod log;
 mod peek;
 mod plan;
@@ -36,10 +37,7 @@ use pingora::{
     protocols::Stream,
     server::ShutdownWatch,
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Notify,
-};
+use tokio::{io::AsyncReadExt as _, sync::Notify};
 
 use timing::within;
 
@@ -47,9 +45,18 @@ pub(crate) use plan::LaneRoute;
 pub(crate) use rules::RouteEdits;
 
 use crate::{
-    HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeGeneration,
-    http::{action::HttpRoutePlan, request_id::generated_request_id_bytes},
+    HttpServicePlan, ListenerMetrics, RuntimeGeneration,
+    http::{
+        action::{CachedFile, HttpRoutePlan},
+        request_id::generated_request_id_bytes,
+    },
 };
+
+use local::{Exchange, Local};
+
+/// The route a request is served by, the authority it was selected for and, for a static route, the file the cache
+/// holds for it.
+type Selected = (Arc<HttpRoutePlan>, Authority, Option<Arc<CachedFile>>);
 
 /// The downstream timeouts of the listener, as the classic path applies them to a session.
 #[derive(Clone, Copy, Debug, Default)]
@@ -200,7 +207,7 @@ impl LaneFront {
         buffer: &[u8],
         request: &head::Request,
         early: peek::Early<'_>,
-    ) -> Option<(Arc<HttpRoutePlan>, Authority)> {
+    ) -> Option<Selected> {
         let path = request.path(buffer);
         let authority = request.host(buffer)?.parse::<Authority>().ok()?;
         if authority.as_str().contains('@') || !is_unambiguous_http_path(path) {
@@ -209,15 +216,18 @@ impl LaneFront {
         if self.challenge.is_some() && ChallengeStore::serves(path) {
             return None;
         }
-        let route = if let Some(route) = early.route(buffer, request) {
-            route
+        let (route, file) = if let Some(selected) = early.route(buffer, request) {
+            selected
         } else {
             let method = Method::from_bytes(request.method(buffer)).ok()?;
-            self.service
+            let route = self
+                .service
                 .select_route_path(Some(&authority), path, &method)
-                .filter(|route| route.lane != LaneRoute::Classic)?
+                .filter(|route| route.lane != LaneRoute::Classic)?;
+            let file = peek::cached_file(&route, path, &method).ok()?;
+            (route, file)
         };
-        Some((route, authority))
+        Some((route, authority, file))
     }
 
     /// Whether the lane forwards the body of the request to its route: only a proxied route does, and a length over
@@ -258,9 +268,12 @@ impl LaneFront {
         else {
             return Served::Handoff;
         };
-        let Some((route, authority)) = self.select_route(buffer, &request, early) else {
+        let Some((route, authority, file)) = self.select_route(buffer, &request, early) else {
             return Served::Handoff;
         };
+        if file.is_some() && head::is_conditional(scanned, buffer) {
+            return Served::Handoff;
+        }
         if request.body_len != 0 && !Self::takes_body(&route, &request) {
             return Served::Handoff;
         }
@@ -315,66 +328,20 @@ impl LaneFront {
             buffers::give_write(values.into_buffer());
             return served;
         }
-        let automatic = if connection.will_keepalive() {
-            "keep-alive"
-        } else {
-            "close"
+        let exchange = Exchange {
+            route: &route,
+            buffer,
+            request: &request,
+            authority: &authority,
+            id,
+            started,
         };
-        let Some(response) = route.action.direct_response() else {
-            unreachable!("only direct routes reach the lane");
+        let local = match (&file, route.action.direct_response()) {
+            (Some(file), _) => Local::File(file),
+            (None, Some(response)) => Local::Direct(response),
+            (None, None) => unreachable!("only direct and cached static routes reach this point"),
         };
-        let mut out = BytesMut::new();
-        direct::render(&mut out, response, id, Some(automatic), request.is_head);
-        let written = tokio::time::timeout(self.write_budget, async {
-            stream.write_all(&out).await?;
-            stream.flush().await
-        })
-        .await;
-        let ended = Instant::now();
-        let sent = written.is_ok_and(|result| result.is_ok());
-        let body = if request.is_head {
-            0
-        } else {
-            response.body.len() as u64
-        };
-        let _ = self.metrics.record_bytes_sent(body);
-        let status = sent.then_some(response.status);
-        let _ = self.metrics.record_http_operation(
-            HttpOperationResult::from_status(status),
-            ended.saturating_duration_since(started),
-        );
-        if let Some(log) = self.service.access_log() {
-            let method = Method::from_bytes(request.method(buffer))
-                .expect("the route was selected for this method");
-            let line = log::Line {
-                attempts: 0,
-                received: 0,
-                sent: body,
-                connect: None,
-                header: None,
-                id,
-                id_generated: request.client_id.is_none(),
-                elapsed: ended.saturating_duration_since(started),
-                evacuations: 0,
-                host: Some(&authority),
-                idempotency: None,
-                method: &method,
-                queue_wait: Duration::ZERO,
-                reason: "",
-                rescued: false,
-                servers: &[],
-                status,
-                unix_ms: crate::clock::wall_ms(ended),
-                stuck: false,
-            };
-            log::write(log, &self.service_log, &route.edits.log, &line);
-        }
-        connection.end_request();
-        if sent && connection.will_keepalive() {
-            return Served::Next(ended);
-        }
-        let _ = stream.shutdown().await;
-        Served::Close
+        self.serve_local(stream, connection, exchange, local).await
     }
 }
 
