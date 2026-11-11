@@ -299,6 +299,7 @@ impl HttpRequestContext {
     /// An attempt failed after it connected, with `error`: records what the failure says of the server, releases the
     /// lease and decides, with the retry policy, whether the request goes on. What `error_while_proxy` settles for
     /// both paths.
+    #[allow(clippy::unnecessary_box_returns)]
     pub(super) fn attempt_failed(
         &mut self,
         mut error: Box<Error>,

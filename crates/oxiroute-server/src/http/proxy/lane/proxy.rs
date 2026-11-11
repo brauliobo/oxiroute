@@ -399,6 +399,7 @@ impl super::LaneFront {
     }
 
     /// Sends the request on a connected session and reads the response head.
+    #[allow(clippy::too_many_arguments)]
     async fn send_and_open(
         &self,
         stream: &mut Stream,

@@ -291,12 +291,7 @@ impl HttpServicePlan {
     pub(crate) fn has_lane_route(&self) -> bool {
         self.route_plans
             .values()
-            .any(|route| self.serves_on_lane(route.lane))
-    }
-
-    /// Whether the lane serves routes of this kind: it writes the access line of both.
-    pub(crate) fn serves_on_lane(&self, lane: LaneRoute) -> bool {
-        lane != LaneRoute::Classic
+            .any(|route| route.lane != LaneRoute::Classic)
     }
 }
 
@@ -330,7 +325,7 @@ mod tests {
         Arc::new(HttpRoutePlan {
             access: None,
             lane,
-            edits: Default::default(),
+            edits: crate::http::proxy::lane::RouteEdits::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
             policy: RoutePolicyPlan::compile(oxiroute_config::HttpRoutePolicy::default()),
             route_id: "r".into(),
@@ -359,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn an_access_log_keeps_neither_fixed_responses_nor_proxied_routes_off_the_lane() {
+    fn an_access_log_does_not_keep_fixed_responses_off_the_lane() {
         let directory = tempfile::tempdir().expect("log directory");
         let policy = oxiroute_config::AccessLogPolicy::File {
             path: directory.path().join("access.log"),
@@ -369,8 +364,11 @@ mod tests {
             .expect("access log")
             .map(Arc::new);
         assert!(logged.has_lane_route());
-        assert!(logged.serves_on_lane(LaneRoute::Direct));
-        assert!(logged.serves_on_lane(LaneRoute::Proxy));
-        assert!(!logged.serves_on_lane(LaneRoute::Classic));
+        assert!(
+            logged
+                .route_plans
+                .values()
+                .all(|route| route.lane == LaneRoute::Direct)
+        );
     }
 }

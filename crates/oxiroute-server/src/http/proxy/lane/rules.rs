@@ -255,8 +255,11 @@ pub(super) fn evaluate(
                 // The text comes from an authority and from header values the scanner checked, and the rest is
                 // addresses and literals: nothing here is a byte a header value refuses.
                 debug_assert!(Value::new(&evaluated.bytes[start..]).is_some());
-                let (start, len) = (start as u32, (evaluated.bytes.len() - start) as u32);
-                Slot::Bytes(start, len)
+                let len = evaluated.bytes.len() - start;
+                Slot::Bytes(
+                    u32::try_from(start).expect("scratch bytes are bounded"),
+                    u32::try_from(len).expect("a value is bounded"),
+                )
             }
             Rendered::ClientIpMissing => return Err(RequestPolicyError::ClientIpUnavailable),
             Rendered::Preserve | Rendered::NoOp => Slot::None,
@@ -447,6 +450,7 @@ mod tests {
 
     /// Every kind of value, for clients of every shape: what the lane writes is what the classic decision completes.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn every_kind_of_value_is_what_the_classic_decision_gives() {
         let kinds = [
             HttpRequestHeaderValue::Literal {
@@ -547,7 +551,7 @@ mod tests {
                                 "{case}"
                             ),
                             (classic, lane) => {
-                                assert_eq!(classic.is_err(), lane.is_err(), "{case}")
+                                assert_eq!(classic.is_err(), lane.is_err(), "{case}");
                             }
                         }
                     }

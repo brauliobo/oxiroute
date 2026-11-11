@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use http::{Method, uri::Authority};
 
-use super::head;
+use super::{LaneRoute, head};
 use crate::{HttpServicePlan, http::action::HttpRoutePlan};
 
 /// A request the lane may serve, as far as its first lines say.
@@ -42,7 +42,7 @@ pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Option<
     let method = Method::from_bytes(line.method(buffer)).ok()?;
     let route = service
         .select_route_path(authority.as_ref(), line.path(buffer), &method)
-        .filter(|route| service.serves_on_lane(route.lane))?;
+        .filter(|route| route.lane != LaneRoute::Classic)?;
     Some(Early {
         line,
         route: Some(route),

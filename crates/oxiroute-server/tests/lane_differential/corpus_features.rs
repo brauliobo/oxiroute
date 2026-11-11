@@ -5,6 +5,7 @@ use super::{Case, HOST, get, numbered_headers};
 
 /// Requests that header rules read: forwarded-for chains, names in every case, hosts in every spelling, headers a rule
 /// removes or replaces and values too large for a rule.
+#[allow(clippy::too_many_lines)]
 pub fn forwarded(base: &str) -> Vec<Case> {
     let mut cases = Vec::new();
     let mut add = |name: &str, headers: &str| cases.push(Case::one(name, get(base, headers)));

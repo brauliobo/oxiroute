@@ -215,7 +215,7 @@ impl LaneFront {
             let method = Method::from_bytes(request.method(buffer)).ok()?;
             self.service
                 .select_route_path(Some(&authority), path, &method)
-                .filter(|route| self.service.serves_on_lane(route.lane))?
+                .filter(|route| route.lane != LaneRoute::Classic)?
         };
         Some((route, authority))
     }
@@ -241,6 +241,7 @@ impl LaneFront {
         served
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn serve_scanned(
         &self,
         stream: &mut Stream,

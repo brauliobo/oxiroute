@@ -180,7 +180,7 @@ async fn a_junk_answer_is_retried_on_the_junk_response_trigger() {
 async fn a_slow_answer_is_retried_on_the_response_timeout_trigger() {
     const STEPS: &[Step] = &[
         Step::Reply(OK),
-        Step::Slow(Duration::from_millis(1000), OK),
+        Step::Slow(Duration::from_secs(1), OK),
         Step::Reply(OK),
     ];
     let timeouts = |config: &mut ConfigDraft| {

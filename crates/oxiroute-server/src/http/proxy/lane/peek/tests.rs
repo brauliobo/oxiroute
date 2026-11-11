@@ -45,7 +45,7 @@ fn service(specs: &[Spec]) -> HttpServicePlan {
             Arc::new(HttpRoutePlan {
                 access: None,
                 lane: spec.lane,
-                edits: Default::default(),
+                edits: crate::http::proxy::lane::RouteEdits::default(),
                 action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
                 policy: RoutePolicyPlan::compile(HttpRoutePolicy::default()),
                 route_id: id.into(),
