@@ -27,6 +27,9 @@ grep -q "'${tarball_sha256%% *}'" "${root}/pkg/bin/PKGBUILD"
 grep -q "'${doc_sha256%% *}'" "${root}/pkg/bin/PKGBUILD"
 grep -q "sha256sums = ${tarball_sha256%% *}" "${root}/pkg/bin/.SRCINFO"
 grep -q 'pkgver = 9.9.9' "${root}/pkg/bin/.SRCINFO"
+modules_sha256=$(sha256sum "${root}/pkg/bin/oxiroute.modules")
+grep -q "'${modules_sha256%% *}'" "${root}/pkg/bin/PKGBUILD"
+grep -q "sha256sums = ${modules_sha256%% *}" "${root}/pkg/bin/.SRCINFO"
 
 printf 'tampered\n' >"${root}/release/${name}.sha256"
 if OXIROUTE_RELEASE_URL=file://${root}/release OXIROUTE_RAW_URL=file://${root}/docs \

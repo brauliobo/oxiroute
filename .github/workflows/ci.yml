@@ -194,6 +194,7 @@ jobs:
         run: |
           ./packaging/arch/test-verify-checksums.sh
           ./packaging/arch/test-pin-bin-release.sh
+          ./packaging/arch/test-package-files.sh
           ./packaging/arch/verify-checksums.sh
 
   ui:

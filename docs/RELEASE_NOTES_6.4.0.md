@@ -29,8 +29,11 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
 ## Host requirements
 
 - **Kernel TLS** (optional): the `tls` kernel module and Linux 6.5 or newer. The module is not loaded by default and an
-  unprivileged service cannot load it: add `tls` to `/etc/modules-load.d/` (or `modprobe tls`) and reload the
-  configuration. Without it nothing changes; the log of each TLS profile says once why TLS stays in user space.
+  unprivileged service cannot load it. The Arch packages (`oxiroute`, `oxiroute-bin`) now ship
+  `/usr/lib/modules-load.d/oxiroute.conf` and load `tls` at boot (`modprobe tls` once after the upgrade, or reboot,
+  then reload the configuration). On other distributions add `tls` to `/etc/modules-load.d/` (or `modprobe tls`) and
+  reload the configuration. Without it nothing changes; the log of each TLS profile says once why TLS stays in user
+  space.
 - **Large static files** are sent with `sendfile` on tmpfs, ramfs and file systems that support `RWF_NOWAIT`; other file
   systems keep the copy path.
 - `splice` relays need pipe quota for up to two descriptors per bulk direction; past the quota the relay copies.
@@ -70,8 +73,9 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   more over plain HTTP/1.1 are sent with `sendfile`.
 - **Kernel TLS (on where the host has it).** A TLS profile sends large static files (about 256 KiB and up) over TLS 1.3
   with `sendfile` and the kernel's TLS offload: 46% to 51% fewer CPU cycles per 1 MiB response, 94% fewer user-space
-  instructions. `ktls = "auto"` is the default and `"off"` turns it off. It needs the `tls` kernel module (`modprobe tls`,
-  `/etc/modules-load.d/`) and kernel 6.5 or newer; without them nothing changes and the log says so once.
+  instructions. `ktls = "auto"` is the default and `"off"` turns it off. It needs the `tls` kernel module (the Arch
+  packages load it at boot through `modules-load.d`; elsewhere `modprobe tls` and `/etc/modules-load.d/`) and kernel 6.5
+  or newer; without them nothing changes and the log says so once.
 - **Pingora 0.9.1.** The vendored Pingora crates are rebased; the advisories RUSTSEC-2026-0388, RUSTSEC-2026-0390 and
   RUSTSEC-2026-0253 are no longer reported against the build.
 - **rustls backend (opt-in).** `tls_profiles[].policy.backend = "rustls"` runs the handshakes and records of a profile's
@@ -147,7 +151,8 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   Set `"off"` to keep TLS in user space. A host without the `tls` module behaves exactly as `"off"`. TLS 1.2,
   ChaCha20, HTTP/2, HTTP/3 and proxied bodies are unchanged. The profile checks the kernel when a generation starts and
   logs once (info) whether kernel TLS is active or why TLS stays in user space (the `tls` module is not loaded and an
-  unprivileged service cannot load it: add `tls` to `/etc/modules-load.d/`; kernel older than 6.5; unsupported cipher;
+  unprivileged service cannot load it: the Arch packages load it at boot, elsewhere add `tls` to `/etc/modules-load.d/`;
+  kernel older than 6.5; unsupported cipher;
   the `rustls` backend). The vendored OpenSSL is now built with kernel TLS support. Details:
   [kernel TLS](developer/PERF_6_4_KTLS.md).
 - **Static files on the fast lane.** A plain `GET` or `HEAD` of a file the static cache holds is answered by the HTTP/1.1
@@ -465,8 +470,8 @@ output is unchanged.
 - Restart or reload as usual. `http_fast_lane = false` returns every request to the classic path.
 - HTTP/2 listeners buffer up to 8 MiB of unread request data per connection (64 KiB before). Size `max_connections` with
   that bound or lower `h2_initial_connection_window` on listeners that face many untrusted clients.
-- To use kernel TLS, load the `tls` module before the service starts (see the host requirements); nothing else changes
-  if you do not.
+- To use kernel TLS, load the `tls` module before the service starts (see the host requirements; the Arch packages
+  now do it at boot); nothing else changes if you do not.
 - Scripts that parse `oxiroute --output json` by field order must not rely on the alphabetical order any more.
 - Operators who set `RUST_LOG`, `OXIROUTE_AUDIT_*` or `OXIROUTE_MANAGEMENT_TOKEN_FILE` keep working; set the options when
   convenient. Supervised workers do not inherit `RUST_LOG`: use `log_filter`.

@@ -175,8 +175,10 @@ with 1,000 requests it is below 5%, and the options above matter for short conne
 `tls_profiles[].policy.ktls` is `"auto"` by default. A TLS 1.3 AES-GCM HTTP/1.1 connection that sends its first
 large static file (about 256 KiB and up) is switched to kernel TLS and the file goes out with `sendfile`; every later
 response on that connection is encrypted by the kernel as well. It needs the `tls` kernel module and kernel 6.5 or
-newer. The module is not loaded by default and an unprivileged service cannot load it, so load it before OxiRoute
-starts and reload the configuration afterwards (the probe runs per generation):
+newer. The module is not loaded by default and an unprivileged service cannot load it, so it must be loaded before
+OxiRoute starts, and the configuration reloaded afterwards (the probe runs per generation). The Arch packages
+(`oxiroute`, `oxiroute-bin`) ship `/usr/lib/modules-load.d/oxiroute.conf` and load it at boot; mask it with an empty
+`/etc/modules-load.d/oxiroute.conf` to keep it unloaded. On other distributions:
 
 ```sh
 echo tls | sudo tee /etc/modules-load.d/ktls.conf   # at boot
