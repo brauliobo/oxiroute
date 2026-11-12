@@ -36,7 +36,7 @@ def main():
     shim = Path(args.tmp) / f"r2-memcpy-profile-{r2.os.getuid()}.so"
     subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-o", str(shim), str(HERE / "tool/memcpy_profile.c"), "-ldl"], check=True)
     lane = r2.LANES[args.lane]
-    run_args = argparse.Namespace(bin=args.bin, tool=args.tool, tmp=args.tmp, proxy_env=[], classic=False)
+    run_args = argparse.Namespace(bin=args.bin, tool=args.tool, tmp=args.tmp, proxy_env=[], classic=False, baseline=False, tls_backend="openssl")
     out = Path(args.tmp) / f"r2-memcpy-{r2.os.getpid()}.txt"
     with r2.bench_lock():
         r2.pick_ports(lane)
