@@ -17,6 +17,8 @@ pub(in crate::http::proxy) mod proxy;
 pub(in crate::http::proxy) mod render;
 pub(in crate::http::proxy) mod response;
 pub(in crate::http::proxy) mod rules;
+mod stop;
+pub(in crate::http::proxy) mod timers;
 pub(in crate::http::proxy) mod timing;
 mod upload;
 
@@ -24,11 +26,12 @@ use std::{
     future::{Future, poll_fn},
     pin::{Pin, pin},
     sync::Arc,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use http::{HeaderValue, Method, uri::Authority};
 use oxiroute_acme::ChallengeStore;
 use oxiroute_config::is_unambiguous_http_path;
@@ -44,7 +47,8 @@ use tokio::{
     sync::Notify,
 };
 
-use timing::within;
+use stop::Stop;
+use timers::{Wait, within};
 
 pub(crate) use plan::LaneRoute;
 pub(crate) use rules::RouteEdits;
@@ -108,6 +112,24 @@ pub(in crate::http::proxy) async fn end_connection(stream: &mut Stream) {
     };
 }
 
+/// The output of `work`, or `None` once `stopped` says so; `work` is polled first.
+async fn raced<T>(
+    mut work: Pin<&mut impl Future<Output = Option<T>>>,
+    mut stopped: impl FnMut(&mut Context<'_>) -> bool,
+) -> Option<T> {
+    poll_fn(|cx| {
+        if let Poll::Ready(output) = work.as_mut().poll(cx) {
+            return Poll::Ready(output);
+        }
+        if stopped(cx) {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
 enum Served {
     /// The connection serves another request; the clock reading at which this one ended, from which its idle wait
     /// is timed.
@@ -167,15 +189,14 @@ impl LaneFront {
 
     /// Waits until the connection has bytes of a request and reads them. `None` when the connection is over: the
     /// client left, the wait timed out or the service is stopping. No buffer is held while the connection waits.
-    /// `idle_since` is when the wait began; `stopped` resolves when the service stops, and is polled by the waits
+    /// `idle_since` is when the wait began; `stop` resolves when the service stops, and is polled by the waits
     /// of every request of the connection, so it registers once and not once per wait.
     async fn wait_for_bytes(
         &self,
         stream: &mut Stream,
         connection: &Http1Connection,
-        stopping: bool,
+        stop: &mut Stop<'_, impl Future<Output = ()>>,
         idle_since: Instant,
-        stopped: Pin<&mut impl Future<Output = ()>>,
     ) -> Option<BytesMut> {
         // Between two requests nothing of the connection is parked: it may move to a lighter worker (worker_scaling).
         if connection.is_reused() {
@@ -197,29 +218,26 @@ impl LaneFront {
             }
         };
         // A read that is ready at once needs no timer.
-        let timed = async {
-            let deadline = self
-                .idle_timeout(connection, stopping)
-                .and_then(|limit| idle_since.checked_add(limit));
+        let deadline = self
+            .idle_timeout(connection, stop.stopping())
+            .and_then(|limit| idle_since.checked_add(limit));
+        let mut timed = pin!(async {
             match deadline {
-                Some(deadline) => within(tokio::time::Instant::from_std(deadline), read)
-                    .await
-                    .unwrap_or(None),
+                Some(deadline) => {
+                    within(Wait::Idle, tokio::time::Instant::from_std(deadline), read)
+                        .await
+                        .unwrap_or(None)
+                }
                 None => read.await,
             }
-        };
+        });
         // A connection waiting between requests ends with the signal its owner shares; the first request of a
         // connection ends when the service stops.
-        tokio::select! {
-            biased;
-            buffer = timed => buffer,
-            () = async {
-                if connection.is_reused() {
-                    stopped.await;
-                } else {
-                    self.first_request.notified().await;
-                }
-            } => None,
+        if connection.is_reused() {
+            raced(timed.as_mut(), |cx| stop.poll(cx).is_ready()).await
+        } else {
+            let mut first = pin!(self.first_request.notified());
+            raced(timed.as_mut(), |cx| first.as_mut().poll(cx).is_ready()).await
         }
     }
 
@@ -232,7 +250,7 @@ impl LaneFront {
         early: peek::Early<'_>,
     ) -> Option<Selected> {
         let path = request.path(buffer);
-        let authority = request.host(buffer)?.parse::<Authority>().ok()?;
+        let authority = head::authority(request.host(buffer)?)?;
         if authority.as_str().contains('@') || !is_unambiguous_http_path(path) {
             return None;
         }
@@ -263,12 +281,18 @@ impl LaneFront {
         &self,
         stream: &mut Stream,
         connection: &mut Http1Connection,
-        shutdown: &ShutdownWatch,
+        (stopping, client_ip): (bool, Option<std::net::IpAddr>),
         buffer: &[u8],
     ) -> Served {
         let mut scanned = buffers::take_head();
         let served = self
-            .serve_scanned(stream, connection, shutdown, buffer, &mut scanned)
+            .serve_scanned(
+                stream,
+                connection,
+                (stopping, client_ip),
+                buffer,
+                &mut scanned,
+            )
             .await;
         buffers::give_head(scanned);
         served
@@ -279,7 +303,7 @@ impl LaneFront {
         &self,
         stream: &mut Stream,
         connection: &mut Http1Connection,
-        shutdown: &ShutdownWatch,
+        (stopping, client_ip): (bool, Option<std::net::IpAddr>),
         buffer: &[u8],
         scanned: &mut RequestHead,
     ) -> Served {
@@ -300,11 +324,6 @@ impl LaneFront {
         if request.body_len != 0 && !Self::takes_body(&route, &request) {
             return Served::Handoff;
         }
-        let client_ip = if route.lane == LaneRoute::Proxy {
-            proxy::client_ip(stream)
-        } else {
-            None
-        };
         let values = if route.lane == LaneRoute::Proxy {
             let Some(values) = proxy::decide(
                 stream.get_ssl().is_some(),
@@ -322,15 +341,17 @@ impl LaneFront {
         let started = Instant::now();
         connection.begin_request();
         connection.respect_request(request.close);
-        if *shutdown.borrow() || self.generation.retired() {
+        if stopping || self.generation.retired() {
             connection.disable_keepalive();
         }
         let generated = generated_request_id_bytes();
-        let id = request
-            .client_id
-            .map_or(&generated[..], |span| span.of(buffer));
         if route.lane == LaneRoute::Proxy {
-            let id = HeaderValue::from_bytes(id).expect("request ids are visible ASCII");
+            // A generated id is owned once and shared by the clones the request context makes of it.
+            let id = match request.client_id {
+                Some(span) => HeaderValue::from_bytes(span.of(buffer)),
+                None => HeaderValue::from_maybe_shared(Bytes::from_owner(generated)),
+            }
+            .expect("request ids are visible ASCII");
             let method = Method::from_bytes(request.method(buffer))
                 .expect("the route was selected for this method");
             let forward = proxy::Forward {
@@ -351,6 +372,9 @@ impl LaneFront {
             buffers::give_write(values.into_buffer());
             return served;
         }
+        let id = request
+            .client_id
+            .map_or(&generated[..], |span| span.of(buffer));
         let exchange = Exchange {
             route: &route,
             buffer,
@@ -377,27 +401,27 @@ impl Http1Front for LaneFront {
         shutdown: &ShutdownWatch,
     ) -> Http1FrontOutcome {
         let mut watch = shutdown.clone();
-        let stopped = async {
+        let stopped = pin!(async {
             let _ = watch.wait_for(|stopping| *stopping).await;
-        };
-        let mut stopped = pin!(stopped);
+        });
+        let mut stop = Stop::new(shutdown, stopped);
+        // The peer of a connection does not change.
+        let client_ip = proxy::client_ip(&stream);
         let mut idle_since = Instant::now();
         loop {
-            let stopping = *shutdown.borrow();
             let Some(mut buffer) = self
-                .wait_for_bytes(
-                    &mut stream,
-                    connection,
-                    stopping,
-                    idle_since,
-                    stopped.as_mut(),
-                )
+                .wait_for_bytes(&mut stream, connection, &mut stop, idle_since)
                 .await
             else {
                 return Http1FrontOutcome::Closed;
             };
             match self
-                .serve_request(&mut stream, connection, shutdown, &buffer)
+                .serve_request(
+                    &mut stream,
+                    connection,
+                    (stop.stopping(), client_ip),
+                    &buffer,
+                )
                 .await
             {
                 Served::Next(ended) => {

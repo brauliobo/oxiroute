@@ -5,8 +5,11 @@
 //! context's own steps.
 
 use std::{
+    future::{Future as _, poll_fn},
     io::Write as _,
+    pin::pin,
     sync::Arc,
+    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -37,7 +40,8 @@ use super::{
     render::{host_edit, push_small_body, render_request},
     response::serve_fast,
     rules,
-    timing::{Expired, within},
+    timers::{Wait, within, within_for as within_step},
+    timing::Expired,
     upload::Upload,
 };
 use crate::{
@@ -90,6 +94,8 @@ struct Opened {
     buffered: bool,
     /// What is left of the request body, which goes on while the response is relayed.
     upload: Upload,
+    /// What the attempt allows each step of the response.
+    timeouts: AttemptTimeouts,
 }
 
 /// What an exchange has moved so far.
@@ -356,14 +362,19 @@ impl super::LaneFront {
         progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
         loop {
-            let cancelled = ctx.arm_evacuation_for_lane();
-            let outcome = {
-                let attempt = self.attempt(stream, ctx, upstream, forward, progress);
-                tokio::select! {
-                    biased;
-                    error = cancelled => Err(ctx.attempt_failed(error, Exchanged::UNANSWERED)),
-                    opened = attempt => opened,
-                }
+            let mut cancelled = pin!(ctx.arm_evacuation_for_lane());
+            // Polled in place: `select!` would move the attempt's future, which is kilobytes, into its own tuple.
+            let raced = {
+                let mut attempt = pin!(self.attempt(stream, ctx, upstream, forward, progress));
+                poll_fn(|cx| match cancelled.as_mut().poll(cx) {
+                    Poll::Ready(error) => Poll::Ready(Err(error)),
+                    Poll::Pending => attempt.as_mut().poll(cx).map(Ok),
+                })
+                .await
+            };
+            let outcome = match raced {
+                Ok(opened) => opened,
+                Err(error) => Err(ctx.attempt_failed(error, Exchanged::UNANSWERED)),
             };
             match outcome {
                 Ok(opened) => return Ok(opened),
@@ -452,7 +463,7 @@ impl super::LaneFront {
         progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
         ctx.connected(reused, Some(session.digest()))?;
-        timeouts.apply(&mut session);
+        timeouts.apply_write(&mut session);
         ctx.remaining_cached(true)?;
         let host = host_edit(ctx);
         let connection_close = ctx.pool.as_ref().is_some_and(|pool| {
@@ -471,7 +482,7 @@ impl super::LaneFront {
             forward.buffer.len() - forward.request.head_len,
         );
         let raw = if forward.request.body_len == 0 {
-            session.read_raw_head().await.map_err(Error::into_up)?
+            read_head(ctx, &mut session, timeouts).await?
         } else {
             self.head_of(
                 stream,
@@ -479,11 +490,19 @@ impl super::LaneFront {
                 &mut session,
                 (forward, with_head),
                 (&mut upload, progress),
+                timeouts,
             )
             .await?
         };
-        self.open(stream, ctx, (session, release), forward, (raw, upload))
-            .await
+        self.open(
+            stream,
+            ctx,
+            (session, release),
+            forward,
+            (raw, upload),
+            *timeouts,
+        )
+        .await
     }
 
     /// The origin's response head. The body goes to the origin as the client sends it, and an answer that comes before
@@ -496,13 +515,14 @@ impl super::LaneFront {
         session: &mut HttpSession,
         request: (&Forward<'_>, bool),
         (upload, progress): (&mut Upload, &mut Progress),
+        timeouts: &AttemptTimeouts,
     ) -> Result<Bytes, Box<Error>> {
         match self
-            .upload_until_head(stream, ctx, session, request, (upload, progress))
+            .upload_until_head(stream, ctx, session, request, (upload, progress), timeouts)
             .await
         {
             Err(error) if error.esource() == &pingora::ErrorSource::Upstream => {
-                let raw = session.read_raw_head().await.map_err(|_| error)?;
+                let raw = read_head(ctx, session, timeouts).await.map_err(|_| error)?;
                 upload.refuse();
                 Ok(raw)
             }
@@ -517,6 +537,7 @@ impl super::LaneFront {
         session: &mut HttpSession,
         (forward, with_head): (&Forward<'_>, bool),
         (upload, progress): (&mut Upload, &mut Progress),
+        timeouts: &AttemptTimeouts,
     ) -> Result<Bytes, Box<Error>> {
         send_arrived(ctx, session, (forward, with_head), progress).await?;
         while upload.pumping() {
@@ -526,7 +547,7 @@ impl super::LaneFront {
             } else {
                 tokio::select! {
                     biased;
-                    raw = session.read_raw_head() => return raw.map_err(Error::into_up),
+                    raw = read_head(ctx, session, timeouts) => return raw,
                     ready = upload.readable(stream, self.timeouts.request) => ready,
                 }
             };
@@ -534,7 +555,7 @@ impl super::LaneFront {
             progress.received += upload.forward(stream, session).await?;
             ctx.observe_bytes(progress.received, 0, Instant::now());
         }
-        session.read_raw_head().await.map_err(Error::into_up)
+        read_head(ctx, session, timeouts).await
     }
 
     /// Reads the response head, applies what the classic response filter applies and renders what the client gets.
@@ -545,6 +566,7 @@ impl super::LaneFront {
         (mut session, release): (Box<HttpSession>, ReusePeer),
         forward: &Forward<'_>,
         (raw, upload): (Bytes, Upload),
+        timeouts: AttemptTimeouts,
     ) -> Result<Opened, Box<Error>> {
         let now = ctx.refresh_clock();
         // The client connection goes on only when the whole body arrived: what is left of it cannot be told from the
@@ -563,6 +585,7 @@ impl super::LaneFront {
             ) {
                 (status, framing, refused, keepalive, buffered)
             } else {
+                timeouts.apply_reads(&mut session);
                 session.reparse_raw_head();
                 let mut response = read_final_head(stream, ctx, &mut session, forward).await?;
                 let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
@@ -611,6 +634,7 @@ impl super::LaneFront {
             keepalive,
             buffered,
             upload,
+            timeouts,
         })
     }
 
@@ -630,6 +654,7 @@ impl super::LaneFront {
             framing,
             buffered,
             mut upload,
+            timeouts,
             ..
         } = opened;
         let deadline = tokio::time::Instant::from_std(ctx.deadline);
@@ -644,7 +669,13 @@ impl super::LaneFront {
             }
             let mut first = true;
             while let Some(data) = self
-                .next_piece(stream, ctx, &mut session, (&mut upload, progress))
+                .next_piece(
+                    stream,
+                    ctx,
+                    &mut session,
+                    (&mut upload, progress),
+                    &timeouts,
+                )
                 .await?
             {
                 progress.sent += data.len();
@@ -686,7 +717,7 @@ impl super::LaneFront {
             buffers::give_write(frame);
             flush(stream).await
         };
-        within(deadline, body)
+        within(Wait::Total, deadline, body)
             .await
             .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
         // An origin that did not get the whole body keeps what it has not read: its connection is not used again.
@@ -706,10 +737,11 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         session: &mut HttpSession,
         (upload, progress): (&mut Upload, &mut Progress),
+        timeouts: &AttemptTimeouts,
     ) -> Result<Option<Bytes>, Box<Error>> {
         while upload.pumping() {
             tokio::select! {
-                piece = session.read_body_bytes() => return piece.map_err(Error::into_up),
+                piece = read_piece(session, timeouts) => return piece,
                 ready = upload.readable(stream, self.timeouts.request) => {
                     ready?;
                     match upload.forward(stream, session).await {
@@ -724,7 +756,7 @@ impl super::LaneFront {
                 }
             }
         }
-        session.read_body_bytes().await.map_err(Error::into_up)
+        read_piece(session, timeouts).await
     }
 
     /// Answers a request that ended in `error`, unless a response went out already; the status of the response
@@ -859,6 +891,39 @@ async fn send_arrived(
         ctx.observe_bytes(progress.received, 0, Instant::now());
     }
     Ok(())
+}
+
+/// The origin's response head, within the time the attempt allows for it. The lane keeps this limit itself: a
+/// session's own read limit is a timer from the wheel of its clock thread for every request.
+async fn read_head(
+    ctx: &HttpRequestContext,
+    session: &mut HttpSession,
+    timeouts: &AttemptTimeouts,
+) -> Result<Bytes, Box<Error>> {
+    let deadline = tokio::time::Instant::from_std(ctx.now + timeouts.read());
+    match within(Wait::Step, deadline, session.read_raw_head()).await {
+        Ok(head) => head.map_err(Error::into_up),
+        Err(Expired) => {
+            Err(Error::explain(ErrorType::ReadTimedout, "while reading response headers").into_up())
+        }
+    }
+}
+
+/// The next piece of the origin's response body, within the idle time the attempt allows between pieces.
+async fn read_piece(
+    session: &mut HttpSession,
+    timeouts: &AttemptTimeouts,
+) -> Result<Option<Bytes>, Box<Error>> {
+    match within_step(
+        Wait::Step,
+        Some(timeouts.body_read()),
+        session.read_body_bytes(),
+    )
+    .await
+    {
+        Ok(piece) => piece.map_err(Error::into_up),
+        Err(Expired) => Err(Error::explain(ErrorType::ReadTimedout, "reading body").into_up()),
+    }
 }
 
 /// The stream buffers its writes: what a client waits for must be flushed before the next wait on the origin.
