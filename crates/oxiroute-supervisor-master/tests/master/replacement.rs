@@ -453,6 +453,18 @@ pub(super) fn stale_acknowledgement_is_observed_without_advancing_the_phase() {
     harness.shutdown();
 }
 
+/// A probe that gives up on a connection leaves it for the worker to find: the worker must go on serving.
+#[test]
+pub(super) fn a_client_that_leaves_before_the_answer_does_not_stop_the_worker_serving() {
+    let harness = Harness::launch("normal");
+    for _ in 0..20 {
+        drop(UnixStream::connect(&harness.unix_path).unwrap());
+        drop(TcpStream::connect(harness.tcp_address).unwrap());
+    }
+    assert_served_by(&harness, 1);
+    harness.shutdown();
+}
+
 /// The activation deadline is 300 ms: a test thread that stalls for longer than that before it polls the master
 /// again, as on a loaded host, still sees the candidate's exit reported as the crash it was.
 #[test]
