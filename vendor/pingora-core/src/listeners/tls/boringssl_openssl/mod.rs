@@ -232,16 +232,16 @@ impl Acceptor {
         if let Some(offload) = self.offload.as_ref() {
             let ssl_acceptor = self.ssl_acceptor.clone();
             let callbacks = self.callbacks.clone();
-            let rt = offload.get_runtime(stream.id() as u64);
-            rt.spawn(async move {
-                if let Some(cb) = callbacks.as_ref() {
-                    handshake_with_callback(&ssl_acceptor, stream, cb.as_ref()).await
-                } else {
-                    handshake(&ssl_acceptor, stream).await
-                }
-            })
-            .await
-            .or_err(InternalError, "TLS offload runtime failure")?
+            offload
+                .spawn(stream.id() as u64, async move {
+                    if let Some(cb) = callbacks.as_ref() {
+                        handshake_with_callback(&ssl_acceptor, stream, cb.as_ref()).await
+                    } else {
+                        handshake(&ssl_acceptor, stream).await
+                    }
+                })
+                .await
+                .or_err(InternalError, "TLS offload runtime failure")?
         } else if let Some(cb) = self.callbacks.as_ref() {
             handshake_with_callback(&self.ssl_acceptor, stream, cb.as_ref()).await
         } else {

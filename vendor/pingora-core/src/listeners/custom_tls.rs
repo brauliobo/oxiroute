@@ -84,8 +84,10 @@ impl CustomTlsAcceptor {
         };
         let acceptor = self.acceptor.clone();
         offload
-            .get_runtime(stream.id() as u64)
-            .spawn(async move { acceptor.accept(stream).await })
+            .spawn(
+                stream.id() as u64,
+                async move { acceptor.accept(stream).await },
+            )
             .await
             .or_err(InternalError, "TLS offload runtime failure")?
     }
