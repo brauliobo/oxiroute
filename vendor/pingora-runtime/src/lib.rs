@@ -687,6 +687,36 @@ struct LoadGuard {
     index: AtomicUsize,
 }
 
+/// A connection's future that counts it on its worker for as long as it lives. A struct and not an `async` block
+/// around `future.await`: the block stores the future twice (as its argument and as the future it awaits), which made
+/// every connection task twice the size of its future.
+struct Counted<F> {
+    future: F,
+    _guard: LoadGuard,
+}
+
+impl<F> Counted<F> {
+    fn new(guard: LoadGuard, future: F) -> Self {
+        Self {
+            future,
+            _guard: guard,
+        }
+    }
+}
+
+impl<F: Future> Future for Counted<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // SAFETY: `future` is structurally pinned: it is never moved out of `self`, and `Counted` has no `Drop` that
+        // moves it.
+        unsafe { self.map_unchecked_mut(|counted| &mut counted.future) }.poll(cx)
+    }
+}
+
 tokio::task_local! {
     /// The guard of the connection being polled, for a runtime that scales its workers.
     static CONNECTION: LoadGuard;
@@ -723,7 +753,9 @@ where
     };
     let pools = worker_pools.get().unwrap();
     let index = match &pools.scaling {
-        Some(scaling) if movable => scaling.place(own, |index| pools[index].load.load(Ordering::Relaxed)),
+        Some(scaling) if movable => {
+            scaling.place(own, |index| pools[index].load.load(Ordering::Relaxed))
+        }
         _ => least_loaded(pools, own),
     };
     pools[index].load.fetch_add(1, Ordering::Relaxed);
@@ -737,10 +769,7 @@ where
             scaling.connection_placed();
         }
         (executor, _) => {
-            let task = async move {
-                let _guard = guard;
-                future.await
-            };
+            let task = Counted::new(guard, future);
             match executor {
                 Some(executor) => executor.spawn(task),
                 None => {
@@ -1052,6 +1081,9 @@ fn test_dial9_zero_worker_poll_interval_is_rejected() {
 mod scaling_tests;
 
 #[cfg(test)]
+mod counted_tests;
+
+#[cfg(test)]
 mod connection_tests {
     use super::*;
     use std::collections::HashMap;
@@ -1087,9 +1119,7 @@ mod connection_tests {
         });
         let mut per_thread = HashMap::new();
         for _ in 0..count {
-            *per_thread
-                .entry(rx.blocking_recv().unwrap())
-                .or_default() += 1;
+            *per_thread.entry(rx.blocking_recv().unwrap()).or_default() += 1;
         }
         (per_thread, release)
     }
@@ -1114,7 +1144,10 @@ mod connection_tests {
         let runtime = Runtime::new_no_steal(4, "spread");
         let (per_thread, release) = spread(&runtime, 64);
         assert_eq!(per_thread.len(), 4);
-        assert!(per_thread.values().all(|count| *count == 16), "{per_thread:?}");
+        assert!(
+            per_thread.values().all(|count| *count == 16),
+            "{per_thread:?}"
+        );
         release.notify_waiters();
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
@@ -1156,7 +1189,10 @@ mod connection_tests {
         let runtime = aged_runtime(4, "aged", Duration::from_millis(40));
         let (per_thread, release) = spread(&runtime, 64);
         assert_eq!(per_thread.len(), 4);
-        assert!(per_thread.values().all(|count| *count == 16), "{per_thread:?}");
+        assert!(
+            per_thread.values().all(|count| *count == 16),
+            "{per_thread:?}"
+        );
         release.notify_waiters();
         runtime.shutdown_timeout(Duration::from_secs(1));
     }

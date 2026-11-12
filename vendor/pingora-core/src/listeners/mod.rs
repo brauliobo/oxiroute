@@ -316,7 +316,7 @@ impl TransportStack {
     pub async fn accept(&self) -> Result<UninitializedStream> {
         let stream = self.l4.accept().await?;
         Ok(UninitializedStream {
-            l4: stream,
+            l4: Box::new(stream),
             tls: self.tls.clone(),
             custom_tls: self.custom_tls.clone(),
             accepted_by: Handle::current().id(),
@@ -331,7 +331,9 @@ impl TransportStack {
 }
 
 pub(crate) struct UninitializedStream {
-    l4: L4Stream,
+    /// On the heap from the accept: a plain socket's stream is this allocation, and the task of the connection, which
+    /// holds this struct until the application runs, does not hold the 300 bytes of the socket's state three times.
+    l4: Box<L4Stream>,
     tls: Option<Arc<Acceptor>>,
     custom_tls: Option<Arc<CustomTlsAcceptor>>,
     /// The runtime whose I/O driver the socket is registered with.
@@ -368,7 +370,7 @@ impl UninitializedStream {
         if self.needs_handshake() {
             return Err(self);
         }
-        Ok(self.move_to_runtime().map(|()| Box::new(self.l4) as Stream))
+        Ok(self.move_to_runtime().map(|()| self.l4 as Stream))
     }
 
     pub async fn handshake(mut self) -> Result<Stream> {
@@ -380,12 +382,12 @@ impl UninitializedStream {
             }
         }
         if let Some(custom_tls) = self.custom_tls {
-            custom_tls.tls_handshake(self.l4).await
+            custom_tls.tls_handshake(*self.l4).await
         } else if let Some(tls) = self.tls {
-            let tls_stream = tls.tls_handshake(self.l4).await?;
+            let tls_stream = tls.tls_handshake(*self.l4).await?;
             Ok(Box::new(tls_stream))
         } else {
-            Ok(Box::new(self.l4))
+            Ok(self.l4)
         }
     }
 
