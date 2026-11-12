@@ -135,9 +135,9 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   streams keep the copy path until the prefix is consumed. Up to two descriptors per bulk direction are open while it
   runs; past the user's pipe quota the relay keeps the copy loop.
 - **Static files** of 64 KiB or more over plain HTTP/1.1 are sent with `sendfile` when the file is cached: the head and
-  the body are two writes instead of one `writev`; TLS, HTTP/2, HTTP/3 and gzip-compressed responses are unchanged, as are
-  file systems without `RWF_NOWAIT` other than tmpfs and ramfs. One more system call (`preadv2` probe) per large static
-  request.
+  the body are two writes instead of one `writev`; TLS, HTTP/2, HTTP/3 and gzip-compressed responses are unchanged;
+  file systems without `RWF_NOWAIT` other than tmpfs and ramfs read the file once per validity window and then use
+  `sendfile` too (see "Static files on the fast lane"). One more system call (`preadv2` probe) per large static request.
 - **HTTP/3 listeners.** See [the HTTP/3 section](#http3) for the stricter request handling, the origins behind `http3`
   listeners and the configuration that is now refused.
 - **Kernel TLS** (`tls_profiles[].policy.ktls`, `"auto"` default or `"off"`): with `"auto"` and a kernel that passes the
@@ -152,12 +152,17 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   [kernel TLS](developer/PERF_6_4_KTLS.md).
 - **Static files on the fast lane.** A plain `GET` or `HEAD` of a file the static cache holds is answered by the HTTP/1.1
   fast lane (plain and TLS) with the same bytes, access line and metrics as the classic path; requests with `Range` or a
-  condition header (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`) and other methods
-  still take the classic path. Files of any size are now kept for the 1 s validity window (up to 512 entries, 128 open
+  condition header (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`), other methods, a
+  service with `gzip` and a route with an access policy still take the classic path. Files of any size (HTTP/1.1,
+  HTTP/2 and HTTP/3) are now kept for the 1 s validity window (up to 512 entries, 128 open
   descriptors, 16 MiB of small bodies per route): a file replaced or deleted inside the window is served as it was, whole;
   a file truncated in place inside it ends the response with the connection. On file systems that cannot say whether a
   read would wait (ZFS, some network mounts) a file of up to 8 MiB is read once per window when opened and then sent with
   `sendfile`; if the kernel evicts its pages in the window that `sendfile` waits for the disk on the worker thread.
+  The copy of a large file that a blocking-pool thread did outside the worker is now `sendfile` on the worker: user-space
+  instructions fall by 8x and CPU per request stays the same, but one worker serving 1 MiB files from a file system whose
+  copy costs hundreds of microseconds (ZFS here) is limited to one core's rate, like nginx (3.3k to 2.0k requests per
+  second on one worker); use more `listener_workers` for such loads.
   Measured: 1 KiB 26,949 to 9,298 and 1 MiB 95,827 to 10,540 (ZFS), 40,971 to 11,689 (btrfs) user instructions per request
   (nginx 13.2k to 13.6k); see [static files](developer/PERF_6_4_STATIC_FILES.md).
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
@@ -165,13 +170,16 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
   (`audit.*`), `RUST_LOG` (`log_filter`). Supervised workers run with a cleared environment and do not inherit `RUST_LOG`;
   set `log_filter` to change their verbosity. The log filter follows every reload.
+- **Tail latency at many busy connections** is unchanged: 1,024 to 2,048 busy keep-alive connections on one work-stealing
+  worker still see a p99 of 157 to 360 ms. Serving the queues in arrival order cut it 2.5x to 2.9x but also cut the
+  saturated rate of the worker about 3x, with no way back, so it is not in 6.4; `connection_scheduling` is where tail work
+  belongs (see [tail latency and idle memory](developer/PERF_6_4_TAIL_AND_MEMORY.md)).
 - **Upgraded connections** (WebSocket) hold 7.7 kB less while idle: 47.2 kB to 39.5 kB, over TLS 69.6 kB to 61.5 kB
   (the request and response head buffers are released once the connection is upgraded).
-- **Costs.** A 1 KiB static file costs about 15% and a WebSocket message about 3% more user-space instructions than in
-  6.3.1 (the 0.9.1 base, and for the static file the lane's look at a request of a classic route in a service that also
-  has lane routes; see the summary). Requests that take the classic path (cache, rescue pools, streamed bodies, `Expect`,
-  gzip) pay only the 0.9.1 base (1% to 8%). A classic HTTP/2 request (a request with a body) pays 3% to 10% more in the
-  session codec than before the HTTP/2 view API, and is still 19% below 6.3.1.
+- **Costs.** A WebSocket message costs about 1% more user-space instructions than in 6.3.1 (the 0.9.1 base; upgraded
+  connections are not served by a lane). Requests that take the classic path (cache, rescue pools, chunked bodies,
+  `Expect`, gzip) pay only the 0.9.1 base (1% to 8%). A classic HTTP/2 request (one the lane declines) pays 3% to 10%
+  more in the session codec than before the HTTP/2 view API, and is still well below 6.3.1.
 
 ## Measured effect
 
@@ -182,17 +190,20 @@ in [the 6.4 performance summary](developer/PERF_6_4_SUMMARY.md).
 
 | Lane | 6.3.1 | 6.4 | Change |
 | --- | ---: | ---: | ---: |
-| HTTP/1.1 proxied, 1 KiB | 53,320 | 34,967 | -34.4% |
-| Fixed response | 22,654 | 10,863 | -52.0% |
-| New connection per request | 69,621 | 47,440 | -31.9% |
-| 2,048 keep-alive connections | 55,327 | 35,876 | -35.2% |
-| Proxied 1 MiB response | 85,074 | 56,367 | -33.7% |
-| WebSocket echo 1 KiB | 15,756 | 16,270 | +3.3% |
-| TLS 1.3 keep-alive, 1 KiB | 66,555 | 46,021 | -30.9% |
-| HTTP/2 over TLS, 1 KiB / 64 KiB / POST 1 KiB | 86,749 / 183,153 / 99,714 | 43,683 / 116,506 / 81,027 | -49.6% / -36.4% / -18.7% |
-| HTTP/3, fixed 1 KiB response | 69,815 | 43,889 | -37.1% |
-| TLS 1.3 full handshake (plus one request) | 1,737,119 | 1,726,260 | -0.6% |
-| Static file 1 KiB / 1 MiB | 32,752 / 80,993 | 37,672 / 114,588 | +15.0% / +41.5% (CPU of 1 MiB: -65% to -75%) |
+| HTTP/1.1 proxied, 1 KiB | 53,035 | 34,608 | -34.7% |
+| Fixed response | 22,630 | 11,076 | -51.1% |
+| New connection per request | 69,068 | 44,938 | -34.9% |
+| 2,048 keep-alive connections | 54,532 | 35,461 | -35.0% |
+| Proxied 1 MiB response | 83,972 | 54,577 | -35.0% |
+| HTTP/1.1 POST, 1 KiB / 64 KiB | 58,330 / 90,186 | 35,828 / 46,148 | -38.6% / -48.8% |
+| WebSocket echo 1 KiB | 15,690 | 15,877 | +1.2% |
+| TLS 1.3 keep-alive, 1 KiB | 66,349 | 46,020 | -30.6% |
+| HTTP/2 over TLS, 1 KiB / 64 KiB / POST 1 KiB | 87,000 / 181,853 / 99,387 | 43,907 / 116,097 / 54,650 | -49.5% / -36.2% / -45.0% |
+| HTTP/3, fixed 1 KiB response | 70,543 | 46,427 | -34.2% |
+| TLS 1.3 full handshake (plus one request) | 1,736,034 | 1,726,405 | -0.6% |
+| Static file 1 KiB / 1 MiB | 32,747 / 81,669 | 12,542 / 14,426 | -61.7% / -82.3% |
+
+The CPU time per request of a 1 MiB static file also fell by 65% to 75% (kernel offload, first integration pass).
 
 ## Request path and connections
 
