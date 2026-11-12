@@ -154,13 +154,17 @@ impl PingoraService for PanickingService {
 
 #[async_trait]
 impl ServerApp for ClosingApp {
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         mut stream: Stream,
         _shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        let _ = stream.shutdown().await;
-        None
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            let _ = stream.shutdown().await;
+            None
+        }
     }
 }
 
