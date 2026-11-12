@@ -18,7 +18,7 @@ thread_local! {
     static BLOCKS: RefCell<Vec<(Layout, NonNull<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(super) struct PooledFuture<F> {
+pub struct PooledFuture<F> {
     future: NonNull<F>,
 }
 
@@ -58,7 +58,7 @@ fn give_block(layout: Layout, block: NonNull<u8>) {
 impl<F: Future> PooledFuture<F> {
     /// The future is written where it will live: the block is taken before `make` runs.
     #[inline(always)]
-    pub(super) fn new(make: impl FnOnce() -> F) -> Self {
+    pub fn new(make: impl FnOnce() -> F) -> Self {
         let future = take_block(Layout::new::<F>()).cast::<F>();
         // SAFETY: the block is valid for `layout` and owned by this value.
         unsafe { future.write(make()) };
