@@ -48,5 +48,10 @@ fn count(bytes: usize) {
 /// requested bytes, then zeros for the clock and the live bytes.
 #[must_use]
 pub fn snapshot() -> String {
-    format!("{} 0 0 0 {} {} 0 0", ALLOCATIONS.load(Relaxed), FREES.load(Relaxed), BYTES.load(Relaxed))
+    format!(
+        "{} 0 0 0 {} {} 0 0",
+        ALLOCATIONS.load(Relaxed),
+        FREES.load(Relaxed),
+        BYTES.load(Relaxed)
+    )
 }
