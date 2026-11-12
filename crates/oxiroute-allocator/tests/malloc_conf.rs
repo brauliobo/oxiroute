@@ -1,5 +1,5 @@
 //! The embedded configuration is what jemalloc reports, with no environment variable set, in a binary that declares
-//! the allocator the way `oxiroute` does.
+//! the allocator the way `oxiroute` does; the purging thread starts on request.
 #![cfg(target_os = "linux")]
 #![allow(unsafe_code)]
 
@@ -26,12 +26,15 @@ fn option<T: Default>(name: &[u8]) -> T {
 }
 
 #[test]
-fn jemalloc_purges_its_dirty_pages_from_a_background_thread() {
+fn jemalloc_starts_no_thread_of_its_own_until_asked_to() {
     assert!(
         std::env::var_os("_RJEM_MALLOC_CONF").is_none(),
         "the run-time override would hide the embedded value"
     );
-    assert!(option::<bool>(b"opt.background_thread\0"));
+    assert!(!option::<bool>(b"opt.background_thread\0"));
+    assert!(!option::<bool>(b"background_thread\0"));
+    oxiroute_allocator::start_background_thread().expect("start the purging thread");
+    assert!(option::<bool>(b"background_thread\0"));
 }
 
 #[test]

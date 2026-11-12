@@ -136,7 +136,9 @@ fn main() -> ExitCode {
         Command::Serve { config } => {
             #[cfg(target_os = "linux")]
             {
-                supervised::master::run_if_supported(config)
+                oxiroute_allocator::start_background_thread()
+                    .map_err(Into::into)
+                    .and_then(|()| supervised::master::run_if_supported(config))
             }
             #[cfg(not(target_os = "linux"))]
             {
