@@ -288,7 +288,7 @@ pub fn requests(base: &str) -> Vec<Case> {
         "nominated forwarded header",
         get(
             base,
-            "Connection: X-Forwarded-For\r\nX-Forwarded-For: 192.0.2.19\r\n",
+            "Connection: X-Forwarded-For\r\nX-Forwarded-For: 192.0.2.9\r\n",
         ),
     );
     add(
@@ -459,7 +459,7 @@ pub fn requests(base: &str) -> Vec<Case> {
     add(
         &mut cases,
         "x-forwarded-for client",
-        get(base, "X-Forwarded-For: 192.0.2.201\r\nX-Real-IP: 192.0.2.201\r\n"),
+        get(base, "X-Forwarded-For: 192.0.2.1\r\nX-Real-IP: 192.0.2.1\r\n"),
     );
     add(
         &mut cases,
