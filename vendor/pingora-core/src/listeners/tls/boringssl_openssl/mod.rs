@@ -38,7 +38,47 @@ unsafe extern "C" {
         context: *mut crate::tls::ssl_sys::SSL_CTX,
         timeout_seconds: libc::c_long,
     ) -> libc::c_long;
+
+    // openssl-sys does not declare this exported OpenSSL function either.
+    fn SSL_CTX_get_ciphers(
+        context: *const crate::tls::ssl_sys::SSL_CTX,
+    ) -> *mut crate::tls::ssl_sys::stack_st_SSL_CIPHER;
 }
+
+/// The cipher suites OpenSSL enables for `cipher_list` (its cipher string syntax), in the order it prefers them: the
+/// TLS 1.3 suites first, then the suites of earlier protocol versions. This is how a TLS library that cannot parse
+/// the syntax follows an operator's cipher string with OpenSSL's own semantics.
+///
+/// # Errors
+///
+/// Returns the OpenSSL error when the string selects no cipher or is malformed.
+#[cfg(feature = "openssl")]
+pub fn cipher_list_names(cipher_list: &str) -> std::result::Result<Vec<String>, crate::tls::error::ErrorStack> {
+    use foreign_types::ForeignType as _;
+
+    let mut builder = crate::tls::ssl::SslContextBuilder::new(SslMethod::tls_server())?;
+    builder.set_cipher_list(cipher_list)?;
+    let context = builder.build();
+    let stack = unsafe {
+        // SAFETY: `context` is live for this call and owns the returned stack, which is only read below.
+        SSL_CTX_get_ciphers(context.as_ptr())
+    };
+    let count = unsafe {
+        // SAFETY: `stack` is the live cipher stack of `context` (or null, which the call reports as -1).
+        crate::tls::ssl_sys::OPENSSL_sk_num(stack.cast())
+    };
+    Ok((0..count)
+        .map(|index| unsafe {
+            // SAFETY: `index` is below the stack's length and each element is a live SSL_CIPHER whose name is a
+            // static NUL-terminated string.
+            let cipher = crate::tls::ssl_sys::OPENSSL_sk_value(stack.cast(), index);
+            std::ffi::CStr::from_ptr(crate::tls::ssl_sys::SSL_CIPHER_get_name(cipher.cast()))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect())
+}
+
 pub const TLS_CONF_ERR: ErrorType = ErrorType::Custom("TLSConfigError");
 
 pub(crate) struct Acceptor {

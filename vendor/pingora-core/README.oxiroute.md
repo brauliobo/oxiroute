@@ -52,6 +52,9 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   while custom L4 connections retain descriptor fallback. Transport and HTTP/2 checkout use that
   opt-in identity before the existing descriptor syscall without changing readiness, pool keys,
   release behavior, or retained connection objects.
+- `listeners/tls/boringssl_openssl/mod.rs` adds `cipher_list_names`: the cipher suites OpenSSL enables for an OpenSSL cipher
+  string, in its order (`SSL_CTX_get_ciphers`, declared by hand like `SSL_CTX_set_timeout`). The rustls TLS backend of a
+  profile uses it to follow `cipher_list` with OpenSSL's own semantics.
 - `protocols/l4/lazy_read.rs` replaces `tokio::io::BufStream` as the accepted stream's buffer. Reads go
   through one 64 KiB scratch buffer per thread and only the bytes the caller did not ask for stay with the
   connection, in a buffer that is released as soon as the socket would block, so an idle keep-alive
