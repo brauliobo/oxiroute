@@ -220,11 +220,14 @@ where
     }
 }
 
-fn handled_signals() -> Vec<i32> {
-    let mut signals = vec![SIGTERM, SIGINT, SIGHUP];
-    #[cfg(feature = "alloc-count")]
-    signals.push(signal_hook::consts::SIGUSR1);
-    signals
+#[cfg(not(feature = "alloc-count"))]
+fn handled_signals() -> [i32; 3] {
+    [SIGTERM, SIGINT, SIGHUP]
+}
+
+#[cfg(feature = "alloc-count")]
+fn handled_signals() -> [i32; 4] {
+    [SIGTERM, SIGINT, SIGHUP, signal_hook::consts::SIGUSR1]
 }
 
 /// The allocator counters, appended as a line to `$OXIROUTE_INTERNAL_TEST_ALLOC_FILE`: the data-path harness takes
@@ -236,7 +239,11 @@ fn append_allocation_snapshot() {
         return;
     };
     let line = oxiroute_allocator::snapshot();
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
         let _ = writeln!(file, "{line}");
     }
 }
