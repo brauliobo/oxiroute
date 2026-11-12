@@ -1018,9 +1018,13 @@ The current certificate and profile rules are:
   `"openssl"` (the default) or `"rustls"` (rustls with the aws-lc-rs provider). Certificates, SNI selection, ALPN, the
   minimum version, client authentication (`mode`, `ca_certificate_path`, `allowed_dns_names`), `session_cache`,
   `session_timeout_seconds`, `session_tickets`, `prefer_server_ciphers`, certificate hot reload and TLS-ALPN-01
-  challenges behave the same on both. `cipher_list` and `dh_parameters_path` are OpenSSL settings and are rejected
-  with `backend = "rustls"` (rustls has no cipher-list syntax, no DHE and no CBC suites); the rustls suites are
-  TLS 1.3 AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 and, for TLS 1.2, the ECDHE AEAD suites in that order.
+  challenges behave the same on both. The rustls suites are TLS 1.3 AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 and,
+  for TLS 1.2, the ECDHE AEAD suites. With `backend = "rustls"`, `cipher_list` is evaluated by OpenSSL, so the string
+  means what it means on the OpenSSL backend (`HIGH:!aNULL`, `ECDHE+AESGCM`, `@STRENGTH`, exact names), and the TLS 1.2
+  suites it selects that rustls implements are offered in OpenSSL's order; the ones it cannot implement (finite-field
+  DHE, CBC, RSA key exchange) are left out and named once in the log, and a profile whose list leaves no TLS 1.2 suite
+  fails to start unless `min_version` is `"1.3"` (TLS 1.3 suites are not governed by `cipher_list` on either backend).
+  `dh_parameters_path` is read and ignored (a warning says so): rustls offers no DHE suites.
   Upstream TLS, ACME and HTTP/3 are not affected by the setting. Changing it is an ordinary reload: new connections
   of the new generation use the new library and connections of the replaced generation finish as they were accepted.
   See `docs/developer/PERF_6_4_RUSTLS.md` for the differences and the measurements.

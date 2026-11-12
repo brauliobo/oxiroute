@@ -163,7 +163,7 @@ Three profile options (`tls_profiles[].policy`, see `CONFIG_SPEC.md`) change the
 | --- | --- | --- |
 | `key_exchange_groups = { "x25519", "secp256r1" }` | a browser handshake costs 1.58 million instead of 2.27 million instructions (-30%): browsers offer the post-quantum hybrid `x25519mlkem768`, which the default list prefers and which costs 0.68 million more | the key exchange is classical only: recorded traffic is not protected against a future quantum computer; default unchanged |
 | `session_cache = { name, size_bytes }` | a TLS 1.2 client that reconnects resumes at 255 thousand instead of 1.5 million (-83%); a TLS 1.3 client at -6% to -14% (the key exchange still runs) | memory of `size_bytes` per profile, shared by the workers of the process; off by default |
-| `session_tickets = true` | stateless tickets, no server memory | a full handshake costs 10% more (two tickets are issued); pays back above about 57% resumption; off by default |
+| `session_tickets = true` | stateless tickets, no server memory | one ticket is issued per full handshake (about 5% of its instructions) and a fresh one on every resumed connection; a resumed TLS 1.2 handshake costs 79% less than a full one, a resumed TLS 1.3 handshake only 7% less (it still does the key exchange); off by default |
 
 Handshake CPU is the sum over new connections, so the effect shows in `top -H` as the `downstream TLS offload` threads
 (one thread handles about 4,800 ECDSA handshakes per second, see `tls_handshake_threads` above). A keep-alive or HTTP/2
@@ -194,9 +194,11 @@ request; the break-even is one large file per 200 small requests. Details: `deve
 ## TLS backend
 
 `tls_profiles[].policy.backend` is `"openssl"` by default; `"rustls"` runs the handshakes and records of the profile's
-listeners with rustls and aws-lc-rs. It rejects `cipher_list` and `dh_parameters_path`, offers only the TLS 1.3 and ECDHE
-AEAD suites, and has no kernel TLS. Switch one profile at a time (a reload applies it to new connections) and compare the
-handshake and error counters before moving more. Differences and numbers: `developer/PERF_6_4_RUSTLS.md`.
+listeners with rustls and aws-lc-rs. It offers only the TLS 1.3 and ECDHE AEAD suites (a `cipher_list` is followed with
+OpenSSL's semantics and the DHE, CBC and RSA key exchange suites it selects are left out, with a warning at start;
+`dh_parameters_path` is ignored), and has no kernel TLS. Switch one profile at a time (a reload applies it to new
+connections) and compare the handshake and error counters before moving more. Differences, the parity audit and the
+numbers: `developer/PERF_6_4_RUSTLS.md`, `developer/research/PERF_NEXT_TLS.md`.
 
 ## Shutdown
 
