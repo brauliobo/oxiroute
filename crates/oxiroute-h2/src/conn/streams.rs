@@ -113,6 +113,9 @@ impl Slot {
     }
 }
 
+/// Slots a connection keeps while it has no stream.
+const IDLE_SLOTS: usize = 16;
+
 #[derive(Default)]
 pub struct Streams {
     slots: Vec<Slot>,
@@ -163,6 +166,17 @@ impl Streams {
             slot.body = None;
             slot.wakers = Wakers::default();
             self.free.push(idx);
+            self.release_when_idle();
+        }
+    }
+
+    /// A connection that has no stream left gives back the slots a burst of concurrent streams needed: a handle
+    /// that outlives its stream finds no slot (or one that belongs to another id) and so does nothing.
+    fn release_when_idle(&mut self) {
+        if self.index.is_empty() && self.slots.capacity() > IDLE_SLOTS {
+            self.slots = Vec::new();
+            self.free = Vec::new();
+            self.index = Vec::new();
         }
     }
 
@@ -174,6 +188,28 @@ impl Streams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_burst_of_streams_leaves_no_slots_behind_once_they_are_gone() {
+        let mut t = Streams::default();
+        for id in (1..=200).step_by(2) {
+            t.insert(id, 10, 10);
+        }
+        for id in (1..=200).step_by(2) {
+            t.remove(id);
+        }
+        assert_eq!(
+            t.slots.capacity() + t.free.capacity() + t.index.capacity(),
+            0
+        );
+        let again = t.insert(201, 10, 10);
+        assert_eq!(t.get(again, 201).map(|s| s.id), Some(201));
+        assert!(t.get(again, 1).is_none());
+        assert!(
+            t.get(5, 3).is_none(),
+            "a handle to a stream that is gone finds no slot"
+        );
+    }
 
     #[test]
     fn insert_find_remove_reuse() {
