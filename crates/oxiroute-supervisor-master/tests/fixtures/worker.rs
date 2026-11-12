@@ -1,6 +1,5 @@
 use std::{
     env, fs, io,
-    io::Write as _,
     net::TcpListener,
     os::unix::net::UnixListener,
     process::{Command, ExitCode},
@@ -317,6 +316,21 @@ impl Serving {
     }
 }
 
+/// Answers one client. A client that left before the answer, as a probe that gave up does, is not the worker's failure.
+fn answer(mut stream: impl io::Write, response: &[u8]) -> io::Result<()> {
+    match stream.write_all(response) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
 fn serve_tcp(
     listener: &TcpListener,
     active: &AtomicBool,
@@ -326,7 +340,7 @@ fn serve_tcp(
     while !stop.load(Ordering::Acquire) {
         if active.load(Ordering::Acquire) {
             match listener.accept() {
-                Ok((mut stream, _)) => stream.write_all(response)?,
+                Ok((stream, _)) => answer(stream, response)?,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
             }
@@ -345,7 +359,7 @@ fn serve_unix(
     while !stop.load(Ordering::Acquire) {
         if active.load(Ordering::Acquire) {
             match listener.accept() {
-                Ok((mut stream, _)) => stream.write_all(response)?,
+                Ok((stream, _)) => answer(stream, response)?,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
             }

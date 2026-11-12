@@ -625,7 +625,7 @@ pub(super) fn probe_tcp(address: SocketAddr) -> u64 {
                 return u64::from_be_bytes(response);
             }
         }
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < TEST_TIMEOUT);
     }
 }
 
@@ -641,7 +641,7 @@ pub(super) fn probe_unix(path: &PathBuf) -> u64 {
                 return u64::from_be_bytes(response);
             }
         }
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < TEST_TIMEOUT);
     }
 }
 
