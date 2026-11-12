@@ -43,3 +43,7 @@ OxiRoute runs a service on non-stealing runtimes only when the configuration ask
 `connection_scheduling = "aged_per_worker"` (`ServerConf::work_stealing = false` with `connection_age_ms` set); the
 default is Pingora's work-stealing runtime. See `docs/developer/PERF_6_3_RUNTIME_MODEL.md` and
 `docs/developer/PERF_6_4_CONNECTION_SCHEDULING.md`.
+
+- `spawn_connection_as` wraps the connection future in `Counted`, a hand-written future that holds the load guard next to
+  the future. The former `async move { let _guard = guard; future.await }` stored the future twice (once as the captured
+  argument, once as the awaited local) and made every connection task 1 to 3 kB larger. Tests in `src/counted_tests.rs`.
