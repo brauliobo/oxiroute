@@ -332,6 +332,11 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   no longer lists it, the `pingora-rustls` crate is not part of the 0.9.1 set in the offline registry, and Pingora
   compiles one backend, so `rustls` and `openssl` cannot be enabled together). The unused `protocols/tls/rustls/` and
   `listeners/tls/rustls/` sources stay unbuilt, as in the pristine import.
+- `offload.rs` runs offloaded work through `OffloadRuntime::spawn`, which returns an `OffloadTask` that aborts the task
+  when it is dropped. Upstream detached the task when the caller stopped waiting, so a downstream TLS handshake that hit
+  the handshake timeout kept its socket and its connection admission until the silent client went away, and a service
+  at its connection limit refused every new connection meanwhile. The downstream acceptors and the upstream connector
+  use it; a handshake that times out is closed with the timeout.
 
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a

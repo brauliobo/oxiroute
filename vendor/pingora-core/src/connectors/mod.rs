@@ -239,29 +239,26 @@ impl TransportConnector {
         peer: &P,
         lifetime: Option<Arc<dyn crate::protocols::ConnectionLifetime>>,
     ) -> Result<Stream> {
-        let rt = self
-            .offload
-            .as_ref()
-            .map(|o| o.get_runtime(peer.reuse_hash()));
         let bind_to = l4::bind_to_random(peer, &self.bind_to_v4, &self.bind_to_v6);
         let alpn_override = self.preferred_http_version.get(peer);
-        let stream = if let Some(rt) = rt {
+        let stream = if let Some(offload) = self.offload.as_ref() {
             let peer = peer.clone();
             let tls_ctx = self.tls_ctx.clone();
             let offload_start = Instant::now();
-            rt.spawn(async move {
-                let offload_wait = offload_start.elapsed();
-                do_connect(
-                    &peer,
-                    bind_to,
-                    alpn_override,
-                    &tls_ctx.ctx,
-                    Some(offload_wait),
-                )
+            offload
+                .spawn(peer.reuse_hash(), async move {
+                    let offload_wait = offload_start.elapsed();
+                    do_connect(
+                        &peer,
+                        bind_to,
+                        alpn_override,
+                        &tls_ctx.ctx,
+                        Some(offload_wait),
+                    )
+                    .await
+                })
                 .await
-            })
-            .await
-            .or_err(InternalError, "offload runtime failure")??
+                .or_err(InternalError, "offload runtime failure")??
         } else {
             do_connect(peer, bind_to, alpn_override, &self.tls_ctx.ctx, None).await?
         };
