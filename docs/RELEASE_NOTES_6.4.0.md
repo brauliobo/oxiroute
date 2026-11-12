@@ -1,7 +1,9 @@
 # OxiRoute 6.4.0
 
+Released 2026-11-11.
+
 OxiRoute 6.4.0 makes the connection and protocol layers cheaper. Plain HTTP/1.1 requests of fixed-response and plain
-proxy routes are served on a compiled fast lane and need 32% to 52% fewer user-space instructions than in 6.3.1,
+proxy routes are served on a compiled fast lane and need 35% to 51% fewer user-space instructions than in 6.3.1,
 bodyless HTTP/2 requests of the same routes are served on a stream lane (HTTP/2 over TLS: 50% fewer instructions for
 1 KiB responses), an idle keep-alive connection holds no session and no read buffer (also over TLS and
 for WebSocket), TLS handshakes run on their own threads, TCP relays and large static files move their bytes in the
