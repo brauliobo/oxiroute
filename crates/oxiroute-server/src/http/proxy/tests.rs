@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     os::fd::AsRawFd as _,
     sync::{
@@ -103,7 +102,7 @@ async fn request_preparation_fixture(
         .expect("preparation metrics");
     let service = Arc::new(HttpServicePlan::new(
         Some(1024),
-        HashMap::new(),
+        Vec::new(),
         Duration::from_secs(1),
         RouteTable::default(),
     ));

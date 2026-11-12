@@ -3,28 +3,28 @@
 use super::*;
 
 impl HostMatcher {
-    fn rank_if_matches(&self, authority: Option<&Authority>) -> Option<(u8, usize)> {
+    fn rank_if_matches(&self, host: Option<&str>) -> Option<(u8, usize)> {
         match self {
             Self::Any => Some((0, 0)),
-            Self::ExactAuthority(expected) => authority
-                .is_some_and(|authority| authority.as_str() == expected)
+            Self::ExactAuthority(expected) => host
+                .is_some_and(|host| host == expected)
                 .then_some((3, expected.len())),
-            Self::AsciiCaseInsensitiveExactAuthority(expected) => authority
-                .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(expected))
+            Self::AsciiCaseInsensitiveExactAuthority(expected) => host
+                .is_some_and(|host| host.eq_ignore_ascii_case(expected))
                 .then_some((3, expected.len())),
-            Self::NormalizedExact(expected) => authority
+            Self::NormalizedExact(expected) => host
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| host == *expected)
                 .then_some((2, expected.len())),
-            Self::Wildcard(suffix) => authority
+            Self::Wildcard(suffix) => host
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| wildcard_matches(&host, suffix))
                 .then_some((1, suffix.len())),
-            Self::NginxLeadingWildcard(suffix) => authority
+            Self::NginxLeadingWildcard(suffix) => host
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| nginx_suffix_matches(&host, suffix, false))
                 .then_some((1, suffix.len())),
-            Self::NginxLeadingDot(suffix) => authority
+            Self::NginxLeadingDot(suffix) => host
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| nginx_suffix_matches(&host, suffix, true))
                 .then_some((1, suffix.len())),
@@ -65,14 +65,14 @@ fn select_linear<'a>(
     uri: &Uri,
     method: &Method,
 ) -> Option<&'a Route> {
-    let authority = authority.or_else(|| uri.authority());
+    let host = authority.or_else(|| uri.authority()).map(Authority::as_str);
     let path = canonicalize_http_path(uri.path())?;
     let mut best = None;
     for route in &table.routes {
         if !route.matches_method(method) {
             continue;
         }
-        let Some(host_rank) = route.host.rank_if_matches(authority) else {
+        let Some(host_rank) = route.host.rank_if_matches(host) else {
             continue;
         };
         let Some((path_rank, path_length)) = route.path.rank_if_matches(path.as_ref()) else {
@@ -254,12 +254,20 @@ fn assert_equivalent(table: &RouteTable) {
         for target in TARGETS {
             let uri: Uri = target.parse().expect("uri");
             for method in [Method::GET, Method::POST, Method::PUT] {
+                let expected =
+                    select_linear(table, Some(&authority), &uri, &method).map(Route::route_id);
                 assert_eq!(
                     table
                         .select(Some(&authority), &uri, &method)
                         .map(Route::route_id),
-                    select_linear(table, Some(&authority), &uri, &method).map(Route::route_id),
+                    expected,
                     "{authority} {target} {method}"
+                );
+                let order = table.select_index(Some(authority.as_str()), uri.path(), &method);
+                assert_eq!(
+                    order.map(|order| table.routes[order].route_id()),
+                    expected,
+                    "index {authority} {target} {method}"
                 );
             }
         }
@@ -417,8 +425,32 @@ fn the_host_of_an_authority_is_what_http_reports() {
         "a:1",
     ] {
         let authority: Authority = text.parse().expect("authority");
-        assert_eq!(host_of(&authority), authority.host(), "{text}");
+        assert_eq!(host_of(text), authority.host(), "{text}");
     }
+}
+
+#[test]
+fn the_host_of_any_text_is_what_http_reports_when_the_text_is_an_authority() {
+    let mut authorities = 0_u32;
+    every_string(b"a1.:[]@%-", 6, &mut |text| {
+        let host = host_of(text);
+        if let Ok(authority) = text.parse::<Authority>() {
+            authorities += 1;
+            assert_eq!(host, authority.host(), "{text:?}");
+        }
+    });
+    assert!(authorities > 10_000, "{authorities}");
+}
+
+#[test]
+fn a_path_with_no_single_meaning_selects_no_route() {
+    let table = table_of(vec![None]);
+    for path in [
+        "/a/../b", "/a/./b", "//a", "/a\\b", "/a%2fb", "/a%zz", "/%41",
+    ] {
+        assert_eq!(table.select_index(None, path, &Method::GET), None, "{path}");
+    }
+    assert_eq!(table.select_index(None, "/a%3fb", &Method::GET), Some(0));
 }
 
 fn table_of(hosts: Vec<Option<HttpHostSelector>>) -> RouteTable {

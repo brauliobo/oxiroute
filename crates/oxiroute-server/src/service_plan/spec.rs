@@ -171,14 +171,15 @@ pub struct HttpServicePlan {
     automatic_response_headers: bool,
     gzip: Option<Arc<HttpGzipPlan>>,
     max_request_body_bytes: Option<u64>,
-    route_plans: HashMap<String, Arc<HttpRoutePlan>>,
+    /// The plans in the order of the routes of the table.
+    route_plans: Box<[Arc<HttpRoutePlan>]>,
     upstream_io_timeout: Duration,
     routes: RouteTable,
 }
 
 impl HttpServicePlan {
     pub fn upstream_pools(&self) -> impl Iterator<Item = &Arc<RoundRobinPool>> {
-        self.route_plans.values().filter_map(|route| {
+        self.route_plans.iter().filter_map(|route| {
             let HttpActionPlan::Proxy(proxy) = &route.action else {
                 return None;
             };
@@ -187,9 +188,9 @@ impl HttpServicePlan {
     }
 
     #[cfg(test)]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         max_request_body_bytes: Option<u64>,
-        route_plans: HashMap<String, Arc<HttpRoutePlan>>,
+        route_plans: Vec<Arc<HttpRoutePlan>>,
         upstream_io_timeout: Duration,
         routes: RouteTable,
     ) -> Self {
@@ -198,7 +199,7 @@ impl HttpServicePlan {
             automatic_response_headers: true,
             gzip: None,
             max_request_body_bytes,
-            route_plans,
+            route_plans: route_plans.into(),
             upstream_io_timeout,
             routes,
         }
@@ -207,7 +208,7 @@ impl HttpServicePlan {
     pub(super) fn with_http_policy(
         automatic_response_headers: bool,
         max_request_body_bytes: Option<u64>,
-        route_plans: HashMap<String, Arc<HttpRoutePlan>>,
+        route_plans: Vec<Arc<HttpRoutePlan>>,
         upstream_io_timeout: Duration,
         routes: RouteTable,
         gzip: Option<Arc<HttpGzipPlan>>,
@@ -218,7 +219,7 @@ impl HttpServicePlan {
             automatic_response_headers,
             gzip,
             max_request_body_bytes,
-            route_plans,
+            route_plans: route_plans.into(),
             upstream_io_timeout,
             routes,
         }
@@ -229,23 +230,25 @@ impl HttpServicePlan {
         authority: Option<&Authority>,
         uri: &Uri,
         method: &Method,
-    ) -> Option<Arc<HttpRoutePlan>> {
-        let route = self.routes.select(authority, uri, method)?;
-        self.route_plans.get(route.route_id()).cloned()
+    ) -> Option<&Arc<HttpRoutePlan>> {
+        let authority = authority.or_else(|| uri.authority());
+        self.select_route_path(authority.map(Authority::as_str), uri.path(), method)
     }
 
     pub(crate) fn selects_on_host(&self) -> bool {
         self.routes.selects_on_host()
     }
 
+    /// The plan of the route a request is served by, for its authority as written and its path. A path with no single
+    /// meaning selects no route.
     pub(crate) fn select_route_path(
         &self,
-        authority: Option<&Authority>,
+        authority: Option<&str>,
         path: &str,
         method: &Method,
-    ) -> Option<Arc<HttpRoutePlan>> {
-        let route = self.routes.select_path(authority, path, method)?;
-        self.route_plans.get(route.route_id()).cloned()
+    ) -> Option<&Arc<HttpRoutePlan>> {
+        let order = self.routes.select_index(authority, path, method)?;
+        Some(&self.route_plans[order])
     }
 
     #[must_use]
@@ -291,7 +294,7 @@ impl HttpServicePlan {
     /// request that the classic path serves.
     pub(crate) fn has_lane_route(&self) -> bool {
         self.route_plans
-            .values()
+            .iter()
             .any(|route| route.lane != LaneRoute::Classic)
     }
 }
@@ -322,23 +325,19 @@ mod tests {
     use super::*;
     use crate::http::action::{FixedResponsePlan, RoutePolicyPlan};
 
-    fn route(lane: LaneRoute) -> Arc<HttpRoutePlan> {
+    fn route(lane: LaneRoute, route_id: &str) -> Arc<HttpRoutePlan> {
         Arc::new(HttpRoutePlan {
             access: None,
             lane,
             edits: crate::http::proxy::lane::RouteEdits::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
             policy: RoutePolicyPlan::compile(oxiroute_config::HttpRoutePolicy::default()),
-            route_id: "r".into(),
+            route_id: route_id.into(),
         })
     }
 
     fn service(lanes: &[LaneRoute]) -> HttpServicePlan {
-        let routes = lanes
-            .iter()
-            .enumerate()
-            .map(|(index, lane)| (index.to_string(), route(*lane)))
-            .collect();
+        let routes = lanes.iter().map(|lane| route(*lane, "r")).collect();
         HttpServicePlan::new(None, routes, Duration::from_secs(1), RouteTable::default())
     }
 
@@ -368,8 +367,39 @@ mod tests {
         assert!(
             logged
                 .route_plans
-                .values()
+                .iter()
                 .all(|route| route.lane == LaneRoute::Direct)
+        );
+    }
+
+    #[test]
+    fn the_route_a_table_selects_is_the_plan_at_its_position() {
+        let routes = (0..12)
+            .map(|index| {
+                let path = oxiroute_config::HttpPathSelector::Exact {
+                    value: format!("/{index}"),
+                };
+                crate::Route::new(None, path, None, index.to_string()).expect("route")
+            })
+            .collect();
+        let plans = (0..12).map(|index| route(LaneRoute::Direct, &index.to_string()));
+        let service = HttpServicePlan::new(
+            None,
+            plans.collect(),
+            Duration::from_secs(1),
+            RouteTable::new(routes),
+        );
+        for index in 0..12 {
+            let plan = service.select_route_path(None, &format!("/{index}"), &Method::GET);
+            assert_eq!(
+                plan.map(|plan| &*plan.route_id),
+                Some(index.to_string().as_str())
+            );
+        }
+        assert!(
+            service
+                .select_route_path(None, "/12", &Method::GET)
+                .is_none()
         );
     }
 }

@@ -87,7 +87,7 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
         .expect("listener metrics");
     let service = Arc::new(HttpServicePlan::new(
         Some(1024),
-        HashMap::new(),
+        Vec::new(),
         Duration::from_secs(1),
         RouteTable::default(),
     ));

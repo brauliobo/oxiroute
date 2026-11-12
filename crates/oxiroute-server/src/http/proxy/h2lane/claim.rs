@@ -4,7 +4,6 @@ use std::{net::IpAddr, sync::Arc};
 
 use http::{HeaderValue, Method, uri::Authority};
 use oxiroute_acme::ChallengeStore;
-use oxiroute_config::is_unambiguous_http_path;
 use pingora::{
     apps::{ClaimedStream, Http2Claim},
     protocols::{
@@ -84,16 +83,15 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
     let authority = Authority::try_from(request.authority()?).ok()?;
     let target = request.path();
     let path = std::str::from_utf8(target.split(|byte| *byte == b'?').next()?).ok()?;
-    if !is_unambiguous_http_path(path)
-        || (front.challenge.is_some() && ChallengeStore::serves(path))
-    {
+    if front.challenge.is_some() && ChallengeStore::serves(path) {
         return None;
     }
     let route = front
         .service
-        .select_route_path(Some(&authority), path, &method)
+        .select_route_path(Some(authority.as_str()), path, &method)
         .filter(|route| matches!(route.lane, LaneRoute::Direct | LaneRoute::Proxy))
-        .filter(|route| streams_body(route, body))?;
+        .filter(|route| streams_body(route, body))
+        .cloned()?;
     let client_ip = client_ip(digest);
     let (id, wire, values, replay_safe) = match &route.action {
         HttpActionPlan::Proxy(proxy) => {

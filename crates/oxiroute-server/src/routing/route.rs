@@ -213,9 +213,24 @@ impl RouteTable {
         path: &str,
         method: &Method,
     ) -> Option<&Route> {
+        let order = self.select_index(authority.map(Authority::as_str), path, method)?;
+        Some(&self.routes[order])
+    }
+
+    /// The position in the table of the route [`Self::select_path`] selects, for the authority as the request wrote
+    /// it. The text is not checked to be an authority; a path with no single meaning selects no route.
+    pub(crate) fn select_index(
+        &self,
+        authority: Option<&str>,
+        path: &str,
+        method: &Method,
+    ) -> Option<usize> {
         let path = canonicalize_http_path(path)?;
-        let best = self.index.best(&self.routes, authority, &path, method)?;
-        Some(&self.routes[best.order()])
+        Some(
+            self.index
+                .best(&self.routes, authority, &path, method)?
+                .order(),
+        )
     }
 }
 
@@ -349,7 +364,7 @@ fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
     })
 }
 
-pub(super) fn normalized_authority_host(authority: &Authority) -> Option<Cow<'_, str>> {
+pub(super) fn normalized_authority_host(authority: &str) -> Option<Cow<'_, str>> {
     let authority_host = host_of(authority);
     let host = authority_host.strip_suffix('.').unwrap_or(authority_host);
     if let Some(ip) = parse_host_ip(host) {
@@ -364,11 +379,12 @@ pub(super) fn normalized_authority_host(authority: &Authority) -> Option<Cow<'_,
     })
 }
 
-/// The host of an authority, without scanning for the forms that need `Authority::host`.
-fn host_of(authority: &Authority) -> &str {
-    let text = authority.as_str();
-    if text.starts_with('[') || text.contains('@') {
-        return authority.host();
+/// The host of an authority as `Authority::host` reports it: after the userinfo, a bracketed IP literal or the text
+/// before the port.
+fn host_of(authority: &str) -> &str {
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    match host_port.strip_prefix('[') {
+        Some(rest) => &host_port[..rest.find(']').map_or(host_port.len(), |close| close + 2)],
+        None => host_port.split(':').next().unwrap_or(host_port),
     }
-    text.split_once(':').map_or(text, |(host, _)| host)
 }

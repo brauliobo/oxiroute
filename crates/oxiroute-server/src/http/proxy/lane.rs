@@ -31,7 +31,6 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use http::{HeaderValue, Method, uri::Authority};
 use oxiroute_acme::ChallengeStore;
-use oxiroute_config::is_unambiguous_http_path;
 use oxiroute_h1_head::RequestHead;
 use pingora::{
     apps::{Http1Connection, Http1Front, Http1FrontOutcome, relocate_idle_connection},
@@ -233,7 +232,7 @@ impl LaneFront {
     ) -> Option<Selected> {
         let path = request.path(buffer);
         let authority = request.host(buffer)?.parse::<Authority>().ok()?;
-        if authority.as_str().contains('@') || !is_unambiguous_http_path(path) {
+        if authority.as_str().contains('@') {
             return None;
         }
         if self.challenge.is_some() && ChallengeStore::serves(path) {
@@ -245,10 +244,10 @@ impl LaneFront {
             let method = Method::from_bytes(request.method(buffer)).ok()?;
             let route = self
                 .service
-                .select_route_path(Some(&authority), path, &method)
+                .select_route_path(Some(authority.as_str()), path, &method)
                 .filter(|route| route.lane != LaneRoute::Classic)?;
-            let file = peek::cached_file(&route, path, &method).ok()?;
-            (route, file)
+            let file = peek::cached_file(route, path, &method).ok()?;
+            (Arc::clone(route), file)
         };
         Some((route, authority, file))
     }
