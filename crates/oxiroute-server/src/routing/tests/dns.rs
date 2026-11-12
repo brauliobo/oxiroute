@@ -7,7 +7,7 @@ fn normalized_nginx_hosts_accept_one_trailing_dot() {
         .expect("trailing-dot authority");
 
     assert_eq!(
-        normalized_authority_host(&authority).as_deref(),
+        normalized_authority_host(authority.as_str()).as_deref(),
         Some("api.example.test")
     );
 }

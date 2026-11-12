@@ -119,7 +119,7 @@ async fn dispatch_reverse_request(
 ) -> Option<u16> {
     let method = request.method();
     let uri = request.uri();
-    let Some(route) = service.select_route(Some(authority), uri, method) else {
+    let Some(route) = service.select_route(Some(authority), uri, method).cloned() else {
         return send_h3_error(
             stream,
             StatusCode::NOT_FOUND,

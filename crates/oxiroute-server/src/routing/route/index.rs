@@ -4,7 +4,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
 };
 
-use http::{Method, uri::Authority};
+use http::Method;
 
 use super::{HostMatcher, PathIndex, Route, normalized_authority_host};
 
@@ -163,7 +163,7 @@ impl RouteIndex {
     pub(super) fn best(
         &self,
         routes: &[Route],
-        authority: Option<&Authority>,
+        authority: Option<&str>,
         path: &str,
         method: &Method,
     ) -> Option<Rank> {
@@ -178,7 +178,7 @@ impl RouteIndex {
     fn best_for(
         &self,
         routes: &[Route],
-        authority: &Authority,
+        written: &str,
         path: &str,
         method: &Method,
     ) -> Option<Rank> {
@@ -189,7 +189,6 @@ impl RouteIndex {
                     .map(|rank| rank.on_host((class, key.len())))
             })
         };
-        let written = authority.as_str();
         let mut best = probe(&self.exact, written, 3);
         if !self.ascii_ci.is_empty() {
             best = best.max(probe(&self.ascii_ci, &written.to_ascii_lowercase(), 3));
@@ -197,7 +196,7 @@ impl RouteIndex {
         if best.is_some() || !self.has_normalized_hosts() {
             return best;
         }
-        let host = normalized_authority_host(authority)?;
+        let host = normalized_authority_host(written)?;
         if let found @ Some(_) = probe(&self.normalized, &host, 2) {
             return found;
         }
