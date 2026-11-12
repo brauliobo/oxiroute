@@ -47,9 +47,26 @@ use faults::*;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The directory in which the fixture worker and the test synchronize: see `Hold` and `Harness::wait_done`.
+const SYNC_DIRECTORY: &str = "OXIROUTE_INTERNAL_TEST_FIXTURE_SYNC";
 
+/// A phase of a fixture worker that waits until the hold is dropped: a request is held before the worker handles it,
+/// and `Exit` holds the end of a worker that was told to shut down.
+struct Hold(PathBuf);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        fs::remove_file(&self.0).unwrap();
+    }
+}
+
+/// The master of a test runs on a clock that stands still until the test moves it, so that a deadline expires when
+/// the test says so and never because the host was slow: workers are real processes, and what they do takes
+/// however long the host needs. A test that expects a timeout moves the clock past the deadline.
 struct Harness<E: ActionExecutor = SystemActionExecutor> {
     _temporary: tempfile::TempDir,
+    now: Instant,
+    sync: PathBuf,
     listener_targets: Vec<PathBuf>,
     tcp_address: SocketAddr,
     unix_path: PathBuf,
@@ -102,31 +119,27 @@ impl<E: ActionExecutor> Harness<E> {
     }
 
     fn launch_input_with_executor(active: WorkerInput<WorkerCommand>, executor: E) -> Self {
+        Self::launch_configured(active, executor, config())
+    }
+
+    fn launch_configured(
+        mut active: WorkerInput<WorkerCommand>,
+        executor: E,
+        config: MasterConfig,
+    ) -> Self {
         let (temporary, listeners, listener_targets, tcp_address, unix_path, kept) = listeners();
-        let config = MasterConfig::new(
-            Duration::from_millis(300),
-            Duration::from_millis(300),
-            Duration::from_millis(300),
-            Duration::from_millis(300),
-            Duration::from_millis(300),
-        )
-        .unwrap();
-        let mut factory = WorkerSpawner::new(
-            env!("CARGO_BIN_EXE_master-launcher-fixture"),
-            Duration::from_secs(2),
-        )
-        .unwrap();
-        let master = Master::launch_with_executor(
-            config,
-            listeners,
-            executor,
-            &mut factory,
-            active,
-            Instant::now(),
-        )
-        .unwrap();
+        let sync = temporary.path().join("sync");
+        fs::create_dir(&sync).unwrap();
+        active.command = active.command.env(SYNC_DIRECTORY, &sync);
+        let now = Instant::now();
+        let mut factory = factory();
+        let master =
+            Master::launch_with_executor(config, listeners, executor, &mut factory, active, now)
+                .unwrap();
         let mut harness = Self {
             _temporary: temporary,
+            now,
+            sync,
             listener_targets,
             tcp_address,
             unix_path,
@@ -143,43 +156,92 @@ impl<E: ActionExecutor> Harness<E> {
         harness
     }
 
+    fn candidate(&self, generation: u64, behavior: &str) -> WorkerInput<WorkerCommand> {
+        let mut input = worker("b", generation, behavior);
+        input.command = input.command.env(SYNC_DIRECTORY, &self.sync);
+        input
+    }
+
+    /// Makes the worker of `generation` wait before it handles the `phase` request, until the hold is dropped.
+    fn hold(&self, generation: u64, phase: ControlPhase) -> Hold {
+        self.hold_named(generation, &format!("{phase:?}"))
+    }
+
+    /// Makes the worker of `generation` wait before it exits after it acknowledged its shutdown.
+    fn hold_exit(&self, generation: u64) -> Hold {
+        self.hold_named(generation, "Exit")
+    }
+
+    /// Makes the worker of `generation` that crashes after its quiesce wait before it aborts.
+    fn hold_crash(&self, generation: u64) -> Hold {
+        self.hold_named(generation, "Crash")
+    }
+
+    fn hold_named(&self, generation: u64, name: &str) -> Hold {
+        let path = self.sync.join(format!("hold-{generation}-{name}"));
+        fs::write(&path, "").unwrap();
+        Hold(path)
+    }
+
+    /// Waits until the worker of `generation` has answered the `phase` request: its acknowledgement and its status
+    /// are in the channel the master reads.
+    fn wait_done(&self, generation: u64, phase: ControlPhase) {
+        let done = self.sync.join(format!("done-{generation}-{phase:?}"));
+        let started = Instant::now();
+        while !done.exists() {
+            assert!(
+                started.elapsed() < TEST_TIMEOUT,
+                "generation {generation} never answered {phase:?}"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     fn replace(&mut self, behavior: &str, generation: u64) {
+        let candidate = self.candidate(generation, behavior);
         self.master
-            .replace(
-                &mut self.factory,
-                worker("b", generation, behavior),
-                Instant::now(),
-            )
+            .replace(&mut self.factory, candidate, self.now)
             .unwrap();
     }
 
     fn replace_with_listeners(&mut self, behavior: &str, generation: u64, next: NextSet) {
         let listeners = self.kept.next_set(self.tcp_address, &self.unix_path, next);
+        let candidate = self.candidate(generation, behavior);
         self.master
-            .replace_with_listeners(
-                &mut self.factory,
-                worker("b", generation, behavior),
-                listeners,
-                Instant::now(),
-            )
+            .replace_with_listeners(&mut self.factory, candidate, listeners, self.now)
             .unwrap();
     }
 
     #[cfg(target_os = "linux")]
     fn replace_contained(&mut self, behavior: &str, generation: u64, pid_file: &Path) {
+        let candidate = contained_worker("b", generation, behavior, pid_file);
         self.master
-            .replace(
-                &mut self.factory,
-                contained_worker("b", generation, behavior, pid_file),
-                Instant::now(),
-            )
+            .replace(&mut self.factory, candidate, self.now)
             .unwrap();
     }
 
     fn until(&mut self, predicate: impl FnMut(&Master<E>) -> bool) -> Vec<MasterEvent> {
         let mut events = self.poll_until(predicate);
-        events.extend(self.master.poll(Instant::now()).unwrap());
+        events.extend(self.poll());
         events
+    }
+
+    /// Polls the master at the clock of the test.
+    fn poll(&mut self) -> Vec<MasterEvent> {
+        self.master.poll(self.now).unwrap()
+    }
+
+    /// Moves the clock of the master to `at`, if that is later, and polls.
+    fn poll_at(&mut self, at: Instant) -> Vec<MasterEvent> {
+        self.now = self.now.max(at);
+        self.poll()
+    }
+
+    /// Moves the clock just past the earliest deadline of the master and polls: whatever waits for a worker times
+    /// out, and a worker's answer that is waiting in its channel comes after the timeout.
+    fn expire_deadline(&mut self) -> Vec<MasterEvent> {
+        let deadline = self.master.next_deadline().unwrap();
+        self.poll_at(deadline + POLL_INTERVAL)
     }
 
     /// Polls until the predicate holds and stops there, without the extra poll `until` adds.
@@ -187,7 +249,7 @@ impl<E: ActionExecutor> Harness<E> {
         let started = Instant::now();
         let mut events = Vec::new();
         while !predicate(&self.master) {
-            events.extend(self.master.poll(Instant::now()).unwrap());
+            events.extend(self.poll());
             assert!(
                 started.elapsed() < TEST_TIMEOUT,
                 "master remained in {:?}; events: {events:?}",
@@ -198,17 +260,12 @@ impl<E: ActionExecutor> Harness<E> {
         events
     }
 
-    /// Polls with the master clock held at `now` until an event matches, so deadlines cannot fire
-    /// while the test waits for a worker process to react.
-    fn until_event_at(
-        &mut self,
-        now: Instant,
-        wanted: impl Fn(&MasterEvent) -> bool,
-    ) -> Vec<MasterEvent> {
+    /// Polls until an event matches.
+    fn until_event(&mut self, wanted: impl Fn(&MasterEvent) -> bool) -> Vec<MasterEvent> {
         let started = Instant::now();
         let mut events = Vec::new();
         while !events.iter().any(&wanted) {
-            events.extend(self.master.poll(now).unwrap());
+            events.extend(self.poll());
             assert!(
                 started.elapsed() < TEST_TIMEOUT,
                 "master remained in {:?}; events: {events:?}",
@@ -232,42 +289,27 @@ impl<E: ActionExecutor> Harness<E> {
 
     /// Waits until the candidate, which aborts on the activation the master just sent, has exited,
     /// and returns the events up to the rollback its exit causes. The test thread may stall for
-    /// `stall` meanwhile, as on a loaded host. The master clock stays before the activation
-    /// deadline, so the exit is first seen as the crash it is, not as an answer that came too late;
-    /// the master has not polled since sending the activation, so it sees the exit before the
-    /// closing channel.
+    /// `stall` meanwhile, as on a loaded host. The master has not polled since sending the
+    /// activation, so it sees the exit before the closing channel.
     fn candidate_crashes_on_activation(&mut self, stall: Duration) -> Vec<MasterEvent> {
         let mut events =
             self.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
-        let held = self
-            .master
-            .next_deadline()
-            .unwrap()
-            .checked_sub(POLL_INTERVAL)
-            .unwrap();
         thread::sleep(stall);
         wait_for_launcher_exit(
             self.master
                 .worker_process_group_id(WorkerRole::Candidate)
                 .unwrap(),
         );
-        events.extend(self.until_event_at(held, |event| {
-            matches!(event, MasterEvent::RollbackStarted { .. })
-        }));
+        events
+            .extend(self.until_event(|event| matches!(event, MasterEvent::RollbackStarted { .. })));
         events
     }
 
     /// Crashes the old active worker while the candidate activates and returns the events that
-    /// report its exit. The master clock stays before the activation deadline meanwhile.
+    /// report its exit.
     fn crash_active_while_activating(&mut self) -> Vec<MasterEvent> {
-        let held = self
-            .master
-            .next_deadline()
-            .unwrap()
-            .checked_sub(POLL_INTERVAL)
-            .unwrap();
         self.crash_active();
-        let events = self.until_event_at(held, |event| {
+        let events = self.until_event(|event| {
             matches!(
                 event,
                 MasterEvent::WorkerExited {
@@ -280,9 +322,20 @@ impl<E: ActionExecutor> Harness<E> {
         events
     }
 
+    /// Shuts down a master whose worker does not answer the shutdown, so that the deadline ends it.
+    fn shutdown_after_deadline(mut self) -> Vec<MasterEvent> {
+        assert!(matches!(
+            self.master.shutdown(self.now).unwrap(),
+            ShutdownProgress::Pending { .. }
+        ));
+        let mut events = self.expire_deadline();
+        events.extend(self.until(|master| master.state() == MasterState::Stopped));
+        events
+    }
+
     fn shutdown(mut self) -> Vec<MasterEvent> {
         assert!(matches!(
-            self.master.shutdown(Instant::now()).unwrap(),
+            self.master.shutdown(self.now).unwrap(),
             ShutdownProgress::Pending { .. }
         ));
         self.until(|master| master.state() == MasterState::Stopped)
