@@ -11,3 +11,8 @@ pub use tikv_jemallocator::Jemalloc;
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: &[u8; 99] =
     b"tcache_nslots_small_min:400,tcache_nslots_small_max:2000,tcache_nslots_large:400,tcache_max:131072\0";
+
+#[cfg(all(target_os = "linux", feature = "count"))]
+mod counting;
+#[cfg(all(target_os = "linux", feature = "count"))]
+pub use counting::{CountingJemalloc, snapshot};
