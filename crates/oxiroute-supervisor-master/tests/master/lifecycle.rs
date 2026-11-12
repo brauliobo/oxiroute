@@ -10,9 +10,8 @@ pub(super) fn shutdown_deadline_kills_and_reaps_an_uncooperative_worker() {
         .worker_process_group_id(WorkerRole::Active)
         .unwrap();
     let mut harness = harness;
-    let now = Instant::now();
     assert_eq!(
-        harness.master.shutdown(now).unwrap(),
+        harness.master.shutdown(harness.now).unwrap(),
         ShutdownProgress::Pending {
             remaining: 1,
             forced: false
@@ -20,7 +19,7 @@ pub(super) fn shutdown_deadline_kills_and_reaps_an_uncooperative_worker() {
     );
     let deadline = harness.master.next_deadline().unwrap();
     let started = Instant::now();
-    let mut events = harness.master.poll(deadline + POLL_INTERVAL).unwrap();
+    let mut events = harness.poll_at(deadline + POLL_INTERVAL);
     assert!(started.elapsed() < Duration::from_millis(100));
     assert!(matches!(
         harness.master.state(),
@@ -104,8 +103,7 @@ pub(super) fn delegated_candidate_startup_timeout_contains_nested_and_setsid_des
     let candidate_pid = harness.master.worker_id(WorkerRole::Candidate).unwrap();
     let candidate_cgroup = worker_cgroup_path(candidate_pid);
     let descendants = wait_for_pids(&candidate_pid_file);
-    let deadline = harness.master.next_deadline().unwrap();
-    harness.master.poll(deadline + POLL_INTERVAL).unwrap();
+    harness.expire_deadline();
     harness.until(|master| {
         master.state() == MasterState::Running
             && master
@@ -133,7 +131,11 @@ pub(super) fn delegated_graceful_and_forced_shutdown_contain_nested_and_setsid_d
         let worker_pid = harness.master.worker_id(WorkerRole::Active).unwrap();
         let cgroup = worker_cgroup_path(worker_pid);
         let descendants = wait_for_pids(&pid_file);
-        let events = harness.shutdown();
+        let events = if behavior == "ignore-shutdown" {
+            harness.shutdown_after_deadline()
+        } else {
+            harness.shutdown()
+        };
         assert!(events.iter().any(|event| matches!(
             event,
             MasterEvent::ShutdownCompleted { forced } if *forced == (behavior == "ignore-shutdown")
@@ -157,12 +159,11 @@ pub(super) fn rejected_shutdown_is_killed_and_reaped() {
 
 #[test]
 pub(super) fn deadline_expiry_precedes_matching_acknowledgement() {
-    let mut harness = Harness::launch("delay-quiesce");
+    let mut harness = Harness::launch("normal");
     harness.replace("normal", 2);
-    harness.until(|master| master.state() == MasterState::Quiescing);
-    let expired = harness.master.next_deadline().unwrap();
-    thread::sleep(Duration::from_millis(100));
-    let mut events = harness.master.poll(expired).unwrap();
+    harness.poll_until(|master| master.state() == MasterState::Quiescing);
+    harness.wait_done(1, ControlPhase::Quiesce);
+    let mut events = harness.expire_deadline();
     assert_ne!(harness.master.state(), MasterState::ActivatingCandidate);
     events.extend(harness.until(|master| master.state() == MasterState::Running));
     assert_eq!(harness.master.active_instance().unwrap().as_str(), "a");
@@ -185,9 +186,18 @@ pub(super) fn deadline_expiry_precedes_matching_acknowledgement() {
 #[test]
 pub(super) fn candidate_activation_ack_precedes_collected_old_active_exit() {
     let mut harness = Harness::launch("crash-after-quiesce");
+    let crash = harness.hold_crash(1);
     harness.replace("normal", 2);
-    let mut events = harness.until(|master| master.state() == MasterState::ActivatingCandidate);
-    thread::sleep(Duration::from_millis(100));
+    let mut events =
+        harness.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+    harness.wait_done(2, ControlPhase::Activate);
+    drop(crash);
+    wait_for_launcher_exit(
+        harness
+            .master
+            .worker_process_group_id(WorkerRole::Active)
+            .unwrap(),
+    );
     events.extend(harness.until(|master| {
         master.state() == MasterState::Running
             && master
@@ -216,7 +226,7 @@ pub(super) fn successful_replacement_has_exact_public_state_and_event_sequence()
     while harness.master.state() != MasterState::Running
         || harness.master.active_instance().unwrap().as_str() != "b"
     {
-        events.extend(harness.master.poll(Instant::now()).unwrap());
+        events.extend(harness.poll());
         let state = harness.master.state();
         if states.last() != Some(&state) {
             states.push(state);
@@ -252,8 +262,9 @@ pub(super) fn successful_replacement_has_exact_public_state_and_event_sequence()
 pub(super) fn rollback_completes_after_reactivation_and_reap_in_either_order() {
     let mut reactivated_first = Harness::launch("normal");
     reactivated_first.replace("reject-activate", 2);
-    let mut events = reactivated_first.until(|master| master.state() == MasterState::RollingBack);
-    thread::sleep(Duration::from_millis(50));
+    let mut events =
+        reactivated_first.poll_until(|master| master.state() == MasterState::RollingBack);
+    reactivated_first.wait_done(1, ControlPhase::Reactivate);
     events.extend(reactivated_first.until(|master| master.state() == MasterState::Running));
     assert_eq!(
         rollback_event_sequence(&events),
@@ -267,13 +278,15 @@ pub(super) fn rollback_completes_after_reactivation_and_reap_in_either_order() {
     );
     reactivated_first.shutdown();
 
-    let mut reaped_first = Harness::launch("delay-reactivate");
+    let mut reaped_first = Harness::launch("normal");
+    let reactivation = reaped_first.hold(1, ControlPhase::Reactivate);
     reaped_first.replace("reject-activate", 2);
     let mut events = reaped_first.until(|master| {
         master.state() == MasterState::RollingBack
             && master.worker_state(WorkerRole::Candidate).is_none()
     });
     assert_eq!(reaped_first.master.state(), MasterState::RollingBack);
+    drop(reactivation);
     events.extend(reaped_first.until(|master| master.state() == MasterState::Running));
     assert_eq!(
         rollback_event_sequence(&events),
@@ -295,8 +308,7 @@ pub(super) fn deferred_old_active_exit_precedes_candidate_timeout_and_fails_clos
     harness.until(|master| master.state() == MasterState::ActivatingCandidate);
     let mut events = harness.crash_active_while_activating();
 
-    let deadline = harness.master.next_deadline().unwrap();
-    events.extend(harness.master.poll(deadline + POLL_INTERVAL).unwrap());
+    events.extend(harness.expire_deadline());
     events.extend(harness.until(|master| master.state() == MasterState::Failed));
     assert!(events.iter().any(|event| matches!(
         event,
@@ -314,40 +326,41 @@ pub(super) fn deferred_old_active_exit_precedes_candidate_timeout_and_fails_clos
 #[test]
 pub(super) fn shutdown_completes_from_every_replacement_phase() {
     let mut adopting = Harness::launch("normal");
-    adopting.replace("delay-adopt", 2);
+    adopting.replace("normal", 2);
     assert_shutdown_from_phase(adopting, MasterState::AdoptingCandidate);
 
-    let mut quiescing = Harness::launch("delay-quiesce");
+    let mut quiescing = Harness::launch("normal");
     quiescing.replace("normal", 2);
-    quiescing.until(|master| master.state() == MasterState::Quiescing);
+    quiescing.poll_until(|master| master.state() == MasterState::Quiescing);
     assert_shutdown_from_phase(quiescing, MasterState::Quiescing);
 
     let mut activating = Harness::launch("normal");
-    activating.replace("delay-activate", 2);
-    activating.until(|master| master.state() == MasterState::ActivatingCandidate);
+    activating.replace("normal", 2);
+    activating.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
     assert_shutdown_from_phase(activating, MasterState::ActivatingCandidate);
 
-    let mut rolling_back = Harness::launch("delay-reactivate");
+    let mut rolling_back = Harness::launch("normal");
     rolling_back.replace("reject-activate", 2);
-    rolling_back.until(|master| master.state() == MasterState::RollingBack);
+    rolling_back.poll_until(|master| master.state() == MasterState::RollingBack);
     assert_shutdown_from_phase(rolling_back, MasterState::RollingBack);
 
-    let mut draining = Harness::launch("delay-drain");
+    let mut draining = Harness::launch("normal");
     draining.replace("normal", 2);
-    draining.until(|master| master.state() == MasterState::DrainingRetired);
+    draining.poll_until(|master| master.state() == MasterState::DrainingRetired);
     assert_shutdown_from_phase(draining, MasterState::DrainingRetired);
 
-    let mut stopping = Harness::launch("delay-exit-after-shutdown");
+    let mut stopping = Harness::launch("normal");
     stopping.replace("normal", 2);
-    stopping.until(|master| master.state() == MasterState::StoppingRetired);
+    stopping.poll_until(|master| master.state() == MasterState::StoppingRetired);
     assert_shutdown_from_phase(stopping, MasterState::StoppingRetired);
 }
 
 #[test]
 pub(super) fn retired_shutdown_ack_keeps_exit_deadline_until_delayed_reap() {
-    let mut harness = Harness::launch("delay-exit-after-shutdown");
+    let mut harness = Harness::launch("normal");
+    let exit = harness.hold_exit(1);
     harness.replace("normal", 2);
-    harness.until(|master| master.state() == MasterState::StoppingRetired);
+    harness.poll_until(|master| master.state() == MasterState::StoppingRetired);
     let deadline = harness.master.next_deadline().unwrap();
     harness.until(|master| {
         master
@@ -362,7 +375,7 @@ pub(super) fn retired_shutdown_ack_keeps_exit_deadline_until_delayed_reap() {
         Some(WorkerState::Terminating { forced: false })
     );
 
-    let mut events = harness.master.poll(deadline + POLL_INTERVAL).unwrap();
+    let mut events = harness.poll_at(deadline + POLL_INTERVAL);
     assert!(events.iter().any(|event| matches!(
         event,
         MasterEvent::TerminationRequested {
@@ -377,19 +390,19 @@ pub(super) fn retired_shutdown_ack_keeps_exit_deadline_until_delayed_reap() {
             phase: FailurePhase::Shutdown
         }
     )));
+    drop(exit);
     harness.shutdown();
 }
 
 #[test]
 pub(super) fn batched_old_active_status_follows_role_move_to_retired() {
-    let mut harness = Harness::launch("delay-status-after-quiesce");
+    let mut harness = Harness::launch("normal");
     harness.replace("normal", 2);
-    while harness.master.state() != MasterState::ActivatingCandidate {
-        harness.master.poll(Instant::now()).unwrap();
-        thread::sleep(POLL_INTERVAL);
-    }
-    thread::sleep(Duration::from_millis(175));
-    let events = harness.master.poll(Instant::now()).unwrap();
+    harness.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+    // The status of the old active and the activation answer of the candidate both wait in their channels.
+    harness.wait_done(1, ControlPhase::Quiesce);
+    harness.wait_done(2, ControlPhase::Activate);
+    let events = harness.poll();
     let committed = events
         .iter()
         .position(|event| matches!(event, MasterEvent::ReplacementCommitted { .. }))
