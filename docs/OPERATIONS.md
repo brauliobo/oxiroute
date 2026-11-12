@@ -272,7 +272,7 @@ service access log, and a request body that arrives with its head. Rescue pools,
 rewrites, buffering, gzip, streamed or chunked bodies and `Expect` take the classic path from the first byte. The root option `http_fast_lane = false` sends every request through the classic path (for a comparison
 or to rule the lane out); it is an ordinary reload, applied to the new connections of the new generation.
 
-The HTTP/2 lane is the same idea for HTTP/2: a request without a body for a fixed-response or plain proxy route is
+The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or plain proxy route (any body framing, `Expect`, access log) is
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls
 both lanes.
 

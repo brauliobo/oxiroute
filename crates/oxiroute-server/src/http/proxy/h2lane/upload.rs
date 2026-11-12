@@ -12,6 +12,7 @@ use pingora::{
     protocols::http::{v1::client::HttpSession, v2::server::H2Stream},
 };
 
+use super::claim::Body;
 use crate::http::proxy::lane::timing::{Expired, within_for};
 
 /// What happens on the client's side of an exchange.
@@ -29,14 +30,21 @@ pub(super) struct Upload {
     pending: bool,
     /// The origin does not take more of the body: it answered, or a write to it failed.
     refused: bool,
+    /// What a body of unknown length may add up to, and how much of it arrived. A body of announced length was held to
+    /// the limit when its request was claimed.
+    open: Option<(Option<u64>, u64)>,
 }
 
 impl Upload {
-    /// The upload of a request whose body is `length` bytes.
-    pub(super) const fn new(length: usize) -> Self {
+    /// The upload of a request with `body`; `limit` is the route's bound on request bodies.
+    pub(super) const fn new(body: Body, limit: Option<u64>) -> Self {
         Self {
-            pending: length > 0,
+            pending: !matches!(body, Body::None),
             refused: false,
+            open: match body {
+                Body::Unknown => Some((limit, 0)),
+                _ => None,
+            },
         }
     }
 
@@ -87,6 +95,19 @@ impl Upload {
         })
     }
 
+    /// Counts a piece of a body of unknown length against the route's limit, as the classic request filter does once the
+    /// piece is read: the request is refused with `413` and the piece is not sent.
+    fn count(&mut self, piece: usize) -> Result<(), Box<Error>> {
+        let Some((limit, seen)) = &mut self.open else {
+            return Ok(());
+        };
+        *seen += piece as u64;
+        if limit.is_some_and(|limit| *seen > limit) {
+            return Err(Error::new_down(ErrorType::HTTPStatus(413)));
+        }
+        Ok(())
+    }
+
     /// Applies an event to the origin's session; the error ends the exchange. Returns the bytes written.
     pub(super) async fn forward(
         &mut self,
@@ -102,6 +123,7 @@ impl Upload {
                 Ok(0)
             }
             Event::Piece(piece) => {
+                self.count(piece.len())?;
                 session.write_body(&piece).await.map_err(Error::into_up)?;
                 stream.release_capacity(piece.len());
                 Ok(piece.len())

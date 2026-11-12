@@ -268,9 +268,13 @@ pub(super) async fn the_same_service_answers_alike_on_an_https_and_an_http3_list
         let by_https = classic(https_address, method, path, headers, body).await;
         assert_eq!(comparable(&by_h3), comparable(&by_https), "{method} {path}");
         if *method != "HEAD" && by_h3.status != 204 && by_h3.status != 304 {
+            // An answer the origin did not give a length streams: it has none, as on the https listener.
+            let length = by_https
+                .header("content-length")
+                .map(|_| by_h3.body.len().to_string());
             assert_eq!(
                 by_h3.header("content-length"),
-                Some(by_h3.body.len().to_string().as_str()),
+                length.as_deref(),
                 "{method} {path}"
             );
         }
