@@ -459,7 +459,10 @@ pub fn requests(base: &str) -> Vec<Case> {
     add(
         &mut cases,
         "x-forwarded-for client",
-        get(base, "X-Forwarded-For: 192.0.2.1\r\nX-Real-IP: 192.0.2.1\r\n"),
+        get(
+            base,
+            "X-Forwarded-For: 192.0.2.1\r\nX-Real-IP: 192.0.2.1\r\n",
+        ),
     );
     add(
         &mut cases,
