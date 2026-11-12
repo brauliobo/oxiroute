@@ -26,6 +26,8 @@ pub(super) async fn dispatch_h3_upstream_request(
         true,
     );
     let mut last_error = H3UpstreamError::Connect;
+    // An answer is sent as it arrives unless the cache needs all of it or the client wants no body.
+    let may_stream = cache_transaction.is_none() && request.method() != Method::HEAD;
 
     for attempt in 0..max_attempts {
         let mut selected = if let Some(server) = retry_server.take() {
@@ -106,9 +108,9 @@ pub(super) async fn dispatch_h3_upstream_request(
                     &mut selected,
                     &upstream_request,
                     &body,
-                    remaining,
-                    deadline,
+                    (remaining, deadline),
                     &shutdown,
+                    may_stream,
                 )
                 .await
             {
@@ -126,7 +128,7 @@ pub(super) async fn dispatch_h3_upstream_request(
             }
         }
         if let Some(response) = response {
-            if proxy.policy.retries_on_status(response.status.as_u16()) {
+            if proxy.policy.retries_on_status(response.status().as_u16()) {
                 selected
                     .observation()
                     .record_passive_failure(HealthFailure::UnexpectedStatus);
@@ -232,8 +234,36 @@ pub(super) async fn dispatch_h3_upstream_request(
     send_h3_upstream_failure(stream, &last_error, &proxy.pool, head, deadline).await
 }
 
-#[allow(clippy::too_many_lines)]
 async fn send_h3_upstream_response(
+    stream: &mut H3Stream,
+    request: &Request<()>,
+    answer: Answer<'_>,
+    proxy: &ProxyActionPlan,
+    metrics: &ListenerMetrics,
+    deadline: Instant,
+    cache_transaction: &mut Option<CacheTransaction>,
+) -> Option<u16> {
+    match answer {
+        Answer::Whole(response) => {
+            send_h3_whole_response(
+                stream,
+                request,
+                *response,
+                proxy,
+                metrics,
+                deadline,
+                cache_transaction,
+            )
+            .await
+        }
+        Answer::Open(open) => {
+            send_h3_streamed_response(stream, *open, proxy, metrics, deadline).await
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn send_h3_whole_response(
     stream: &mut H3Stream,
     request: &Request<()>,
     response: crate::http3::upstream_plan::H3UpstreamResponse,
@@ -354,6 +384,70 @@ async fn send_h3_upstream_response(
     {
         let _ = transaction.admit(entry).await;
     }
+    Some(status.as_u16())
+}
+
+/// Sends an answer whose body is still with the origin: the head first, then each piece as it arrives, then the
+/// trailers. The stream ends when the body does; an origin that fails after the head leaves the response unfinished,
+/// which resets the stream.
+async fn send_h3_streamed_response(
+    stream: &mut H3Stream,
+    mut open: OpenAnswer<'_>,
+    proxy: &ProxyActionPlan,
+    metrics: &ListenerMetrics,
+    deadline: Instant,
+) -> Option<u16> {
+    let status = open.status;
+    let mut headers = std::mem::take(&mut open.headers);
+    if apply_response_policy_map(status, &mut headers, &proxy.policy).is_err()
+        || sanitize_h3_streamed_headers(&mut headers, status).is_err()
+    {
+        let _ = send_h3_error(
+            stream,
+            StatusCode::BAD_GATEWAY,
+            b"HTTP/3 upstream response headers are invalid\n",
+            deadline,
+        )
+        .await;
+        return Some(StatusCode::BAD_GATEWAY.as_u16());
+    }
+    let declared = request_content_length(&headers).ok().flatten();
+    let mut head = Response::new(());
+    *head.status_mut() = status;
+    *head.headers_mut() = headers;
+    if !within(deadline, stream.send_response(head)).await {
+        return None;
+    }
+    let mut sent = 0_u64;
+    loop {
+        let chunk = match timeout_at(deadline, open.chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            Ok(Ok(None)) => break,
+            Ok(Err(_)) | Err(_) => return Some(status.as_u16()),
+        };
+        sent += chunk.len() as u64;
+        if declared.is_some_and(|declared| sent > declared)
+            || !within(deadline, stream.send_data(chunk)).await
+        {
+            return Some(status.as_u16());
+        }
+    }
+    let _ = metrics.record_bytes_sent(sent);
+    if declared.is_some_and(|declared| sent != declared) {
+        return Some(status.as_u16());
+    }
+    let trailers = match timeout_at(deadline, open.trailers()).await {
+        Ok(Ok(trailers)) => trailers.filter(|trailers| !trailers.is_empty()),
+        Ok(Err(_)) | Err(_) => return Some(status.as_u16()),
+    };
+    open.release().await;
+    if let Some(mut trailers) = trailers
+        && (sanitize_h3_trailers(&mut trailers).is_err()
+            || !within(deadline, stream.send_trailers(trailers)).await)
+    {
+        return Some(status.as_u16());
+    }
+    stream.finish().ok()?;
     Some(status.as_u16())
 }
 

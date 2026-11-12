@@ -27,6 +27,11 @@ use crate::{
 /// Idle origin connections one listener keeps for reuse.
 const ORIGIN_IDLE_CONNECTIONS: usize = 1024;
 
+/// An origin response whose declared length is above this, or that declares none, is sent to the client as it arrives
+/// instead of being read whole first. Smaller ones are buffered: they leave in one write and the attempt loop may still
+/// retry, cache and measure them.
+pub(super) const H3_STREAM_FROM: u64 = 256 * 1024;
+
 /// The connections of a listener to HTTP/1.1 and HTTP/2 origins.
 pub(super) struct OriginClient {
     connector: Connector,
@@ -38,6 +43,52 @@ impl OriginClient {
         Self {
             connector: Connector::new(Some(options)),
         }
+    }
+}
+
+/// What an attempt on an upstream brings back.
+pub(super) enum Answer<'a> {
+    /// The head, the body and the trailers, all read.
+    Whole(Box<H3UpstreamResponse>),
+    /// The head of an answer whose body is still with the origin and goes on to the client as it arrives.
+    Open(Box<OpenAnswer<'a>>),
+}
+
+impl Answer<'_> {
+    pub(super) fn status(&self) -> StatusCode {
+        match self {
+            Self::Whole(response) => response.status,
+            Self::Open(open) => open.status,
+        }
+    }
+}
+
+/// An origin connection with the head of the answer read; its body is read with [`OpenAnswer::chunk`].
+pub(super) struct OpenAnswer<'a> {
+    pub(super) status: StatusCode,
+    pub(super) headers: HeaderMap,
+    session: HttpSession,
+    peer: HttpPeer,
+    client: &'a OriginClient,
+}
+
+impl OpenAnswer<'_> {
+    /// The next piece of the body, `None` once it ended.
+    pub(super) async fn chunk(&mut self) -> Result<Option<Bytes>, H3UpstreamError> {
+        Ok(self.session.read_response_body().await?)
+    }
+
+    pub(super) async fn trailers(&mut self) -> Result<Option<HeaderMap>, H3UpstreamError> {
+        Ok(read_trailers(&mut self.session).await?)
+    }
+
+    /// Gives the connection back for reuse; call it only after the body ended.
+    pub(super) async fn release(self) {
+        let idle = self.peer.idle_timeout();
+        self.client
+            .connector
+            .release_http_session(self.session, &self.peer, idle)
+            .await;
     }
 }
 
@@ -101,10 +152,10 @@ impl<'a> Upstream<'a> {
         selected: &mut SelectedEndpoint,
         request: &Request<()>,
         body: &Bytes,
-        remaining: Duration,
-        deadline: Instant,
+        (remaining, deadline): (Duration, Instant),
         shutdown: &watch::Receiver<bool>,
-    ) -> Result<H3UpstreamResponse, H3UpstreamError> {
+        may_stream: bool,
+    ) -> Result<Answer<'_>, H3UpstreamError> {
         match self {
             Self::Quic { plan, server_name } => {
                 let address = selected
@@ -121,6 +172,7 @@ impl<'a> Upstream<'a> {
                     shutdown.clone(),
                 )
                 .await
+                .map(|response| Answer::Whole(Box::new(response)))
             }
             Self::Origin(origin) => {
                 let mut shutdown = shutdown.clone();
@@ -129,7 +181,7 @@ impl<'a> Upstream<'a> {
                         let _ = changed;
                         Err(H3UpstreamError::Cancelled)
                     }
-                    result = timeout_at(deadline, origin.round_trip(selected, request, body, remaining)) => {
+                    result = timeout_at(deadline, origin.round_trip(selected, request, body, remaining, may_stream)) => {
                         result.unwrap_or(Err(H3UpstreamError::Timeout))
                     }
                 }
@@ -138,7 +190,7 @@ impl<'a> Upstream<'a> {
     }
 }
 
-impl Origin<'_> {
+impl<'a> Origin<'a> {
     /// The origin-form request an origin gets: the route's `Host`, the length of a buffered body, no `Content-Length`
     /// that the client did not send for an empty one, and a `Connection: close` from a pool that never reuses
     /// connections.
@@ -175,7 +227,8 @@ impl Origin<'_> {
         request: &Request<()>,
         body: &Bytes,
         remaining: Duration,
-    ) -> Result<H3UpstreamResponse, H3UpstreamError> {
+        may_stream: bool,
+    ) -> Result<Answer<'a>, H3UpstreamError> {
         let peer = self.peer(selected, remaining).await?;
         let connector = &self.client.connector;
         let (mut session, _reused) = connector.get_http_session(&peer).await?;
@@ -183,11 +236,21 @@ impl Origin<'_> {
         selected.end_queue_wait();
         self.admit(&session)?;
         apply_timeouts(&mut session, &peer);
-        let response = exchange(&mut session, request, body).await?;
+        let (status, headers) = send_request(&mut session, request, body).await?;
+        if may_stream && streams(status, &headers)? {
+            return Ok(Answer::Open(Box::new(OpenAnswer {
+                status,
+                headers,
+                session,
+                peer,
+                client: self.client,
+            })));
+        }
+        let response = read_answer(&mut session, status, headers).await?;
         connector
             .release_http_session(session, &peer, peer.idle_timeout())
             .await;
-        Ok(response)
+        Ok(Answer::Whole(Box::new(response)))
     }
 
     /// The peer of the attempt, with the timeouts the classic path gives it.
@@ -251,29 +314,51 @@ fn apply_timeouts(session: &mut HttpSession, peer: &HttpPeer) {
     }
 }
 
-async fn exchange(
+/// Sends the request and reads the head of the final answer.
+async fn send_request(
     session: &mut HttpSession,
     request: &Request<()>,
     body: &Bytes,
-) -> Result<H3UpstreamResponse, H3UpstreamError> {
+) -> Result<(StatusCode, HeaderMap), H3UpstreamError> {
     let head = origin_request_header(request, matches!(session, HttpSession::H2(_)))?;
     session.write_request_header(head).await?;
     if !body.is_empty() {
         session.write_request_body(body.clone(), true).await?;
     }
     session.finish_request_body().await?;
-    let (status, headers) = read_head(session).await?;
+    read_head(session).await
+}
+
+/// Whether the body of an answer goes to the client as it arrives: it has no declared length or a long one.
+fn streams(status: StatusCode, headers: &HeaderMap) -> Result<bool, H3UpstreamError> {
+    if body_forbidden(status) {
+        return Ok(false);
+    }
+    let declared = request_content_length(headers).map_err(|()| H3UpstreamError::JunkResponse)?;
+    Ok(declared.is_none_or(|length| length > H3_STREAM_FROM))
+}
+
+/// The body and the trailers of an answer whose head was read.
+async fn read_answer(
+    session: &mut HttpSession,
+    status: StatusCode,
+    headers: HeaderMap,
+) -> Result<H3UpstreamResponse, H3UpstreamError> {
     let body = read_body(session, &headers).await?;
-    let trailers = match session {
-        HttpSession::H2(h2) => h2.read_trailers().await?,
-        HttpSession::H1(_) | HttpSession::Custom(()) => None,
-    };
+    let trailers = read_trailers(session).await?;
     Ok(H3UpstreamResponse {
         status,
         headers,
         body,
         trailers,
     })
+}
+
+async fn read_trailers(session: &mut HttpSession) -> pingora::Result<Option<HeaderMap>> {
+    match session {
+        HttpSession::H2(h2) => h2.read_trailers().await,
+        HttpSession::H1(_) | HttpSession::Custom(()) => Ok(None),
+    }
 }
 
 fn origin_request_header(

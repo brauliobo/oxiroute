@@ -73,9 +73,11 @@ pub(super) async fn h3_reaches_a_plain_h1_origin_with_every_response_framing() {
             (200, expected),
             "{path}"
         );
+        // An answer of unknown length is sent as it arrives, so it declares none; a declared one is kept.
+        let declared = (path == "/continue").then(|| expected.len().to_string());
         assert_eq!(
             answer.header("content-length"),
-            Some(expected.len().to_string().as_str()),
+            declared.as_deref(),
             "{path}"
         );
         assert!(answer.header("transfer-encoding").is_none(), "{path}");
@@ -83,6 +85,7 @@ pub(super) async fn h3_reaches_a_plain_h1_origin_with_every_response_framing() {
 
     let answer = daemon.get("/big").await;
     assert_eq!((answer.status, answer.body.len()), (200, 300_000));
+    assert_eq!(answer.header("content-length"), Some("300000"));
     assert!(answer.body.iter().all(|byte| *byte == b'b'));
 
     let answer = daemon.get("/missing").await;
@@ -224,5 +227,92 @@ pub(super) async fn h3_reaches_an_origin_on_a_unix_socket() {
         (200, "/over/unix?x=1")
     );
     assert_eq!(origin.requests()[0].header("host"), Some(AUTHORITY));
+    daemon.finish().await;
+}
+
+const SLOW_CHUNKED_HEAD: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+#[tokio::test]
+pub(super) async fn h3_delivers_what_an_unfinished_answer_has_before_the_origin_ends_it() {
+    let (origin, address) = ScriptedOrigin::tcp(|_| Reply::Paced {
+        pieces: vec![
+            (
+                Duration::ZERO,
+                [SLOW_CHUNKED_HEAD, b"5\r\nfirst\r\n"].concat(),
+            ),
+            (Duration::from_secs(2), b"6\r\nsecond\r\n0\r\n\r\n".to_vec()),
+        ],
+        close: false,
+    })
+    .await;
+    let mut daemon = daemon_for(&[address], HttpProxyPolicy::default()).await;
+    let mut stream = daemon.open("GET", "/events", &[], b"").await;
+    let response = stream.recv_response().await.expect("the head");
+    assert_eq!(response.status(), 200);
+    assert!(response.headers().get("content-length").is_none());
+    let first = timeout(Duration::from_millis(1500), recv_chunk(&mut stream))
+        .await
+        .expect("the first piece arrives while the origin still holds the rest");
+    assert_eq!(first.as_ref(), b"first");
+    assert_eq!(recv_body(&mut stream).await.as_ref(), b"second");
+    assert_eq!(origin.connections(), 1);
+    // The origin connection went back to the pool when the body ended.
+    assert_eq!(daemon.get("/events-again").await.status, 200);
+    assert_eq!(origin.connections(), 1);
+    daemon.finish().await;
+}
+
+#[tokio::test]
+pub(super) async fn h3_resets_an_answer_whose_origin_fails_after_sending_the_head() {
+    let (_origin, address) = ScriptedOrigin::tcp(|_| Reply::Paced {
+        pieces: vec![
+            (
+                Duration::ZERO,
+                [SLOW_CHUNKED_HEAD, b"5\r\nhello\r\n"].concat(),
+            ),
+            (Duration::from_millis(300), Vec::new()),
+        ],
+        close: true,
+    })
+    .await;
+    let mut daemon = daemon_for(&[address], HttpProxyPolicy::default()).await;
+    let mut stream = daemon.open("GET", "/broken", &[], b"").await;
+    let response = stream.recv_response().await.expect("the head");
+    assert_eq!(response.status(), 200);
+    let mut received = Vec::new();
+    let ended = loop {
+        match stream.recv_data().await {
+            Ok(Some(mut chunk)) => {
+                received.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+            }
+            other => break other.map(|_| ()),
+        }
+    };
+    assert_eq!(received, b"hello");
+    assert!(
+        ended.is_err(),
+        "the response is reset, not finished: {ended:?}"
+    );
+    daemon.finish().await;
+}
+
+#[tokio::test]
+pub(super) async fn h3_streams_an_answer_longer_than_the_buffer_limit_whole_and_in_order() {
+    let size: usize = 3 * 1024 * 1024;
+    let body: Vec<u8> = (0..size)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect();
+    let copy = body.clone();
+    let (_origin, address) =
+        ScriptedOrigin::tcp(move |_| Reply::Send(response("200 OK", &[], &copy))).await;
+    let mut daemon = daemon_for(&[address], HttpProxyPolicy::default()).await;
+    let answer = daemon.get("/large").await;
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        answer.header("content-length"),
+        Some(size.to_string().as_str())
+    );
+    assert_eq!(answer.body.as_ref(), body.as_slice());
     daemon.finish().await;
 }
