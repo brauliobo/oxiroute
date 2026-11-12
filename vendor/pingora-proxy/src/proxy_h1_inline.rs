@@ -14,9 +14,12 @@
 
 use bytes::Bytes;
 
+use pingora_core::apps::PooledFuture;
+
 use super::*;
 use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
 use crate::proxy_h1::send_body_to1;
+use crate::proxy_tunnel::TunnelState;
 
 /// What the loop waits for next.
 enum Event {
@@ -24,8 +27,17 @@ enum Event {
     Request(Result<Option<Bytes>>),
 }
 
+/// How the relay loop ended.
+#[derive(PartialEq, Eq)]
+pub(crate) enum LoopEnd {
+    /// The exchange is over (or failed): the request is finished.
+    Done,
+    /// The upgrade handshake is complete and the connection goes on as a tunnel, outside this request's state machine.
+    Upgraded,
+}
+
 /// The progress of one exchange.
-struct Exchange {
+pub(crate) struct Exchange {
     /// The client sent all of its request body (or its end was seen), so only a close is waited for: data after it
     /// ends the exchange (the idle read of a finished body fails on data).
     reading_done: bool,
@@ -103,19 +115,94 @@ where
 
         let mut serve_from_cache = ServeFromCache::new();
         let mut range_body_filter = RangeBodyFilter::new();
+        let end = self
+            .relay_loop(
+                session,
+                client_session,
+                &mut exchange,
+                ctx,
+                &mut serve_from_cache,
+                &mut range_body_filter,
+                true,
+            )
+            .await?;
+        if end == LoopEnd::Upgraded {
+            session.tunnel = Some(Box::new(TunnelState::new(exchange)));
+            return Ok((false, false));
+        }
+        self.relay_end(session, client_session, exchange).await
+    }
+
+    /// Continues the exchange of an upgraded connection to its end, outside the request's state machine (see
+    /// [`crate::proxy_tunnel`]). Same result as [`Self::proxy_1to1_inline`].
+    pub(crate) async fn relay_resumed(
+        &self,
+        session: &mut Session,
+        client_session: &mut HttpSessionV1,
+        mut exchange: Exchange,
+        ctx: &mut SV::CTX,
+    ) -> (bool, bool, Option<Box<Error>>)
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
+        let mut serve_from_cache = ServeFromCache::new();
+        let mut range_body_filter = RangeBodyFilter::new();
+        let relayed = match self
+            .relay_loop(
+                session,
+                client_session,
+                &mut exchange,
+                ctx,
+                &mut serve_from_cache,
+                &mut range_body_filter,
+                false,
+            )
+            .await
+        {
+            Ok(_) => self.relay_end(session, client_session, exchange).await,
+            Err(error) => Err(error),
+        };
+        match relayed {
+            Ok((reuse_downstream, reuse_upstream)) => (reuse_downstream, reuse_upstream, None),
+            Err(error) => (false, false, Some(error)),
+        }
+    }
+
+    /// Relays until both directions are done. With `may_tunnel`, returns as soon as the upgrade handshake is complete
+    /// and the exchange can continue as a tunnel.
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_loop(
+        &self,
+        session: &mut Session,
+        client_session: &mut HttpSessionV1,
+        exchange: &mut Exchange,
+        ctx: &mut SV::CTX,
+        serve_from_cache: &mut ServeFromCache,
+        range_body_filter: &mut RangeBodyFilter,
+        may_tunnel: bool,
+    ) -> Result<LoopEnd>
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
         while !(exchange.reading_done || exchange.request_done) || !exchange.response_done {
-            match Self::next_event(session, client_session, &exchange).await {
+            match Self::next_event(session, client_session, exchange).await {
                 Event::Response(first) => {
+                    let upgrading = may_tunnel && !session.was_upgraded();
                     self.relay_response(
                         session,
                         client_session,
-                        &mut exchange,
+                        exchange,
                         first,
                         ctx,
-                        &mut serve_from_cache,
-                        &mut range_body_filter,
+                        serve_from_cache,
+                        range_body_filter,
                     )
-                    .await?
+                    .await?;
+                    if upgrading && Self::can_tunnel(session, client_session, exchange) {
+                        return Ok(LoopEnd::Upgraded);
+                    }
                 }
                 Event::Request(body) => {
                     let body = body.map_err(|e| e.into_down())?;
@@ -133,18 +220,37 @@ where
                     }
                     let end = session.is_body_done();
                     exchange.reading_done = end || body.is_none();
-                    self.forward_request_body(
-                        session,
-                        client_session,
-                        &mut exchange,
-                        body,
-                        end,
-                        ctx,
-                    )
-                    .await?;
+                    self.forward_request_body(session, client_session, exchange, body, end, ctx)
+                        .await?;
                 }
             }
         }
+        Ok(LoopEnd::Done)
+    }
+
+    /// Whether the connection can go on as a tunnel: an HTTP/1 client and upstream that both completed the upgrade
+    /// and nothing of the exchange is over or failed.
+    fn can_tunnel(
+        session: &mut Session,
+        client_session: &HttpSessionV1,
+        exchange: &Exchange,
+    ) -> bool {
+        session.subrequest_ctx.is_none()
+            && session.downstream_session.as_http1().is_some()
+            && session.was_upgraded()
+            && client_session.was_upgraded()
+            && exchange.send_error.is_none()
+            && !(exchange.reading_done || exchange.request_done || exchange.response_done)
+    }
+
+    /// The end of an exchange: the request is ended on the upstream if that has not happened yet, and the response
+    /// to the client is finished.
+    async fn relay_end(
+        &self,
+        session: &mut Session,
+        client_session: &mut HttpSessionV1,
+        exchange: Exchange,
+    ) -> Result<(bool, bool)> {
         // The client is done with its body: end the request on the upstream if that has not happened yet.
         if !exchange.request_done {
             send_body_to1(client_session, None).await?;
@@ -298,20 +404,31 @@ where
             #[cfg(feature = "upstream_modules")]
             session.upstream_modules_filter_task(&mut task).await?;
             session.upstream_compression.response_filter(&mut task);
-            let task = self
-                .h1_response_filter(
-                    session,
-                    task,
-                    ctx,
-                    serve_from_cache,
-                    range_body_filter,
-                    false,
-                )
-                .await?;
+            // On the heap: these futures are 2 to 4 KiB each and would be part of the relay's state for the whole
+            // life of an exchange, tunnels included.
+            let task = {
+                let (session, ctx) = (&mut *session, &mut *ctx);
+                let (serve_from_cache, range_body_filter) =
+                    (&mut *serve_from_cache, &mut *range_body_filter);
+                PooledFuture::new(move || {
+                    self.h1_response_filter(
+                        session,
+                        task,
+                        ctx,
+                        serve_from_cache,
+                        range_body_filter,
+                        false,
+                    )
+                })
+                .await?
+            };
             filtered_tasks.push(task);
         }
         let upgraded = session.was_upgraded();
-        let response_done = session.write_response_task_batch(filtered_tasks).await?;
+        let response_done = {
+            let session = &mut *session;
+            PooledFuture::new(move || session.write_response_task_batch(filtered_tasks)).await?
+        };
         if !upgraded && session.was_upgraded() {
             // Just upgraded: the client body reader now passes bytes as they are, and they go to the upstream.
             if exchange.send_error.is_none() {
@@ -562,5 +679,111 @@ mod tests {
         let mut answer = Vec::new();
         client.read_to_end(&mut answer).await.unwrap();
         assert!(answer.starts_with(b"HTTP/1.1 200 OK"), "{answer:?}");
+    }
+
+    /// An origin that accepts the upgrade and then echoes what it is sent until the proxy closes the connection.
+    async fn echoing_origin(mut origin_io: tokio::io::DuplexStream) {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(origin_io.read_u8().await.unwrap());
+        }
+        origin_io
+            .write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut chunk = [0_u8; 64];
+        loop {
+            match origin_io.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(count) => origin_io.write_all(&chunk[..count]).await.unwrap(),
+            }
+        }
+    }
+
+    /// The relay hands the connection over as soon as the handshake is complete, and the tunnel relays both ways.
+    #[tokio::test]
+    async fn an_upgrade_continues_as_a_tunnel_once_the_handshake_is_complete() {
+        let (mut client, server) = tokio::io::duplex(8192);
+        client
+            .write_all(
+                b"GET /socket HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+        let (proxy_io, origin_io) = tokio::io::duplex(8192);
+        tokio::spawn(echoing_origin(origin_io));
+        let mut upstream = HttpSessionV1::new(Box::new(proxy_io));
+        upstream
+            .write_request_header_ref(session.req_header())
+            .await
+            .unwrap();
+
+        let proxy = HttpProxy::new(Relay, Arc::new(ServerConf::default()));
+        let (reuse_downstream, reuse_upstream, error) = proxy
+            .proxy_1to1_inline(&mut session, &mut upstream, &mut ())
+            .await;
+        assert!(error.is_none(), "{error:?}");
+        assert!(!reuse_downstream && !reuse_upstream);
+        let exchange = session
+            .tunnel
+            .take()
+            .expect("the upgrade left a tunnel")
+            .into_exchange();
+
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(client.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(b"HTTP/1.1 101"), "{head:?}");
+
+        let mut ctx = ();
+        let resumed = proxy.relay_resumed(&mut session, &mut upstream, exchange, &mut ctx);
+        let talk = async {
+            client.write_all(b"hello").await.unwrap();
+            let mut echoed = [0_u8; 5];
+            client.read_exact(&mut echoed).await.unwrap();
+            assert_eq!(&echoed, b"hello");
+            drop(client);
+        };
+        let ((_, _, error), ()) = tokio::join!(resumed, talk);
+        assert!(error.is_none(), "{error:?}");
+    }
+
+    /// A request that is not an upgrade never leaves a tunnel behind.
+    #[tokio::test]
+    async fn a_request_that_is_not_an_upgrade_leaves_no_tunnel() {
+        let (mut client, server) = tokio::io::duplex(8192);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+        let (proxy_io, mut origin_io) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(origin_io.read_u8().await.unwrap());
+            }
+            origin_io
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let mut upstream = HttpSessionV1::new(Box::new(proxy_io));
+        upstream
+            .write_request_header_ref(session.req_header())
+            .await
+            .unwrap();
+        let proxy = HttpProxy::new(Relay, Arc::new(ServerConf::default()));
+        let (_, _, error) = proxy
+            .proxy_1to1_inline(&mut session, &mut upstream, &mut ())
+            .await;
+        assert!(error.is_none(), "{error:?}");
+        assert!(session.tunnel.is_none());
     }
 }

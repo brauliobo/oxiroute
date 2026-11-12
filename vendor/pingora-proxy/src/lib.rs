@@ -56,7 +56,7 @@ use tokio::time;
 
 use pingora_cache::NoCacheReason;
 use pingora_core::apps::{
-    HttpPersistentSettings, HttpServerApp, HttpServerOptions, ReusedHttpStream,
+    ErasedFuture, HttpPersistentSettings, HttpServerApp, HttpServerOptions, ReusedHttpStream,
 };
 use pingora_core::connectors::http::custom;
 use pingora_core::connectors::{http::Connector, ConnectorOptions};
@@ -93,6 +93,7 @@ mod proxy_h1_inline;
 mod proxy_h2;
 mod proxy_purge;
 mod proxy_trait;
+mod proxy_tunnel;
 mod spsc;
 pub mod subrequest;
 
@@ -434,17 +435,22 @@ where
 
         // The attempt is dropped when the application abandons it, which closes its upstream
         // connection without returning it to the pool.
-        let cancelled = self
+        let mut cancelled = self
             .inner
             .upstream_attempt_cancelled(session, ctx)
             .unwrap_or_else(|| Box::pin(std::future::pending()));
-        tokio::select! {
+        let ended = tokio::select! {
             biased;
-            error = cancelled => {
+            error = &mut cancelled => {
                 (false, Some(self.inner.error_while_proxy(&peer, session, error, ctx, false)))
             }
             attempt = self.proxy_attempt(session, ctx, &peer) => attempt,
+        };
+        // An upgraded connection goes on after this attempt; the watch for its cancellation and the peer go with it.
+        if let Some(tunnel) = session.tunnel.as_mut() {
+            tunnel.continue_with(cancelled, peer);
         }
+        ended
     }
 
     // One attempt on the selected peer: connect, proxy and release the upstream session
@@ -471,6 +477,8 @@ where
                             self.client_upstream
                                 .release_http_session(session, peer, peer.idle_timeout())
                                 .await;
+                        } else if let Some(tunnel) = session.tunnel.as_mut() {
+                            tunnel.upstream(Box::new(h1), client_reused);
                         }
                         (server_reused, error)
                     }
@@ -664,6 +672,8 @@ pub struct Session {
     upstream_write_pending_time: Duration,
     /// Flag that is set when the shutdown process has begun.
     shutdown_flag: Arc<AtomicBool>,
+    /// The upgraded connection that outlives the request's state machine, set when the upgrade completed.
+    tunnel: Option<Box<proxy_tunnel::TunnelState>>,
 }
 
 impl Session {
@@ -691,6 +701,7 @@ impl Session {
             downstream_task_seen_upgraded: false,
             upstream_write_pending_time: Duration::ZERO,
             shutdown_flag,
+            tunnel: None,
         }
     }
 
@@ -1212,15 +1223,18 @@ impl<SV, C> HttpProxy<SV, C>
 where
     C: custom::Connector,
 {
+    /// Serves one request. The context is owned so that an upgraded connection can carry it on as a tunnel.
     async fn process_request(
         self: &Arc<Self>,
         mut session: Session,
-        ctx: &mut <SV as ProxyHttp>::CTX,
+        mut owned_ctx: Box<<SV as ProxyHttp>::CTX>,
     ) -> Option<ReusedHttpStream>
     where
         SV: ProxyHttp + Send + Sync + 'static,
-        <SV as ProxyHttp>::CTX: Send + Sync,
+        <SV as ProxyHttp>::CTX: Send + Sync + 'static,
+        C: 'static,
     {
+        let ctx = &mut *owned_ctx;
         if let Err(e) = self.inner.early_request_filter(&mut session, ctx).await {
             return self
                 .handle_error(session, ctx, e, "Fail to early filter request:")
@@ -1407,6 +1421,33 @@ where
             };
         }
 
+        // The upgrade is complete: the rest of the connection is a tunnel, which the connection runs once this
+        // request's state machine is gone.
+        if session.tunnel.is_some() {
+            let proxy = self.clone();
+            return Some(ReusedHttpStream::tunnel(ErasedFuture::new(move || {
+                proxy.run_tunnel(session, owned_ctx)
+            })));
+        }
+
+        self.conclude(session, ctx, server_reuse, proxy_error, retries)
+            .await
+    }
+
+    /// What follows the attempts of a request: stale content on an error, the response to an error, and the end of the
+    /// request (logging, and the stream if it can serve another request).
+    async fn conclude(
+        &self,
+        mut session: Session,
+        ctx: &mut <SV as ProxyHttp>::CTX,
+        mut server_reuse: bool,
+        proxy_error: Option<Box<Error>>,
+        retries: usize,
+    ) -> Option<ReusedHttpStream>
+    where
+        SV: ProxyHttp + Send + Sync + 'static,
+        <SV as ProxyHttp>::CTX: Send + Sync,
+    {
         // serve stale if error
         // Check both error and cache before calling the function because await is not cheap
         // allow unwrap until if let chains
@@ -1537,8 +1578,8 @@ pub trait Subrequest {
 impl<SV, C> Subrequest for HttpProxy<SV, C>
 where
     SV: ProxyHttp + Send + Sync + 'static,
-    <SV as ProxyHttp>::CTX: Send + Sync,
-    C: custom::Connector,
+    <SV as ProxyHttp>::CTX: Send + Sync + 'static,
+    C: custom::Connector + 'static,
 {
     async fn process_subrequest(
         self: Arc<Self>,
@@ -1564,8 +1605,8 @@ where
 
         session.subrequest_ctx.replace(sub_req_ctx);
         trace!("processing subrequest");
-        let mut ctx = Box::new(self.inner.new_ctx());
-        self.process_request(session, &mut ctx).await;
+        let ctx = Box::new(self.inner.new_ctx());
+        self.process_request(session, ctx).await;
         trace!("subrequest done");
     }
 }
@@ -1662,8 +1703,8 @@ impl SubrequestSpawner {
 impl<SV, C> HttpServerApp for HttpProxy<SV, C>
 where
     SV: ProxyHttp + Send + Sync + 'static,
-    <SV as ProxyHttp>::CTX: Send + Sync,
-    C: custom::Connector,
+    <SV as ProxyHttp>::CTX: Send + Sync + 'static,
+    C: custom::Connector + 'static,
 {
     fn closes_idle_on_shutdown(&self) -> bool {
         true
@@ -1719,7 +1760,7 @@ where
                     .on_connection_reuse(&mut session, &mut ctx, prev_ctx);
             }
 
-            self.process_request(session, &mut ctx).await
+            self.process_request(session, ctx).await
         }
     }
 
