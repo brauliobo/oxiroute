@@ -2,13 +2,14 @@ use std::{
     env, fs, io,
     net::TcpListener,
     os::unix::net::UnixListener,
+    path::PathBuf,
     process::{Command, ExitCode},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use oxiroute_supervision::GenerationId;
@@ -73,6 +74,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(pid_file) = descendant_pid_file {
         spawn_containment_descendants(&pid_file)?;
     }
+    let sync = Rendezvous::from_environment();
     let mut serving = None;
     let mut status_sequence = 1_u64;
     let mut notice = String::new();
@@ -80,6 +82,8 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     loop {
         let mut request = control.receive()?;
         let phase = request.phase();
+        let name = format!("{phase:?}");
+        sync.wait_released(generation, &name);
         if phase == ControlPhase::Notice {
             notice = String::from_utf8_lossy(request.attachment()).into_owned();
         }
@@ -132,17 +136,6 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 ControlOutcome::Accepted,
             )?;
         }
-        if (behavior == "delay-adopt" && phase == ControlPhase::AdoptListeners)
-            || (behavior == "delay-activate" && phase == ControlPhase::Activate)
-            || (behavior == "delay-quiesce" && phase == ControlPhase::Quiesce)
-            || (behavior == "delay-reactivate" && phase == ControlPhase::Reactivate)
-            || (behavior == "delay-drain" && phase == ControlPhase::Drain)
-        {
-            thread::sleep(Duration::from_millis(150));
-        }
-        if behavior == "slow-drain" && phase == ControlPhase::Drain {
-            thread::sleep(Duration::from_millis(500));
-        }
         if behavior == "timeout-activate" && phase == ControlPhase::Activate {
             thread::sleep(Duration::from_secs(1));
         }
@@ -151,9 +144,6 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         if phase != ControlPhase::Notice {
             control.acknowledge(&request, ControlOutcome::Accepted)?;
-        }
-        if behavior == "delay-status-after-quiesce" && phase == ControlPhase::Quiesce {
-            thread::sleep(Duration::from_millis(150));
         }
         control.report_status(&WorkerStatus {
             sequence: status_sequence,
@@ -219,21 +209,53 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             },
         })?;
         status_sequence = status_sequence.saturating_add(1);
+        sync.mark_done(generation, &name);
         if behavior == "malformed-status-after-activate" && phase == ControlPhase::Activate {
             control.report_status_raw(&[0, 1])?;
         }
         if behavior == "crash-after-quiesce" && phase == ControlPhase::Quiesce {
-            thread::sleep(Duration::from_millis(50));
+            sync.wait_released(generation, "Crash");
             std::process::abort();
         }
-        if behavior == "delay-exit-after-shutdown" && phase == ControlPhase::Shutdown {
-            thread::sleep(Duration::from_secs(1));
-        }
         if phase == ControlPhase::Shutdown && behavior != "ignore-shutdown" {
+            sync.wait_released(generation, "Exit");
             if let Some(serving) = serving.take() {
                 serving.stop();
             }
             return Ok(ExitCode::SUCCESS);
+        }
+    }
+}
+
+/// How the test and the worker wait for each other, through files in a directory the test owns: the test holds a step
+/// of a generation by creating `hold-<generation>-<step>`, and the worker waits while that file exists; the worker
+/// creates `done-<generation>-<phase>` when it has sent the acknowledgement and the status of a request.
+struct Rendezvous(Option<PathBuf>);
+
+impl Rendezvous {
+    /// The worker waits at most this long for a hold to be released, so that one forgotten by a failed test ends.
+    const LONGEST_HOLD: Duration = Duration::from_mins(1);
+
+    fn from_environment() -> Self {
+        Self(env::var_os("OXIROUTE_INTERNAL_TEST_FIXTURE_SYNC").map(PathBuf::from))
+    }
+
+    fn wait_released(&self, generation: u64, step: &str) {
+        let Some(directory) = &self.0 else { return };
+        let hold = directory.join(format!("hold-{generation}-{step}"));
+        let started = Instant::now();
+        while hold.exists() && started.elapsed() < Self::LONGEST_HOLD {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn mark_done(&self, generation: u64, phase: &str) {
+        if let Some(directory) = &self.0 {
+            let done = directory.join(format!("done-{generation}-{phase}"));
+            // The directory is gone when the test that owned this worker has ended.
+            if let Err(error) = fs::write(done, "") {
+                assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+            }
         }
     }
 }

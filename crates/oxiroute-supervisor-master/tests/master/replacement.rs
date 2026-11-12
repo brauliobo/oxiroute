@@ -103,8 +103,10 @@ pub(super) fn a_replacement_that_removes_a_tcp_listener_refuses_new_connections_
     harness.until(committed_as_b);
     assert_eq!(harness.master.listener_manifest().slots().len(), 1);
     // The test and the retired worker still hold descriptors of the removed socket; it stops
-    // listening anyway because the shutdown applies to the socket, not to one descriptor.
-    assert!(TcpStream::connect(harness.tcp_address).is_err());
+    // listening anyway because the shutdown applies to the socket, not to one descriptor. The socket
+    // is asked, not the address: the address is free to bind again, and a connection to it can reach
+    // a listener another test just bound on the same port.
+    assert!(!rustix::net::sockopt::socket_acceptconn(&harness.kept.tcp).unwrap());
     assert_eq!(probe_unix(&harness.unix_path), 2);
     harness.shutdown();
 }
@@ -172,7 +174,7 @@ pub(super) fn a_rolled_back_replacement_discards_the_listeners_it_added() {
     // The candidate that adopted the added socket is gone, and the master dropped its own copy.
     let started = Instant::now();
     while socket_is_open_in_any_process(&added_socket) {
-        harness.master.poll(Instant::now()).unwrap();
+        harness.poll();
         assert!(
             started.elapsed() < TEST_TIMEOUT,
             "the added listener outlived the rolled back replacement"
@@ -201,7 +203,7 @@ pub(super) fn a_replacement_that_fails_to_spawn_discards_the_listeners_it_brough
         &mut failing,
         worker("b", 2, "normal"),
         listeners,
-        Instant::now(),
+        harness.now,
     );
     assert!(result.is_err() || failing.calls == 1);
     harness.until(|master| master.state() == MasterState::Running);
@@ -224,7 +226,13 @@ pub(super) fn the_drain_window_may_last_a_day_while_other_phases_stay_within_an_
 
 #[test]
 pub(super) fn authenticated_worker_status_is_retained_without_creating_a_command_path() {
-    let harness = Harness::launch("normal");
+    let mut harness = Harness::launch("normal");
+    // The activation answer, which ends the launch, comes before the status that follows it.
+    harness.poll_until(|master| {
+        master
+            .worker_status(WorkerRole::Active)
+            .is_some_and(|status| status.sequence == 2)
+    });
     let status = harness
         .master
         .worker_status(WorkerRole::Active)
@@ -298,18 +306,19 @@ pub(super) fn initial_adoption_and_activation_fail_closed() {
     ] {
         let (_temporary, listeners, _, _, _, _) = listeners();
         let mut factory = factory();
+        let now = Instant::now();
         let mut master = Master::launch(
             config(),
             listeners,
             &mut factory,
             worker("a", 1, behavior),
-            Instant::now(),
+            now,
         )
         .unwrap();
         let started = Instant::now();
         let mut events = Vec::new();
         while master.state() != MasterState::Failed {
-            events.extend(master.poll(Instant::now()).unwrap());
+            events.extend(master.poll(now).unwrap());
             assert!(started.elapsed() < TEST_TIMEOUT);
             thread::sleep(POLL_INTERVAL);
         }
@@ -384,31 +393,41 @@ pub(super) fn retired_drain_failure_keeps_the_committed_candidate_active() {
 
 #[test]
 pub(super) fn a_retiring_worker_that_outlasts_the_default_drain_window_is_failed() {
-    let mut harness = Harness::launch("slow-drain");
+    let mut harness = Harness::launch("normal");
+    let drain = harness.hold(1, ControlPhase::Drain);
     harness.replace("normal", 2);
-    let events = harness.until(|master| master.state() == MasterState::Running);
+    harness.poll_until(|master| master.state() == MasterState::DrainingRetired);
+    let mut events = harness.expire_deadline();
+    events.extend(harness.until(|master| master.state() == MasterState::Running));
     assert!(events.iter().any(|event| matches!(
         event,
         MasterEvent::RetiredFailed {
             phase: FailurePhase::Drain
         }
     )));
+    drop(drain);
     harness.shutdown();
 }
 
 #[test]
 pub(super) fn the_retirement_deadline_of_a_replacement_replaces_the_default_drain_window() {
-    let mut harness = Harness::launch("slow-drain");
+    let mut harness = Harness::launch("normal");
     harness
         .master
         .set_retirement_deadline(Duration::from_secs(2));
+    let drain = harness.hold(1, ControlPhase::Drain);
     harness.replace("normal", 2);
-    let events = harness.until(|master| {
+    let mut events = harness.poll_until(|master| master.state() == MasterState::DrainingRetired);
+    // Past the default window of 300 ms and inside the deadline of the replacement.
+    events.extend(harness.poll_at(harness.now + Duration::from_secs(1)));
+    assert_eq!(harness.master.state(), MasterState::DrainingRetired);
+    drop(drain);
+    events.extend(harness.until(|master| {
         master.state() == MasterState::Running
             && master
                 .active_instance()
                 .is_some_and(|id| id.as_str() == "b")
-    });
+    }));
     assert!(
         !events
             .iter()
@@ -450,6 +469,24 @@ pub(super) fn stale_acknowledgement_is_observed_without_advancing_the_phase() {
         event,
         MasterEvent::StaleAcknowledgement { request_id: 2, .. }
     )));
+    harness.shutdown();
+}
+
+/// The master of a test runs on the clock of the test: a test thread that stalls for several times every deadline, as on
+/// a loaded host, finds the replacement in the phase it was in.
+#[test]
+pub(super) fn a_replacement_does_not_time_out_while_the_test_thread_stalls() {
+    let mut harness = Harness::launch("normal");
+    harness.replace("normal", 2);
+    thread::sleep(Duration::from_secs(1));
+    let events = harness.until(committed_as_b);
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            MasterEvent::RollbackStarted { .. } | MasterEvent::FailClosed { .. }
+        )),
+        "{events:?}"
+    );
     harness.shutdown();
 }
 

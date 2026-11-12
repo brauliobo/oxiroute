@@ -12,17 +12,20 @@ pub(super) fn initial_duplicate_and_send_faults_fail_closed_without_synchronous_
         executor.fail(fault);
         let (_temporary, listeners, _, _, _, _) = listeners();
         let mut factory = factory();
+        let now = Instant::now();
         let mut master = Master::launch_with_executor(
             config(),
             listeners,
             executor,
             &mut factory,
             worker("a", 1, "normal"),
-            Instant::now(),
+            now,
         )
         .unwrap();
         let started = Instant::now();
-        let events = poll_until(&mut master, |master| master.state() == MasterState::Failed);
+        let events = poll_until(&mut master, now, |master| {
+            master.state() == MasterState::Failed
+        });
         assert!(started.elapsed() < TEST_TIMEOUT);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -119,7 +122,7 @@ pub(super) fn reactivation_send_fault_fails_closed_and_shutdown_send_fault_is_fo
         .fail(FaultPoint::Send(WorkerRole::Active, ControlPhase::Shutdown));
     let started = Instant::now();
     assert_eq!(
-        shutdown.master.shutdown(Instant::now()).unwrap(),
+        shutdown.master.shutdown(shutdown.now).unwrap(),
         ShutdownProgress::Pending {
             remaining: 1,
             forced: true
@@ -170,7 +173,8 @@ pub(super) fn candidate_adoption_preparation_faults_are_compensated_without_stra
 
 #[test]
 pub(super) fn preparation_faults_after_lifecycle_mutation_compensate_or_fail_closed() {
-    let mut quiesce = Harness::launch_with_executor("delay-reactivate", FaultExecutor::default());
+    let mut quiesce = Harness::launch_with_executor("normal", FaultExecutor::default());
+    let reactivation = quiesce.hold(1, ControlPhase::Reactivate);
     quiesce
         .master
         .action_executor_mut()
@@ -182,6 +186,7 @@ pub(super) fn preparation_faults_after_lifecycle_mutation_compensate_or_fail_clo
     quiesce.replace("normal", 2);
     let mut events = quiesce.until(|master| master.state() == MasterState::RollingBack);
     assert!(quiesce.master.next_deadline().is_some());
+    drop(reactivation);
     events.extend(quiesce.until(|master| master.state() == MasterState::Running));
     assert_preparation_failure(&events, ControlPhase::Quiesce, PreparationStep::Deadline);
     assert_served_by(&quiesce, 1);
@@ -261,7 +266,7 @@ pub(super) fn preparation_faults_after_lifecycle_mutation_compensate_or_fail_clo
             PreparationStep::Encoding,
         ));
     assert_eq!(
-        shutdown.master.shutdown(Instant::now()).unwrap(),
+        shutdown.master.shutdown(shutdown.now).unwrap(),
         ShutdownProgress::Pending {
             remaining: 1,
             forced: true,
@@ -279,7 +284,7 @@ pub(super) fn shutdown_consumes_deferred_active_exit_and_completes() {
     harness.crash_active_while_activating();
 
     assert_eq!(
-        harness.master.shutdown(Instant::now()).unwrap(),
+        harness.master.shutdown(harness.now).unwrap(),
         ShutdownProgress::Pending {
             remaining: 1,
             forced: false,
@@ -304,7 +309,7 @@ pub(super) fn begin_is_validated_before_spawn_and_spawn_failure_leaves_active_un
     assert!(
         harness
             .master
-            .replace(&mut failing, worker("stale", 1, "normal"), Instant::now())
+            .replace(&mut failing, worker("stale", 1, "normal"), harness.now)
             .is_err()
     );
     assert_eq!(failing.calls, 0);
@@ -312,11 +317,11 @@ pub(super) fn begin_is_validated_before_spawn_and_spawn_failure_leaves_active_un
     assert!(
         harness
             .master
-            .replace(&mut failing, worker("b", 2, "normal"), Instant::now())
+            .replace(&mut failing, worker("b", 2, "normal"), harness.now)
             .is_err()
     );
     assert_eq!(failing.calls, 1);
-    let events = harness.master.poll(Instant::now()).unwrap();
+    let events = harness.poll();
     assert!(events.iter().any(|event| matches!(
         event,
         MasterEvent::SpawnFailed { instance_id } if instance_id.as_str() == "b"
@@ -455,11 +460,7 @@ pub(super) fn config() -> MasterConfig {
 }
 
 pub(super) fn factory() -> WorkerSpawner {
-    WorkerSpawner::new(
-        env!("CARGO_BIN_EXE_master-launcher-fixture"),
-        Duration::from_secs(2),
-    )
-    .unwrap()
+    WorkerSpawner::new(env!("CARGO_BIN_EXE_master-launcher-fixture"), TEST_TIMEOUT).unwrap()
 }
 
 pub(super) fn worker(name: &str, generation: u64, behavior: &str) -> WorkerInput<WorkerCommand> {
@@ -523,16 +524,17 @@ pub(super) fn matching_descriptor_count(targets: &[PathBuf]) -> usize {
 
 pub(super) fn poll_until<E: ActionExecutor>(
     master: &mut Master<E>,
+    now: Instant,
     mut predicate: impl FnMut(&Master<E>) -> bool,
 ) -> Vec<MasterEvent> {
     let started = Instant::now();
     let mut events = Vec::new();
     while !predicate(master) {
-        events.extend(master.poll(Instant::now()).unwrap());
+        events.extend(master.poll(now).unwrap());
         assert!(started.elapsed() < TEST_TIMEOUT);
         thread::sleep(POLL_INTERVAL);
     }
-    events.extend(master.poll(Instant::now()).unwrap());
+    events.extend(master.poll(now).unwrap());
     events
 }
 
@@ -561,7 +563,7 @@ pub(super) fn assert_preparation_failure(
 pub(super) fn assert_shutdown_from_phase(mut harness: Harness, phase: MasterState) {
     assert_eq!(harness.master.state(), phase);
     assert!(matches!(
-        harness.master.shutdown(Instant::now()).unwrap(),
+        harness.master.shutdown(harness.now).unwrap(),
         ShutdownProgress::Pending { .. }
     ));
     assert_eq!(harness.master.state(), MasterState::ShuttingDown);
@@ -648,7 +650,7 @@ pub(super) fn probe_unix(path: &PathBuf) -> u64 {
 pub(super) fn wait_process_gone(pid: u32) {
     let path = PathBuf::from(format!("/proc/{pid}"));
     let started = Instant::now();
-    while path.exists() && started.elapsed() < Duration::from_secs(2) {
+    while path.exists() && started.elapsed() < TEST_TIMEOUT {
         thread::sleep(POLL_INTERVAL);
     }
     assert!(!path.exists(), "process {pid} was not reaped");
@@ -668,7 +670,7 @@ pub(super) fn wait_for_pids(path: &Path) -> Vec<u32> {
                 return pids;
             }
         }
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < TEST_TIMEOUT);
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -686,7 +688,7 @@ pub(super) fn worker_cgroup_path(pid: u32) -> PathBuf {
 #[cfg(target_os = "linux")]
 pub(super) fn assert_cgroup_released(path: &Path) {
     let started = Instant::now();
-    while path.exists() && started.elapsed() < Duration::from_secs(2) {
+    while path.exists() && started.elapsed() < TEST_TIMEOUT {
         if fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()) {
             break;
         }
@@ -699,7 +701,7 @@ pub(super) fn assert_cgroup_released(path: &Path) {
             path.display()
         );
         let started = Instant::now();
-        while path.exists() && started.elapsed() < Duration::from_secs(2) {
+        while path.exists() && started.elapsed() < TEST_TIMEOUT {
             thread::sleep(POLL_INTERVAL);
         }
     }

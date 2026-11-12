@@ -55,28 +55,45 @@ pub(super) fn a_readable_extra_descriptor_wakes_the_wait() {
 
 #[test]
 pub(super) fn the_next_state_machine_deadline_bounds_the_wait() {
-    let mut harness = Harness::launch("normal");
+    // The clock of this test is the real one, which the wait reads: the phases before the activation get a deadline that
+    // a loaded host cannot reach.
+    let config = MasterConfig::new(
+        TEST_TIMEOUT,
+        TEST_TIMEOUT,
+        Duration::from_millis(300),
+        TEST_TIMEOUT,
+        TEST_TIMEOUT,
+    )
+    .unwrap();
+    let mut harness =
+        Harness::launch_configured(worker("a", 1, "normal"), SystemActionExecutor, config);
     harness.replace("hold-activate", 2);
-    harness.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+    let started = Instant::now();
+    while harness.master.state() != MasterState::ActivatingCandidate {
+        harness.poll_at(Instant::now());
+        assert!(
+            started.elapsed() < TEST_TIMEOUT,
+            "{:?}",
+            harness.master.state()
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
 
+    let deadline = harness.master.next_deadline().unwrap();
     let started = Instant::now();
     let mut waits = 0;
     while harness.master.state() == MasterState::ActivatingCandidate {
-        harness.master.poll(Instant::now()).unwrap();
+        harness.poll_at(Instant::now());
         harness.master.wait(&[], Some(TEST_TIMEOUT)).unwrap();
         waits += 1;
     }
 
-    // The candidate never answers the activation: its 300 ms deadline ends the wait, not TEST_TIMEOUT.
+    // The candidate never answers the activation: its deadline ends the wait, not TEST_TIMEOUT.
     assert!(
-        started.elapsed() >= Duration::from_millis(100),
+        started.elapsed() >= deadline.saturating_duration_since(started),
         "{:?}",
         started.elapsed()
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < TEST_TIMEOUT, "{:?}", started.elapsed());
     assert!(waits < 20, "{waits} waits: the wait spins");
 }
