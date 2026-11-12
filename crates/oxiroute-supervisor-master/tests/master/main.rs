@@ -230,16 +230,30 @@ impl<E: ActionExecutor> Harness<E> {
         wait_for_launcher_exit(launcher);
     }
 
-    /// Waits until the candidate, which aborts on the activation the master just sent, has
-    /// exited. The master has not polled since sending it, so it first sees the exit rather than
-    /// the closing channel that precedes it.
-    fn candidate_crashes_on_activation(&mut self) -> Vec<MasterEvent> {
-        let events = self.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+    /// Waits until the candidate, which aborts on the activation the master just sent, has exited,
+    /// and returns the events up to the rollback its exit causes. The test thread may stall for
+    /// `stall` meanwhile, as on a loaded host. The master clock stays before the activation
+    /// deadline, so the exit is first seen as the crash it is, not as an answer that came too late;
+    /// the master has not polled since sending the activation, so it sees the exit before the
+    /// closing channel.
+    fn candidate_crashes_on_activation(&mut self, stall: Duration) -> Vec<MasterEvent> {
+        let mut events =
+            self.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+        let held = self
+            .master
+            .next_deadline()
+            .unwrap()
+            .checked_sub(POLL_INTERVAL)
+            .unwrap();
+        thread::sleep(stall);
         wait_for_launcher_exit(
             self.master
                 .worker_process_group_id(WorkerRole::Candidate)
                 .unwrap(),
         );
+        events.extend(self.until_event_at(held, |event| {
+            matches!(event, MasterEvent::RollbackStarted { .. })
+        }));
         events
     }
 

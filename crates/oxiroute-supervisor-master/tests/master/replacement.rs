@@ -453,11 +453,28 @@ pub(super) fn stale_acknowledgement_is_observed_without_advancing_the_phase() {
     harness.shutdown();
 }
 
+/// The activation deadline is 300 ms: a test thread that stalls for longer than that before it polls the master
+/// again, as on a loaded host, still sees the candidate's exit reported as the crash it was.
+#[test]
+pub(super) fn a_candidate_crash_is_a_crash_however_late_the_master_polls() {
+    let mut harness = Harness::launch("normal");
+    harness.replace("crash-activate", 2);
+    let events = harness.candidate_crashes_on_activation(Duration::from_millis(600));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::RollbackStarted {
+            phase: FailurePhase::Crash,
+            ..
+        }
+    )));
+    harness.shutdown();
+}
+
 #[test]
 pub(super) fn candidate_crash_rolls_back_and_active_crash_fails_closed() {
     let mut candidate = Harness::launch("normal");
     candidate.replace("crash-activate", 2);
-    let mut events = candidate.candidate_crashes_on_activation();
+    let mut events = candidate.candidate_crashes_on_activation(Duration::ZERO);
     events.extend(candidate.until(|master| {
         master.state() == MasterState::Running
             && master
