@@ -330,6 +330,9 @@ where
         let current_write_pending = client_session.stream().get_write_pending_time();
         let upstream_write_pending = current_write_pending.saturating_sub(initial_write_pending);
         session.set_upstream_write_pending_time(upstream_write_pending);
+        if let Some(tunnel) = session.tunnel.as_mut() {
+            tunnel.write_pending_before(initial_write_pending);
+        }
 
         (server_session_reuse, client_session_reuse, error)
     }

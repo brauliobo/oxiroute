@@ -151,3 +151,14 @@ mod evacuation;
 mod request;
 mod response;
 mod upstream;
+
+/// What an idle tunnel (a WebSocket, 10,000 of them) holds per connection is bounded by the size of its parts: the
+/// request context was 1,920 bytes, 1,150 of them state that only a cacheable route uses.
+#[test]
+fn the_request_context_of_a_connection_that_stays_open_is_small() {
+    assert!(
+        size_of::<HttpRequestContext>() <= 1024,
+        "{} bytes",
+        size_of::<HttpRequestContext>()
+    );
+}

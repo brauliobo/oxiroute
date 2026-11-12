@@ -372,10 +372,12 @@ impl BodyReader {
         }
 
         if self.rewind_buf_len == 0 && self.owned_preread.is_none() {
-            // take any extra bytes and send them as-is,
-            // reset body counter
-            let extra = self.body_buf_overread.take();
-            self.prepare_buf(extra.as_deref().unwrap_or_default());
+            // take any extra bytes and send them as-is, reset body counter. Without extra bytes there is nothing
+            // to rewind and the read that follows takes its own buffer: a connection that waits holds none.
+            match self.body_buf_overread.take() {
+                Some(extra) => self.prepare_buf(&extra),
+                None => self.release_body_buf(),
+            }
         } // if rewind_buf_len is not 0, body read has not yet been polled
         self.body_state = PS::UntilClose(0);
     }
@@ -2641,6 +2643,36 @@ mod tests {
         assert_eq!(res, None);
         assert_eq!(body_reader.body_state, ParseState::Complete(1));
         assert_eq!(body_reader.get_body_overread(), None);
+    }
+
+    /// An upgraded connection waits for its first bytes with no body buffer: the 128 KiB chunk buffer is taken by the
+    /// read that needs it, not when the body is converted.
+    #[tokio::test]
+    async fn a_connection_converted_to_close_delimited_holds_no_buffer_until_it_reads() {
+        init_log();
+        let mut mock_io = Builder::new().read(b"ping").read(b"").build();
+        let mut body_reader = BodyReader::new(false);
+        body_reader.init_content_length(0, b"");
+        body_reader.convert_to_close_delimited();
+        assert!(body_reader.body_buf.is_none());
+
+        let bytes = body_reader.read_body_bytes(&mut mock_io).await.unwrap();
+        assert_eq!(bytes.as_deref(), Some(&b"ping"[..]));
+        assert!(
+            body_reader.body_buf.is_none(),
+            "a small read gives the buffer back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_converted_to_close_delimited_keeps_the_bytes_read_ahead() {
+        init_log();
+        let mut mock_io = Builder::new().read(b"").build();
+        let mut body_reader = BodyReader::new(false);
+        body_reader.init_content_length(0, b"early");
+        body_reader.convert_to_close_delimited();
+        let bytes = body_reader.read_body_bytes(&mut mock_io).await.unwrap();
+        assert_eq!(bytes.as_deref(), Some(&b"early"[..]));
     }
 
     #[tokio::test]

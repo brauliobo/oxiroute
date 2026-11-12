@@ -21,7 +21,7 @@ pub use relocate::relocate_idle_connection;
 mod pooled_future;
 
 pub use self::pooled_future::ErasedFuture as ClaimedStream;
-use self::pooled_future::PooledFuture;
+pub use self::pooled_future::{ErasedFuture, PooledFuture};
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -415,6 +415,8 @@ impl Drop for AcceptOwnership {
 
 #[cfg(test)]
 mod h2_shutdown_tests;
+#[cfg(test)]
+mod tunnel_tests;
 
 #[cfg(test)]
 mod accept_gate_tests {
@@ -718,17 +720,52 @@ impl HttpPersistentSettings {
     }
 }
 
-#[derive(Debug)]
+/// What a served HTTP/1 request leaves of its connection: the stream, to serve the next request on, or the rest of an
+/// upgraded connection (a tunnel), which the connection runs to its end and closes.
 pub struct ReusedHttpStream {
-    stream: Stream,
-    persistent_settings: Option<HttpPersistentSettings>,
+    next: Next,
+}
+
+enum Next {
+    Stream {
+        stream: Stream,
+        persistent_settings: Option<HttpPersistentSettings>,
+    },
+    Tunnel(ErasedFuture),
+}
+
+impl std::fmt::Debug for ReusedHttpStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.next {
+            Next::Stream { stream, .. } => f.debug_tuple("ReusedHttpStream").field(stream).finish(),
+            Next::Tunnel(_) => f.write_str("ReusedHttpStream::Tunnel"),
+        }
+    }
+}
+
+/// The two things a connection does after a request.
+pub enum AfterRequest {
+    /// Serve the next request on the stream.
+    Reuse(Stream, Option<HttpPersistentSettings>),
+    /// Run the rest of an upgraded connection, then close it.
+    Tunnel(ErasedFuture),
 }
 
 impl ReusedHttpStream {
     pub fn new(stream: Stream, persistent_settings: Option<HttpPersistentSettings>) -> Self {
         ReusedHttpStream {
-            stream,
-            persistent_settings,
+            next: Next::Stream {
+                stream,
+                persistent_settings,
+            },
+        }
+    }
+
+    /// The upgraded connection continues as `tunnel`, which owns what it needs and is run by the connection once the
+    /// request future is gone: the request state (hooks, filters, buffers) is not kept for the life of the tunnel.
+    pub fn tunnel(tunnel: ErasedFuture) -> Self {
+        ReusedHttpStream {
+            next: Next::Tunnel(tunnel),
         }
     }
 
@@ -745,8 +782,14 @@ impl ReusedHttpStream {
         Self::new(stream, Some(persistent_settings))
     }
 
-    pub fn consume(self) -> (Stream, Option<HttpPersistentSettings>) {
-        (self.stream, self.persistent_settings)
+    pub fn consume(self) -> AfterRequest {
+        match self.next {
+            Next::Stream {
+                stream,
+                persistent_settings,
+            } => AfterRequest::Reuse(stream, persistent_settings),
+            Next::Tunnel(tunnel) => AfterRequest::Tunnel(tunnel),
+        }
     }
 }
 
@@ -1135,15 +1178,21 @@ where
                 let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
                 connection.apply_to_session(&mut session);
                 // On the heap per request: the connection's own future stays small while it waits between requests.
-                let Some((next, settings)) =
-                    PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
-                        .await
-                        .map(ReusedHttpStream::consume)
-                else {
-                    return None;
-                };
-                stream = next;
-                connection = Http1Connection::after(settings);
+                let after = PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
+                    .await
+                    .map(ReusedHttpStream::consume);
+                match after {
+                    Some(AfterRequest::Reuse(next, settings)) => {
+                        stream = next;
+                        connection = Http1Connection::after(settings);
+                    }
+                    // The request future is gone (its block is back in the pool); the tunnel is what is left.
+                    Some(AfterRequest::Tunnel(tunnel)) => {
+                        tunnel.await;
+                        return None;
+                    }
+                    None => return None,
+                }
             }
         }
     }

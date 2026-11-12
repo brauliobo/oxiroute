@@ -159,3 +159,10 @@ Then run formatting and diff checks.
   upstream attempts too (upstream's only honors it for errors before peer selection): a hook that wrote a complete
   response and ends the request through an error, as OxiRoute's cache does after a revalidation, keeps the keep-alive
   connection. The default hook still returns `false`. `proxy_trait.rs` documents the changed contract.
+- WebSocket and other upgrades end the request state machine at the handshake (6.5). `proxy_h1_inline.rs`
+  (`relay_inline` / `relay_loop` / `relay_resumed`) hands the exchange to `Session::tunnel` (`proxy_tunnel.rs`) when both
+  sides completed an HTTP/1 upgrade, `process_request` returns `ReusedHttpStream::tunnel(..)` with
+  `HttpProxy::run_tunnel`, and the 11 kB request future goes back to the thread's block pool while the tunnel, a much
+  smaller future, lives for hours. The hooks and the end of the request (`conclude`) run as before. `process_request`
+  takes the request context boxed (`Box<CTX>`, so the context moves to the tunnel without a copy), hence the `'static`
+  bounds. The response filters of the relay run as pooled leaf futures. Tests in `proxy_h1_inline.rs`.

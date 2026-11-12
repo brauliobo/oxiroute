@@ -369,3 +369,10 @@ sendfile body write (`write_body_from_file`), the kernel TLS offload (`ktls` mod
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.
+- Memory of an upgraded connection (6.5): `ReusedHttpStream::tunnel(ErasedFuture)` lets an application end a request with a
+  continuation that the connection loop runs after the request future's pooled block went back to the pool
+  (`AfterRequest::{Reuse, Tunnel}` in `ServerApp::process_new`; test in `apps/tunnel_tests.rs`). `PooledFuture` is public
+  so leaf futures of an application can use the same block pool. `listeners/mod.rs` boxes the accepted `L4Stream` in
+  `UninitializedStream` (a connection task that waits for its first request no longer carries the stream inline).
+  `protocols/http/v1/body.rs`: `convert_to_close_delimited` no longer allocates the 128 KiB chunk buffer before the
+  connection reads (the bytes read ahead after the headers still move into the buffer); tests in the same file.
