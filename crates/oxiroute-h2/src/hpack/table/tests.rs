@@ -132,3 +132,17 @@ fn offsets_survive_wrapping_past_u32() {
         assert_eq!(table.get(1), Some((b"k".as_slice(), [i; 20].as_slice())));
     }
 }
+
+#[test]
+fn a_table_with_a_few_small_entries_does_not_reserve_its_whole_size() {
+    let mut table = Table::new(4096);
+    for index in 0..6_u8 {
+        table.insert(b"x-field", &[b'a' + index; 20]);
+    }
+    assert_eq!(table.len(), 6);
+    assert!(
+        table.arena.capacity() <= 256,
+        "the arena holds {} bytes for 162 live ones",
+        table.arena.capacity()
+    );
+}

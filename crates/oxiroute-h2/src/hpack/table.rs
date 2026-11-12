@@ -105,9 +105,6 @@ impl Table {
             name_len: name.len() as u32,
             value_len: value.len() as u32,
         };
-        if self.arena.capacity() == 0 {
-            self.arena.reserve(self.max.min(4096));
-        }
         self.arena.extend_from_slice(name);
         self.arena.extend_from_slice(value);
         let slot = self.slot(self.count);
