@@ -4,7 +4,7 @@
 //! on: an answer before the body is over is the response, and the rest of the upload is not sent. A request whose body
 //! began to flow is not sent again.
 
-use std::{future::poll_fn, time::Duration};
+use std::{future::poll_fn, pin::pin, time::Duration};
 
 use bytes::BufMut as _;
 use futures_util::FutureExt as _;
@@ -16,7 +16,7 @@ use tokio::io::AsyncReadExt as _;
 
 use super::{
     buffers,
-    timing::{Expired, within_for},
+    timing::{Expired, Wait, within_for},
 };
 
 pub(in crate::http::proxy) struct Upload {
@@ -57,7 +57,12 @@ impl Upload {
         stream: &mut Stream,
         idle: Option<Duration>,
     ) -> Result<(), Box<Error>> {
-        let ready = within_for(idle, poll_fn(|cx| stream.poll_read_ready(cx))).await;
+        let ready = within_for(
+            Wait::Step,
+            idle,
+            pin!(poll_fn(|cx| stream.poll_read_ready(cx))),
+        )
+        .await;
         ready
             .map_err(|Expired| {
                 Error::explain(

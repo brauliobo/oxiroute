@@ -87,9 +87,13 @@ mod tests;
 
 /// Per-thread allocation caches: with several workers per listener, glibc's shared arenas made every
 /// cross-thread free wait on a lock. `oxiroute-allocator` also embeds the jemalloc configuration.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "alloc-count")))]
 #[global_allocator]
 static ALLOCATOR: oxiroute_allocator::Jemalloc = oxiroute_allocator::Jemalloc;
+
+#[cfg(all(target_os = "linux", feature = "alloc-count"))]
+#[global_allocator]
+static ALLOCATOR: oxiroute_allocator::CountingJemalloc = oxiroute_allocator::CountingJemalloc;
 
 const GENERATION_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -218,11 +222,39 @@ where
     }
 }
 
+#[cfg(not(feature = "alloc-count"))]
+fn handled_signals() -> [i32; 3] {
+    [SIGTERM, SIGINT, SIGHUP]
+}
+
+#[cfg(feature = "alloc-count")]
+fn handled_signals() -> [i32; 4] {
+    [SIGTERM, SIGINT, SIGHUP, signal_hook::consts::SIGUSR1]
+}
+
+/// The allocator counters, appended as a line to `$OXIROUTE_INTERNAL_TEST_ALLOC_FILE`: the data-path harness takes
+/// one before and one after its measured window.
+#[cfg(feature = "alloc-count")]
+fn append_allocation_snapshot() {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("OXIROUTE_INTERNAL_TEST_ALLOC_FILE") else {
+        return;
+    };
+    let line = oxiroute_allocator::snapshot();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let stop_supervisor = Arc::new(AtomicBool::new(false));
     let reload_requested = Arc::new(AtomicBool::new(false));
-    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
+    let mut signals = Signals::new(handled_signals())?;
     let signal_handle = signals.handle();
     let signal_stop = Arc::clone(&stop_supervisor);
     let signal_reload = Arc::clone(&reload_requested);
@@ -236,6 +268,8 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
                         break;
                     }
                     SIGHUP => signal_reload.store(true, Ordering::Release),
+                    #[cfg(feature = "alloc-count")]
+                    signal_hook::consts::SIGUSR1 => append_allocation_snapshot(),
                     _ => {}
                 }
             }

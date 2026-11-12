@@ -270,3 +270,14 @@ fn every_state_survives_its_encoding() {
         assert_eq!(State::decode(state.encode()), state);
     }
 }
+
+#[test]
+fn an_unboxed_cancellation_resolves_like_the_boxed_one_and_waits_when_the_request_cannot_move() {
+    let evacuation = armed(None);
+    let mut cancelled = std::pin::pin!(evacuation.cancelled());
+    assert!(cancelled.as_mut().now_or_never().is_none());
+    assert_eq!(evacuation.evacuate(false, true), Some(Fate::Redispatched));
+    let error = cancelled.now_or_never().expect("cancelled");
+    assert!(is_evacuated(&error));
+    assert!(Cancelled::never().now_or_never().is_none());
+}

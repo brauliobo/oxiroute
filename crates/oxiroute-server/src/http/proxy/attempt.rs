@@ -15,9 +15,35 @@ pub(super) struct AttemptTimeouts {
 impl AttemptTimeouts {
     /// Applies the attempt's read and write limits to the session of its connection.
     pub(super) fn apply(&self, session: &mut pingora::protocols::http::v1::client::HttpSession) {
+        self.apply_write(session);
+        self.apply_reads(session);
+    }
+
+    /// The write limit alone: the fast lane keeps the read limits itself (`lane::timing`).
+    pub(super) fn apply_write(
+        &self,
+        session: &mut pingora::protocols::http::v1::client::HttpSession,
+    ) {
+        session.write_timeout = Some(self.write);
+    }
+
+    /// The read limits alone, for a response the session's own parser reads.
+    pub(super) fn apply_reads(
+        &self,
+        session: &mut pingora::protocols::http::v1::client::HttpSession,
+    ) {
         session.read_timeout = Some(self.read);
         session.body_read_timeout = Some(self.body_read);
-        session.write_timeout = Some(self.write);
+    }
+
+    /// How long the response head may take.
+    pub(super) fn read(&self) -> Duration {
+        self.read
+    }
+
+    /// How long the response body may be silent.
+    pub(super) fn body_read(&self) -> Duration {
+        self.body_read
     }
 }
 
@@ -269,12 +295,12 @@ impl HttpRequestContext {
 /// What the fast lane needs of an attempt: its request has no body, so it can always move, and the lane's routes
 /// never retry, so a failed attempt is final unless an operator moved it.
 impl HttpRequestContext {
-    pub(super) fn arm_evacuation_for_lane(&self) -> UpstreamCancellation {
+    pub(super) fn arm_evacuation_for_lane(&self) -> crate::http::evacuation::Cancelled {
         let Some(evacuation) = self.evacuation() else {
-            return Box::pin(std::future::pending());
+            return crate::http::evacuation::Cancelled::never();
         };
         evacuation.begin_attempt(self.evacuation_pin);
-        evacuation.cancellation()
+        evacuation.cancelled()
     }
 }
 

@@ -42,3 +42,8 @@ pub fn start_background_thread() -> std::io::Result<()> {
         Err(std::io::Error::from_raw_os_error(status))
     }
 }
+
+#[cfg(all(target_os = "linux", feature = "count"))]
+mod counting;
+#[cfg(all(target_os = "linux", feature = "count"))]
+pub use counting::{CountingJemalloc, snapshot};

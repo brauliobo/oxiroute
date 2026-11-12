@@ -53,6 +53,8 @@ pub(super) fn render_request(
 ) {
     let (buffer, head, request) = (forward.buffer, forward.head, forward.request);
     let connection = head.facts.connection;
+    // Declared before the edits, which may borrow it.
+    let incoming;
     let mut edits = Edits::new();
     let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
         result.expect("a request head needs few edits");
@@ -75,7 +77,6 @@ pub(super) fn render_request(
         edit(edits.set(names::CONNECTION, Value::trusted(b"close")));
     }
     // The host a rule may name: the request's own when it is passed on as it is.
-    let incoming;
     let selected = match host {
         HostEdit::Set(value) => Some(value),
         HostEdit::AsSent if forward.values.names_host() => {

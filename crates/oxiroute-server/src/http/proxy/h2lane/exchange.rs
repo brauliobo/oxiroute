@@ -3,7 +3,10 @@
 //! request goes to a plain HTTP/1.1 server of the pool and its answer comes back on the stream; the client leaving
 //! ends the exchange and the origin connection with it.
 
-use std::time::{Duration, Instant};
+use std::{
+    pin::pin,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use http::StatusCode;
@@ -37,7 +40,7 @@ use crate::{
                 proxy::{Arrival, Progress, Scanned, error_answer, proxy_route},
                 response::{QueueValues, accept_head, is_plain, refused_by_pool},
                 rules,
-                timing::{Expired, within},
+                timing::{Expired, Wait, within},
             },
             proxy_policy,
             retry::status_retry_possible,
@@ -514,7 +517,7 @@ async fn relay_response(
         }
         Ok(())
     };
-    within(deadline, body)
+    within(Wait::Total, deadline, pin!(body))
         .await
         .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
     // An origin that did not get the whole body keeps what it has not read: its connection is not used again.

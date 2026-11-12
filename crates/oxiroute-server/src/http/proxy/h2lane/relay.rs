@@ -1,12 +1,12 @@
 //! The body on the stream: flow control, the wait for the client's window bounded by the write timeout, and the
 //! client's departure noticed while the lane waits for the origin.
 
-use std::{future::poll_fn, time::Duration};
+use std::{future::poll_fn, pin::pin, time::Duration};
 
 use bytes::Bytes;
 use pingora::{Error, ErrorType, protocols::http::v2::server::H2Stream};
 
-use crate::http::proxy::lane::timing::{Expired, within_for};
+use crate::http::proxy::lane::timing::{Expired, Wait, within_for};
 
 async fn reserve_and_send(
     stream: &mut H2Stream,
@@ -48,13 +48,15 @@ pub(super) async fn send_body(
     }
     while !data.is_empty() {
         let step = reserve_and_send(stream, &mut data, end);
-        within_for(write_timeout, step).await.map_err(|Expired| {
-            Error::explain(
-                ErrorType::WriteTimedout,
-                format!("while writing h2 response body, timeout: {write_timeout:?}"),
-            )
-            .into_down()
-        })??;
+        within_for(Wait::Step, write_timeout, pin!(step))
+            .await
+            .map_err(|Expired| {
+                Error::explain(
+                    ErrorType::WriteTimedout,
+                    format!("while writing h2 response body, timeout: {write_timeout:?}"),
+                )
+                .into_down()
+            })??;
     }
     Ok(())
 }
