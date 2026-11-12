@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, Write},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll, ready},
@@ -155,9 +155,14 @@ impl AsyncRead for TlsStream {
             return Poll::Ready(Ok(()));
         }
         loop {
-            match this.pump.conn.reader().read(buffer.initialize_unfilled()) {
-                Ok(count) => {
-                    buffer.advance(count);
+            // Copies only the plaintext that is there: reading into `initialize_unfilled` would zero the caller's whole
+            // spare capacity (a body buffer is 16 to 64 KiB) on every read and make it resident.
+            let mut reader = this.pump.conn.reader();
+            match reader.fill_buf() {
+                Ok(plaintext) => {
+                    let count = plaintext.len().min(buffer.remaining());
+                    buffer.put_slice(&plaintext[..count]);
+                    reader.consume(count);
                     return Poll::Ready(Ok(()));
                 }
                 // The peer closed without a close_notify: the stream ends the way a closed connection does.
