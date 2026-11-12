@@ -2249,7 +2249,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-acme"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "base64 0.23.1",
  "hickory-resolver",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-aged-executor"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "atomic-waker",
  "slab",
@@ -2339,14 +2339,14 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-allocator"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "tikv-jemallocator",
 ]
 
 [[package]]
 name = "oxiroute-cache"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "chrono-tz",
  "http",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "hocon-parser",
  "kdl",
@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-forward-proxy"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2420,11 +2420,11 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h1-head"
-version = "6.3.1"
+version = "6.4.0"
 
 [[package]]
 name = "oxiroute-h2"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "bytes",
  "http",
@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h3"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "http",
  "openssl",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
@@ -2522,14 +2522,14 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-tls-client"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "openssl",
 ]
 
 [[package]]
 name = "oxiroute-tls-rustls"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "async-trait",
  "log",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-worker-scaling"
-version = "6.3.1"
+version = "6.4.0"
 
 [[package]]
 name = "parking"

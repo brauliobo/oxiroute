@@ -39,7 +39,7 @@ sha256sums=('2e1bdbd2beecbe326ab0ec62c46fb3d9c2840deedf98eabc37457d309e8ff0ba'
             'd56db017915b82ad6204bb4de1aa268cc41586eafcbbf35194366b32ed02f19a'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-            'a81a1c0d57f7b2d719dcc9ad874d851f76514ccefe7902a9942b176567cf6a6f')
+            'b9a65afc6e14091ee3a25ff72c0a523f90a17e22e7695edc0a9009e5c2719456')
 
 package() {
   cd "oxiroute-${pkgver}-${_target}"
