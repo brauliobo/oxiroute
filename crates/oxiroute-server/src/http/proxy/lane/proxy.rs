@@ -783,7 +783,16 @@ impl super::LaneFront {
     ) {
         let elapsed = self.finish_request(ctx, error, progress);
         if let Some(log) = self.service.access_log() {
-            super::log::write_proxied(log, &self.service_log, ctx, forward, progress, elapsed);
+            let request = super::log::Proxied {
+                buffer: forward.buffer,
+                head: forward.head,
+                id: forward.id,
+                id_generated: forward.request.client_id.is_none(),
+                method: forward.method,
+                route: forward.route,
+                protocol: super::log::HTTP1,
+            };
+            super::log::write_proxied(log, &self.service_log, ctx, &request, progress, elapsed);
         }
     }
 

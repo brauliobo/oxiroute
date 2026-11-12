@@ -24,8 +24,8 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, ConfigDraft, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    AccessLogPolicy, AlpnProtocol, ConfigDraft, HttpLiteralHeader, HttpPathSelector,
+    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpUpstreamHost, HttpVersionPolicy,
 };
 use process_support::{ServerProcess, reserve_tcp_address};
@@ -392,6 +392,7 @@ async fn requests_reach_the_origin_as_the_classic_path_sends_them() {
             "/plain",
             vec![("x-request-id", "one"), ("x-request-id", "two")],
         ),
+        (Method::GET, "/plain", vec![("expect", "100-continue")]),
         (Method::DELETE, "/plain", vec![("content-length", "0")]),
         (
             Method::OPTIONS,
@@ -426,7 +427,6 @@ async fn requests_the_lane_does_not_take_are_the_classic_paths_on_both_sides() {
     let requests: Vec<Request3> = vec![
         (Method::GET, "/plain", vec![("te", "trailers")]),
         (Method::GET, "/plain", vec![("trailer", "x")]),
-        (Method::GET, "/plain", vec![("expect", "100-continue")]),
         (
             Method::GET,
             "/plain",
@@ -579,4 +579,82 @@ async fn header_rules_are_applied_as_the_classic_path_applies_them() {
     ] {
         same_with(requests.clone(), served, header_rules(host)).await;
     }
+}
+
+/// The lines of an access log once it stops growing, with what differs by construction left out: times, durations and
+/// ids.
+async fn log_lines(path: &std::path::Path) -> Vec<String> {
+    let read = || std::fs::read_to_string(path).unwrap_or_default();
+    let mut text = read();
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let next = read();
+        if next == text {
+            return text.lines().map(volatile_fields_masked).collect();
+        }
+        text = next;
+    }
+}
+
+fn volatile_fields_masked(line: &str) -> String {
+    let mut record: serde_json::Value = serde_json::from_str(line).expect("a JSON access line");
+    let fields = record.as_object_mut().expect("a JSON object");
+    for key in [
+        "timestampUnixMs",
+        "durationMs",
+        "connectMs",
+        "headerMs",
+        "correlationId",
+        "requestId",
+    ] {
+        if let Some(value) = fields.get_mut(key) {
+            *value = serde_json::Value::Null;
+        }
+    }
+    record.to_string()
+}
+
+fn log_to(path: std::path::PathBuf) -> impl Fn(&mut ConfigDraft) {
+    move |config| {
+        config.http_services[0].access_log = Some(AccessLogPolicy::File { path: path.clone() });
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_with_an_access_log_is_served_by_the_lane_and_logs_as_the_classic_path_does() {
+    let directory = tempfile::tempdir().expect("log directory");
+    let [classic_log, lane_log] =
+        ["classic.log", "lane.log"].map(|name| directory.path().join(name));
+    let (classic, lane) = (
+        Side::start_with(false, log_to(classic_log.clone())).await,
+        Side::start_with(true, log_to(lane_log.clone())).await,
+    );
+    let requests: Vec<Request3> = vec![
+        get("/plain"),
+        (Method::HEAD, "/plain", Vec::new()),
+        get("/missing"),
+        get("/informational"),
+        get("/closing"),
+        (Method::GET, "/plain", vec![("x-request-id", "client-id-1")]),
+        (Method::GET, "/plain", vec![("x-request-id", "not valid")]),
+        get("/fixed"),
+        (Method::HEAD, "/fixed", Vec::new()),
+        (Method::GET, "/fixed", vec![("x-request-id", "client-id-2")]),
+        get("/moved"),
+        get("/absent-route-but-proxied?q=1"),
+    ];
+    let (mut c, mut l) = (classic.client().await, lane.client().await);
+    assert_eq!(run(&mut l, &requests).await, run(&mut c, &requests).await);
+    c.finish().await;
+    l.finish().await;
+    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
+    assert_eq!(classic_lines.len(), requests.len());
+    assert!(
+        classic_lines
+            .iter()
+            .all(|line| line.contains(r#""protocol":"h2""#))
+    );
+    assert_eq!(lane_lines, classic_lines);
+    assert_eq!(classic.served(), 0, "the classic side took the lane");
+    assert_eq!(lane.served(), requests.len(), "streams the lane served");
 }

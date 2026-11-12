@@ -4,11 +4,11 @@
 
 use http::{
     HeaderValue, Method, Request, Version,
-    header::{CONNECTION, HOST},
+    header::{CONNECTION, HOST, TRANSFER_ENCODING},
 };
 use pingora::{http::RequestHeader, protocols::http::v1::client::http_req_header_to_wire};
 
-use super::{head, request};
+use super::{claim::Body, head, request};
 use crate::http::request_id::stamp_request;
 
 fn request_of(method: Method, target: &str, fields: &[(&str, &str)]) -> RequestHeader {
@@ -24,6 +24,11 @@ fn request_of(method: Method, target: &str, fields: &[(&str, &str)]) -> RequestH
 
 /// What the classic path writes for the request.
 fn classic(request: &RequestHeader, host: &str, close: bool) -> Vec<u8> {
+    classic_body(request, host, close, false)
+}
+
+/// What the classic path writes for a request whose body has no announced length: chunked, after every filter.
+fn classic_body(request: &RequestHeader, host: &str, close: bool, chunked: bool) -> Vec<u8> {
     let mut upstream = request.clone();
     stamp_request(&mut upstream).unwrap();
     upstream.set_version(Version::HTTP_11);
@@ -32,6 +37,11 @@ fn classic(request: &RequestHeader, host: &str, close: bool) -> Vec<u8> {
     upstream.insert_header(HOST, host.to_owned()).unwrap();
     if close {
         upstream.insert_header(CONNECTION, "close").unwrap();
+    }
+    if chunked {
+        upstream
+            .insert_header(TRANSFER_ENCODING, "chunked")
+            .unwrap();
     }
     http_req_header_to_wire(&upstream).unwrap().to_vec()
 }
@@ -55,7 +65,7 @@ fn lane_fields(
     host: &str,
     close: bool,
 ) -> Option<Vec<u8>> {
-    lane_body(request, fields, host, close, 0)
+    lane_body(request, fields, host, close, Body::None)
 }
 
 /// Like `lane_fields` for a request whose body of `body` bytes follows the head.
@@ -64,7 +74,7 @@ fn lane_body(
     fields: &WireFields<'_>,
     host: &str,
     close: bool,
-    body: usize,
+    body: Body,
 ) -> Option<Vec<u8>> {
     let authority = request.uri.authority().unwrap();
     let target = request.uri.path_and_query().unwrap().as_str().as_bytes();
@@ -72,11 +82,11 @@ fn lane_body(
     let (id, wire) = request::read((method, target), &fields.iter().copied(), authority, body)?;
     let mut out = Vec::new();
     let host = HeaderValue::from_str(host).unwrap();
-    head::render(
-        &mut out,
-        &wire,
-        &head::edits(&wire, &id, Some(&host), close),
-    );
+    let mut edits = head::edits(&wire, &id, Some(&host), close);
+    if body == Body::Unknown {
+        head::chunked(&mut edits);
+    }
+    head::render(&mut out, &wire, &edits);
     Some(out)
 }
 
@@ -114,7 +124,7 @@ fn id_of(request: &RequestHeader) -> HeaderValue {
         (method, target),
         &fields.iter().copied(),
         request.uri.authority().unwrap(),
-        0,
+        Body::None,
     )
     .unwrap();
     id
@@ -207,7 +217,6 @@ fn a_request_with_a_field_the_lane_does_not_write_is_not_the_lanes() {
         ("host", "example.com"),
         ("te", "trailers"),
         ("trailer", "x"),
-        ("expect", "100-continue"),
         ("proxy-authorization", "Basic x"),
         ("proxy-authenticate", "Basic"),
         ("x-padded", " value"),
@@ -236,8 +245,14 @@ fn a_request_with_a_body_is_written_as_the_classic_path_writes_it() {
         "/up?x=1",
         &[("content-type", "text/plain"), ("content-length", "5")],
     );
-    let actual = lane_body(&request, &map_fields(&request), "example.com", false, 5)
-        .expect("the lane serves a body the fields announce");
+    let actual = lane_body(
+        &request,
+        &map_fields(&request),
+        "example.com",
+        false,
+        Body::Length(5),
+    )
+    .expect("the lane serves a body the fields announce");
     assert_eq!(
         mask_generated(&actual),
         mask_generated(&classic(&request, "example.com", false))
@@ -247,12 +262,9 @@ fn a_request_with_a_body_is_written_as_the_classic_path_writes_it() {
 #[test]
 fn a_body_that_the_fields_do_not_announce_is_not_the_lanes() {
     let request = request_of(Method::POST, "/", &[("content-length", "5")]);
-    for body in [0, 4, 6] {
+    for body in [Body::None, Body::Length(4), Body::Length(6), Body::Unknown] {
         let lane = lane_body(&request, &map_fields(&request), "example.com", false, body);
-        assert!(
-            lane.is_none(),
-            "a body of {body} bytes against a length of 5"
-        );
+        assert!(lane.is_none(), "a body of {body:?} against a length of 5");
     }
     let unannounced = request_of(Method::POST, "/", &[("accept", "*/*")]);
     assert!(
@@ -261,8 +273,46 @@ fn a_body_that_the_fields_do_not_announce_is_not_the_lanes() {
             &map_fields(&unannounced),
             "example.com",
             false,
-            5
+            Body::Length(5)
         )
         .is_none()
+    );
+}
+
+#[test]
+fn a_body_without_a_length_is_chunked_after_every_other_edit() {
+    let request = request_of(
+        Method::POST,
+        "/up",
+        &[("content-type", "text/plain"), ("x-request-id", "abc")],
+    );
+    for (host, close) in [("example.com", false), ("127.0.0.1:8080", true)] {
+        let actual = lane_body(&request, &map_fields(&request), host, close, Body::Unknown)
+            .expect("the lane serves a body of unknown length");
+        assert_eq!(
+            mask_generated(&actual),
+            mask_generated(&classic_body(&request, host, close, true))
+        );
+    }
+}
+
+#[test]
+fn an_expect_field_goes_on_to_the_origin_like_any_other() {
+    let request = request_of(
+        Method::POST,
+        "/up",
+        &[("expect", "100-continue"), ("content-length", "5")],
+    );
+    let actual = lane_body(
+        &request,
+        &map_fields(&request),
+        "example.com",
+        false,
+        Body::Length(5),
+    )
+    .expect("the lane serves an expecting request");
+    assert_eq!(
+        mask_generated(&actual),
+        mask_generated(&classic(&request, "example.com", false))
     );
 }

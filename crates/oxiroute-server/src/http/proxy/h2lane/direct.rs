@@ -14,7 +14,10 @@ use pingora::{
 use super::{claim::Plan, relay};
 use crate::{
     HttpOperationResult,
-    http::{action::FixedResponsePlan, proxy::lane::LaneFront},
+    http::{
+        action::FixedResponsePlan,
+        proxy::lane::{LaneFront, log},
+    },
 };
 
 pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
@@ -32,9 +35,21 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
     };
     let _ = front.metrics.record_bytes_sent(body);
     let status = sent.then_some(response.status);
-    let _ = front
-        .metrics
-        .record_http_operation(HttpOperationResult::from_status(status), started.elapsed());
+    let ended = Instant::now();
+    let _ = front.metrics.record_http_operation(
+        HttpOperationResult::from_status(status),
+        ended.saturating_duration_since(started),
+    );
+    if let Some(log) = front.service.access_log() {
+        let line = log::Line::answered(
+            (plan.id.as_bytes(), plan.id_generated),
+            (&plan.authority, &plan.method),
+            (status, body),
+            (started, ended),
+            log::HTTP2,
+        );
+        log::write(log, &front.service_log, &plan.route.edits.log, &line);
+    }
 }
 
 async fn send(

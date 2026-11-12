@@ -9,7 +9,10 @@ use pingora::{
     apps::{ClaimedStream, Http2Claim},
     protocols::{
         Digest,
-        http::v2::server::{H2Request, H2Stream},
+        http::{
+            v1::client::FastFraming,
+            v2::server::{H2Request, H2Stream},
+        },
     },
 };
 
@@ -19,6 +22,37 @@ use crate::http::{
     proxy::lane::{LaneFront, LaneRoute, buffers, proxy::decide, rules},
 };
 
+/// The body that follows the head of a request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Body {
+    None,
+    /// The request announces its length (`content-length`, at least 1).
+    Length(usize),
+    /// The request has a body and no announced length: the origin gets it chunked, as the classic proxy sends it.
+    Unknown,
+}
+
+impl Body {
+    /// The length the request's fields announce: none for a body without one.
+    pub(super) const fn announced(self) -> usize {
+        match self {
+            Self::Length(length) => length,
+            Self::None | Self::Unknown => 0,
+        }
+    }
+
+    /// How the origin's session writes the body.
+    pub(super) const fn framing(self) -> FastFraming {
+        FastFraming {
+            chunked: matches!(self, Self::Unknown),
+            content_length: match self {
+                Self::Length(length) => Some(length),
+                Self::None | Self::Unknown => None,
+            },
+        }
+    }
+}
+
 /// A request the lane serves: the route it matched and what the exchange needs of the request.
 pub(super) struct Plan {
     pub(super) route: Arc<HttpRoutePlan>,
@@ -26,13 +60,14 @@ pub(super) struct Plan {
     pub(super) method: Method,
     pub(super) client_ip: Option<IpAddr>,
     pub(super) id: HeaderValue,
+    /// The id is one the proxy made, not the client's.
+    pub(super) id_generated: bool,
     /// The request as the HTTP/1 origin gets it, for a proxied route, and what the route's header rules make of it.
     pub(super) wire: Option<request::Wire>,
     pub(super) values: rules::Evaluated,
     /// Whether the request could be sent again, which decides whether an operator may move it to another server.
     pub(super) replay_safe: bool,
-    /// The length of the body that follows the head.
-    pub(super) body: usize,
+    pub(super) body: Body,
 }
 
 impl Plan {
@@ -63,12 +98,13 @@ pub(super) fn claim(
     Http2Claim::Claimed(ClaimedStream::new(move || serve(front, stream, plan)))
 }
 
-/// The length of the body that follows the head: none when the head ends the stream, else the length the request
-/// announces. `None` for a body the lane does not take: its length is not announced, or it is announced empty.
-fn body_length(request: &H2Request) -> Option<usize> {
+/// The body that follows the head: none when the head ends the stream, else the length the request announces or, with
+/// no length, an open body. `None` for a body the lane does not take: one announced empty yet not ended.
+fn body_of(request: &H2Request) -> Option<Body> {
     match (request.is_end_stream(), request.content_length()) {
-        (true, None | Some(0)) => Some(0),
-        (false, Some(length @ 1..)) => usize::try_from(length).ok(),
+        (true, None | Some(0)) => Some(Body::None),
+        (false, Some(length @ 1..)) => usize::try_from(length).ok().map(Body::Length),
+        (false, None) => Some(Body::Unknown),
         _ => None,
     }
 }
@@ -76,10 +112,7 @@ fn body_length(request: &H2Request) -> Option<usize> {
 /// `None` when the classic path must see the request: its body is not one the lane streams, the route is not the
 /// lane's, or its fields are not of the shape the lane writes (see `request::read`).
 fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan> {
-    if front.service.access_log().is_some() {
-        return None;
-    }
-    let body = body_length(request)?;
+    let body = body_of(request)?;
     let method = Method::from_bytes(request.method()).ok()?;
     let authority = Authority::try_from(request.authority()?).ok()?;
     let target = request.path();
@@ -95,8 +128,8 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
         .filter(|route| matches!(route.lane, LaneRoute::Direct | LaneRoute::Proxy))
         .filter(|route| streams_body(route, body))?;
     let client_ip = client_ip(digest);
-    let (id, wire, values, replay_safe) = match &route.action {
-        HttpActionPlan::Proxy(proxy) => {
+    let (id, id_generated, wire, values, replay_safe) =
+        if let HttpActionPlan::Proxy(proxy) = &route.action {
             let (id, wire) = request::read(
                 (request.method(), target),
                 &request.fields(),
@@ -122,24 +155,22 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
                         .find(|(field, _)| *field == name.as_str().as_bytes())
                         .is_some_and(|(_, value)| !value.is_empty())
                 },
-                body == 0,
+                body == Body::None,
                 route.policy.request_buffering,
             );
-            (id, Some(wire), values, replay_safe)
-        }
-        _ => (
-            request::request_id(request.fields()),
-            None,
-            rules::Evaluated::default(),
-            false,
-        ),
-    };
+            let id_generated = wire.request.client_id.is_none();
+            (id, id_generated, Some(wire), values, replay_safe)
+        } else {
+            let (id, generated) = request::request_id(request.fields());
+            (id, generated, None, rules::Evaluated::default(), false)
+        };
     Some(Plan {
         route,
         authority,
         method,
         client_ip,
         id,
+        id_generated,
         wire,
         values,
         replay_safe,
@@ -147,10 +178,16 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
     })
 }
 
-/// Whether the route takes a body of `body` bytes: only a proxied route forwards one, and a length over the route's
-/// limit is the classic path's `413`.
-fn streams_body(route: &HttpRoutePlan, body: usize) -> bool {
-    body == 0 || (route.lane == LaneRoute::Proxy && !route.policy.exceeds_body_limit(body as u64))
+/// Whether the route takes the body: only a proxied route forwards one, and an announced length over the route's
+/// limit is the classic path's `413`. A body of unknown length is held to the limit as it arrives.
+fn streams_body(route: &HttpRoutePlan, body: Body) -> bool {
+    match body {
+        Body::None => true,
+        Body::Length(length) => {
+            route.lane == LaneRoute::Proxy && !route.policy.exceeds_body_limit(length as u64)
+        }
+        Body::Unknown => route.lane == LaneRoute::Proxy,
+    }
 }
 
 fn client_ip(digest: &Digest) -> Option<IpAddr> {

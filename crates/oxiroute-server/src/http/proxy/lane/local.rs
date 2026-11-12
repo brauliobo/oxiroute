@@ -1,11 +1,7 @@
 //! Responses the lane writes from what the route holds, with no upstream: a fixed response, or a file the static
 //! cache answers. Both end the same way: metrics, the access line, and the connection's next step.
 
-use std::{
-    future::Future,
-    io,
-    time::{Duration, Instant},
-};
+use std::{future::Future, io, time::Instant};
 
 use bytes::BytesMut;
 use http::{Method, uri::Authority};
@@ -94,27 +90,13 @@ impl LaneFront {
         if let Some(log) = self.service.access_log() {
             let method = Method::from_bytes(request.method(buffer))
                 .expect("the route was selected for this method");
-            let line = log::Line {
-                attempts: 0,
-                received: 0,
-                sent: body,
-                connect: None,
-                header: None,
-                id,
-                id_generated: request.client_id.is_none(),
-                elapsed: ended.saturating_duration_since(started),
-                evacuations: 0,
-                host: Some(authority),
-                idempotency: None,
-                method: &method,
-                queue_wait: Duration::ZERO,
-                reason: "",
-                rescued: false,
-                servers: &[],
-                status,
-                unix_ms: crate::clock::wall_ms(ended),
-                stuck: false,
-            };
+            let line = log::Line::answered(
+                (id, request.client_id.is_none()),
+                (authority, &method),
+                (status, body),
+                (started, ended),
+                log::HTTP1,
+            );
             log::write(log, &self.service_log, &route.edits.log, &line);
         }
         connection.end_request();
