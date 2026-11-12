@@ -19,7 +19,7 @@ impl AttemptTimeouts {
         self.apply_reads(session);
     }
 
-    /// The write limit alone: the fast lane keeps the read limits itself (`lane::timers`).
+    /// The write limit alone: the fast lane keeps the read limits itself (`lane::timing`).
     pub(super) fn apply_write(
         &self,
         session: &mut pingora::protocols::http::v1::client::HttpSession,

@@ -3,7 +3,7 @@
 //! and an origin that reads slowly slows the client down. Nothing of the body is replayed: a request whose body began
 //! to flow is not sent again.
 
-use std::{future::poll_fn, time::Duration};
+use std::{future::poll_fn, pin::pin, time::Duration};
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -12,7 +12,7 @@ use pingora::{
     protocols::http::{v1::client::HttpSession, v2::server::H2Stream},
 };
 
-use crate::http::proxy::lane::timing::{Expired, within_for};
+use crate::http::proxy::lane::timing::{Expired, Wait, within_for};
 
 /// What happens on the client's side of an exchange.
 pub(super) enum Event {
@@ -76,15 +76,17 @@ impl Upload {
                 None => Event::End,
             })
         });
-        within_for(idle, next).await.unwrap_or_else(|Expired| {
-            Event::Left(
-                Error::explain(
-                    ErrorType::ReadTimedout,
-                    format!("reading downstream request body, timeout: {idle:?}"),
+        within_for(Wait::Step, idle, pin!(next))
+            .await
+            .unwrap_or_else(|Expired| {
+                Event::Left(
+                    Error::explain(
+                        ErrorType::ReadTimedout,
+                        format!("reading downstream request body, timeout: {idle:?}"),
+                    )
+                    .into_down(),
                 )
-                .into_down(),
-            )
-        })
+            })
     }
 
     /// Applies an event to the origin's session; the error ends the exchange. Returns the bytes written.

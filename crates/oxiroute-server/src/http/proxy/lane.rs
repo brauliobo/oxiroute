@@ -18,7 +18,6 @@ pub(in crate::http::proxy) mod render;
 pub(in crate::http::proxy) mod response;
 pub(in crate::http::proxy) mod rules;
 mod stop;
-pub(in crate::http::proxy) mod timers;
 pub(in crate::http::proxy) mod timing;
 mod upload;
 
@@ -48,7 +47,7 @@ use tokio::{
 };
 
 use stop::Stop;
-use timers::{Wait, within};
+use timing::{Wait, within};
 
 pub(crate) use plan::LaneRoute;
 pub(crate) use rules::RouteEdits;
@@ -206,7 +205,7 @@ impl LaneFront {
         } else if let Some(buffer) = buffers::read_arrived(stream) {
             return Some(buffer);
         }
-        let read = async {
+        let mut read = pin!(async {
             poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;
             let mut buffer = buffers::take_read();
             match stream.read_buf(&mut buffer).await {
@@ -216,19 +215,21 @@ impl LaneFront {
                     None
                 }
             }
-        };
+        });
         // A read that is ready at once needs no timer.
         let deadline = self
             .idle_timeout(connection, stop.stopping())
             .and_then(|limit| idle_since.checked_add(limit));
         let mut timed = pin!(async {
             match deadline {
-                Some(deadline) => {
-                    within(Wait::Idle, tokio::time::Instant::from_std(deadline), read)
-                        .await
-                        .unwrap_or(None)
-                }
-                None => read.await,
+                Some(deadline) => within(
+                    Wait::Idle,
+                    tokio::time::Instant::from_std(deadline),
+                    read.as_mut(),
+                )
+                .await
+                .unwrap_or(None),
+                None => read.as_mut().await,
             }
         });
         // A connection waiting between requests ends with the signal its owner shares; the first request of a
