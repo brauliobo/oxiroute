@@ -754,14 +754,15 @@ fn serve_generation(
                     .into());
                 };
                 let runtime = Http3Runtime::start_reverse(
-                    listener_name.clone(),
-                    reservation,
-                    http_service,
-                    listener_tls,
-                    Arc::clone(generation),
-                    metrics,
+                    &listener_name,
+                    &reservation,
+                    &http_service,
+                    &listener_tls,
+                    generation,
+                    &metrics,
                     downstream_timeouts,
-                    shutdown.clone(),
+                    &shutdown,
+                    workers,
                 )
                 .inspect_err(|_| {
                     generation.mark_runtime_failed();

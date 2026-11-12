@@ -18,7 +18,7 @@ pub(super) const H3_CLOSE_GRACE: Duration = Duration::from_secs(1);
 pub(super) const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 
 pub struct Http3Runtime {
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl Http3Runtime {
@@ -59,7 +59,7 @@ impl Http3Runtime {
             })?;
         match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
-                thread: Some(thread),
+                threads: vec![thread],
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
@@ -86,93 +86,98 @@ impl Http3Runtime {
     ///
     /// The reverse listener owns QUIC directly because Pingora does not expose a downstream H3
     /// service app. Proxy routes to an exact H3 pool use the native H3 upstream transport; routes to
-    /// every other pool use the classic HTTP/1.1 and HTTP/2 origin connections, with the answer buffered.
+    /// every other pool use the classic HTTP/1.1 and HTTP/2 origin connections, with the answer buffered
+    /// unless it is long or of unknown length.
+    ///
+    /// The listener runs `workers` QUIC endpoints when its socket is shared (see
+    /// [`ListenerReservation::quic_endpoints`]), each served by a thread of its own: the kernel gives
+    /// every client address to one of them, so connections spread over the cores.
     ///
     /// # Errors
     ///
-    /// Returns an error unless the QUIC endpoint, TLS configuration, and H3 accept loop all reach
+    /// Returns an error unless the QUIC endpoints, TLS configuration, and H3 accept loops all reach
     /// their startup boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn start_reverse(
-        listener_name: String,
-        reservation: ListenerReservation,
-        service: Arc<HttpServicePlan>,
-        tls: Arc<TlsProfilePlan>,
-        generation: Arc<RuntimeGeneration>,
-        metrics: ListenerMetrics,
+        listener_name: &str,
+        reservation: &ListenerReservation,
+        service: &Arc<HttpServicePlan>,
+        tls: &Arc<TlsProfilePlan>,
+        generation: &Arc<RuntimeGeneration>,
+        metrics: &ListenerMetrics,
         downstream_timeouts: DownstreamTimeoutPolicy,
-        shutdown: watch::Receiver<bool>,
+        shutdown: &watch::Receiver<bool>,
+        workers: usize,
     ) -> Result<Self, Box<dyn Error>> {
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let startup_listener_name = listener_name.clone();
-        let thread = thread::Builder::new()
-            .name(format!("oxiroute-h3-reverse-{listener_name}"))
-            .spawn(move || {
-                let result = run_reverse(
-                    &listener_name,
-                    reservation,
-                    service,
-                    tls,
-                    generation.clone(),
-                    metrics,
-                    downstream_timeouts,
-                    shutdown,
-                    ready_tx,
-                );
-                if let Err(error) = result {
-                    generation.mark_runtime_failed();
-                    error!("reverse HTTP/3 listener `{listener_name}` failed: {error}");
-                }
-            })?;
-        match ready_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => Ok(Self {
-                thread: Some(thread),
-            }),
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                Err(io::Error::other(error).into())
-            }
-            Err(error) => {
-                let _ = thread.join();
-                Err(io::Error::new(
-                    if error == std::sync::mpsc::RecvTimeoutError::Timeout {
-                        io::ErrorKind::TimedOut
-                    } else {
-                        io::ErrorKind::BrokenPipe
-                    },
-                    format!(
-                        "reverse HTTP/3 listener `{startup_listener_name}` did not become ready: {error}"
-                    ),
-                )
-                .into())
-            }
+        let server_config = Arc::new(server_config(
+            tls,
+            downstream_timeouts
+                .keepalive_timeout_ms
+                .map(Duration::from_millis),
+        )?);
+        let endpoints = reservation.quic_endpoints(&server_config, workers)?;
+        metrics.mark_listening();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(endpoints.len());
+        let mut threads = Vec::with_capacity(endpoints.len());
+        for (index, endpoint) in endpoints.into_iter().enumerate() {
+            let worker = Worker {
+                endpoint,
+                server_config: Arc::clone(&server_config),
+                service: Arc::clone(service),
+                generation: Arc::clone(generation),
+                metrics: metrics.clone(),
+                downstream_timeouts,
+                shutdown: shutdown.clone(),
+                // One worker owns the listener's state in the metrics, as the only endpoint did.
+                reports_state: index == 0,
+            };
+            let (name, ready) = (listener_name.to_owned(), ready_tx.clone());
+            let generation = Arc::clone(generation);
+            let thread = thread::Builder::new()
+                .name(format!("oxiroute-h3-reverse-{listener_name}"))
+                .spawn(move || {
+                    if let Err(error) = worker.run(&name, &ready) {
+                        generation.mark_runtime_failed();
+                        error!("reverse HTTP/3 listener `{name}` failed: {error}");
+                    }
+                })?;
+            threads.push(thread);
         }
+        drop(ready_tx);
+        for _ in 0..threads.len() {
+            ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| {
+                    let timed_out = error == std::sync::mpsc::RecvTimeoutError::Timeout;
+                    io::Error::new(
+                        if timed_out {
+                            io::ErrorKind::TimedOut
+                        } else {
+                            io::ErrorKind::BrokenPipe
+                        },
+                        format!(
+                            "reverse HTTP/3 listener `{listener_name}` did not become ready: {error}"
+                        ),
+                    )
+                })?
+                .map_err(io::Error::other)?;
+        }
+        Ok(Self { threads })
     }
 
     /// Waits for the listener and all active H3 connections to stop.
     ///
     /// # Errors
     ///
-    /// Returns an error if the listener thread panicked.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the listener thread handle was already consumed, which violates the runtime
-    /// ownership invariant.
-    pub fn join(mut self) -> io::Result<()> {
-        if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
-            return self
-                .thread
-                .take()
-                .expect("finished HTTP/3 listener thread")
-                .join()
-                .map_err(|_| io::Error::other("HTTP/3 listener thread panicked"));
+    /// Returns an error if a listener thread panicked.
+    pub fn join(self) -> io::Result<()> {
+        let mut result = Ok(());
+        for thread in self.threads {
+            if thread.join().is_err() {
+                result = Err(io::Error::other("HTTP/3 listener thread panicked"));
+            }
         }
-        self.thread
-            .take()
-            .expect("HTTP/3 listener thread exists")
-            .join()
-            .map_err(|_| io::Error::other("HTTP/3 listener thread panicked"))
+        result
     }
 }
 
@@ -190,7 +195,9 @@ fn run_forward(
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
         let server_config = Arc::new(server_config(&tls, None)?);
-        let endpoint = reservation.quic_endpoint(ServerConfig::clone(&server_config))?;
+        let endpoint = reservation
+            .quic_endpoints(&server_config, 1)?
+            .swap_remove(0);
         metrics.mark_listening();
         ready
             .send(Ok(()))
@@ -220,56 +227,62 @@ fn run_forward(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_reverse(
-    listener_name: &str,
-    reservation: ListenerReservation,
+/// One QUIC endpoint of a reverse HTTP/3 listener and what its thread serves it with.
+struct Worker {
+    endpoint: Endpoint,
+    server_config: Arc<ServerConfig>,
     service: Arc<HttpServicePlan>,
-    tls: Arc<TlsProfilePlan>,
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
     shutdown: watch::Receiver<bool>,
-    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
-) -> Result<(), Box<dyn Error>> {
-    let runtime = Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(async move {
-        let server_config = Arc::new(server_config(
-            &tls,
-            downstream_timeouts
-                .keepalive_timeout_ms
-                .map(Duration::from_millis),
-        )?);
-        let endpoint = reservation.quic_endpoint(ServerConfig::clone(&server_config))?;
-        metrics.mark_listening();
-        ready
-            .send(Ok(()))
-            .map_err(|_| io::Error::other("reverse HTTP/3 startup receiver was dropped"))?;
-        let listener_metrics = metrics.clone();
-        let listener = ListenerRuntime::new(metrics.clone());
-        let accept_gate = generation.accept_gate().register();
-        let orderly = serve_reverse_endpoint(
-            listener_name,
-            endpoint,
-            server_config,
-            service,
-            generation,
-            listener,
-            metrics,
-            downstream_timeouts,
-            Arc::new(OriginClient::new()),
-            shutdown,
-            accept_gate,
-        )
-        .await;
-        if orderly {
-            listener_metrics.mark_stopped();
-        } else {
-            listener_metrics.mark_failed();
-            return Err(io::Error::other("reverse HTTP/3 endpoint terminated unexpectedly").into());
-        }
-        Ok::<(), Box<dyn Error>>(())
-    })
+    /// This worker marks the listener stopped or failed when it ends.
+    reports_state: bool,
+}
+
+impl Worker {
+    fn run(
+        self,
+        listener_name: &str,
+        ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async move {
+            ready
+                .send(Ok(()))
+                .map_err(|_| io::Error::other("reverse HTTP/3 startup receiver was dropped"))?;
+            let listener_metrics = self.metrics.clone();
+            let listener = ListenerRuntime::new(self.metrics.clone());
+            let accept_gate = self.generation.accept_gate().register();
+            let orderly = serve_reverse_endpoint(
+                listener_name,
+                self.endpoint,
+                self.server_config,
+                self.service,
+                self.generation,
+                listener,
+                self.metrics,
+                self.downstream_timeouts,
+                Arc::new(OriginClient::new()),
+                self.shutdown,
+                accept_gate,
+            )
+            .await;
+            if orderly {
+                if self.reports_state {
+                    listener_metrics.mark_stopped();
+                }
+            } else {
+                if self.reports_state {
+                    listener_metrics.mark_failed();
+                }
+                return Err(
+                    io::Error::other("reverse HTTP/3 endpoint terminated unexpectedly").into(),
+                );
+            }
+            Ok::<(), Box<dyn Error>>(())
+        })
+    }
 }
 
 /// The ring provider with the profile's key-exchange groups in the profile's order; the provider has no hybrid group.
