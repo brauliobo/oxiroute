@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use oxiroute_tls_rustls::RustlsAcceptor;
-use pingora::listeners::CustomTlsSettings;
+use pingora::listeners::{CustomTlsSettings, tls::cipher_list_names};
 use rustls::{
-    ServerConfig, SupportedProtocolVersion,
-    crypto::aws_lc_rs::Ticketer,
+    ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
+    crypto::{CryptoProvider, aws_lc_rs::Ticketer},
     server::{NoServerSessionStorage, ProducesTickets, StoresServerSessions},
     version,
 };
@@ -17,18 +17,16 @@ use self::{
     router::ProfileRouter,
     session::{SessionCache, TimedTicketer},
 };
-use super::{ALPN, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
-use crate::tls::provider::{aws_lc_provider, with_key_exchange_groups};
+use super::{ALPN, TLS13_TICKETS, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
+use crate::tls::provider::{aws_lc_provider, with_cipher_list, with_key_exchange_groups};
 
 mod resolver;
 mod router;
 mod session;
 
-/// The TLS 1.3 tickets sent per full handshake when something can redeem them (rustls' and OpenSSL's default).
-const TLS13_TICKETS: usize = 2;
-
-/// OpenSSL's default session timeout, which a profile without `session_timeout_seconds` has always had.
-const DEFAULT_SESSION_TIMEOUT_SECONDS: u32 = 300;
+/// OpenSSL's default session timeout for TLS 1.3, which a profile without `session_timeout_seconds` has always had
+/// (it is 300 seconds for TLS 1.2 sessions; the stamp inside a rustls ticket cannot tell the versions apart).
+const DEFAULT_SESSION_TIMEOUT_SECONDS: u32 = 7_200;
 
 impl TlsProfilePlan {
     /// Settings that hand the accepted connections of a listener to the rustls backend.
@@ -49,15 +47,22 @@ impl TlsProfilePlan {
                 return Err(self.rustls_error(format!("certificate `{name}`: {detail}")));
             }
         }
+        if self.dh_parameters.is_some() {
+            log::warn!(
+                "TLS profile `{}`: dh_parameters_path is not used by the rustls backend, which offers no finite-field DHE suites",
+                self.name
+            );
+        }
         let protocols = alpn_protocols(&self.alpn);
-        let sessions = self.sessions()?;
-        let strict = self.rustls_server_config(protocols.clone(), &sessions)?;
+        let provider = self.rustls_provider()?;
+        let sessions = self.shared_sessions()?;
+        let strict = self.rustls_server_config(&provider, protocols.clone(), &sessions)?;
         // A client that offers protocols the profile does not speak is served without ALPN, as the OpenSSL backend
         // does, unless the profile speaks HTTP/2 only.
         let lenient = if matches!(self.alpn, ALPN::H2) {
             None
         } else {
-            Some(self.rustls_server_config(Vec::new(), &sessions)?)
+            Some(self.rustls_server_config(&provider, Vec::new(), &sessions)?)
         };
         let router = ProfileRouter::new(
             strict,
@@ -82,17 +87,59 @@ impl TlsProfilePlan {
         }
     }
 
-    fn rustls_server_config(
-        &self,
-        alpn_protocols: Vec<Vec<u8>>,
-        sessions: &Sessions,
-    ) -> Result<Arc<ServerConfig>, TlsBuildError> {
+    /// The crypto provider of the profile: the key exchange groups and, for the TLS 1.2 suites, the `cipher_list` the
+    /// profile asks for, evaluated by OpenSSL so the string means what it means on the OpenSSL backend. The suites the
+    /// rustls provider cannot implement are named once in the log.
+    fn rustls_provider(&self) -> Result<Arc<CryptoProvider>, TlsBuildError> {
         let provider = with_key_exchange_groups(
             aws_lc_provider(),
             self.policy.key_exchange_groups.as_deref(),
         )
         .map_err(|detail| self.rustls_error(detail.into()))?;
-        let builder = ServerConfig::builder_with_provider(provider)
+        let Some(cipher_list) = &self.cipher_list else {
+            return Ok(provider);
+        };
+        let selected = cipher_list_names(cipher_list)
+            .map_err(|error| self.rustls_error(format!("cipher_list: {error}")))?;
+        let (provider, left_out) = with_cipher_list(&provider, &selected);
+        if !left_out.is_empty() {
+            let shown = left_out
+                .iter()
+                .take(6)
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            log::warn!(
+                "TLS profile `{}`: cipher_list selects {} TLS 1.2 suites the rustls backend does not implement and leaves out: {}{}",
+                self.name,
+                left_out.len(),
+                shown.join(", "),
+                if left_out.len() > shown.len() {
+                    ", ..."
+                } else {
+                    ""
+                }
+            );
+        }
+        let tls12 = provider
+            .cipher_suites
+            .iter()
+            .any(|suite| matches!(suite, SupportedCipherSuite::Tls12(_)));
+        if self.min_version == TlsVersion::Tls12 && !tls12 {
+            return Err(self.rustls_error(
+                "cipher_list selects no TLS 1.2 suite the rustls backend implements (ECDHE with AES-GCM or ChaCha20-Poly1305)"
+                    .into(),
+            ));
+        }
+        Ok(provider)
+    }
+
+    fn rustls_server_config(
+        &self,
+        provider: &Arc<CryptoProvider>,
+        alpn_protocols: Vec<Vec<u8>>,
+        sessions: &Sessions,
+    ) -> Result<Arc<ServerConfig>, TlsBuildError> {
+        let builder = ServerConfig::builder_with_provider(Arc::clone(provider))
             .with_protocol_versions(self.protocol_versions())
             .map_err(|error| self.rustls_error(error.to_string()))?;
         let builder = match self.client_auth.rustls_verifier() {
@@ -113,7 +160,16 @@ impl TlsProfilePlan {
 
     /// Resumption as the profile declares it: a named cache keeps sessions in memory (TLS 1.2 ids and TLS 1.3 stateful
     /// tickets), stateless tickets are encrypted by per-process keys, and a TLS 1.3 ticket nobody could redeem is not
-    /// sent. Every configuration of the listener shares the one state, so a session resumes whichever serves it.
+    /// sent. Every configuration of the profile shares the one state, so a session resumes whichever serves it and
+    /// whichever listener of the profile accepts the next connection.
+    fn shared_sessions(&self) -> Result<Arc<Sessions>, TlsBuildError> {
+        if let Some(sessions) = self.rustls_sessions.get() {
+            return Ok(Arc::clone(sessions));
+        }
+        let sessions = Arc::new(self.sessions()?);
+        Ok(Arc::clone(self.rustls_sessions.get_or_init(|| sessions)))
+    }
+
     fn sessions(&self) -> Result<Sessions, TlsBuildError> {
         let timeout = self
             .session_timeout
@@ -147,8 +203,8 @@ impl TlsProfilePlan {
     }
 }
 
-/// The resumption state the configurations of one listener share.
-struct Sessions {
+/// The resumption state the configurations of one profile share.
+pub(super) struct Sessions {
     storage: Arc<dyn StoresServerSessions>,
     tickets: Option<Arc<dyn ProducesTickets>>,
     tls13_tickets: usize,

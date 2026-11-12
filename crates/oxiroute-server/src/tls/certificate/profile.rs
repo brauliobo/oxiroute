@@ -3,6 +3,11 @@ use super::*;
 
 mod rustls_backend;
 
+/// The TLS 1.3 tickets sent per full handshake when something can redeem them. Browsers use a ticket once and get a
+/// fresh one on every resumed connection, so one ticket keeps them resuming; each extra ticket costs a full handshake
+/// about 80k instructions.
+const TLS13_TICKETS: usize = 1;
+
 #[derive(Clone)]
 pub(crate) struct CompiledTlsProfilePolicy {
     min_version: TlsVersion,
@@ -187,6 +192,8 @@ pub struct TlsProfilePlan {
     kernel_tx: bool,
     tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
+    /// The rustls resumption state, created by the first listener of the profile that uses the backend.
+    rustls_sessions: OnceLock<Arc<rustls_backend::Sessions>>,
 }
 
 impl TlsProfilePlan {
@@ -241,6 +248,7 @@ impl TlsProfilePlan {
             ),
             tls_alpn_challenge_store,
             selector,
+            rustls_sessions: OnceLock::new(),
         })
     }
 
@@ -390,9 +398,10 @@ impl TlsProfilePlan {
             settings.set_options(SslOptions::NO_TICKET);
         }
         // Without a cache or stateless tickets a TLS 1.3 ticket cannot be resumed, so none is sent.
-        if !self.session_tickets && self.session_cache.is_none() {
-            settings.set_num_tickets(0).map_err(profile_error)?;
-        }
+        let resumable = self.session_tickets || self.session_cache.is_some();
+        settings
+            .set_num_tickets(if resumable { TLS13_TICKETS } else { 0 })
+            .map_err(profile_error)?;
         // Read whatever the socket holds in one call instead of a record header, then its body.
         settings.set_read_ahead(true);
         if self.prefer_server_ciphers {
@@ -463,5 +472,28 @@ impl fmt::Debug for TlsProfilePlan {
             .field("default_certificate", &self.selector.default_certificate)
             .field("certificates", &self.selector.active_generations.keys())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod kernel_tx_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_openssl_profile_that_asks_for_it_is_offered_the_kernel() {
+        assert!(!kernel_tx_available(
+            "edge",
+            KtlsMode::Off,
+            TlsBackend::Openssl
+        ));
+        assert!(!kernel_tx_available(
+            "edge",
+            KtlsMode::Off,
+            TlsBackend::Rustls
+        ));
+        assert!(
+            !kernel_tx_available("edge", KtlsMode::Auto, TlsBackend::Rustls),
+            "a rustls profile never converts to kernel TLS, whatever the kernel can do"
+        );
     }
 }

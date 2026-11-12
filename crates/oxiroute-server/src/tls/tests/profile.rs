@@ -235,3 +235,57 @@ fn generates_explicit_development_certificate_with_exact_sans_and_redacted_debug
     assert!(!debug.contains("PRIVATE KEY"));
     assert!(!debug.contains("private_key"));
 }
+
+fn rustls_settings_result(
+    cipher_list: Option<&str>,
+    dh_parameters: bool,
+    min_version: TlsVersion,
+) -> Result<(), TlsBuildError> {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let mut config = config_with_identity(&files);
+    config.tls_profiles[0].min_version = min_version;
+    config.tls_profiles[0].policy.backend = oxiroute_config::TlsBackend::Rustls;
+    config.tls_profiles[0].policy.cipher_list = cipher_list.map(Into::into);
+    if dh_parameters {
+        let path = temp.path().join("dhparam.pem");
+        fs::write(&path, Dh::get_2048_256().unwrap().params_to_pem().unwrap()).unwrap();
+        config.tls_profiles[0].policy.dh_parameters_path = Some(path);
+    }
+    let prepared = prepare_tls(&config.validate().expect("valid TLS test config")).unwrap();
+    prepared
+        .profiles()
+        .get("public")
+        .unwrap()
+        .rustls_settings(0)
+        .map(drop)
+}
+
+#[test]
+fn the_rustls_backend_follows_a_cipher_list_with_dhe_suites_and_ignores_the_dh_parameters() {
+    let nginx_style =
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+
+    assert!(rustls_settings_result(Some(nginx_style), true, TlsVersion::Tls12).is_ok());
+    assert!(rustls_settings_result(Some("HIGH:!aNULL:!MD5"), false, TlsVersion::Tls12).is_ok());
+}
+
+#[test]
+fn a_cipher_list_without_a_tls12_suite_the_rustls_backend_implements_stops_the_profile_unless_tls12_is_off()
+ {
+    let dhe_only = "DHE-RSA-AES128-GCM-SHA256:AES128-SHA";
+
+    assert!(matches!(
+        rustls_settings_result(Some(dhe_only), false, TlsVersion::Tls12),
+        Err(TlsBuildError::RustlsSettings { .. })
+    ));
+    assert!(rustls_settings_result(Some(dhe_only), false, TlsVersion::Tls13).is_ok());
+}
+
+#[test]
+fn a_cipher_list_openssl_rejects_stops_the_rustls_profile_too() {
+    assert!(matches!(
+        rustls_settings_result(Some("NO-SUCH-CIPHER"), false, TlsVersion::Tls12),
+        Err(TlsBuildError::RustlsSettings { .. })
+    ));
+}
