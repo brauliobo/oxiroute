@@ -287,17 +287,18 @@ Current constraints:
   queueing, drain, retirement and evacuation behave as with one worker. One worker serves a
   listener on one core (about 60 000 small requests per second); raise the value for a listener that
   saturates its core, to at most the cores you can give it, because every extra worker adds
-  cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
-  `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
+  cross-thread wake-ups per request. A reverse `http3` listener runs one QUIC endpoint per worker
+  (see below). The management, statistics, RTMP, `udp` and `forward_http3` listeners keep their
+  dedicated single threads. Changing the value is an ordinary
   reload: the replaced generation drains on its own threads.
 - Root `http_fast_lane` is an optional boolean. Omitted (or `true`) serves the plain HTTP/1.1 requests of fixed-response
   routes, redirects and proxy routes on the compiled fast lane, which answers them on the connection itself without building a
   session, with the same bytes, headers, framing and connection handling as the classic path. `false` sends every
-  request through the classic path. The same option controls the HTTP/2 lane: an HTTP/2 request without a body for a
+  request through the classic path. The same option controls the HTTP/2 lane: an HTTP/2 request for a
   fixed-response or plain proxy route is answered on its stream before any session exists, with the same response and the
   same request to the origin as the classic path. A request the lane cannot prove equivalent (streamed or chunked bodies, `Expect`, rescue pools,
   cache, affinity, path or cookie rewrites, buffering, HTTP/2 or HTTP/3 upstreams, gzip, pipelining, unusual heads; on HTTP/2 also
-  any body, trailers, a `Host`, `TE` or `Expect` field, and services with an access log)
+  trailers and a `Host` or `TE` field; HTTP/2 bodies of any framing, `Expect` and access-log services are served by the lane)
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
@@ -591,7 +592,10 @@ Current constraints:
   response buffering, no gzip, no upgrade header mutation, and a configured upstream pool for every
   proxy route: an exact `3/3` pool is reached with the QUIC client, any other pool with the classic
   HTTP/1.1 and HTTP/2 origin connections (plain TCP, TLS, Unix socket), the answer buffered up to
-  the 64 MiB response limit and bigger ones answered `502`. Retry budgets, rescue, pool selection,
+  the 64 MiB response limit and bigger ones answered `502`. An answer with no declared length, or
+  one declared longer than 256 KiB, is not buffered: it is sent as it arrives, without a
+  `content-length` when the origin gave none, and a failure after the head reset the stream (the
+  64 MiB limit does not apply to these; cache fills and `HEAD` are always buffered). Retry budgets, rescue, pool selection,
   affinity and queue classes are not applied by the HTTP/3 path and are rejected on its routes.
   HTTP/1.1 origin trailers are not forwarded. Fixed, redirect, descriptor-pinned static-file, and bounded memory/persistent cache
   actions are active; compression and upgrades remain explicitly unsupported. H3 cache uses the
@@ -600,6 +604,11 @@ Current constraints:
   admitted. The runtime uses bounded QUIC admission, field sections, streams, request bodies (at most
   64 MiB), response bodies, safe response framing, and graceful GOAWAY drain; migration and 0-RTT are
   disabled.
+- With `listener_workers` above 1 a reverse `http3` listener binds that many UDP sockets to its
+  address with `SO_REUSEPORT` and runs one QUIC endpoint and one serving thread on each; the kernel
+  steers a client's datagrams to the same socket for the life of the connection (migration is
+  disabled). Where the descriptor was handed over without `SO_REUSEPORT` the listener runs one
+  endpoint and logs a warning.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.
