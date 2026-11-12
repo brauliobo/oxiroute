@@ -4,7 +4,10 @@
 
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, LockResult, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -42,7 +45,28 @@ pub enum Step {
     Slow(Duration, &'static [u8]),
 }
 
-pub type Captured = Arc<Mutex<Vec<Vec<u8>>>>;
+/// The requests an origin received, and how many are being received.
+#[derive(Default)]
+pub struct Capture {
+    requests: Mutex<Vec<Vec<u8>>>,
+    /// Requests of which bytes arrived and that are not recorded yet: a request is recorded when it is whole or when
+    /// its connection ends, and the proxy ends the origin connection of a request cut short after the client side.
+    receiving: AtomicUsize,
+}
+
+impl Capture {
+    pub fn lock(&self) -> LockResult<MutexGuard<'_, Vec<Vec<u8>>>> {
+        self.requests.lock()
+    }
+
+    /// Records a request that [`read_request_counted`] returned.
+    fn record(&self, request: Vec<u8>) {
+        self.lock().expect("captured requests").push(request);
+        self.receiving.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub type Captured = Arc<Capture>;
 
 /// An origin that answers every request with `reply` and records the request bytes it received.
 pub struct Origin {
@@ -85,16 +109,18 @@ impl Origin {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
         let requests = Captured::default();
-        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&requests);
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("origin accept");
                 let (seen, counter) = (Arc::clone(&seen), Arc::clone(&counter));
                 tokio::spawn(async move {
-                    while let Some(request) = read_request(&mut stream).await {
-                        seen.lock().expect("captured requests").push(request);
-                        let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    while let Some(request) =
+                        read_request_counted(&mut stream, &seen.receiving).await
+                    {
+                        seen.record(request);
+                        let n = counter.fetch_add(1, Ordering::SeqCst);
                         match steps[n.min(steps.len() - 1)] {
                             Step::Reply(reply) => {
                                 if stream.write_all(reply).await.is_err() {
@@ -144,6 +170,23 @@ impl Origin {
         Self { address, requests }
     }
 
+    /// How many requests of which bytes arrived are not recorded yet.
+    pub fn receiving(&self) -> usize {
+        self.requests.receiving.load(Ordering::SeqCst)
+    }
+
+    /// Waits until every request of which bytes arrived is recorded: one cut short is recorded when the proxy ends
+    /// the origin connection, which can be after the client connection ended.
+    pub async fn settled(&self) {
+        timeout(STEP, async {
+            while self.receiving() != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the origin never recorded a request that was cut short");
+    }
+
     pub fn requests(&self) -> Vec<String> {
         let requests = self.requests.lock().expect("captured requests");
         requests
@@ -159,8 +202,8 @@ async fn answer<S: AsyncRead + AsyncWrite + Unpin>(
     closes: bool,
     seen: Captured,
 ) {
-    while let Some(request) = read_request(&mut stream).await {
-        seen.lock().expect("captured requests").push(request);
+    while let Some(request) = read_request_counted(&mut stream, &seen.receiving).await {
+        seen.record(request);
         if stream.write_all(reply).await.is_err() || closes {
             return;
         }
@@ -169,15 +212,28 @@ async fn answer<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// The head of a request and the body its framing announces; `None` once the peer closed.
 pub async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Vec<u8>> {
+    read_request_counted(stream, &AtomicUsize::new(0)).await
+}
+
+/// [`read_request`], with `receiving` one higher from the first byte of a request until it is recorded with
+/// [`Capture::record`]; it is lowered here only when there is no request to record.
+async fn read_request_counted<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    receiving: &AtomicUsize,
+) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
     let head_end = loop {
         if let Some(position) = find(&bytes, b"\r\n\r\n") {
             break position + 4;
         }
-        let count = stream.read(&mut buffer).await.ok()?;
+        let count = stream.read(&mut buffer).await.unwrap_or(0);
         if count == 0 {
+            receiving.fetch_sub(usize::from(!bytes.is_empty()), Ordering::SeqCst);
             return None;
+        }
+        if bytes.is_empty() {
+            receiving.fetch_add(1, Ordering::SeqCst);
         }
         bytes.extend_from_slice(&buffer[..count]);
     };
@@ -196,7 +252,10 @@ pub async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Vec<u8
         if complete {
             return Some(bytes);
         }
-        let count = stream.read(&mut buffer).await.ok()?;
+        let Ok(count) = stream.read(&mut buffer).await else {
+            receiving.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        };
         if count == 0 {
             return Some(bytes);
         }

@@ -47,6 +47,12 @@ pub async fn read_step(stream: &mut TcpStream, unanswered: &[u8], bytes: &mut Ve
     }
 }
 
+/// Whether an origin got `request` whole: its head and the body its framing announces. A request cut short is what a
+/// proxy forwarded of a request it did not finish, and how much that is depends on its reads, not on its behaviour.
+pub fn is_whole_request(request: &str) -> bool {
+    find(request.as_bytes(), b"\r\n\r\n").is_some() && whole(request.as_bytes(), Messages::Requests)
+}
+
 /// Whether `bytes` holds whole messages, or ends in one whose framing cannot be told: a head that is not complete yet,
 /// or a response body without a length, which ends with the connection.
 fn whole(mut bytes: &[u8], messages: Messages) -> bool {

@@ -231,11 +231,16 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
             break;
         }
     }
-    // The origin notes a request when it has all of it or the connection closed: give it a moment to see either.
-    sleep(Duration::from_millis(100)).await;
+    // The origin notes a request when it has all of it or its connection closed, and the proxy ends the origin
+    // connection of a request cut short only after the client's: the case ends when the origin noted every request
+    // it started to receive, or a leftover would show up in the next case. Only the requests it got whole are
+    // compared: what a proxy forwards of a request that did not end is not promised.
+    drop(stream);
+    wire.origin.settled().await;
     let origin = wire.origin.requests().split_off(before);
     let mut origin: Vec<_> = origin
         .iter()
+        .filter(|request| reading::is_whole_request(request))
         .map(|request| merge_chunks(&normalize(request)))
         .collect();
     // Once the client side closed, the origin connections of the proxy end on their own: the order in which the
@@ -566,4 +571,29 @@ async fn a_file_replaced_while_cached_is_served_as_it_was_until_the_window_ends(
         );
     }
     pair.finish();
+}
+
+/// An origin notes a request cut short when its connection ends; `settled` waits for that, so the next case of a
+/// script never sees the leftover of the previous one.
+#[tokio::test]
+async fn an_origin_settles_when_the_request_it_started_to_receive_is_noted() {
+    let origin = Origin::start(OK).await;
+    let mut stream = TcpStream::connect(origin.address).await.expect("connect");
+    stream
+        .write_all(
+            b"POST /r HTTP/1.1\r\nHost: example.test\r\nContent-Length: 30\r\n\r\n0123456789",
+        )
+        .await
+        .expect("write a part of the request");
+    while origin.receiving() == 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        origin.requests().is_empty(),
+        "not noted before its connection ends"
+    );
+    drop(stream);
+    origin.settled().await;
+    assert_eq!(origin.requests().len(), 1);
+    assert_eq!(origin.receiving(), 0);
 }
