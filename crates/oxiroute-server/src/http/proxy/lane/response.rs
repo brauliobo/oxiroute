@@ -84,7 +84,9 @@ fn render_fast(
     let facts = head.facts;
     let is_head = forward.request.is_head;
     let queue = queue.map(QueueValues::new);
-    let mut edits = filtered(
+    let mut edits = Edits::new();
+    filtered(
+        &mut edits,
         raw,
         head,
         (&forward.route.edits, forward.policy()),
@@ -157,14 +159,14 @@ pub(in crate::http::proxy) const RESPONSE_HOP_BY_HOP: [(Class, Name<'static>); 9
 /// the hop-by-hop fields that leave, the route's rules, the queue headers of a route that says so (after the rules)
 /// and the request id.
 pub(in crate::http::proxy) fn filtered<'a>(
+    edits: &mut Edits<'a>,
     raw: &'a Bytes,
     head: &ResponseHead,
     (route, policy): (&RouteEdits, &'a ProxyPolicyPlan),
     queue: Option<&'a QueueValues>,
     id: &'a HeaderValue,
-) -> Edits<'a> {
+) {
     let facts = head.facts;
-    let mut edits = Edits::new();
     let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
         result.expect("a response head needs few edits");
     };
@@ -176,12 +178,11 @@ pub(in crate::http::proxy) fn filtered<'a>(
             edit(edits.remove(name));
         }
     }
-    edit(rules::edit_response(&mut edits, route, policy, head.status));
+    edit(rules::edit_response(edits, route, policy, head.status));
     if let Some(queue) = queue {
-        edit(queue.set_in(&mut edits));
+        edit(queue.set_in(edits));
     }
     edit(edits.stamp_request_id(raw, head, Value::trusted(id.as_bytes())));
-    edits
 }
 
 /// The wait a request had for capacity, as the decimal values of the headers a route that says so sends.

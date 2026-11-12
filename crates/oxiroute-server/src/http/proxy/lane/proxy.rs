@@ -40,8 +40,7 @@ use super::{
     render::{host_edit, push_small_body, render_request},
     response::serve_fast,
     rules,
-    timers::{Wait, within, within_for as within_step},
-    timing::Expired,
+    timing::{Expired, Wait, within, within_for as within_step},
     upload::Upload,
 };
 use crate::{
@@ -717,7 +716,7 @@ impl super::LaneFront {
             buffers::give_write(frame);
             flush(stream).await
         };
-        within(Wait::Total, deadline, body)
+        within(Wait::Total, deadline, pin!(body))
             .await
             .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
         // An origin that did not get the whole body keeps what it has not read: its connection is not used again.
@@ -901,7 +900,7 @@ async fn read_head(
     timeouts: &AttemptTimeouts,
 ) -> Result<Bytes, Box<Error>> {
     let deadline = tokio::time::Instant::from_std(ctx.now + timeouts.read());
-    match within(Wait::Step, deadline, session.read_raw_head()).await {
+    match within(Wait::Step, deadline, pin!(session.read_raw_head())).await {
         Ok(head) => head.map_err(Error::into_up),
         Err(Expired) => {
             Err(Error::explain(ErrorType::ReadTimedout, "while reading response headers").into_up())
@@ -917,7 +916,7 @@ async fn read_piece(
     match within_step(
         Wait::Step,
         Some(timeouts.body_read()),
-        session.read_body_bytes(),
+        pin!(session.read_body_bytes()),
     )
     .await
     {
