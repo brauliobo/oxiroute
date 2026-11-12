@@ -8,6 +8,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+arrayvec = "0.7"
 
 [dev-dependencies]
 bytes.workspace = true

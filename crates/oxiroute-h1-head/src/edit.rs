@@ -1,5 +1,7 @@
 //! Edits a lane applies to a head, in the vocabulary of the `HeaderMap` calls the classic path makes.
 
+use arrayvec::ArrayVec;
+
 use crate::class::{Class, classify};
 use crate::fields::MAX_NAME_LEN;
 use crate::tables::{NAME, TOKEN, UPPER, is_header_value};
@@ -153,8 +155,7 @@ pub struct EditsFull;
 /// Edits applied in order to a scanned head by the writers. Fixed capacity, no allocation.
 #[derive(Clone, Debug)]
 pub struct Edits<'a> {
-    list: [Edit<'a>; MAX_EDITS],
-    len: usize,
+    list: ArrayVec<Edit<'a>, MAX_EDITS>,
     bytes: usize,
 }
 
@@ -168,25 +169,24 @@ impl<'a> Edits<'a> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            list: [Edit::Remove(names::HOST); MAX_EDITS],
-            len: 0,
+            list: ArrayVec::new_const(),
             bytes: 0,
         }
     }
 
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.list.clear();
         self.bytes = 0;
     }
 
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.len
+        self.list.len()
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.len == 0
+        self.list.is_empty()
     }
 
     /// Bytes the added lines take: their names, values and separators.
@@ -197,7 +197,7 @@ impl<'a> Edits<'a> {
 
     #[must_use]
     pub fn as_slice(&self) -> &[Edit<'a>] {
-        &self.list[..self.len]
+        &self.list
     }
 
     /// Appends an edit.
@@ -205,8 +205,7 @@ impl<'a> Edits<'a> {
     /// # Errors
     /// [`EditsFull`] when [`MAX_EDITS`] edits are queued.
     pub fn push(&mut self, edit: Edit<'a>) -> Result<(), EditsFull> {
-        *self.list.get_mut(self.len).ok_or(EditsFull)? = edit;
-        self.len += 1;
+        self.list.try_push(edit).map_err(|_| EditsFull)?;
         self.bytes += edit
             .value()
             .map_or(0, |v| edit.name().wire.len() + v.0.len() + 4);
