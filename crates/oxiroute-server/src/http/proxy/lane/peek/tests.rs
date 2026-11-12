@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use oxiroute_config::{HttpHostSelector, HttpPathSelector, HttpRoutePolicy};
 use oxiroute_h1_head::RequestHead;
@@ -29,7 +29,7 @@ const fn spec(path: &'static str, lane: LaneRoute) -> Spec {
 
 fn service(specs: &[Spec]) -> HttpServicePlan {
     let mut routes = Vec::new();
-    let mut plans = HashMap::new();
+    let mut plans = Vec::new();
     for (index, spec) in specs.iter().enumerate() {
         let id = index.to_string();
         let host = spec.host.map(|value| HttpHostSelector::ExactAuthority {
@@ -40,17 +40,14 @@ fn service(specs: &[Spec]) -> HttpServicePlan {
         };
         let methods = spec.method.clone().map(|method| vec![method]);
         routes.push(Route::new(host, path, methods, id.clone()).expect("route"));
-        plans.insert(
-            id.clone(),
-            Arc::new(HttpRoutePlan {
-                access: None,
-                lane: spec.lane,
-                edits: crate::http::proxy::lane::RouteEdits::default(),
-                action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
-                policy: RoutePolicyPlan::compile(HttpRoutePolicy::default()),
-                route_id: id.into(),
-            }),
-        );
+        plans.push(Arc::new(HttpRoutePlan {
+            access: None,
+            lane: spec.lane,
+            edits: crate::http::proxy::lane::RouteEdits::default(),
+            action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
+            policy: RoutePolicyPlan::compile(HttpRoutePolicy::default()),
+            route_id: id.into(),
+        }));
     }
     HttpServicePlan::new(None, plans, Duration::from_secs(1), RouteTable::new(routes))
 }
@@ -164,17 +161,33 @@ fn a_service_with_host_routes_decides_by_the_host_field() {
 }
 
 #[test]
-fn a_service_with_host_routes_leaves_an_unusable_host_to_the_scan() {
+fn a_service_with_host_routes_leaves_a_missing_or_unreadable_host_to_the_scan() {
     let service = by_host();
     for bytes in [
         &b"GET /a HTTP/1.1\r\n\r\n"[..],
         b"GET /a HTTP/1.1\r\nAccept: */*\r\n",
-        b"GET /a HTTP/1.1\r\nHost: not a host\r\n\r\n",
         b"GET /a HTTP/1.1\r\nHost: \xff\r\n\r\n",
         b"GET /a HTTP/1.1\r\nHost\r\n\r\n",
     ] {
         let early = decide(&service, bytes).expect("the scan decides");
         assert!(early.route.is_none(), "{bytes:?}");
+    }
+}
+
+#[test]
+fn the_decision_leaves_it_to_the_scan_to_judge_whether_the_host_is_an_authority() {
+    let early =
+        decide(&by_host(), b"GET /a HTTP/1.1\r\nHost: not a host\r\n\r\n").expect("a route");
+    assert!(early.route.is_some());
+}
+
+#[test]
+fn a_path_with_no_single_meaning_is_the_classic_paths() {
+    for target in ["/a/../b", "//a", "/a%2fb", "/a%zz", "/a\\b"] {
+        assert!(
+            decide(&mixed(), request(target).as_bytes()).is_none(),
+            "{target}"
+        );
     }
 }
 
@@ -226,7 +239,7 @@ fn static_service(root: &std::path::Path) -> (HttpServicePlan, Arc<HttpRoutePlan
         value: "/static".into(),
     };
     let routes = vec![Route::new(None, path, None, "0".to_owned()).expect("route")];
-    let plans = HashMap::from([("0".to_owned(), Arc::clone(&route))]);
+    let plans = vec![Arc::clone(&route)];
     let service =
         HttpServicePlan::new(None, plans, Duration::from_secs(1), RouteTable::new(routes));
     (service, route)

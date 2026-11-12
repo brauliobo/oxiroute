@@ -101,9 +101,10 @@ impl ProxyHttp for HttpReverseProxy {
             respond_status(session, 400).await?;
             return Ok(true);
         }
-        let Some(route) =
-            self.service
-                .select_route(authority.as_ref(), &request.uri, &request.method)
+        let Some(route) = self
+            .service
+            .select_route(authority.as_ref(), &request.uri, &request.method)
+            .cloned()
         else {
             respond_status_with_body(session, 404, Bytes::from_static(b"route not found\n"))
                 .await?;

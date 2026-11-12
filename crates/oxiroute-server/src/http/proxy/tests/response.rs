@@ -264,7 +264,7 @@ fn reverse_proxy_does_not_install_disabled_compression() {
         .expect("listener metrics");
     let service = Arc::new(HttpServicePlan::new(
         Some(1024),
-        HashMap::new(),
+        Vec::new(),
         Duration::from_secs(1),
         RouteTable::default(),
     ));
@@ -299,7 +299,7 @@ async fn grpc_trailer_hooks_leave_trailers_and_body_untouched() {
         .expect("gRPC listener metrics");
     let service = Arc::new(HttpServicePlan::new(
         Some(1024),
-        HashMap::new(),
+        Vec::new(),
         Duration::from_secs(1),
         RouteTable::default(),
     ));

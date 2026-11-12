@@ -15,9 +15,9 @@ pub(super) fn compile_http_services(
     let mut http_services = Vec::with_capacity(services.len());
     let mut cache_backends = HashMap::new();
     for service in services {
-        let mut route_plans = HashMap::with_capacity(service.routes.len());
+        let mut route_plans = Vec::with_capacity(service.routes.len());
         for (route_index, route) in service.routes.iter().enumerate() {
-            let plan = compile_http_route(
+            route_plans.push(compile_http_route(
                 &service.name,
                 route_index,
                 route,
@@ -27,8 +27,7 @@ pub(super) fn compile_http_services(
                 service.gzip.is_some(),
                 mode,
                 deadline,
-            )?;
-            route_plans.insert(route_index.to_string(), plan);
+            )?);
         }
         http_services.push(Arc::new(HttpServicePlan::with_http_policy(
             service.automatic_response_headers,
