@@ -26,6 +26,15 @@ fn option<T: Default>(name: &[u8]) -> T {
 }
 
 #[test]
+fn jemalloc_purges_its_dirty_pages_from_a_background_thread() {
+    assert!(
+        std::env::var_os("_RJEM_MALLOC_CONF").is_none(),
+        "the run-time override would hide the embedded value"
+    );
+    assert!(option::<bool>(b"opt.background_thread\0"));
+}
+
+#[test]
 fn jemalloc_reports_the_embedded_thread_cache_sizes() {
     assert!(
         std::env::var_os("_RJEM_MALLOC_CONF").is_none(),
