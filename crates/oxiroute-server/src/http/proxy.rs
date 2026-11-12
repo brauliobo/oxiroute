@@ -157,8 +157,9 @@ pub struct HttpRequestContext {
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
     generation: Option<Arc<RuntimeGeneration>>,
-    cache_transaction: Option<CacheTransaction>,
-    cache_capture: Option<CacheCapture>,
+    // On the heap: 1.1 kB of state that only a cacheable route uses, in every request context of an idle tunnel.
+    cache_transaction: Option<Box<CacheTransaction>>,
+    cache_capture: Option<Box<CacheCapture>>,
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
     cache_response_written: bool,

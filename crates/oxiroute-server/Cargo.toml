@@ -81,6 +81,10 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-uti
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 
+[features]
+# jemalloc heap profiling (see crates/oxiroute-allocator); for memory investigations only.
+heap-profile = ["oxiroute-allocator/profiling"]
+
 [[test]]
 name = "tls"
 path = "src/tls/tests.rs"

@@ -34,7 +34,9 @@ use oxiroute_acme::ChallengeStore;
 use oxiroute_config::is_unambiguous_http_path;
 use oxiroute_h1_head::RequestHead;
 use pingora::{
-    apps::{Http1Connection, Http1Front, Http1FrontOutcome, relocate_idle_connection},
+    apps::{
+        Http1Connection, Http1Front, Http1FrontOutcome, PooledFuture, relocate_idle_connection,
+    },
     connectors::http::v1::Connector,
     protocols::Stream,
     server::ShutdownWatch,
@@ -396,10 +398,15 @@ impl Http1Front for LaneFront {
             else {
                 return Http1FrontOutcome::Closed;
             };
-            match self
-                .serve_request(&mut stream, connection, shutdown, &buffer)
-                .await
-            {
+            // On the heap, in a block the thread keeps for the next request: the connection's own future, which is
+            // all an idle connection holds, stays small instead of containing the state of serving a request.
+            let served = {
+                let (stream, connection) = (&mut stream, &mut *connection);
+                let buffer = &buffer;
+                PooledFuture::new(move || self.serve_request(stream, connection, shutdown, buffer))
+            }
+            .await;
+            match served {
                 Served::Next(ended) => {
                     buffers::give_read(buffer);
                     idle_since = ended;
