@@ -30,7 +30,7 @@ pub fn run(flags: &Flags) -> ExitCode {
         .build()
         .expect("runtime");
     runtime.block_on(async move {
-        let connector = tls_connector(b"h2", &version, false, "default");
+        let connector = tls_connector(b"h2", &version, false, "default", None);
         let (sent, completed, failed) = (
             AtomicU64::new(0),
             Arc::new(AtomicU64::new(0)),

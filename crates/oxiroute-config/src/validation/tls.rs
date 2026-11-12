@@ -469,23 +469,6 @@ fn validate_tls_policy(profile: &mut TlsProfile) -> Result<(), ConfigError> {
             path,
         )?;
     }
-    if profile.policy.backend == crate::model::TlsBackend::Rustls {
-        for (field, configured) in [
-            ("cipher_list", profile.policy.cipher_list.is_some()),
-            (
-                "dh_parameters_path",
-                profile.policy.dh_parameters_path.is_some(),
-            ),
-        ] {
-            if configured {
-                return Err(ConfigError::InvalidTlsProfilePolicy {
-                    profile: profile.name.clone(),
-                    field,
-                    detail: "is not supported by the rustls backend",
-                });
-            }
-        }
-    }
     if let Some(cache) = &profile.policy.session_cache {
         if cache.name.is_empty()
             || cache.name.len() > 255

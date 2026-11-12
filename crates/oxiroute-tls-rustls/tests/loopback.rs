@@ -1,4 +1,7 @@
-use std::{future::poll_fn, net::Ipv4Addr, sync::Arc, task::Poll, time::Duration};
+use std::{
+    future::poll_fn, mem::MaybeUninit, net::Ipv4Addr, pin::Pin, sync::Arc, task::Poll,
+    time::Duration,
+};
 
 use oxiroute_tls_rustls::{ConfigRouter, RustlsAcceptor};
 use pingora::{
@@ -13,7 +16,7 @@ use rustls::{
     server::ClientHello,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
@@ -35,11 +38,15 @@ struct Pair {
 }
 
 fn pair(alpn: &[&[u8]]) -> Pair {
+    pair_for(alpn, rustls::ALL_VERSIONS)
+}
+
+fn pair_for(alpn: &[&[u8]], versions: &[&'static rustls::SupportedProtocolVersion]) -> Pair {
     let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec![NAME.into()]).unwrap();
     let provider = Arc::new(ring::default_provider());
     let mut server = ServerConfig::builder_with_provider(Arc::clone(&provider))
-        .with_safe_default_protocol_versions()
+        .with_protocol_versions(versions)
         .unwrap()
         .with_no_client_auth()
         .with_single_cert(
@@ -51,7 +58,7 @@ fn pair(alpn: &[&[u8]]) -> Pair {
     let mut roots = RootCertStore::empty();
     roots.add(cert.der().clone()).unwrap();
     let mut client = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
+        .with_protocol_versions(versions)
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
@@ -110,6 +117,39 @@ async fn serves_requests_and_reports_what_was_negotiated() {
 
     AsyncWriteExt::shutdown(&mut server).await.unwrap();
     assert_eq!(client.read(&mut response).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_read_initializes_only_the_bytes_it_returns() {
+    let Pair { client, server } = pair(&[b"http/1.1"]);
+    let (server, client) = connect(client, Fixed(Some(server))).await;
+    let (mut server, mut client) = (server.unwrap(), client.unwrap());
+    client.write_all(b"ping").await.unwrap();
+    client.flush().await.unwrap();
+
+    let mut spare = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
+    let mut buffer = ReadBuf::uninit(&mut spare);
+    poll_fn(|context| Pin::new(&mut server).poll_read(context, &mut buffer))
+        .await
+        .unwrap();
+    assert_eq!(buffer.filled(), b"ping");
+    assert_eq!(buffer.initialized().len(), 4);
+}
+
+#[tokio::test]
+async fn a_tls12_digest_names_the_suite_as_openssl_does() {
+    let Pair { client, server } = pair_for(&[b"http/1.1"], &[&rustls::version::TLS12]);
+    let (server, client) = connect(client, Fixed(Some(server))).await;
+    let (server, _client) = (server.unwrap(), client.unwrap());
+
+    let digest = server.get_ssl_digest().expect("TLS digest");
+    assert_eq!(digest.version, "TLSv1.2");
+    assert!(
+        digest.cipher.starts_with("ECDHE-ECDSA-"),
+        "{}",
+        digest.cipher
+    );
+    assert!(!digest.cipher.contains('_'), "{}", digest.cipher);
 }
 
 #[tokio::test]

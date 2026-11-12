@@ -632,7 +632,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
             session_timeout_seconds: Some(86_400),
             session_tickets: false,
             prefer_server_ciphers: false,
-            backend: oxiroute_config::TlsBackend::Openssl,
+            backend: oxiroute_config::TlsBackend::default(),
             key_exchange_groups: None,
             ktls: KtlsMode::Auto,
         }
