@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use std::borrow::Cow;
 
 pub(super) struct CertificateSelector {
     pub(super) default_certificate: String,
@@ -50,7 +51,7 @@ impl CertificateSelector {
         let certificate_name = server_name
             .and_then(normalize_server_name)
             .and_then(|name| {
-                self.exact_names.get(&name).or_else(|| {
+                self.exact_names.get(name.as_ref()).or_else(|| {
                     let (label, suffix) = name.split_once('.')?;
                     if label.is_empty() {
                         None
@@ -64,10 +65,19 @@ impl CertificateSelector {
     }
 }
 
-fn normalize_server_name(server_name: &str) -> Option<String> {
-    let mut server_name = server_name.to_owned();
-    server_name.make_ascii_lowercase();
-    (valid_dns_name(&server_name) && !server_name.starts_with("*.")).then_some(server_name)
+/// The name a `ClientHello`'s SNI selects certificates by: valid, not a wildcard, lower case. Names are already lower case
+/// in practice, so only a name with capitals is copied.
+fn normalize_server_name(server_name: &str) -> Option<Cow<'_, str>> {
+    if !valid_dns_name(server_name) || server_name.starts_with("*.") {
+        return None;
+    }
+    Some(
+        if server_name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Owned(server_name.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(server_name)
+        },
+    )
 }
 
 pub(super) struct GenerationTlsAccept {
