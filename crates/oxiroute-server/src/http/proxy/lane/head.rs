@@ -1,5 +1,8 @@
 //! What the lane takes from a scanned request head: the facts of the shapes it serves, and a refusal for the rest.
 
+use std::cell::RefCell;
+
+use http::uri::Authority;
 use oxiroute_h1_head::{
     Class, Connection, Header, RequestHead, RequestLine, Scan, Span, scan_request_fields,
     scan_request_line,
@@ -71,6 +74,33 @@ fn is_condition(name: &[u8]) -> bool {
         _ => &[],
     };
     names.iter().any(|known| name.eq_ignore_ascii_case(known))
+}
+
+/// Authorities a thread has parsed lately: the hosts a listener serves are few, and every request names one.
+const KNOWN_AUTHORITIES: usize = 4;
+
+thread_local! {
+    static AUTHORITIES: RefCell<(Vec<Authority>, usize)> = const { RefCell::new((Vec::new(), 0)) };
+}
+
+/// The authority `host` parses to, or `None` when it is not one: the parse is `Authority::from_str`, remembered for the
+/// next request that names the same host.
+pub(in crate::http::proxy) fn authority(host: &str) -> Option<Authority> {
+    AUTHORITIES.with(|known| {
+        let mut known = known.borrow_mut();
+        if let Some(found) = known.0.iter().find(|known| known.as_str() == host) {
+            return Some(found.clone());
+        }
+        let parsed = host.parse::<Authority>().ok()?;
+        let (list, next) = &mut *known;
+        if list.len() < KNOWN_AUTHORITIES {
+            list.push(parsed.clone());
+        } else {
+            list[*next] = parsed.clone();
+            *next = (*next + 1) % KNOWN_AUTHORITIES;
+        }
+        Some(parsed)
+    })
 }
 
 /// The request line of a head: what routes a request, read before the header fields.
@@ -169,6 +199,37 @@ mod tests {
     }
 
     const HEAD: &str = "POST /r HTTP/1.1\r\nHost: a.test\r\n";
+
+    #[test]
+    fn a_remembered_authority_is_the_one_the_parser_gives() {
+        let hosts = [
+            "a.test",
+            "b.test:8080",
+            "[::1]:80",
+            "c.test",
+            "d.test",
+            "e.test:1",
+            "a.test",
+            "b.test:8080",
+        ];
+        for round in 0..3 {
+            for host in hosts {
+                let remembered = authority(host).expect("an authority");
+                assert_eq!(
+                    remembered,
+                    host.parse::<Authority>().unwrap(),
+                    "{round} {host}"
+                );
+            }
+        }
+        for refused in ["", "a b", "a.test/x", "[::1", "a@b@c"] {
+            assert_eq!(
+                authority(refused),
+                refused.parse::<Authority>().ok(),
+                "{refused:?}"
+            );
+        }
+    }
 
     fn conditional(request: &str) -> bool {
         let buffer = request.as_bytes();

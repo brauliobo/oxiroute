@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use http::{Method, uri::Authority};
+use http::Method;
 
 use super::{LaneRoute, head};
 use crate::{
@@ -31,7 +31,7 @@ pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Option<
     let line = head::line(buffer)?;
     let host = service.selects_on_host().then(|| host_of(buffer, &line));
     let authority = match host {
-        Some(host) => match host.and_then(|host| host.parse::<Authority>().ok()) {
+        Some(host) => match host.and_then(head::authority) {
             Some(authority) => Some(authority),
             None => {
                 return Some(Early {

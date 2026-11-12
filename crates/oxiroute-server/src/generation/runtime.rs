@@ -18,6 +18,8 @@ pub struct RuntimeGeneration {
     /// that only join this generation's pools at activation.
     carried_states: Mutex<Vec<ServerAdminState>>,
     retired: tokio::sync::watch::Sender<bool>,
+    /// `retired` as a plain load: the request path asks for it more than once per request.
+    retired_flag: AtomicBool,
 }
 
 const RUNTIME_PREPARED: u8 = 0;
@@ -41,6 +43,7 @@ impl RuntimeGeneration {
             runtime_failed: AtomicBool::new(false),
             carried_states: Mutex::new(Vec::new()),
             retired: tokio::sync::watch::channel(false).0,
+            retired_flag: AtomicBool::new(false),
         }
     }
 
@@ -376,12 +379,13 @@ impl RuntimeGeneration {
     /// reverts, and an operator drain of the active generation does not set it.
     #[must_use]
     pub fn retired(&self) -> bool {
-        *self.retired.borrow()
+        self.retired_flag.load(Ordering::Acquire)
     }
 
     /// Records that a newer generation replaced this one; idle HTTP/1 connections end and busy
     /// ones close after their response.
     pub fn mark_retired(&self) {
+        self.retired_flag.store(true, Ordering::Release);
         self.retired.send_replace(true);
     }
 
