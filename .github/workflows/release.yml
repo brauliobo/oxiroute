@@ -176,6 +176,22 @@ jobs:
           targets: ${{ matrix.target }}
           components: llvm-tools
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies (the workspace tests run against the release binary build the management UI)
+        run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: ui
+
       - name: Install BOLT (pinned package, SHA-256 verified)
         if: env.BOLT == '1'
         run: |
