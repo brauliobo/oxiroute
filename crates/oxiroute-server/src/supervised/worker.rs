@@ -56,6 +56,7 @@ const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let identity = parse_identity(&mut arguments)?;
     let mut control = WorkerControl::adopt_at_process_entry(identity)?;
+    oxiroute_allocator::start_background_thread()?;
 
     oxiroute_server::init_logging();
     let metadata = RuntimeMetadata::parse(&mut arguments)?;

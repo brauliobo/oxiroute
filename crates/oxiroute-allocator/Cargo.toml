@@ -14,8 +14,6 @@ profiling = ["tikv-jemallocator/profiling", "tikv-jemallocator/stats"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 tikv-jemalloc-sys = "0.6"
 
 # The only crate of the workspace that cannot forbid unsafe code: jemalloc reads its configuration from an exported
