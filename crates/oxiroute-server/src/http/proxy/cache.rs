@@ -94,7 +94,7 @@ pub(super) async fn cache_request_filter(
             Ok(true)
         }
         CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
-            ctx.cache_transaction = Some(transaction);
+            ctx.cache_transaction = Some(Box::new(transaction));
             Ok(false)
         }
     }
@@ -237,7 +237,7 @@ pub(super) async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
         timing,
         complete,
         admissible,
-    } = capture;
+    } = *capture;
     let tags_valid = transaction.cache_tags_within_limits(&tags);
     if !complete
         || !admissible

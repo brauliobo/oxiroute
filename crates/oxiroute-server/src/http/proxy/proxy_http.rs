@@ -531,7 +531,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.response_buffer = None;
         if ctx
             .cache_transaction
-            .as_ref()
+            .as_deref()
             .is_some_and(CacheTransaction::is_revalidation)
         {
             if response.status == StatusCode::NOT_MODIFIED {
@@ -587,7 +587,7 @@ impl ProxyHttp for HttpReverseProxy {
                         .headers
                         .get(CONTENT_LENGTH)
                         .is_some_and(|value| value.as_bytes() == b"0");
-                ctx.cache_capture = Some(CacheCapture {
+                ctx.cache_capture = Some(Box::new(CacheCapture {
                     status,
                     headers: response.headers.clone(),
                     body: Vec::new(),
@@ -605,7 +605,7 @@ impl ProxyHttp for HttpReverseProxy {
                     admissible: !had_uncacheable_framing
                         && !response.headers.contains_key(TRANSFER_ENCODING)
                         && !response.headers.contains_key(TRAILER),
-                });
+                }));
             }
         }
         // After the capture: a cached response replays the origin's headers, not this request's id.
