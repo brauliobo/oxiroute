@@ -40,6 +40,25 @@ printf '\n# edited\n' >>"${root}/pkg/oxiroute.service"
 expect_rejected 'an edited service unit'
 
 fresh_copy
+printf 'nf_tables\n' >>"${root}/pkg/oxiroute.modules"
+expect_rejected 'an edited kernel module list'
+
+fresh_copy
+rm -- "${root}/pkg/oxiroute.modules"
+expect_rejected 'a missing kernel module list'
+
+fresh_copy
+rm -- "${root}/pkg/bin/oxiroute.modules"
+expect_rejected 'a binary recipe without the kernel module list'
+
+fresh_copy
+old=$(sha256sum -- "${root}/pkg/bin/oxiroute.modules")
+printf 'nf_tables\n' >>"${root}/pkg/bin/oxiroute.modules"
+new=$(sha256sum -- "${root}/pkg/bin/oxiroute.modules")
+sed -i "s/${old%% *}/${new%% *}/" "${root}/pkg/bin/PKGBUILD" "${root}/pkg/bin/.SRCINFO"
+expect_rejected 'a binary-recipe kernel module list that drifted from the source recipe with a consistent hash'
+
+fresh_copy
 stale=$(sha256sum -- "${root}/pkg/oxiroute.kdl")
 sed -i "s/${stale%% *}/$(printf '0%.0s' {1..64})/" "${root}/pkg/PKGBUILD" "${root}/pkg/.SRCINFO"
 expect_rejected 'a stale hash recorded identically in PKGBUILD and .SRCINFO'

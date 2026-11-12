@@ -4,7 +4,7 @@ This directory is the AUR-ready release recipe for `oxiroute`. It builds the loc
 workspace packages with the upstream release profile (`codegen-units = 1`, fat LTO), then installs
 the unified `oxiroute` daemon, offline importer, and management client, the `oxr` short alias,
 the staged `/usr/lib/oxiroute/oxiroute-worker-launcher`, Apache-2.0 license, systemd service,
-sysusers/tmpfiles metadata, management documentation, and administrator-owned KDL and Lua
+sysusers/tmpfiles/modules-load metadata, management documentation, and administrator-owned KDL and Lua
 configuration examples.
 
 The package installs but does not enable or start the service. Review `/etc/oxiroute/oxiroute.kdl`,
@@ -17,6 +17,11 @@ configuration if the newly installed KDL file is still the packaged empty defaul
 fails, a systemd drop-in keeps the service on Lua instead of silently starting the empty KDL root.
 The shipped secret-free examples are root-owned and world-readable so the dynamic service account can
 read them on filesystems without POSIX ACL support. Tighten them as described below when adding secrets.
+
+The package also installs `/usr/lib/modules-load.d/oxiroute.conf`, which loads the `tls` kernel module at boot so
+kernel TLS offload (`ktls = "auto"`, Linux 6.5 or newer) can activate: the unprivileged service cannot autoload it.
+After installing, run `modprobe tls` once (or reboot) and reload the service; mask the file with an empty
+`/etc/modules-load.d/oxiroute.conf` to keep the module unloaded.
 
 The launcher at `/usr/lib/oxiroute/oxiroute-worker-launcher` activates the supervised master for
 configurations whose listener descriptors are supported by the authenticated stream-transfer
@@ -200,7 +205,7 @@ checksums, sources and `makepkg` behaviour are unchanged.
 
 `bin/` holds the `oxiroute-bin` recipe. It installs the profile-guided release tarball
 `oxiroute-<version>-x86_64-unknown-linux-gnu.tar.gz` (checksum: its `.sha256` release asset) instead of building, and
-provides and conflicts with `oxiroute`. It ships the same launcher, service, sysusers, tmpfiles, environment, KDL, Lua,
+provides and conflicts with `oxiroute`. It ships the same launcher, service, sysusers, tmpfiles, modules-load, environment, KDL, Lua,
 `.install` hook and documentation as the source package; the shared files in `bin/` are byte-identical copies and
 `verify-checksums.sh` rejects any drift. The release tarball cannot exist before the tag, so `bin/PKGBUILD` is pinned
 after the release workflow has published it (`pin-bin-release.sh <version>`), while the source recipe is pinned before.

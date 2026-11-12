@@ -8,6 +8,7 @@ srcinfo=${package_dir}/.SRCINFO
 sysusers=${package_dir}/oxiroute.sysusers
 tmpfiles=${package_dir}/oxiroute.tmpfiles
 environment_file=${package_dir}/oxiroute.env
+modules_file=${package_dir}/oxiroute.modules
 
 [[ -f "${unit}" ]] || {
   printf 'service unit not found: %s\n' "${unit}" >&2
@@ -19,7 +20,7 @@ install_script=${package_dir}/oxiroute.install
   exit 1
 }
 bash -n "${install_script}"
-for path in "${pkgbuild}" "${srcinfo}" "${sysusers}" "${tmpfiles}" "${environment_file}"; do
+for path in "${pkgbuild}" "${srcinfo}" "${sysusers}" "${tmpfiles}" "${environment_file}" "${modules_file}"; do
   [[ -f "${path}" ]] || {
     printf 'package metadata file not found: %s\n' "${path}" >&2
     exit 1
@@ -130,6 +131,24 @@ done <"${unit}"
 [[ "${service_entries[CapabilityBoundingSet]:-}" == 'CAP_NET_BIND_SERVICE' &&
    "${service_entries[AmbientCapabilities]:-}" == 'CAP_NET_BIND_SERVICE' ]] || {
   printf 'service unit changed the bounded bind capability\n' >&2
+  exit 1
+}
+
+# systemd-modules-load reads one module name per line; comments start with # or ;. Kernel TLS offload (ktls = "auto")
+# needs the tls module, which an unprivileged service cannot autoload.
+module_names=()
+while IFS= read -r line; do
+  case "${line}" in
+    ''|'#'*|';'*) continue ;;
+  esac
+  module_names+=("${line}")
+done <"${modules_file}"
+[[ "${module_names[*]}" == 'tls' ]] || {
+  printf 'package module list must load exactly the tls module, found: %s\n' "${module_names[*]}" >&2
+  exit 1
+}
+[[ "$(head -n 1 "${modules_file}")" == '#'* ]] || {
+  printf 'package module list must start with a comment explaining the tls module\n' >&2
   exit 1
 }
 
