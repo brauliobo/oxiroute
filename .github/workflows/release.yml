@@ -9,6 +9,11 @@ on:
         description: Existing tag or ref to archive and verify
         required: true
         type: string
+      publish:
+        description: Attach the binaries to the existing release of the tag (its source assets are verified byte for byte and never uploaded again)
+        required: false
+        default: false
+        type: boolean
       pgo:
         description: Build the release binaries with profile-guided optimization (false publishes a plain build)
         required: false
@@ -122,6 +127,19 @@ jobs:
           printf '{\n  "schema": "oxiroute.release-provenance.v1",\n  "version": "%s",\n  "commit": "%s",\n  "source_date_epoch": %s,\n  "archive_sha256": "%s"\n}\n' \
             "${RELEASE_VERSION}" "${commit}" "${source_date_epoch}" "${checksum}" > release/SOURCE-PROVENANCE.json
 
+      - name: Verify the rebuilt source assets are byte-identical to the published ones
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          published="$(mktemp -d)"
+          gh release download "${TAG}" --dir "${published}" \
+            --pattern "oxiroute-${RELEASE_VERSION}.tar.gz" --pattern SHA256SUMS --pattern SOURCE-PROVENANCE.json
+          for asset in "oxiroute-${RELEASE_VERSION}.tar.gz" SHA256SUMS SOURCE-PROVENANCE.json; do
+            cmp "${published}/${asset}" "release/${asset}"
+          done
+
       - name: Upload release verification files
         uses: actions/upload-artifact@v4
         with:
@@ -170,6 +188,13 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Require the existing release that receives the binaries
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: '[[ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" == false ]]'
+
       - name: Install Rust 1.97.1 with the matching llvm-profdata
         uses: dtolnay/rust-toolchain@1.97.1
         with:
@@ -216,9 +241,10 @@ jobs:
           subject-path: release-binaries/oxiroute-*.tar.gz
 
       - name: Publish tagged release binaries
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           append_body: true
           body_path: release-binaries/pgo-note-${{ matrix.target }}${{ matrix.flavour == 'abort' && '-abort' || matrix.flavour == 'v3' && '-x86-64-v3' || '' }}.md
           files: |
