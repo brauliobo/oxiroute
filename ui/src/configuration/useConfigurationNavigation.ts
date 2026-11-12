@@ -1,10 +1,11 @@
 import { computed, type Ref } from 'vue'
 
-import type {
-  CacheStoreConfig,
-  CanonicalConfig,
-  ListenerConfig,
-  UpstreamPoolConfig,
+import {
+  DEFAULT_TLS_BACKEND,
+  type CacheStoreConfig,
+  type CanonicalConfig,
+  type ListenerConfig,
+  type UpstreamPoolConfig,
 } from '../config'
 import {
   defaultCacheStore,
@@ -201,7 +202,7 @@ export function useConfigurationNavigation(
             session_timeout_seconds: null,
             session_tickets: false,
             prefer_server_ciphers: true,
-            backend: 'openssl',
+            backend: DEFAULT_TLS_BACKEND,
             ktls: 'auto',
           },
         })

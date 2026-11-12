@@ -140,6 +140,9 @@ export interface TlsPolicyConfig {
 
 export type TlsBackend = 'openssl' | 'rustls'
 
+/** The backend of a new TLS profile; the server's `TlsBackend::default()` is the same value. */
+export const DEFAULT_TLS_BACKEND: TlsBackend = 'openssl'
+
 export type KtlsMode = 'off' | 'auto'
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
