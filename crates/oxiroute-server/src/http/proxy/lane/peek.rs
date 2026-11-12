@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use http::{Method, uri::Authority};
+use http::Method;
 
 use super::{LaneRoute, head};
 use crate::{
@@ -26,32 +26,29 @@ pub(super) struct Early<'a> {
     host: Option<&'a str>,
 }
 
-/// `None` when the classic path serves the request: its line is partial or not the lane's, or its route is.
+/// `None` when the classic path serves the request: its line is partial or not the lane's, or its route is. Whether the
+/// host is an authority is for the scan to say: a request with one that is not is the classic path's there.
 pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Option<Early<'a>> {
     let line = head::line(buffer)?;
-    let host = service.selects_on_host().then(|| host_of(buffer, &line));
-    let authority = match host {
-        Some(host) => match host.and_then(|host| host.parse::<Authority>().ok()) {
-            Some(authority) => Some(authority),
-            None => {
-                return Some(Early {
-                    line,
-                    route: None,
-                    host: None,
-                });
-            }
-        },
-        None => None,
+    let host = match service.selects_on_host().then(|| host_of(buffer, &line)) {
+        Some(None) => {
+            return Some(Early {
+                line,
+                route: None,
+                host: None,
+            });
+        }
+        host => host.flatten(),
     };
     let method = Method::from_bytes(line.method(buffer)).ok()?;
     let route = service
-        .select_route_path(authority.as_ref(), line.path(buffer), &method)
+        .select_route_path(host, line.path(buffer), &method)
         .filter(|route| route.lane != LaneRoute::Classic)?;
-    let file = cached_file(&route, line.path(buffer), &method).ok()?;
+    let file = cached_file(route, line.path(buffer), &method).ok()?;
     Some(Early {
         line,
-        route: Some((route, file)),
-        host: host.flatten(),
+        route: Some((Arc::clone(route), file)),
+        host,
     })
 }
 

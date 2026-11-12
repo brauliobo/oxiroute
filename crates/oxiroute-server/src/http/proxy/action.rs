@@ -260,7 +260,10 @@ pub(super) async fn execute_route_action(
                 let request = session.req_header_mut();
                 request.set_method(method.clone());
                 request.set_uri(uri.clone());
-                let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, &method) else {
+                let Some(next) = service
+                    .select_route(ctx.authority.as_ref(), &uri, &method)
+                    .cloned()
+                else {
                     respond_status(session, 404).await?;
                     return Ok(true);
                 };
