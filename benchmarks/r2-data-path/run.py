@@ -709,11 +709,15 @@ def build_alloc_shim(args):
 
 
 def measure_allocs(args, lane):
-    """Allocator calls and requested bytes per request, counted by an LD_PRELOAD shim between two snapshots."""
+    """Allocator calls and requested bytes per request, counted between two snapshots by an LD_PRELOAD shim (libc
+    allocations and `clock_gettime`) or, with `--alloc-internal`, by a binary built with `--features alloc-count`
+    (its jemalloc; the shim cannot see it)."""
     env = Env(args, lane)
     snapshots = env.work / "alloc.txt"
+    counted = ({"OXIROUTE_INTERNAL_TEST_ALLOC_FILE": str(snapshots)} if args.alloc_internal
+               else {"LD_PRELOAD": str(build_alloc_shim(args)), "R2_ALLOC_FILE": str(snapshots)})
     try:
-        env.start(proxy_env={"LD_PRELOAD": str(build_alloc_shim(args)), "R2_ALLOC_FILE": str(snapshots)})
+        env.start(proxy_env=counted)
         pid = env.proxy.pid
         hooks = [("hook-start", f"kill -USR1 {pid}"), ("hook-stop", f"kill -USR1 {pid}")]
         result = subprocess.run(env.load_command(args.alloc_requests, args.alloc_warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
@@ -884,7 +888,7 @@ def run_lane(args, lane):
         with bench_lock():
             pick_ports(lane)
             row.update(measure_syscalls(args, lane))
-    if args.alloc:
+    if args.alloc or args.alloc_internal:
         with bench_lock():
             pick_ports(lane)
             row.update(measure_allocs(args, lane))
@@ -917,6 +921,9 @@ def main():
                              "LLVM_PROFILE_FILE=... on an instrumented binary); fails on any load error")
     parser.add_argument("--sys", action="store_true", help="also count syscalls per request (strace slope)")
     parser.add_argument("--alloc", action="store_true", help="also count allocator calls per request (LD_PRELOAD shim)")
+    parser.add_argument("--alloc-internal", action="store_true",
+                        help="also count allocator calls per request with the counting jemalloc of a binary built "
+                             "with `--features alloc-count` (the shim cannot see jemalloc)")
     parser.add_argument("--mem", action="store_true", help="also measure heap/RSS per idle keep-alive connection")
     parser.add_argument("--mem-conns", type=int, default=2000)
     parser.add_argument("--mem-streams", type=int, default=1, help="requests per connection before RSS is sampled")

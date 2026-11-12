@@ -94,7 +94,8 @@ pub(super) fn fields(
     id: &HeaderValue,
 ) -> Fields {
     let date = get_cached_date();
-    let mut edits = filtered(raw, head, rules, queue, id);
+    let mut edits = oxiroute_h1_head::Edits::new();
+    filtered(&mut edits, raw, head, rules, queue, id);
     edits
         .set(names::DATE, Value::trusted(date.as_bytes()))
         .expect("a response head needs few edits");

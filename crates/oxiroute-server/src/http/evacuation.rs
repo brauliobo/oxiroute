@@ -6,11 +6,13 @@
 //! wins, so a request is either moved before anything reached the client or finishes untouched.
 
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
-    task::Poll,
+    task::{Context, Poll},
 };
 
 use futures_util::task::AtomicWaker;
@@ -173,16 +175,39 @@ impl Evacuation {
 
     /// Resolves once the operator cancelled the attempt.
     pub(crate) fn cancellation(self: &Arc<Self>) -> UpstreamCancellation {
-        let handle = Arc::clone(self);
-        Box::pin(std::future::poll_fn(move |context| {
-            if !handle.load().cancelled() {
-                handle.waker.register(context.waker());
-            }
-            if handle.load().cancelled() {
-                Poll::Ready(Error::new_in(EVACUATED))
-            } else {
-                Poll::Pending
-            }
-        }))
+        Box::pin(self.cancelled())
+    }
+
+    /// [`Self::cancellation`] as a plain future, for the callers that await it where it is made.
+    pub(crate) fn cancelled(self: &Arc<Self>) -> Cancelled {
+        Cancelled(Some(Arc::clone(self)))
+    }
+}
+
+/// Resolves once the operator cancelled the attempt; never when there is nothing to cancel.
+pub(crate) struct Cancelled(Option<Arc<Evacuation>>);
+
+impl Cancelled {
+    /// A wait for a request that cannot be cancelled.
+    pub(crate) const fn never() -> Self {
+        Self(None)
+    }
+}
+
+impl Future for Cancelled {
+    type Output = Box<Error>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Box<Error>> {
+        let Some(handle) = &self.0 else {
+            return Poll::Pending;
+        };
+        if !handle.load().cancelled() {
+            handle.waker.register(context.waker());
+        }
+        if handle.load().cancelled() {
+            Poll::Ready(Error::new_in(EVACUATED))
+        } else {
+            Poll::Pending
+        }
     }
 }
