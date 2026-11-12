@@ -29,6 +29,7 @@ def main():
     parser.add_argument("lane")
     parser.add_argument("--tool", default=str(HERE / "tool/target/release/r2tool"))
     parser.add_argument("--tmp", default="/var/tmp")
+    parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl")
     parser.add_argument("--requests", type=int, default=4000)
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--top", type=int, default=25)
@@ -36,7 +37,8 @@ def main():
     shim = Path(args.tmp) / f"r2-memcpy-profile-{r2.os.getuid()}.so"
     subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-o", str(shim), str(HERE / "tool/memcpy_profile.c"), "-ldl"], check=True)
     lane = r2.LANES[args.lane]
-    run_args = argparse.Namespace(bin=args.bin, tool=args.tool, tmp=args.tmp, proxy_env=[], classic=False)
+    run_args = argparse.Namespace(bin=args.bin, tool=args.tool, tmp=args.tmp, proxy_env=[], classic=False,
+                                   tls_backend=args.tls_backend, tls_handshake_threads=None, baseline=False)
     out = Path(args.tmp) / f"r2-memcpy-{r2.os.getpid()}.txt"
     with r2.bench_lock():
         r2.pick_ports(lane)

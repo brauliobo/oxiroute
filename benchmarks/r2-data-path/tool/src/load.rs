@@ -31,7 +31,7 @@ use rustls::{
     },
     crypto::CryptoProvider,
 };
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -301,19 +301,33 @@ fn tls_provider(groups: &str) -> Arc<rustls::crypto::CryptoProvider> {
     })
 }
 
-pub fn tls_config(alpn: &[u8], version: &str, resume: bool, groups: &str) -> ClientConfig {
+/// The client certificate chain and key (PEM files) of `--client-cert` and `--client-key`.
+pub type ClientAuth<'a> = Option<(&'a str, &'a str)>;
+
+pub fn tls_config(alpn: &[u8], version: &str, resume: bool, groups: &str, auth: ClientAuth) -> ClientConfig {
     let provider = tls_provider(groups);
     let versions: &[&rustls::SupportedProtocolVersion] = match version {
         "1.2" => &[&rustls::version::TLS12],
         "1.3" => &[&rustls::version::TLS13],
         _ => &[&rustls::version::TLS13, &rustls::version::TLS12],
     };
-    let mut config = ClientConfig::builder_with_provider(Arc::clone(&provider))
+    let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_protocol_versions(versions)
         .expect("protocol versions")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(Arc::new(NoVerify(provider)));
+    let mut config = match auth {
+        Some((chain, key)) => builder
+            .with_client_auth_cert(
+                CertificateDer::pem_file_iter(chain)
+                    .expect("--client-cert")
+                    .collect::<Result<_, _>>()
+                    .expect("--client-cert PEM"),
+                PrivateKeyDer::from_pem_file(key).expect("--client-key"),
+            )
+            .expect("client certificate"),
+        None => builder.with_no_client_auth(),
+    };
     config.alpn_protocols = vec![alpn.to_vec()];
     config.resumption = if resume {
         Resumption::in_memory_sessions(1024)
@@ -323,8 +337,8 @@ pub fn tls_config(alpn: &[u8], version: &str, resume: bool, groups: &str) -> Cli
     config
 }
 
-pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str) -> TlsConnector {
-    TlsConnector::from(Arc::new(tls_config(alpn, version, resume, groups)))
+pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str, auth: ClientAuth) -> TlsConnector {
+    TlsConnector::from(Arc::new(tls_config(alpn, version, resume, groups, auth)))
 }
 
 fn seconds(value: &str, name: &str) -> Duration {
@@ -348,9 +362,12 @@ fn spec_from(flags: &Flags) -> Spec {
     let tls_version: String = flag(flags, "tls-version", "any".to_owned());
     let resume: bool = flag(flags, "resume", false);
     let tls_groups: String = flag(flags, "tls-groups", "default".to_owned());
+    let client_cert = flags.get("client-cert");
+    let client_key = flags.get("client-key");
+    let auth = client_cert.zip(client_key).map(|(chain, key)| (chain.as_str(), key.as_str()));
     let connector = match proto {
-        Proto::H1Tls | Proto::WsTls => Some(tls_connector(b"http/1.1", &tls_version, resume, &tls_groups)),
-        Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume, &tls_groups)),
+        Proto::H1Tls | Proto::WsTls => Some(tls_connector(b"http/1.1", &tls_version, resume, &tls_groups, auth)),
+        Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume, &tls_groups, auth)),
         _ => None,
     };
     let mut h2_headers = HeaderMap::new();
@@ -798,7 +815,7 @@ pub fn run(flags: &Flags) -> ExitCode {
         .expect("runtime");
     runtime.block_on(async {
         if spec.proto == Proto::H3 {
-            let tls = || h3client::endpoint(tls_config(b"h3", "1.3", false, "default")).expect("quic client endpoint");
+            let tls = || h3client::endpoint(tls_config(b"h3", "1.3", false, "default", None)).expect("quic client endpoint");
             spec.endpoints = (0..spec.conns).map(|_| tls()).collect();
         }
         drive(Arc::new(spec), flags).await

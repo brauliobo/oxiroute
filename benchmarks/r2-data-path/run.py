@@ -449,6 +449,11 @@ class Env:
         htpasswd.write_text(hashed)
         htpasswd.chmod(0o600)
 
+    def handshake_threads(self):
+        """`--tls-handshake-threads` overrides the lane's setting (-1: automatic, 0: handshakes inline)."""
+        override = self.args.tls_handshake_threads
+        return self.lane.handshake_threads if override is None else override
+
     def render_config(self):
         lane = self.lane
         self.prepare_files()
@@ -457,7 +462,7 @@ class Env:
             [sys.executable, str(HERE / "gen_config.py"), str(config), "--proxy-port", str(PROXY_PORT),
              "--upstream-port", str(UPSTREAM_PORT), "--echo-port", str(ECHO_PORT), "--servers", str(lane.servers),
              "--listeners", str(lane.listeners), "--workers", str(lane.workers),
-             "--tls-handshake-threads", str(lane.handshake_threads), "--run-dir", str(self.work)]
+             "--tls-handshake-threads", str(self.handshake_threads()), "--run-dir", str(self.work)]
             + (["--classic"] if self.args.classic else [])
             + (["--baseline"] if self.args.baseline else [])
             + ["--tls-backend", self.args.tls_backend]
@@ -749,7 +754,7 @@ def measure_memory(args, lane):
             time.sleep(0.02)
         open_status = env.work / "status.open"
         hook = (f"kill -USR1 {pid}; sleep 1; cp /proc/{pid}/status {open_status}; sudo -n cat /proc/slabinfo > {env.work}/slab.txt; "
-                f"cp /proc/net/tls_stat {env.work}/tls_stat.txt")
+                f"if [ -e /proc/net/tls_stat ]; then cp /proc/net/tls_stat {env.work}/tls_stat.txt; fi")
         command = env.load_command(connections, connections, [("hook-start", hook)])
         command[command.index("--conns") + 1] = str(connections)
         subprocess.run(command, capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
@@ -759,7 +764,8 @@ def measure_memory(args, lane):
         rss_closed = proc_status(pid)["rss_kb"]
         rss_open = int(re.search(r"^VmRSS:\s+(\d+)", open_status.read_text(), re.M).group(1))
         kernel_after = slab_bytes((env.work / "slab.txt").read_text())
-        converted = int(re.search(r"^TlsCurrTxSw\s+(\d+)", (env.work / "tls_stat.txt").read_text(), re.M).group(1))
+        tls_stat = env.work / "tls_stat.txt"  # absent while the kernel tls module is not loaded: no socket can be converted
+        converted = int(re.search(r"^TlsCurrTxSw\s+(\d+)", tls_stat.read_text(), re.M).group(1)) if tls_stat.exists() else 0
         first, second = [list(map(int, line.split())) for line in snapshots.read_text().splitlines()[:2]]
     finally:
         env.close()
@@ -919,6 +925,8 @@ def main():
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every lane's request counts (smoke runs)")
     parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
                         help="policy.backend of the generated TLS profile")
+    parser.add_argument("--tls-handshake-threads", type=int, default=None,
+                        help="tls_handshake_threads of every lane (-1: automatic, 0: handshakes inline on the worker)")
     parser.add_argument("--classic", action="store_true",
                         help="generate `http_fast_lane = false`: every request takes the classic path")
     parser.add_argument("--baseline", action="store_true",
