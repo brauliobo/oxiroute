@@ -53,7 +53,9 @@ unsafe extern "C" {
 ///
 /// Returns the OpenSSL error when the string selects no cipher or is malformed.
 #[cfg(feature = "openssl")]
-pub fn cipher_list_names(cipher_list: &str) -> std::result::Result<Vec<String>, crate::tls::error::ErrorStack> {
+pub fn cipher_list_names(
+    cipher_list: &str,
+) -> std::result::Result<Vec<String>, crate::tls::error::ErrorStack> {
     use foreign_types::ForeignType as _;
 
     let mut builder = crate::tls::ssl::SslContextBuilder::new(SslMethod::tls_server())?;
