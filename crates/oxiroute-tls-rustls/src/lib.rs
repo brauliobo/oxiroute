@@ -11,4 +11,5 @@ mod pump;
 mod stream;
 
 pub use acceptor::{ConfigRouter, RustlsAcceptor};
+pub use digest::openssl_suite_name;
 pub use stream::TlsStream;

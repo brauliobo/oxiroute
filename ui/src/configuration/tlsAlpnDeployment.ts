@@ -1,4 +1,4 @@
-import type { CanonicalConfig } from '../config'
+import { DEFAULT_TLS_BACKEND, type CanonicalConfig } from '../config'
 
 const TLS_ALPN_BIND = '0.0.0.0:443'
 const TLS_ALPN_PROTOCOLS = ['http', 'forward_http1', 'forward_http2'] as const
@@ -111,7 +111,7 @@ export function prepareTlsAlpnDeployment(
       session_timeout_seconds: null,
       session_tickets: false,
       prefer_server_ciphers: true,
-      backend: 'openssl',
+      backend: DEFAULT_TLS_BACKEND,
       ktls: 'auto',
     },
   })

@@ -4,8 +4,9 @@
 use std::sync::{Arc, OnceLock};
 
 use oxiroute_config::TlsKeyExchangeGroup;
+use oxiroute_tls_rustls::openssl_suite_name;
 use rustls::{
-    NamedGroup,
+    NamedGroup, SupportedCipherSuite,
     crypto::{CryptoProvider, aws_lc_rs, ring},
 };
 
@@ -77,6 +78,35 @@ pub(crate) fn with_key_exchange_groups(
     }))
 }
 
+/// `provider` with the TLS 1.2 suites that OpenSSL enables for an OpenSSL cipher string (`selected`, in OpenSSL's
+/// order), and the names among them that the provider cannot implement (finite-field DHE, CBC and RSA key exchange
+/// suites). The TLS 1.3 suites stay as they are: an OpenSSL cipher string does not govern them.
+pub(crate) fn with_cipher_list(
+    provider: &CryptoProvider,
+    selected: &[String],
+) -> (Arc<CryptoProvider>, Vec<String>) {
+    let (mut cipher_suites, tls12): (Vec<_>, Vec<_>) = provider
+        .cipher_suites
+        .iter()
+        .copied()
+        .partition(|suite| matches!(suite, SupportedCipherSuite::Tls13(_)));
+    let mut left_out = Vec::new();
+    for name in selected.iter().filter(|name| !name.starts_with("TLS_")) {
+        let suite = tls12
+            .iter()
+            .find(|suite| suite.suite().as_str().map(openssl_suite_name) == Some(name.as_str()));
+        match suite {
+            Some(&suite) => cipher_suites.push(suite),
+            None => left_out.push(name.clone()),
+        }
+    }
+    let provider = CryptoProvider {
+        cipher_suites,
+        ..provider.clone()
+    };
+    (Arc::new(provider), left_out)
+}
+
 const fn named_group(group: TlsKeyExchangeGroup) -> NamedGroup {
     match group {
         TlsKeyExchangeGroup::X25519 => NamedGroup::X25519,
@@ -109,6 +139,44 @@ mod tests {
             names(&with_key_exchange_groups(aws_lc_provider(), None).unwrap())[0],
             NamedGroup::X25519MLKEM768
         );
+    }
+
+    fn tls12_names(provider: &CryptoProvider) -> Vec<&'static str> {
+        provider
+            .cipher_suites
+            .iter()
+            .filter(|suite| matches!(suite, SupportedCipherSuite::Tls12(_)))
+            .filter_map(|suite| suite.suite().as_str().map(openssl_suite_name))
+            .collect()
+    }
+
+    #[test]
+    fn the_cipher_list_orders_the_tls12_suites_and_names_what_the_provider_lacks() {
+        let selected = [
+            "TLS_AES_256_GCM_SHA384",
+            "ECDHE-RSA-CHACHA20-POLY1305",
+            "DHE-RSA-AES128-GCM-SHA256",
+            "ECDHE-ECDSA-AES128-GCM-SHA256",
+            "AES128-SHA",
+        ]
+        .map(String::from);
+
+        let (provider, left_out) = with_cipher_list(&aws_lc_provider(), &selected);
+
+        assert_eq!(
+            tls12_names(&provider),
+            [
+                "ECDHE-RSA-CHACHA20-POLY1305",
+                "ECDHE-ECDSA-AES128-GCM-SHA256"
+            ]
+        );
+        assert_eq!(left_out, ["DHE-RSA-AES128-GCM-SHA256", "AES128-SHA"]);
+        let tls13 = provider
+            .cipher_suites
+            .iter()
+            .filter(|suite| matches!(suite, SupportedCipherSuite::Tls13(_)))
+            .count();
+        assert_eq!(tls13, 3);
     }
 
     #[test]
