@@ -32,6 +32,13 @@ pub(super) fn edits<'a>(
     edits
 }
 
+/// The framing of a body that has no announced length: the classic proxy sets it after every filter.
+pub(super) fn chunked(edits: &mut Edits<'_>) {
+    edits
+        .set(names::TRANSFER_ENCODING, Value::trusted(b"chunked"))
+        .expect("a request head needs few edits");
+}
+
 /// Appends the head with its `edits` to `out`.
 pub(super) fn render(out: &mut Vec<u8>, wire: &Wire, edits: &Edits<'_>) {
     write_request(out, &wire.text, &wire.head, edits);

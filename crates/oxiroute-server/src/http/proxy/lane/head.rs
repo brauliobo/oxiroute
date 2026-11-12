@@ -114,6 +114,25 @@ pub(in crate::http::proxy) fn scan(
     line: Line,
     head: &mut RequestHead,
 ) -> Option<Request> {
+    scan_with(buf, line, head, false)
+}
+
+/// [`scan`] for the head of an HTTP/2 request written as HTTP/1 text. `Expect` is a field like any other there: the
+/// classic HTTP/2 session never answers it, and the origin gets it as it was sent.
+pub(in crate::http::proxy) fn scan_h2(
+    buf: &[u8],
+    line: Line,
+    head: &mut RequestHead,
+) -> Option<Request> {
+    scan_with(buf, line, head, true)
+}
+
+fn scan_with(
+    buf: &[u8],
+    line: Line,
+    head: &mut RequestHead,
+    expect_is_plain: bool,
+) -> Option<Request> {
     if scan_request_fields(buf, line.line, head) != Scan::Head {
         return None;
     }
@@ -123,7 +142,7 @@ pub(in crate::http::proxy) fn scan(
         return None;
     }
     let body_len = usize::try_from(facts.content_length.unwrap_or(0)).ok()?;
-    let plain = !(facts.upgrade || facts.expect) && facts.hop_by_hop == 0;
+    let plain = !(facts.upgrade || facts.expect && !expect_is_plain) && facts.hop_by_hop == 0;
     let close = match facts.connection {
         Connection::Absent | Connection::KeepAlive => false,
         Connection::Close => true,

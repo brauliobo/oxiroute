@@ -10,6 +10,7 @@
 use http::{HeaderValue, uri::Authority};
 use oxiroute_h1_head::RequestHead;
 
+use super::claim::Body;
 use crate::http::{
     proxy::lane::{buffers, head},
     request_id::{generated_request_id_bytes, resolve_request_id},
@@ -39,20 +40,20 @@ impl Wire {
 }
 
 /// The id the request goes on with, and the wire of the request; `None` when the lane does not serve it. `target` is
-/// the request target as sent (path and query); `body` is the length of the body that follows the head, which the
-/// fields must announce.
+/// the request target as sent (path and query); `body` is the body that follows the head, whose length the fields
+/// must announce.
 pub(super) fn read<'a>(
     (method, target): (&[u8], &[u8]),
     fields: &impl Fields<'a>,
     authority: &Authority,
-    body: usize,
+    body: Body,
 ) -> Option<(HeaderValue, Wire)> {
     let mut text = buffers::take_write();
     let mut scanned = buffers::take_head();
     let read = write_text(&mut text, (method, target), fields, authority)
-        .then(|| head::line(&text).and_then(|line| head::scan(&text, line, &mut scanned)))
+        .then(|| head::line(&text).and_then(|line| head::scan_h2(&text, line, &mut scanned)))
         .flatten()
-        .filter(|read| read.body_len == body);
+        .filter(|read| read.body_len == body.announced());
     let Some(read) = read else {
         buffers::give_write(text);
         buffers::give_head(scanned);
@@ -117,10 +118,13 @@ fn write_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) -> bool {
     true
 }
 
-/// The id of a request that is not written to an origin: its first id when that is a valid one, else a generated one.
-pub(super) fn request_id<'a>(mut fields: impl Fields<'a>) -> HeaderValue {
+/// The id of a request that is not written to an origin: its first id when that is a valid one, else a generated one
+/// (then the flag is set).
+pub(super) fn request_id<'a>(mut fields: impl Fields<'a>) -> (HeaderValue, bool) {
     let first = fields
         .find(|(name, _)| *name == b"x-request-id")
         .and_then(|(_, value)| HeaderValue::from_bytes(value).ok());
-    resolve_request_id(first.as_ref())
+    let id = resolve_request_id(first.as_ref());
+    let generated = first.as_ref() != Some(&id);
+    (id, generated)
 }
