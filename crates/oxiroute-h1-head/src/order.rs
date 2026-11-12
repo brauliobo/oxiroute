@@ -62,6 +62,7 @@ impl HeaderOrder {
     /// The order after the scanned headers were appended one by one. `duplicate_names` and `present` are the scanner's
     /// facts; without duplicates the entries are the headers in arrival order and nothing is compared.
     #[must_use]
+    #[inline]
     pub fn new(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
         let mut order = Self {
             entries: [0; MAX_ITEMS],
@@ -146,6 +147,7 @@ impl HeaderOrder {
 
     /// The order after all the edits of `items`, applied in sequence.
     #[must_use]
+    #[inline]
     pub fn after_edits(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
         let mut order = Self::new(items, duplicate_names, present);
         for index in 0..items.edits.len() {
