@@ -21,3 +21,7 @@ unsafe_code = "deny"
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+[features]
+# Counts allocator calls and requested bytes (`counting::snapshot`) for the allocation ceilings of the fast lanes.
+count = []
