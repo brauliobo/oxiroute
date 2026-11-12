@@ -13,15 +13,12 @@ use pingora::{
     Error, ErrorType,
     connectors::http::v1::Connector,
     http::ResponseHeader,
-    protocols::http::{
-        v1::client::{FastFraming, HttpSession},
-        v2::server::H2Stream,
-    },
+    protocols::http::{v1::client::HttpSession, v2::server::H2Stream},
     upstreams::peer::Peer as _,
 };
 
 use super::{
-    claim::Plan,
+    claim::{Body, Plan},
     fast, head, relay,
     response::{self, Head},
     upload::{Event, Upload},
@@ -36,7 +33,7 @@ use crate::{
             attempt::{AttemptTimeouts, Exchanged},
             error_response,
             lane::{
-                LaneFront, buffers,
+                LaneFront, buffers, log as lane_log,
                 proxy::{Arrival, Progress, Scanned, error_answer, proxy_route},
                 response::{QueueValues, accept_head, is_plain, refused_by_pool},
                 rules,
@@ -81,8 +78,31 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
         );
         progress.status = fail(front, &mut stream, &mut ctx, error, &plan, &mut progress).await;
     }
-    front.finish_request(&mut ctx, error.as_deref(), &progress);
+    let elapsed = front.finish_request(&mut ctx, error.as_deref(), &progress);
+    write_access_line(front, &ctx, &plan, &progress, elapsed);
     plan.recycle();
+}
+
+fn write_access_line(
+    front: &LaneFront,
+    ctx: &HttpRequestContext,
+    plan: &Plan,
+    progress: &Progress,
+    elapsed: Duration,
+) {
+    let (Some(log), Some(wire)) = (front.service.access_log(), plan.wire.as_ref()) else {
+        return;
+    };
+    let request = lane_log::Proxied {
+        buffer: &wire.text,
+        head: &wire.head,
+        id: &plan.id,
+        id_generated: plan.id_generated,
+        method: &plan.method,
+        route: &plan.route,
+        protocol: lane_log::HTTP2,
+    };
+    lane_log::write_proxied(log, &front.service_log, ctx, &request, progress, elapsed);
 }
 
 fn begin(front: &LaneFront, plan: &Plan) -> Box<HttpRequestContext> {
@@ -118,7 +138,7 @@ async fn exchange(
     progress: &mut Progress,
 ) -> Result<(), Box<Error>> {
     let upstream = &*front.upstream;
-    let mut upload = Upload::new(plan.body);
+    let mut upload = Upload::new(plan.body, plan.route.policy.max_request_body_bytes);
     let opened = tokio::select! {
         biased;
         opened = attempts(front, &*stream, ctx, (plan, &mut upload), progress) => opened?,
@@ -203,14 +223,16 @@ async fn send_and_open(
     render_request(&mut request, ctx, plan, host.as_ref());
     // A small body that the client sent with its head leaves with the origin's head, in one write.
     let first = match plan.body {
-        0 => None,
+        Body::None => None,
         _ => match upload.ready(stream) {
             Some(Event::Left(error)) => return Err(error),
             ready => ready,
         },
     };
-    let with_head = match &first {
-        Some(Event::Piece(piece)) if piece.len() == plan.body && plan.body <= SMALL_BODY => {
+    let with_head = match (&first, plan.body) {
+        (Some(Event::Piece(piece)), Body::Length(length))
+            if piece.len() == length && length <= SMALL_BODY =>
+        {
             request.extend_from_slice(piece);
             true
         }
@@ -221,11 +243,8 @@ async fn send_and_open(
         .await;
     buffers::give_write(request);
     written.map_err(Error::into_up)?;
-    if plan.body > 0 && !with_head {
-        session.init_request_body(FastFraming {
-            chunked: false,
-            content_length: Some(plan.body),
-        });
+    if plan.body != Body::None && !with_head {
+        session.init_request_body(plan.body.framing());
     }
     let raw = head_of(
         front,
@@ -323,6 +342,10 @@ fn render_request(
         host,
     )
     .expect("a request head needs few edits");
+    if plan.body == Body::Unknown {
+        // Framing comes last, after the filters, as the classic proxy frames a body without a length.
+        head::chunked(&mut edits);
+    }
     head::render(out, wire, &edits);
 }
 

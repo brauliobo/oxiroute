@@ -451,6 +451,13 @@ async fn exchange(client: &mut Client, upload: &Upload) -> Outcome {
     outcome
 }
 
+/// The origin was sent a chunked body: where the chunks end depends on how the data arrived, so the bytes they carry
+/// are what is compared.
+fn is_chunked(head: &str) -> bool {
+    head.to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+}
+
 fn masked_head(head: &str, port: u16) -> String {
     head.lines()
         .map(|line| match line.split_once(": ") {
@@ -480,8 +487,12 @@ fn observed(side: &Side, exact: bool) -> Vec<Seen> {
         .into_iter()
         .filter(|seen| !(seen.aborted && seen.body.is_empty()))
         .map(|seen| Seen {
+            body: match (exact, is_chunked(&seen.head)) {
+                (false, _) => Vec::new(),
+                (true, true) => dechunk(&seen.body),
+                (true, false) => seen.body,
+            },
             head: masked_head(&seen.head, port),
-            body: if exact { seen.body } else { Vec::new() },
             ..seen
         })
         .collect()
@@ -524,9 +535,14 @@ async fn same_with(
             .iter()
             .filter(|seen| seen.head.contains("/early"))
         {
+            let read = if is_chunked(&seen.head) {
+                dechunk(&seen.body)
+            } else {
+                seen.body.clone()
+            };
             assert_eq!(
-                seen.body,
-                sent[..seen.body.len()],
+                read,
+                sent[..read.len()],
                 "the part of the upload the origin read"
             );
         }
@@ -746,10 +762,145 @@ async fn a_body_that_does_not_match_its_announced_length_ends_as_it_does_on_the_
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_with_a_body_the_lane_does_not_take_are_the_classic_paths_on_both_sides() {
     let uploads = vec![
-        Upload::post("/plain", patterned(100)).without_length(),
-        Upload::post("/plain", patterned(100)).with("expect", "100-continue"),
         Upload::post("/plain", patterned(100)).with("te", "trailers"),
         Upload::post("/plain", patterned(100)).declaring(LIMIT + 1),
     ];
     same(uploads, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_body_without_a_length_reaches_the_origin_chunked_as_the_classic_path_sends_it() {
+    let pieces = vec![
+        patterned(10),
+        patterned(40_000),
+        patterned(3),
+        patterned(70_000),
+    ];
+    let mut uploads: Vec<Upload> = [1, 1024, 16_385, 65_536, 1 << 20]
+        .iter()
+        .map(|size| Upload::post("/plain", patterned(*size)).without_length())
+        .collect();
+    uploads.push(Upload::pieces("/plain", pieces, Duration::from_millis(20)).without_length());
+    uploads.push(
+        Upload::post("/plain", patterned(2000))
+            .without_length()
+            .with("content-type", "application/octet-stream")
+            .with("x-request-id", "client-id-1")
+            .with("cookie", "a=1")
+            .with("cookie", "b=2"),
+    );
+    uploads.push(
+        Upload::post("/plain", patterned(100))
+            .without_length()
+            .with("x-request-id", "not valid"),
+    );
+    let served = uploads.len();
+    same(uploads, served).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expecting_request_is_forwarded_with_its_field_as_the_classic_path_forwards_it() {
+    let uploads = vec![
+        Upload::post("/plain", patterned(100)).with("expect", "100-continue"),
+        Upload::post("/plain", patterned(100))
+            .without_length()
+            .with("expect", "100-continue"),
+        Upload::post("/plain", patterned(5000)).with("expect", "100-continue"),
+    ];
+    same(uploads, 3).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_origin_that_answers_before_an_open_upload_ends_gets_no_more_of_it_and_is_not_reused() {
+    let uploads = vec![
+        Upload::post("/early", patterned(3 << 20)).without_length(),
+        Upload::post("/plain", patterned(100)).without_length(),
+    ];
+    same_with(uploads, 2, false, |_| {}).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_body_over_the_limit_is_refused_as_the_classic_path_refuses_it() {
+    let limit =
+        |config: &mut ConfigDraft| config.http_services[0].max_request_body_bytes = Some(64 * 1024);
+    let uploads = vec![
+        Upload::post("/plain", patterned(60_000)).without_length(),
+        Upload::post("/plain", patterned(200_000)).without_length(),
+        Upload::post("/plain", patterned(100)).without_length(),
+    ];
+    same_with(uploads, 3, false, limit).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_response_flows_back_while_an_open_upload_is_open() {
+    for lane in [false, true] {
+        let side = Side::start(lane).await;
+        let client = side.client().await;
+        let mut sender = client.sender.clone().ready().await.expect("ready");
+        let upload = Upload::post("/stream", Vec::new()).without_length();
+        let (response, mut send) = sender
+            .send_request(upload.request(), false)
+            .expect("request");
+        send.send_data(Bytes::from_static(b"aaaaaaaa"), false)
+            .expect("first piece");
+        let response = timeout(STEP, response)
+            .await
+            .expect("head")
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let mut echoed = Vec::new();
+        while echoed.len() < 8 {
+            let piece = timeout(STEP, body.data())
+                .await
+                .expect("the echo of an open upload")
+                .expect("piece")
+                .expect("data");
+            echoed.extend_from_slice(&piece);
+        }
+        send.send_data(Bytes::from_static(b"bbbbbbbb"), true)
+            .expect("last piece");
+        while let Some(piece) = timeout(STEP, body.data()).await.expect("the end") {
+            echoed.extend_from_slice(&piece.expect("data"));
+        }
+        // The origin echoes the chunked request as it got it, framing included.
+        assert_eq!(dechunk(&echoed), [&[b'a'; 8][..], &[b'b'; 8]].concat());
+        client.driver.abort();
+        assert_eq!(side.served(), usize::from(lane));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_resets_an_open_upload_aborts_the_origin_request_and_the_proxy_serves_on() {
+    for lane in [false, true] {
+        let side = Side::start(lane).await;
+        let client = side.client().await;
+        let mut sender = client.sender.clone().ready().await.expect("ready");
+        let upload = Upload::post("/hold", Vec::new()).without_length();
+        let (_response, mut send) = sender
+            .send_request(upload.request(), false)
+            .expect("request");
+        send.send_data(Bytes::from(patterned(5000)), false)
+            .expect("piece");
+        timeout(STEP, async {
+            while side.origin.body_bytes() < 5000 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the origin has the piece");
+        send.send_reset(h2::Reason::CANCEL);
+        timeout(STEP, async {
+            while !side.origin.requests().iter().any(|seen| seen.aborted) {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the origin sees the abort");
+        let mut client = client;
+        let outcome = exchange(&mut client, &Upload::post("/plain", patterned(10))).await;
+        assert_eq!(outcome.expect("the next request").0, 200);
+        client.driver.abort();
+        assert_eq!(side.served(), if lane { 2 } else { 0 });
+    }
 }

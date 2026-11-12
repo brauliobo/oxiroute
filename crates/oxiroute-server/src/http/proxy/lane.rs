@@ -10,7 +10,7 @@ pub(in crate::http::proxy) mod buffers;
 mod direct;
 pub(in crate::http::proxy) mod head;
 mod local;
-mod log;
+pub(in crate::http::proxy) mod log;
 mod peek;
 mod plan;
 pub(in crate::http::proxy) mod proxy;
@@ -94,7 +94,7 @@ pub(crate) struct LaneFront {
     /// The upstream connector of the classic proxy, whose idle connections the proxied lane shares.
     pub(in crate::http::proxy) upstream: Arc<Connector>,
     /// The service's name as its access lines write it, with the field's key.
-    service_log: Box<[u8]>,
+    pub(in crate::http::proxy) service_log: Box<[u8]>,
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
     pub(in crate::http::proxy) write_budget: Duration,

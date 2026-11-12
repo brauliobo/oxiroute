@@ -107,6 +107,29 @@ pub(crate) fn sanitize_h3_response_headers(
         .ok_or(())
 }
 
+/// The fields of an answer whose body is sent as it arrives: no hop-by-hop field, and a declared length only when the
+/// origin gave one (its body is checked against it as it goes).
+pub(crate) fn sanitize_h3_streamed_headers(
+    headers: &mut HeaderMap,
+    status: StatusCode,
+) -> Result<(), ()> {
+    if status.is_informational() || status == StatusCode::SWITCHING_PROTOCOLS {
+        return Err(());
+    }
+    let declared = request_content_length(headers)?;
+    strip_h3_hop_by_hop_headers(headers)?;
+    headers.remove(CONTENT_LENGTH);
+    if let Some(declared) = declared {
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&declared.to_string()).map_err(|_| ())?,
+        );
+    }
+    (header_bytes(headers) <= usize::try_from(H3_MAX_FIELD_SECTION_BYTES).map_err(|_| ())?)
+        .then_some(())
+        .ok_or(())
+}
+
 pub(crate) fn sanitize_h3_trailers(headers: &mut HeaderMap) -> Result<(), ()> {
     strip_h3_hop_by_hop_headers(headers)?;
     headers.remove(CONTENT_LENGTH);

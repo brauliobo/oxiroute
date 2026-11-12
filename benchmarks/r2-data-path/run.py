@@ -175,6 +175,10 @@ def build_lanes():
              features=["tls"], requests=1500, warmup=100))
     add(lane("h2_b1k_c4s16", ["--proto", "h2tls", "--path", "/b1k", "--conns", "4", "--streams", "16",
                               "--expect-len", "1024"], features=["tls"], requests=20000))
+    add(lane("h2_b1k_log_c4s16", ["--proto", "h2tls", "--path", "/b1k", "--conns", "4", "--streams", "16",
+                                  "--expect-len", "1024"], features=["tls", "access_log"], requests=20000))
+    add(lane("h2_fixed_b1k_c4s16", ["--proto", "h2tls", "--path", "/fixed", "--conns", "4", "--streams", "16",
+                                    "--expect-len", "1024"], features=["tls", "fixed_b1k"], requests=20000))
     add(lane("h2_b64k_c4s16", ["--proto", "h2tls", "--path", "/b64k", "--conns", "4", "--streams", "16",
                                "--expect-len", "65536"], features=["tls"], requests=5000, warmup=200))
     add(lane("h2_post1k_c4s16", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
@@ -200,6 +204,15 @@ def build_lanes():
              requires=H3_ORIGIN))
     add(lane("h3_post1k_c8s4", h3 + ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"], features=["h3"],
              requests=16000, requires=H3_ORIGIN))
+    # One listener over several workers (`listener_workers`; needs workers + 1 proxy CPUs): HTTP/3 against the HTTP/2 lane.
+    for workers in (1, 4):
+        wide = ["--conns", "32", "--streams", "4"]
+        add(lane(f"h3_fixed_b1k_c32s4_w{workers}", ["--proto", "h3", "--path", "/fixed", "--expect-len", "1024"] + wide,
+                 features=["h3", "fixed_b1k"], requests=32000, workers=workers))
+        add(lane(f"h3_b1k_c32s4_w{workers}", ["--proto", "h3", "--path", "/b1k", "--expect-len", "1024"] + wide,
+                 features=["h3"], requests=32000, workers=workers, requires=H3_ORIGIN))
+        add(lane(f"h2_b1k_c32s4_w{workers}", ["--proto", "h2tls", "--path", "/b1k", "--expect-len", "1024"] + wide,
+                 features=["tls"], requests=32000, workers=workers))
     add(lane("h3_newconn_fixed_b1k", ["--proto", "h3", "--new-conn", "--conns", "8", "--path", "/fixed",
                                       "--expect-len", "1024"], features=["h3", "fixed_b1k"], requests=2000, warmup=100))
     add(lane("h1_b1k_h2up", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_h2"]))
@@ -755,7 +768,8 @@ def measure_memory(args, lane):
         open_status = env.work / "status.open"
         hook = (f"kill -USR1 {pid}; sleep 1; cp /proc/{pid}/status {open_status}; sudo -n cat /proc/slabinfo > {env.work}/slab.txt; "
                 f"if [ -e /proc/net/tls_stat ]; then cp /proc/net/tls_stat {env.work}/tls_stat.txt; fi")
-        command = env.load_command(connections, connections, [("hook-start", hook)])
+        requests = connections * args.mem_streams
+        command = env.load_command(requests, requests, [("hook-start", hook)])
         command[command.index("--conns") + 1] = str(connections)
         subprocess.run(command, capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
         deadline = time.monotonic() + 5
@@ -905,6 +919,7 @@ def main():
     parser.add_argument("--alloc", action="store_true", help="also count allocator calls per request (LD_PRELOAD shim)")
     parser.add_argument("--mem", action="store_true", help="also measure heap/RSS per idle keep-alive connection")
     parser.add_argument("--mem-conns", type=int, default=2000)
+    parser.add_argument("--mem-streams", type=int, default=1, help="requests per connection before RSS is sampled")
     parser.add_argument("--profile", action="store_true", help="also perf-record per-function instruction samples")
     parser.add_argument("--profile-period", type=int, default=20011)
     parser.add_argument("--profile-event", default="instructions:u",

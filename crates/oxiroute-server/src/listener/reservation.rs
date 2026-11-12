@@ -1,10 +1,6 @@
-use std::{
-    collections::HashMap,
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, io, sync::Arc};
 
+use log::warn;
 use oxiroute_config::{ListenerBind, ValidatedConfig};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::{
@@ -21,6 +17,12 @@ use crate::listener::inventory::{
 
 #[cfg(unix)]
 mod quic;
+#[cfg(unix)]
+mod unix_socket;
+#[cfg(all(unix, test))]
+use unix_socket::unix_socket_marker_path;
+#[cfg(unix)]
+use unix_socket::{PathIdentity, UnixSocketIdentity, UnixSocketLease, remove_stale_unix_socket};
 
 #[derive(Clone)]
 pub struct ListenerReservation {
@@ -45,208 +47,37 @@ enum ReservedSocket {
     Unix(std::os::unix::net::UnixListener),
 }
 
-#[cfg(unix)]
-struct UnixSocketIdentity {
-    path_identity: PathIdentity,
-    _lease: UnixSocketLease,
+/// Whether the UDP sockets of a configuration join a `SO_REUSEPORT` group: its listeners have several workers, so an
+/// HTTP/3 listener runs several QUIC endpoints.
+fn shares_udp(config: &ValidatedConfig) -> bool {
+    config
+        .as_draft()
+        .listener_workers
+        .is_some_and(|workers| workers > 1)
 }
 
+/// A non-blocking UDP socket bound to `address`; with `share` it joins the `SO_REUSEPORT` group of that address, whose
+/// sockets the kernel gives the peers of its datagrams to, one socket per peer address.
 #[cfg(unix)]
-struct PathIdentity {
-    device: u64,
-    inode: u64,
-    path: PathBuf,
-    socket: bool,
-}
+fn bind_udp(address: std::net::SocketAddr, share: bool) -> io::Result<std::net::UdpSocket> {
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, bind, socket_with, sockopt};
 
-#[cfg(unix)]
-impl PathIdentity {
-    fn remove_if_unchanged(&self) {
-        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-
-        let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
-            return;
-        };
-        if (self.socket && metadata.file_type().is_socket()
-            || !self.socket && metadata.file_type().is_file())
-            && metadata.dev() == self.device
-            && metadata.ino() == self.inode
-        {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-#[cfg(unix)]
-struct UnixSocketLease {
-    _descriptor: rustix::fd::OwnedFd,
-    marker_identity: PathIdentity,
-}
-
-#[cfg(unix)]
-impl UnixSocketLease {
-    fn acquire(path: &Path) -> io::Result<Self> {
-        use rustix::{
-            fs::{self, FileType, FlockOperation, Mode, OFlags},
-            io::Errno,
-        };
-        validate_unix_socket_parent(path)?;
-        let marker_path = unix_socket_marker_path(path)?;
-        let secure_mode = Mode::from_raw_mode(0o600);
-        let (descriptor, created) = match fs::open(
-            &marker_path,
-            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            secure_mode,
-        ) {
-            Ok(descriptor) => (descriptor, true),
-            Err(Errno::EXIST) => (
-                fs::open(
-                    &marker_path,
-                    OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                    Mode::empty(),
-                )
-                .map_err(io::Error::from)?,
-                false,
-            ),
-            Err(source) => return Err(source.into()),
-        };
-        if created {
-            fs::fchmod(&descriptor, secure_mode).map_err(io::Error::from)?;
-        }
-        let descriptor_metadata = fs::fstat(&descriptor).map_err(io::Error::from)?;
-        let linked_metadata = fs::stat(&marker_path).map_err(io::Error::from)?;
-        if !FileType::from_raw_mode(descriptor_metadata.st_mode).is_file()
-            || descriptor_metadata.st_mode & 0o7777 != 0o600
-            || descriptor_metadata.st_nlink != 1
-            || descriptor_metadata.st_dev != linked_metadata.st_dev
-            || descriptor_metadata.st_ino != linked_metadata.st_ino
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Unix socket ownership marker `{}` is not a secure regular file",
-                    marker_path.display()
-                ),
-            ));
-        }
-        match fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => {}
-            Err(Errno::AGAIN) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    format!("Unix socket `{}` is already reserved", path.display()),
-                ));
-            }
-            Err(source) => return Err(source.into()),
-        }
-        let linked_metadata = fs::stat(&marker_path).map_err(io::Error::from)?;
-        if descriptor_metadata.st_dev != linked_metadata.st_dev
-            || descriptor_metadata.st_ino != linked_metadata.st_ino
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Unix socket ownership marker `{}` changed while it was acquired",
-                    marker_path.display()
-                ),
-            ));
-        }
-        Ok(Self {
-            _descriptor: descriptor,
-            marker_identity: PathIdentity {
-                device: linked_metadata.st_dev,
-                inode: linked_metadata.st_ino,
-                path: marker_path,
-                socket: false,
-            },
-        })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for UnixSocketLease {
-    fn drop(&mut self) {
-        self.marker_identity.remove_if_unchanged();
-    }
-}
-
-#[cfg(unix)]
-fn validate_unix_socket_parent(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let effective_user = rustix::process::geteuid().as_raw();
-    for (index, ancestor) in parent.ancestors().enumerate() {
-        let metadata = std::fs::metadata(ancestor)?;
-        let mode = metadata.mode();
-        let sticky = mode & 0o1000 != 0;
-        if !metadata.is_dir()
-            || mode & 0o022 != 0 && !sticky
-            || index == 0 && metadata.uid() != effective_user && !sticky
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Unix socket directory chain at `{}` is not protected from namespace replacement",
-                    ancestor.display()
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn unix_socket_marker_path(path: &Path) -> io::Result<PathBuf> {
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Unix socket path must include a file name",
-        )
-    })?;
-    let mut marker_name = file_name.to_os_string();
-    marker_name.push(".oxiroute.lock");
-    Ok(path.with_file_name(marker_name))
-}
-
-#[cfg(unix)]
-fn remove_stale_unix_socket(path: &Path) -> io::Result<()> {
-    use rustix::{
-        io::Errno,
-        net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with},
+    let family = if address.is_ipv4() {
+        AddressFamily::INET
+    } else {
+        AddressFamily::INET6
     };
-    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_socket() {
-        return Ok(());
-    }
-    let identity = PathIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        path: path.to_owned(),
-        socket: true,
-    };
-    let address = SocketAddrUnix::new(path).map_err(io::Error::from)?;
-    let probe = socket_with(
-        AddressFamily::UNIX,
-        SocketType::STREAM,
+    let socket = socket_with(
+        family,
+        SocketType::DGRAM,
         SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
         None,
-    )
-    .map_err(io::Error::from)?;
-    match connect(&probe, &address) {
-        Err(Errno::CONNREFUSED | Errno::NOENT) => {
-            identity.remove_if_unchanged();
-        }
-        Ok(()) | Err(Errno::AGAIN | Errno::INPROGRESS | Errno::ALREADY) => {}
-        Err(source) => return Err(source.into()),
+    )?;
+    if share {
+        sockopt::set_socket_reuseport(&socket, true)?;
     }
-    Ok(())
+    bind(&socket, &address)?;
+    Ok(socket.into())
 }
 
 impl Drop for ReservationInner {
@@ -264,8 +95,22 @@ impl ListenerReservation {
     /// # Errors
     ///
     /// Returns an error when the socket cannot be bound securely or the transport is unsupported.
-    #[allow(clippy::too_many_lines)]
     pub fn bind(listener_name: &str, bind: &ListenerBind) -> io::Result<Self> {
+        Self::bind_with(listener_name, bind, false)
+    }
+
+    /// [`ListenerReservation::bind`]; with `share_udp` a UDP socket joins a `SO_REUSEPORT` group, so that
+    /// [`ListenerReservation::quic_endpoints`] can bind siblings to it. Other transports ignore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket cannot be bound securely or the transport is unsupported.
+    #[allow(clippy::too_many_lines)]
+    pub fn bind_with(
+        listener_name: &str,
+        bind: &ListenerBind,
+        share_udp: bool,
+    ) -> io::Result<Self> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
@@ -284,7 +129,7 @@ impl ListenerReservation {
                     (ReservedSocket::Tcp(listener), None, address.to_string())
                 }
                 ListenerBind::Udp { address } => {
-                    let socket = std::net::UdpSocket::bind(address).map_err(|source| {
+                    let socket = bind_udp(*address, share_udp).map_err(|source| {
                         io::Error::new(
                             source.kind(),
                             format!(
@@ -430,17 +275,23 @@ impl ListenerReservation {
         Ok(std::net::UdpSocket::from(self.duplicate_owned_fd()?))
     }
 
-    /// Returns the QUIC endpoint that reads this UDP reservation, starting it on first use.
+    /// Returns the QUIC endpoints that read this UDP reservation, starting them on first use: `count` of them when
+    /// the socket joined a `SO_REUSEPORT` group at bind (see [`ListenerReservation::bind_with`]), else one.
     ///
-    /// Every generation that reuses the reservation shares the endpoint, so the socket never has
-    /// two readers. `config` is only used to start the endpoint; connections are accepted with
-    /// their generation's own configuration.
+    /// Every generation that reuses the reservation shares the endpoints, so a socket never has
+    /// two readers. `config` is only used to start the endpoints; connections are accepted with
+    /// their generation's own configuration. The endpoints of a host are the ones it started with:
+    /// a later call with another `count` gets those.
     ///
     /// # Errors
     ///
-    /// Returns an error when this reservation is not a UDP socket or the endpoint cannot start.
+    /// Returns an error when this reservation is not a UDP socket or an endpoint cannot start.
     #[cfg(unix)]
-    pub fn quic_endpoint(&self, config: quinn::ServerConfig) -> io::Result<quinn::Endpoint> {
+    pub fn quic_endpoints(
+        &self,
+        config: &quinn::ServerConfig,
+        count: usize,
+    ) -> io::Result<Vec<quinn::Endpoint>> {
         let mut host = self
             .inner
             .quic
@@ -448,19 +299,46 @@ impl ListenerReservation {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let started = match host.take() {
             Some(started) => started,
-            None => quic::QuicHost::start(self.duplicate_udp_socket()?, config)?,
+            None => quic::QuicHost::start(self.udp_group(count)?, config)?,
         };
-        let endpoint = started.endpoint();
+        let endpoints = started.endpoints();
         *host = Some(started);
-        Ok(endpoint)
+        Ok(endpoints)
     }
 
     #[cfg(not(unix))]
-    pub fn quic_endpoint(&self, _config: quinn::ServerConfig) -> io::Result<quinn::Endpoint> {
+    pub fn quic_endpoints(
+        &self,
+        _config: &quinn::ServerConfig,
+        _count: usize,
+    ) -> io::Result<Vec<quinn::Endpoint>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "UDP listener reservations are unsupported on this platform",
         ))
+    }
+
+    /// The reservation's socket and, when it is in a `SO_REUSEPORT` group, `count - 1` siblings bound to the same
+    /// address.
+    #[cfg(unix)]
+    fn udp_group(&self, count: usize) -> io::Result<Vec<std::net::UdpSocket>> {
+        let first = self.duplicate_udp_socket()?;
+        if count <= 1 {
+            return Ok(vec![first]);
+        }
+        if !rustix::net::sockopt::socket_reuseport(&first)? {
+            warn!(
+                "listener `{}` has {count} workers but its UDP socket was not bound for sharing: one QUIC endpoint serves it",
+                self.inner.bind_text
+            );
+            return Ok(vec![first]);
+        }
+        let address = first.local_addr()?;
+        let mut group = vec![first];
+        for _ in 1..count {
+            group.push(bind_udp(address, true)?);
+        }
+        Ok(group)
     }
 
     #[cfg(not(unix))]
@@ -517,7 +395,11 @@ impl ListenerReservations {
     /// let _ = ListenerReservations::prepare(&draft, None);
     /// ```
     pub fn prepare(config: &ValidatedConfig, previous: Option<&Self>) -> io::Result<Self> {
-        Self::prepare_inventory(&ListenerInventory::compile(config), previous, false)
+        Self::prepare_inventory(
+            &ListenerInventory::compile(config),
+            previous,
+            (false, shares_udp(config)),
+        )
     }
 
     pub(crate) fn prepare_for_validation(
@@ -526,20 +408,27 @@ impl ListenerReservations {
     ) -> io::Result<Self> {
         // Validation intentionally performs real, temporary bind probes. Dropping the returned
         // set closes descriptors and removes any Unix socket namespace entries it created.
-        Self::prepare_inventory(&ListenerInventory::compile(config), previous, true)
+        Self::prepare_inventory(
+            &ListenerInventory::compile(config),
+            previous,
+            (true, shares_udp(config)),
+        )
     }
 
     fn prepare_inventory(
         inventory: &ListenerInventory,
         previous: Option<&Self>,
-        reuse_unix_path: bool,
+        (reuse_unix_path, share_udp): (bool, bool),
     ) -> io::Result<Self> {
         let mut by_key = HashMap::with_capacity(inventory.len());
         for entry in inventory.entries() {
             let reservation = previous
                 .and_then(|reservations| reservations.by_bind(&entry.bind, reuse_unix_path))
                 .cloned()
-                .map_or_else(|| ListenerReservation::bind(&entry.name, &entry.bind), Ok)?;
+                .map_or_else(
+                    || ListenerReservation::bind_with(&entry.name, &entry.bind, share_udp),
+                    Ok,
+                )?;
             by_key.insert(entry.id.clone(), reservation);
         }
         Ok(Self { by_key })

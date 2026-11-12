@@ -4,15 +4,19 @@
 //! straight to the sink's buffer. `HttpAccess::write_json` is the specification of the bytes; the lane's differential
 //! tests compare the two for a corpus of requests.
 
-use std::{cell::RefCell, time::Duration};
+use std::{
+    cell::RefCell,
+    time::{Duration, Instant},
+};
 
-use http::{Method, uri::Authority};
+use http::{HeaderValue, Method, uri::Authority};
 use log::warn;
+use oxiroute_h1_head::RequestHead;
 
-use super::proxy::{Forward, Progress};
+use super::proxy::Progress;
 use crate::{
     http::{
-        action::AccessLog,
+        action::{AccessLog, HttpRoutePlan},
         policy::normalized_request_host,
         proxy::{
             HttpRequestContext,
@@ -27,8 +31,8 @@ use crate::{
     },
 };
 
-/// The names of a route that its access lines repeat, as the line writes them: from `,"pool":` to the opening quote of
-/// the queue wait (a route without a pool has `null` there), and the whole `route` field.
+/// The names of a route that its access lines repeat, as the line writes them: the whole `pool` field (a route without
+/// a pool has `null` there) and the whole `route` field.
 #[derive(Debug, Default)]
 pub(crate) struct RouteLog {
     pool: Box<[u8]>,
@@ -42,7 +46,6 @@ impl RouteLog {
             Some(pool) => push_text(&mut pool_part, pool.logged()),
             None => pool_part.extend_from_slice(b"null"),
         }
-        pool_part.extend_from_slice(br#","protocol":"http/1.1","queueWaitMs":""#);
         let mut route_part = br#","route":"#.to_vec();
         push_text(&mut route_part, route.logged());
         Self {
@@ -87,68 +90,85 @@ fn push_host(out: &mut Vec<u8>, host: &Authority) {
 }
 
 /// `,"service":` and the service name as the line writes it.
-pub(super) fn service_part(log: &AccessLog) -> Box<[u8]> {
+pub(in crate::http::proxy) fn service_part(log: &AccessLog) -> Box<[u8]> {
     let mut part = br#","service":"#.to_vec();
     push_text(&mut part, log.logged_service());
     part.into()
 }
 
+/// The protocol of the client's connection, as the classic record names it.
+pub(in crate::http::proxy) const HTTP1: &str = "http/1.1";
+pub(in crate::http::proxy) const HTTP2: &str = "h2";
+
 /// What a line says of a request, as the classic record takes it from the request context.
-pub(super) struct Line<'a> {
-    pub(super) attempts: usize,
-    pub(super) received: u64,
-    pub(super) sent: u64,
-    pub(super) connect: Option<Duration>,
-    pub(super) header: Option<Duration>,
+pub(in crate::http::proxy) struct Line<'a> {
+    pub(in crate::http::proxy) attempts: usize,
+    pub(in crate::http::proxy) received: u64,
+    pub(in crate::http::proxy) sent: u64,
+    pub(in crate::http::proxy) connect: Option<Duration>,
+    pub(in crate::http::proxy) header: Option<Duration>,
     /// A valid id, a client's only when it passed the check, else the proxy's own.
-    pub(super) id: &'a [u8],
-    pub(super) id_generated: bool,
-    pub(super) elapsed: Duration,
-    pub(super) evacuations: usize,
-    pub(super) host: Option<&'a Authority>,
-    pub(super) idempotency: Option<&'a [u8]>,
-    pub(super) method: &'a Method,
-    pub(super) queue_wait: Duration,
-    pub(super) reason: &'static str,
-    pub(super) rescued: bool,
-    pub(super) servers: &'a [Label],
-    pub(super) status: Option<u16>,
-    pub(super) unix_ms: u64,
-    pub(super) stuck: bool,
+    pub(in crate::http::proxy) id: &'a [u8],
+    pub(in crate::http::proxy) id_generated: bool,
+    pub(in crate::http::proxy) elapsed: Duration,
+    pub(in crate::http::proxy) evacuations: usize,
+    pub(in crate::http::proxy) host: Option<&'a Authority>,
+    pub(in crate::http::proxy) idempotency: Option<&'a [u8]>,
+    pub(in crate::http::proxy) method: &'a Method,
+    pub(in crate::http::proxy) queue_wait: Duration,
+    pub(in crate::http::proxy) reason: &'static str,
+    pub(in crate::http::proxy) rescued: bool,
+    pub(in crate::http::proxy) servers: &'a [Label],
+    pub(in crate::http::proxy) status: Option<u16>,
+    pub(in crate::http::proxy) unix_ms: u64,
+    pub(in crate::http::proxy) stuck: bool,
+    pub(in crate::http::proxy) protocol: &'static str,
+}
+
+/// A request the lane proxied, as its line needs it: the request as the lane read it and how it went on.
+pub(in crate::http::proxy) struct Proxied<'a> {
+    pub(in crate::http::proxy) buffer: &'a [u8],
+    pub(in crate::http::proxy) head: &'a RequestHead,
+    pub(in crate::http::proxy) id: &'a HeaderValue,
+    pub(in crate::http::proxy) id_generated: bool,
+    pub(in crate::http::proxy) method: &'a Method,
+    pub(in crate::http::proxy) route: &'a HttpRoutePlan,
+    pub(in crate::http::proxy) protocol: &'static str,
 }
 
 impl<'a> Line<'a> {
     /// The line of a request the lane proxied.
     fn proxied(
         ctx: &'a HttpRequestContext,
-        forward: &Forward<'a>,
+        request: &Proxied<'a>,
         progress: &Progress,
         elapsed: Duration,
     ) -> Self {
-        let (buffer, head) = (forward.buffer, forward.head);
-        let trace = &ctx.trace;
         let idempotency = idempotency_header(ctx).and_then(|name| {
             let name = name.as_str().as_bytes();
-            head.headers()
+            request
+                .head
+                .headers()
                 .iter()
-                .find(|header| header.name(buffer).eq_ignore_ascii_case(name))
-                .map(|header| header.value(buffer))
+                .find(|header| header.name(request.buffer).eq_ignore_ascii_case(name))
+                .map(|header| header.value(request.buffer))
         });
+        let trace = &ctx.trace;
         Self {
             attempts: ctx.attempt_count(),
             received: progress.received as u64,
             sent: progress.sent as u64,
             connect: trace.connect,
             header: trace.header,
-            id: forward.id.as_bytes(),
-            id_generated: forward.request.client_id.is_none(),
+            id: request.id.as_bytes(),
+            id_generated: request.id_generated,
             elapsed,
             evacuations: ctx
                 .evacuation()
                 .map_or(0, |evacuation| evacuation.redispatches()),
             host: ctx.authority.as_ref(),
             idempotency,
-            method: forward.method,
+            method: request.method,
             queue_wait: trace.queue_wait,
             reason: trace.failure_reason.unwrap_or(""),
             rescued: ctx.rescued,
@@ -159,23 +179,62 @@ impl<'a> Line<'a> {
                 .inflight
                 .as_ref()
                 .is_some_and(crate::http::inflight::InflightGuard::stuck),
+            protocol: request.protocol,
+        }
+    }
+
+    /// The line of a request answered from the route alone: no attempt, no server.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::http::proxy) fn answered(
+        (id, id_generated): (&'a [u8], bool),
+        (host, method): (&'a Authority, &'a Method),
+        (status, sent): (Option<u16>, u64),
+        (started, ended): (Instant, Instant),
+        protocol: &'static str,
+    ) -> Self {
+        Self {
+            attempts: 0,
+            received: 0,
+            sent,
+            connect: None,
+            header: None,
+            id,
+            id_generated,
+            elapsed: ended.saturating_duration_since(started),
+            evacuations: 0,
+            host: Some(host),
+            idempotency: None,
+            method,
+            queue_wait: Duration::ZERO,
+            reason: "",
+            rescued: false,
+            servers: &[],
+            status,
+            unix_ms: crate::clock::wall_ms(ended),
+            stuck: false,
+            protocol,
         }
     }
 }
 
-pub(super) fn write_proxied(
+pub(in crate::http::proxy) fn write_proxied(
     log: &AccessLog,
     service: &[u8],
     ctx: &HttpRequestContext,
-    forward: &Forward<'_>,
+    request: &Proxied<'_>,
     progress: &Progress,
     elapsed: Duration,
 ) {
-    let line = Line::proxied(ctx, forward, progress, elapsed);
-    write(log, service, &forward.route.edits.log, &line);
+    let line = Line::proxied(ctx, request, progress, elapsed);
+    write(log, service, &request.route.edits.log, &line);
 }
 
-pub(super) fn write(log: &AccessLog, service: &[u8], route: &RouteLog, line: &Line<'_>) {
+pub(in crate::http::proxy) fn write(
+    log: &AccessLog,
+    service: &[u8],
+    route: &RouteLog,
+    line: &Line<'_>,
+) {
     let result = log.write_with(|out| {
         render(out, service, route, line);
         Ok(())
@@ -235,6 +294,9 @@ fn render(out: &mut Vec<u8>, service: &[u8], route: &RouteLog, line: &Line<'_>) 
     out.extend_from_slice(br#","method":"#);
     push_safe(out, &method_text(line.method));
     out.extend_from_slice(&route.pool);
+    out.extend_from_slice(br#","protocol":""#);
+    out.extend_from_slice(line.protocol.as_bytes());
+    out.extend_from_slice(br#"","queueWaitMs":""#);
     push_decimal(out, line.queue_wait.as_millis());
     out.extend_from_slice(br#"","reason":"#);
     push_text(out, line.reason);

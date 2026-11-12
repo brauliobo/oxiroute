@@ -123,7 +123,8 @@ pub(super) async fn h3_answers_bad_gateway_when_the_origin_breaks_its_answer() {
 }
 
 #[tokio::test]
-pub(super) async fn h3_answers_bad_gateway_for_an_origin_response_beyond_the_buffer_bound() {
+pub(super) async fn h3_resets_an_answer_declared_beyond_the_buffer_bound_when_its_origin_ends_early()
+ {
     let (_origin, address) = ScriptedOrigin::tcp(|_| {
         let head = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
@@ -133,7 +134,23 @@ pub(super) async fn h3_answers_bad_gateway_for_an_origin_response_beyond_the_buf
     })
     .await;
     let mut daemon = daemon_for(&[address], HttpProxyPolicy::default()).await;
-    assert_eq!(daemon.get("/huge").await.status, 502);
+    let mut stream = daemon.open("GET", "/huge", &[], b"").await;
+    let ended = match stream.recv_response().await {
+        Ok(response) => {
+            assert_eq!(response.status(), 200);
+            loop {
+                match stream.recv_data().await {
+                    Ok(Some(_)) => {}
+                    other => break other.map(|_| ()),
+                }
+            }
+        }
+        Err(error) => Err(error),
+    };
+    assert!(
+        ended.is_err(),
+        "the response is reset, not finished: {ended:?}"
+    );
     daemon.finish().await;
 }
 
