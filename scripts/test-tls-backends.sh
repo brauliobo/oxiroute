@@ -6,7 +6,7 @@ set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 read -ra cargo <<<"${CARGO:-cargo}"
-tests=(wire_tls_interop wire_tls_tickets wire_tls_handshake_pool wire_tls_rustls)
+tests=(wire_tls_interop wire_tls_tickets wire_tls_handshake_pool wire_tls_rustls wire_tls_parity wire_tls_clients)
 selection=()
 for test in "${tests[@]}"; do selection+=(--test "$test"); done
 
