@@ -46,6 +46,12 @@ pub(super) enum Reply {
     SendAndClose(Vec<u8>),
     /// Writes the bytes after a pause, unless the peer closes the connection first.
     After(Duration, Vec<u8>),
+    /// Writes each piece after its pause, then waits for the next request; the connection closes after the last
+    /// piece when `close` is set.
+    Paced {
+        pieces: Vec<(Duration, Vec<u8>)>,
+        close: bool,
+    },
 }
 
 type Script = Arc<dyn Fn(&Seen) -> Reply + Send + Sync>;
@@ -169,6 +175,18 @@ async fn serve<S>(
             Reply::SendAndClose(bytes) => {
                 let _ = stream.write_all(&bytes).await;
                 return;
+            }
+            Reply::Paced { pieces, close } => {
+                for (pause, bytes) in pieces {
+                    sleep(pause).await;
+                    if stream.write_all(&bytes).await.is_err() {
+                        return;
+                    }
+                }
+                if close {
+                    return;
+                }
+                true
             }
             Reply::After(pause, bytes) => {
                 let mut probe = [0_u8; 1];
