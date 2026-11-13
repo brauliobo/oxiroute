@@ -326,8 +326,8 @@ pnpm --dir ui verify:bundle
 pnpm --dir ui test:browser -- --workers=2
 ```
 
-The checked-in Linux workflow at `.github/workflows/ci.yml` enforces the workspace format/lint/tests,
-locked Rust 1.97.1 tests, bounded fuzz contract, coverage-manifest, package metadata, UI, stats page (build, embedded-asset drift, browser), browser,
+The checked-in Linux workflow at `.github/workflows/ci.yml` enforces the workspace format/lint and the
+locked Rust 1.97.1 workspace tests as parallel jobs, bounded fuzz contract, coverage-manifest, package metadata, UI, stats page (build, embedded-asset drift, browser), browser,
 and local ACME jobs. The separate optional `.github/workflows/fuzz-smoke.yml` runs the same required
 fuzz contract and its bounded smoke when tooling is available. A local `bash fuzz/smoke.sh` skip
 because `cargo-fuzz` is unavailable is not long-running fuzz or crash-corpus evidence.
