@@ -13,10 +13,8 @@ version.workspace = true
 profiling = ["tikv-jemallocator/profiling", "tikv-jemallocator/stats"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemallocator.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 tikv-jemalloc-sys = "0.6"
+tikv-jemallocator.workspace = true
 
 # The only crate of the workspace that cannot forbid unsafe code: jemalloc reads its configuration from an exported
 # C symbol, which Rust 2024 only accepts as `#[unsafe(export_name)]`. Everything else stays denied.
