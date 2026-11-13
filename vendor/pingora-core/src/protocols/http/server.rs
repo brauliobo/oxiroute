@@ -25,7 +25,7 @@ use crate::protocols::{Digest, SocketAddr, Stream};
 use bytes::{Bytes, BytesMut};
 use http::HeaderValue;
 use http::{header::AsHeaderName, HeaderMap};
-use pingora_error::{Error, Result};
+use pingora_error::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
 use std::any::Any;
 use std::time::Duration;
@@ -818,6 +818,23 @@ impl Session {
             Self::Subrequest(s) => s.read_body_or_idle(no_body_expected).await,
             Self::Custom(s) => s.read_body_or_idle(no_body_expected).await,
         }
+    }
+
+    /// Resolves with the error of a client that is gone: it closed its connection or, over HTTP/2, reset the stream.
+    /// Nothing is read, so it can be awaited while the request is still being handled; sessions that cannot tell
+    /// never resolve.
+    pub async fn closed(&mut self) -> Box<Error> {
+        let closed = match self {
+            Self::H1(s) => s.closed().await,
+            Self::H2(s) => s.idle().await.map(drop),
+            Self::Subrequest(_) | Self::Custom(_) => std::future::pending().await,
+        };
+        let context = "downstream gone while its request waited";
+        match closed {
+            Ok(()) => Error::explain(ErrorType::ConnectionClosed, context),
+            Err(cause) => Error::because(ErrorType::ConnectionClosed, context, cause),
+        }
+        .into_down()
     }
 
     /// Return an [`Idle`] future that waits for this H2 stream to close without
