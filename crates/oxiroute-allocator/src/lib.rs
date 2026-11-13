@@ -18,6 +18,7 @@ pub static MALLOC_CONF: &[u8; 99] =
 /// Starts the jemalloc background thread that returns dirty pages when their decay time is up. Without it jemalloc only
 /// purges while some thread allocates, so a process that went idle after a burst (thousands of connections closed)
 /// kept the memory of the burst until the next one. Call it once the process no longer needs to be single-threaded.
+/// A `background_thread` key in `_RJEM_MALLOC_CONF` is the operator's choice and is left alone.
 ///
 /// # Errors
 ///
@@ -25,6 +26,9 @@ pub static MALLOC_CONF: &[u8; 99] =
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub fn start_background_thread() -> std::io::Result<()> {
+    if std::env::var("_RJEM_MALLOC_CONF").is_ok_and(|conf| conf.contains("background_thread")) {
+        return Ok(());
+    }
     let mut enable = true;
     // SAFETY: the name is NUL-terminated and `background_thread` is a `bool` that jemalloc reads from `enable`.
     let status = unsafe {
