@@ -6,7 +6,7 @@
     "value": "ca686e3",
     "documentation": "docs/UPSTREAM_ANALYSIS.md"
   },
-  "evidence": ["evidence.haproxy.import", "evidence.balance.least-connections", "evidence.haproxy.acl-conjunction"],
+  "evidence": ["evidence.haproxy.import", "evidence.balance.least-connections", "evidence.haproxy.acl-conjunction", "evidence.haproxy.runtime-behavior"],
   "entries": [
     { "id": "directive.haproxy.section.global", "key": "global", "form": "section header", "contexts": ["root"], "disposition": "classified", "target": "haproxy.effective_configuration", "required_tests": ["parse", "resolve", "failure"] },
     { "id": "directive.haproxy.section.defaults", "key": "defaults", "form": "named or unnamed section with optional from reference", "contexts": ["root"], "disposition": "classified", "target": "haproxy.effective_configuration", "required_tests": ["parse", "resolve", "failure"] },

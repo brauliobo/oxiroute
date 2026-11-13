@@ -386,44 +386,59 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             .contains("matches no lowered proxy origin")
     }));
 
-    let host-a = import_root_with_options(
+    let directory = tempfile::tempdir().expect("bearer overlay root directory");
+    fs::write(directory.path().join("nginx.conf"), bearer_proxy_root()).unwrap();
+    let duplicate_bearer = import_root_with_options(
         Path::new("nginx.conf"),
-        &live_fixture("host-a"),
+        directory.path(),
         &NginxImportOptions {
             bearer_tokens: vec![
-                NginxBearerTokenOverlay {
-                    server_name: "ollama.corp-b.test".into(),
-                    token_file_path: "/run/secrets/ollama.token".into(),
-                },
-                NginxBearerTokenOverlay {
-                    server_name: "OLLAMA.corp-b.test".into(),
-                    token_file_path: "/run/secrets/other.token".into(),
-                },
+                bearer_overlay("api.example.org", "/run/secrets/api.token"),
+                bearer_overlay("API.example.org", "/run/secrets/other.token"),
             ],
-            upstream_tls: live_options("host-a").upstream_tls,
-            host_timezones: Vec::new(),
-            default_access_log: None,
-            recording_root: None,
-            default_error_page: None,
-            x_accel_controls_absent: false,
+            ..NginxImportOptions::default()
         },
     );
+    assert!(duplicate_bearer.has_errors());
     assert!(
-        host-a
+        duplicate_bearer
             .candidate
             .validated()
             .map(oxiroute_config::ValidatedConfig::as_draft)
             .is_none()
     );
+}
+
+#[test]
+fn bearer_token_overlay_lowers_a_redacted_authorization_rule() {
+    let directory = tempfile::tempdir().expect("bearer overlay root directory");
+    fs::write(directory.path().join("nginx.conf"), bearer_proxy_root()).unwrap();
+    let missing = import_root(Path::new("nginx.conf"), directory.path());
+    assert!(missing.has_errors());
     assert!(
-        host-a
+        missing
             .candidate
             .operational_overlays
             .iter()
-            .any(|overlay| {
-                overlay.kind == OperationalOverlayKind::BearerTokenFile && !overlay.satisfied
-            })
+            .any(
+                |overlay| overlay.kind == OperationalOverlayKind::BearerTokenFile
+                    && !overlay.satisfied
+            )
     );
+
+    let report = import_root_with_options(
+        Path::new("nginx.conf"),
+        directory.path(),
+        &NginxImportOptions {
+            bearer_tokens: vec![bearer_overlay("api.example.org", "/run/secrets/api.token")],
+            ..NginxImportOptions::default()
+        },
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(report.candidate.validated().is_some());
+    assert!(report.candidate.operational_overlays.iter().any(|overlay| {
+        overlay.kind == OperationalOverlayKind::BearerTokenFile && overlay.satisfied
+    }));
 }
 
 #[test]
@@ -477,189 +492,96 @@ fn bounded_downstream_scheme_specializes_static_authority_per_listener() {
 }
 
 #[test]
-fn sanitized_live_source_trees_load_as_complete_graphs() {
-    for (host, expected_sources) in [("host-b", 8), ("host-a", 19), ("host-c", 3)] {
-        let directory = live_fixture(host);
-        let report = import_root(Path::new("nginx.conf"), &directory);
-        assert!(report.source_graph.snapshot_stable, "unstable {host} graph");
-        assert_eq!(
-            report.source_graph.sources.len(),
-            expected_sources,
-            "incomplete {host} source graph: {:#?}",
-            report.diagnostics
-        );
-        let metadata: serde_json::Value = serde_json::from_slice(
-            &fs::read(directory.parent().unwrap().join("metadata.json"))
-                .expect("read live fixture metadata"),
-        )
-        .expect("parse live fixture metadata");
-        assert_eq!(metadata["host"], host);
-        assert_eq!(
-            metadata["host_timezone"],
-            if host == "host-b" {
-                "America/Recife"
-            } else {
-                "America/Argentina/Buenos_Aires"
-            }
-        );
-        assert_eq!(metadata["schema_version"], 4);
-        assert_eq!(
-            metadata["audit_status"],
-            "live_origin_hashed_read_only_captured"
-        );
-        assert_eq!(metadata["sanitized"], true);
-        assert_eq!(
-            metadata["files"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|file| file["path"].as_str().unwrap().starts_with("nginx/"))
-                .count(),
-            expected_sources
-        );
-        assert_eq!(metadata["native_versions"]["nginx"], "1.30.4");
-        assert_eq!(metadata["native_versions"]["haproxy"], "3.4.2");
-        assert_eq!(metadata["native_version_availability"], "recorded");
-        assert_eq!(metadata["origin_captures"].as_array().unwrap().len(), 2);
-        assert_eq!(metadata["sanitizer"]["raw_bytes_stored"], false);
-    }
+fn included_http_and_rtmp_sources_load_as_one_stable_graph() {
+    let report = import_root(Path::new("nginx.conf"), &synthetic_root());
+    assert!(report.source_graph.snapshot_stable);
+    assert_eq!(
+        report.source_graph.sources.len(),
+        3,
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]
-fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers() {
-    for host in ["host-b", "host-a", "host-c"] {
-        let report = import_root_with_options(
-            Path::new("nginx.conf"),
-            &live_fixture(host),
-            &live_options(host),
-        );
-        if host != "host-c" {
-            assert!(report.has_errors());
-            assert!(
-                report
-                    .candidate
-                    .validated()
-                    .map(oxiroute_config::ValidatedConfig::as_draft)
-                    .is_none()
-            );
-            assert!(
-                report
-                    .candidate
-                    .operational_overlays
-                    .iter()
-                    .any(|overlay| !overlay.satisfied)
-            );
-            if host == "host-a" {
-                assert!(
-                    report
-                        .candidate
-                        .operational_overlays
-                        .iter()
-                        .flat_map(|overlay| &overlay.values)
-                        .any(|value| value == "token_file_path=/run/secrets/ollama.token")
-                );
-            }
-            continue;
-        }
-        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        assert!(
-            report
-                .candidate
-                .validated()
-                .map(oxiroute_config::ValidatedConfig::as_draft)
-                .is_some()
-        );
-        assert!(report.candidate.operational_overlays.iter().any(|overlay| {
-            overlay.kind == OperationalOverlayKind::StructuredAccessLogMigration
-                && overlay.satisfied
-        }));
-        assert!(report.candidate.operational_overlays.iter().any(|overlay| {
-            overlay.kind == OperationalOverlayKind::RecordingRootMigration && overlay.satisfied
-        }));
-        assert_eq!(
-            report
-                .candidate
-                .validated()
-                .map(oxiroute_config::ValidatedConfig::as_draft)
-                .unwrap()
-                .rtmp_services[0]
-                .applications[0]
-                .recorders[0]
-                .root_directory,
-            Path::new("/mnt/cloud/4tb/cam-rtmp")
-        );
-        let default_404 = report
-            .candidate
-            .validated()
-            .map(oxiroute_config::ValidatedConfig::as_draft)
-            .unwrap()
-            .http_services
-            .iter()
-            .flat_map(|service| &service.routes)
-            .find_map(|route| match &route.action {
-                HttpRouteAction::StaticFiles {
-                    error_responses, ..
-                } => error_responses
-                    .iter()
-                    .find(|response| response.statuses.contains(&404)),
-                _ => None,
-            })
-            .expect("nginx default 404 migration");
-        assert_eq!(default_404.body.as_deref().map(str::len), Some(153));
-        assert!(
-            default_404
-                .headers
-                .iter()
-                .any(|header| { header.name == "server" && header.value == "nginx/1.30.2" })
-        );
-        assert_eq!(
-            report
-                .candidate
-                .validated()
-                .expect("live root candidate")
-                .as_draft()
-                .rtmp_services[0]
-                .outbound_chunk_size,
-            4_096
-        );
-    }
-}
-
-fn live_fixture(host: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/live")
-        .join(host)
-        .join("nginx")
-}
-
-fn live_options(host: &str) -> NginxImportOptions {
-    let mut options = NginxImportOptions::default();
-    if host == "host-c" {
-        options.host_timezones = vec![NginxHostTimezoneOverlay {
+fn migration_overlays_finalize_the_synthetic_root_and_are_consumed() {
+    let options = NginxImportOptions {
+        host_timezones: vec![NginxHostTimezoneOverlay {
             timezone: "America/Argentina/Buenos_Aires".into(),
-        }];
-        options.default_access_log = Some(NginxDefaultAccessLogOverlay {
+        }],
+        default_access_log: Some(NginxDefaultAccessLogOverlay {
             path: "/var/lib/oxiroute/http-access.jsonl".into(),
-        });
-        options.recording_root = Some(NginxRecordingRootOverlay {
-            path: "/mnt/cloud/4tb/cam-rtmp".into(),
-        });
-        options.default_error_page = Some(NginxDefaultErrorPageOverlay {
+        }),
+        recording_root: Some(NginxRecordingRootOverlay {
+            path: "/mnt/storage/recordings".into(),
+        }),
+        default_error_page: Some(NginxDefaultErrorPageOverlay {
             server: "nginx/1.30.2".into(),
-        });
+        }),
+        ..NginxImportOptions::default()
+    };
+    let report = import_root_with_options(Path::new("nginx.conf"), &synthetic_root(), &options);
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    for kind in [
+        OperationalOverlayKind::StructuredAccessLogMigration,
+        OperationalOverlayKind::RecordingRootMigration,
+        OperationalOverlayKind::DefaultErrorPageMigration,
+    ] {
+        assert!(
+            report
+                .candidate
+                .operational_overlays
+                .iter()
+                .any(|overlay| overlay.kind == kind && overlay.satisfied),
+            "{kind:?} overlay was not consumed"
+        );
     }
-    if host == "host-a" {
-        options.upstream_tls = vec![
-            tls_overlay("198.51.100.76", "host-c.example.org", false),
-            tls_overlay("host-c.test:4081", "host-c.test", true),
-            tls_overlay("198.51.100.152", "nuvem.corp-g.test", false),
-        ];
-        options.bearer_tokens = vec![NginxBearerTokenOverlay {
-            server_name: "ollama.corp-b.test".into(),
-            token_file_path: "/run/secrets/ollama.token".into(),
-        }];
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("overlaid synthetic root");
+    let rtmp = &config.rtmp_services[0];
+    assert_eq!(rtmp.outbound_chunk_size, 4_096);
+    assert_eq!(
+        rtmp.applications[0].recorders[0].root_directory,
+        Path::new("/mnt/storage/recordings")
+    );
+    let default_404 = config
+        .http_services
+        .iter()
+        .flat_map(|service| &service.routes)
+        .find_map(|route| match &route.action {
+            HttpRouteAction::StaticFiles {
+                error_responses, ..
+            } => error_responses
+                .iter()
+                .find(|response| response.statuses.contains(&404)),
+            _ => None,
+        })
+        .expect("nginx default 404 migration");
+    assert_eq!(default_404.body.as_deref().map(str::len), Some(153));
+    assert!(
+        default_404
+            .headers
+            .iter()
+            .any(|header| header.name == "server" && header.value == "nginx/1.30.2")
+    );
+}
+
+fn synthetic_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic/nginx-root")
+}
+
+fn bearer_overlay(server_name: &str, token_file_path: &str) -> NginxBearerTokenOverlay {
+    NginxBearerTokenOverlay {
+        server_name: server_name.into(),
+        token_file_path: token_file_path.into(),
     }
-    options
+}
+
+fn bearer_proxy_root() -> &'static str {
+    "events {}\nhttp { access_log off; proxy_http_version 1.1; proxy_buffering off; proxy_request_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:18080 default_server; server_name api.example.org; location / { if ($http_authorization != \"Bearer <redacted>\") { return 401; } proxy_pass http://app; } } }\n"
 }
 
 fn tls_overlay(

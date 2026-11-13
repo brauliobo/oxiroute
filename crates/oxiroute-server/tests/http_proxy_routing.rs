@@ -898,7 +898,7 @@ async fn cache_serves_stale_only_for_transport_and_server_failures() {
 }
 
 #[tokio::test]
-async fn host-b_shaped_nginx_suffix_routes_use_importer_resolved_first_wins_order_on_wire() {
+async fn nginx_suffix_routes_use_importer_resolved_first_wins_order_on_wire() {
     timeout(TEST_TIMEOUT, async {
         let fallback = Origin::start("fallback", 1).await;
         let wildcard = Origin::start("wildcard", 1).await;
@@ -968,7 +968,7 @@ async fn host-b_shaped_nginx_suffix_routes_use_importer_resolved_first_wins_orde
         leading_dot.finish().await;
     })
     .await
-    .expect("host-b suffix route test timed out");
+    .expect("suffix route test timed out");
 }
 
 #[tokio::test]

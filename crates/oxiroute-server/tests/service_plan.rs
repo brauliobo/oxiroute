@@ -176,7 +176,7 @@ fn distributed_example_compiles_into_an_active_runtime_plan() {
     clippy::too_many_lines,
     reason = "one integration case keeps all three audited host pool shapes visible"
 )]
-fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
+fn dns_pool_shapes_compile_with_named_policy() {
     let haproxy_http_check = HealthCheck {
         kind: HealthCheckType::Http,
         interval_ms: 2_000,
@@ -235,10 +235,10 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         max_connections: Some(4_096),
         upstream_pools: vec![
             pool(
-                "host-b",
+                "app-pool",
                 vec![
-                    dns_server("host-b01".into(), 3_000),
-                    dns_server("host-b02".into(), 3_000),
+                    dns_server("app-pool01".into(), 3_000),
+                    dns_server("app-pool02".into(), 3_000),
                 ],
                 UpstreamAlgorithm::First,
                 Some(haproxy_http_check.clone()),
@@ -253,9 +253,9 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
                 Some(haproxy_http_check.clone()),
             ),
             pool(
-                "host-c_nodes",
+                "media_nodes",
                 (1..=8)
-                    .map(|ordinal| dns_server(format!("host-c{ordinal:02}"), 4_000))
+                    .map(|ordinal| dns_server(format!("media{ordinal:02}"), 4_000))
                     .collect(),
                 UpstreamAlgorithm::LeastConnections,
                 Some(haproxy_http_check),
@@ -289,9 +289,9 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "host-b".into(),
+                "app-pool".into(),
                 "first",
-                vec!["host-b01".into(), "host-b02".into()]
+                vec!["app-pool01".into(), "app-pool02".into()]
             ),
             (
                 "app_nodes".into(),
@@ -299,10 +299,10 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
                 vec!["app01".into(), "app02".into()]
             ),
             (
-                "host-c_nodes".into(),
+                "media_nodes".into(),
                 "least_connections",
                 (1..=8)
-                    .map(|ordinal| format!("host-c{ordinal:02}"))
+                    .map(|ordinal| format!("media{ordinal:02}"))
                     .collect()
             ),
         ]

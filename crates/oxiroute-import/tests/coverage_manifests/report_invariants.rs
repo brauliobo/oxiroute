@@ -48,9 +48,9 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
             .is_some()
     );
 
-    let partial = import_nginx_fixture("host-a-partial.conf");
+    let partial = import_nginx_fixture("synthetic/nginx/dns-upstream-two-listeners.conf");
     assert_import_report_invariants(&partial);
-    assert!(!partial.has_errors());
+    assert!(!partial.has_errors(), "{:#?}", partial.diagnostics);
     assert!(partial.blocked_services.is_empty());
     assert!(
         partial
@@ -73,7 +73,7 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
     assert!(rtmp_exact.blocked_services.is_empty());
     assert_eq!(rtmp_exact.summary().rtmp_services, 1);
 
-    let rtmp_partial = import_rtmp_fixture("host-c-audited-partial.conf");
+    let rtmp_partial = import_rtmp_fixture("synthetic/nginx/rtmp-partial-blocked-server.conf");
     assert_rtmp_import_report_invariants(&rtmp_partial);
     assert!(
         rtmp_partial
@@ -86,9 +86,9 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
     assert_eq!(rtmp_partial.summary().rtmp_services, 1);
 
     for (name, expected_finalized) in [
-        ("minimal-representable.cfg", true),
-        ("host-a-active.cfg", true),
-        ("host-c-dormant.cfg", true),
+        ("haproxy/minimal-representable.cfg", true),
+        ("synthetic/haproxy/unix-gateway.cfg", true),
+        ("synthetic/haproxy/dns-leastconn-pool.cfg", true),
     ] {
         let parsed = parse_haproxy_fixture(name);
         let resolved = resolve_parsed(parsed.clone());
@@ -142,14 +142,14 @@ pub(crate) fn parse_haproxy_source(name: &str, contents: &[u8]) -> Report<Config
 }
 
 pub(crate) fn parse_haproxy_fixture(name: &str) -> Report<Configuration> {
-    let path = workspace_path("crates/oxiroute-import/tests/fixtures/haproxy").join(name);
+    let path = workspace_path("crates/oxiroute-import/tests/fixtures").join(name);
     let contents = fs::read(&path)
         .unwrap_or_else(|error| panic!("read HAProxy fixture {}: {error}", path.display()));
     parse_haproxy_source(name, &contents)
 }
 
 pub(crate) fn import_nginx_fixture(name: &str) -> NginxImportReport {
-    let source_path = workspace_path("crates/oxiroute-import/tests/fixtures/nginx").join(name);
+    let source_path = workspace_path("crates/oxiroute-import/tests/fixtures").join(name);
     let source = fs::read(&source_path)
         .unwrap_or_else(|error| panic!("read nginx fixture {}: {error}", source_path.display()));
     let directory = TempDir::new().expect("create nginx fixture directory");
@@ -165,7 +165,7 @@ pub(crate) fn import_nginx_plaintext_supported_fixture() -> NginxImportReport {
 }
 
 pub(crate) fn import_rtmp_fixture(name: &str) -> RtmpImportReport {
-    let source_path = workspace_path("crates/oxiroute-import/tests/fixtures/nginx").join(name);
+    let source_path = workspace_path("crates/oxiroute-import/tests/fixtures").join(name);
     let source = fs::read(&source_path).unwrap_or_else(|error| {
         panic!("read nginx-RTMP fixture {}: {error}", source_path.display())
     });
@@ -390,16 +390,6 @@ pub(crate) fn assert_diagnostic_message(diagnostics: &[Diagnostic], expected: &s
             .any(|diagnostic| diagnostic.message().contains(expected)),
         "missing diagnostic containing {expected:?}"
     );
-}
-
-pub(crate) fn diagnostic_count(
-    diagnostics: &[Diagnostic],
-    code: oxiroute_import::DiagnosticCode,
-) -> usize {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code() == code)
-        .count()
 }
 
 pub(crate) type HaproxyProbeReports = (

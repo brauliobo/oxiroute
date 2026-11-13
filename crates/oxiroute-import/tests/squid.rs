@@ -25,7 +25,7 @@ use tempfile::tempdir;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/squid")
+        .join("tests/fixtures/synthetic/squid")
         .join(name)
 }
 
@@ -134,15 +134,15 @@ fn canonical_validation_failures_remain_blocking_diagnostics() {
 }
 
 #[test]
-fn host-a_sanitized_shape_classifies_every_reachable_directive() {
-    let report = import(&fixture("host-a-sanitized.conf"));
+fn forward_proxy_sanitized_shape_classifies_every_reachable_directive() {
+    let report = import(&fixture("forward-proxy-auth.conf"));
 
     assert_eq!(report.source_graph.sources.len(), 1);
     assert!(report.source_graph.includes.is_empty());
     assert!(report.source_graph.snapshot_stable);
     assert_eq!(report.source_graph.expanded_directives.len(), 35);
     assert_eq!(report.decision_ledger.decisions.len(), 35);
-    let matrix = host-a_behavior_matrix();
+    let matrix = forward_proxy_behavior_matrix();
     assert_eq!(matrix.len(), 35);
     for (ordinal, (decision, expected)) in report
         .decision_ledger
@@ -179,14 +179,14 @@ fn host-a_sanitized_shape_classifies_every_reachable_directive() {
 }
 
 #[test]
-fn host-a_typed_ir_resolves_acl_auth_port_refresh_and_process_semantics() {
-    let report = import(&fixture("host-a-sanitized.conf"));
-    assert_host-a_acls_and_access(&report);
-    assert_host-a_service_settings(&report);
-    assert_host-a_authentication(&report);
+fn forward_proxy_typed_ir_resolves_acl_auth_port_refresh_and_process_semantics() {
+    let report = import(&fixture("forward-proxy-auth.conf"));
+    assert_forward_proxy_acls_and_access(&report);
+    assert_forward_proxy_service_settings(&report);
+    assert_forward_proxy_authentication(&report);
 }
 
-fn assert_host-a_acls_and_access(report: &oxiroute_import::squid::ImportReport) {
+fn assert_forward_proxy_acls_and_access(report: &oxiroute_import::squid::ImportReport) {
     assert_eq!(report.effective.acl_definitions.len(), 14);
     assert_eq!(report.effective.acls.len(), 4);
     assert_eq!(report.effective.acls[0].acl_type, AclType::Source);
@@ -211,7 +211,7 @@ fn assert_host-a_acls_and_access(report: &oxiroute_import::squid::ImportReport) 
     );
 }
 
-fn assert_host-a_service_settings(report: &oxiroute_import::squid::ImportReport) {
+fn assert_forward_proxy_service_settings(report: &oxiroute_import::squid::ImportReport) {
     assert_eq!(
         report.effective.ports[0].endpoint,
         PortEndpoint::Wildcard { port: 31280 }
@@ -247,7 +247,7 @@ fn assert_host-a_service_settings(report: &oxiroute_import::squid::ImportReport)
     ));
 }
 
-fn assert_host-a_authentication(report: &oxiroute_import::squid::ImportReport) {
+fn assert_forward_proxy_authentication(report: &oxiroute_import::squid::ImportReport) {
     assert_eq!(report.effective.authentication.len(), 3);
     assert_eq!(report.effective.authentication_schemes.len(), 1);
     assert_eq!(
@@ -271,8 +271,8 @@ fn assert_host-a_authentication(report: &oxiroute_import::squid::ImportReport) {
 }
 
 #[test]
-fn host-a_report_lowers_to_a_complete_forward_proxy_candidate() {
-    let report = import(&fixture("host-a-sanitized.conf"));
+fn forward_proxy_report_lowers_to_a_complete_forward_proxy_candidate() {
+    let report = import(&fixture("forward-proxy-auth.conf"));
     let config = report
         .candidate
         .validated()
@@ -317,25 +317,25 @@ fn host-a_report_lowers_to_a_complete_forward_proxy_candidate() {
     assert_squid_origin(
         &report,
         "/listeners/0",
-        &fixture("host-a-sanitized.conf"),
+        &fixture("forward-proxy-auth.conf"),
         4,
         0,
     );
     assert_squid_origin(
         &report,
         "/forward_proxy_services/0/auth",
-        &fixture("host-a-sanitized.conf"),
+        &fixture("forward-proxy-auth.conf"),
         27,
         0,
     );
     assert_squid_origin(
         &report,
         "/forward_proxy_services/0/access_policy/rules/0",
-        &fixture("host-a-sanitized.conf"),
+        &fixture("forward-proxy-auth.conf"),
         20,
         0,
     );
-    assert!(host-a_blockers(&report).is_empty());
+    assert!(forward_proxy_blockers(&report).is_empty());
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(
         report.diagnostics[0].severity(),
@@ -561,7 +561,7 @@ fn assert_squid_origin(
     }));
 }
 
-fn host-a_blockers(
+fn forward_proxy_blockers(
     report: &oxiroute_import::squid::ImportReport,
 ) -> Vec<(SemanticBlockerKind, usize)> {
     report
@@ -571,7 +571,7 @@ fn host-a_blockers(
         .collect()
 }
 
-fn host-a_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution, Activation)> {
+fn forward_proxy_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution, Activation)> {
     let blocked = Activation::Blocked;
     let mut matrix = vec![
         (
@@ -668,12 +668,12 @@ fn host-a_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution, Act
 }
 
 #[test]
-fn host-a_http_access_uses_ordered_first_match_and_native_default() {
-    let report = import(&fixture("host-a-sanitized.conf"));
+fn forward_proxy_http_access_uses_ordered_first_match_and_native_default() {
+    let report = import(&fixture("forward-proxy-auth.conf"));
     let policy = &report.effective.access_policies[0];
 
     let authenticated = policy.evaluate(|term| match term.name.value.as_slice() {
-        b"acl_2" | b"acl_8" | b"all" => Some(true),
+        b"clients" | b"authenticated" | b"safe_ports" | b"all" => Some(true),
         b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => Some(false),
         _ => None,
     });
@@ -686,8 +686,8 @@ fn host-a_http_access_uses_ordered_first_match_and_native_default() {
     );
 
     let unauthenticated = policy.evaluate(|term| match term.name.value.as_slice() {
-        b"acl_2" | b"all" => Some(true),
-        b"acl_8" | b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => {
+        b"clients" | b"safe_ports" | b"all" => Some(true),
+        b"authenticated" | b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => {
             Some(false)
         }
         _ => None,
@@ -1209,7 +1209,7 @@ fn lowering_adapter_receives_typed_ir_without_a_duplicate_schema() {
         }
     }
 
-    let report = import(&fixture("host-a-sanitized.conf"));
+    let report = import(&fixture("forward-proxy-auth.conf"));
     assert_eq!(report.lower_with(&CountAdapter), Ok((1, 35, 0)));
 }
 

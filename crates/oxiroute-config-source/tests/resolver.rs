@@ -51,7 +51,7 @@ haproxy_server "frontend.cfg" "backend.cfg" {
 #[test]
 fn concise_kdl_imports_a_complete_squid_forward_proxy_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let source_path = root.parent().unwrap().join("host.kdl");
     let source = format!("squid_server {root:?} {{ externalize_cache #true }}\n");
     let resolved = resolve_source(&source_path, source.as_bytes()).expect("resolved Squid KDL");
@@ -155,7 +155,7 @@ fn native_apache_reference_retains_include_provenance_in_its_report() {
 #[test]
 fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     for (extension, source) in [
         (
             "hocon",
@@ -187,7 +187,7 @@ fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
 #[test]
 fn native_squid_references_resolve_the_same_candidate_shape() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let sources = [
         (
             "kdl",
@@ -280,7 +280,7 @@ fn nginx_native_dependencies_track_glob_parents_and_match_changes() {
 #[test]
 fn native_squid_requires_explicit_cache_externalization() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let source_path = root.parent().unwrap().join("host.kdl");
     let source = format!("squid_server {root:?}\n");
 
@@ -413,23 +413,23 @@ version = 1
 }
 
 #[test]
-fn sanitized_host-c_sources_resolve_as_one_host() {
-    let fixture = live_fixture("host-c");
+fn nginx_and_haproxy_sources_resolve_as_one_host() {
     let source = br#"
-nginx_server "nginx/nginx.conf" {
-  root_prefix "nginx"
+nginx_server "nginx-root/nginx.conf" {
+  root_prefix "nginx-root"
   host_timezone "America/Argentina/Buenos_Aires"
   default_access_log_file "/var/lib/oxiroute/http-access.jsonl"
-  recording_root "/mnt/cloud/4tb/cam-rtmp"
+  recording_root "/mnt/storage/recordings"
   default_error_server "nginx/1.30.2"
 }
-haproxy_server "haproxy.cfg" {
-  node_ip "192.0.2.73"
+haproxy_server "haproxy/env-health-routes.cfg" {
+  node_ip "192.0.2.11"
   gpu1_defined #false
 }
 "#;
 
-    let resolved = resolve_source(&fixture.join("host.kdl"), source).expect("host-c host");
+    let resolved =
+        resolve_source(&synthetic_fixture().join("host.kdl"), source).expect("synthetic host");
 
     assert!(!resolved.config.as_draft().http_services.is_empty());
     assert!(!resolved.config.as_draft().rtmp_services.is_empty());
@@ -438,30 +438,30 @@ haproxy_server "haproxy.cfg" {
 }
 
 #[test]
-fn sanitized_back1_and_host-d_haproxy_sources_use_explicit_environments() {
-    for (host, node_ip) in [("host-e", "192.0.2.17"), ("host-d", "192.0.2.37")] {
-        let fixture = live_fixture(host);
+fn haproxy_sources_use_explicit_environments() {
+    for (node_ip, gpu1_defined) in [("192.0.2.7", true), ("192.0.2.15", false)] {
+        let fixture = synthetic_fixture().join("haproxy");
         let source = format!(
-            "haproxy_server \"haproxy.cfg\" {{ node_ip \"{node_ip}\"; gpu1_defined #true; }}"
+            "haproxy_server \"env-health-routes.cfg\" {{ node_ip \"{node_ip}\"; gpu1_defined #{gpu1_defined}; }}"
         );
         let resolved = resolve_source(&fixture.join("host.kdl"), source.as_bytes())
-            .unwrap_or_else(|error| panic!("{host} did not resolve: {error}"));
+            .unwrap_or_else(|error| panic!("{node_ip} did not resolve: {error}"));
 
         assert!(!resolved.config.as_draft().listeners.is_empty());
         assert_eq!(
             resolved.dependencies,
-            vec![fixture.join("haproxy.cfg"), fixture.clone()]
+            vec![fixture.join("env-health-routes.cfg"), fixture.clone()]
         );
     }
 }
 
 #[test]
 fn newly_representable_native_candidate_resolves_with_complete_policy() {
-    let fixture = fixture_root().join("haproxy/host-a-active.cfg");
+    let fixture = synthetic_fixture().join("haproxy/unix-gateway.cfg");
     let path = serde_json::to_string(fixture.to_str().unwrap()).unwrap();
     let source = format!("haproxy_server = {{ paths = [{path}] }}");
 
-    let resolved = resolve_source(Path::new("host-a.hocon"), source.as_bytes())
+    let resolved = resolve_source(Path::new("unix-gateway.hocon"), source.as_bytes())
         .expect("representable HAProxy root");
 
     assert!(resolved.compositional);
@@ -606,6 +606,6 @@ fn fixture_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxiroute-import/tests/fixtures")
 }
 
-fn live_fixture(host: &str) -> std::path::PathBuf {
-    fixture_root().join("live").join(host)
+fn synthetic_fixture() -> std::path::PathBuf {
+    fixture_root().join("synthetic")
 }

@@ -22,10 +22,8 @@ use oxiroute_import::{
 };
 use tempfile::tempdir;
 
-const host-a: &[u8] = include_bytes!("fixtures/haproxy/host-a-active.cfg");
 const SYNTHETIC_UNIX_DNS_LEASTCONN: &[u8] =
     include_bytes!("fixtures/haproxy/synthetic-unix-dns-leastconn.cfg");
-const host-c: &[u8] = include_bytes!("fixtures/haproxy/host-c-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
 const ACL_CONJUNCTION: &[u8] = include_bytes!("fixtures/haproxy/acl-conjunction.cfg");
 const HTTP_CHECK_SEND: &[u8] = include_bytes!("fixtures/haproxy/http-check-send.cfg");
@@ -51,181 +49,76 @@ fn imported_http_services_disable_automatic_response_headers_in_canonical_render
 }
 
 #[test]
-fn host-a_active_report_finalizes_proxy_while_retaining_stats_requirements() {
-    let lowered = import_fixture("host-a-active.cfg", host-a);
+fn dns_leastconn_pool_finalizes_with_reusable_connections_and_queue_timeout() {
+    let lowered = import_synthetic("dns-leastconn-pool.cfg", false);
     let candidate = lowered.value();
+    let config = validated_config(candidate);
 
-    assert!(
-        candidate
-            .validated()
-            .map(oxiroute_config::ValidatedConfig::as_draft)
-            .is_some()
-    );
     assert_eq!(candidate.summary().upstream_pools, 1);
+    assert_eq!(candidate.summary().listeners, 1);
+    assert_eq!(candidate.summary().max_connections, Some(2048));
     assert_eq!(
-        validated_config(candidate).upstream_pools[0].connection_reuse,
+        config.upstream_pools[0].connection_reuse,
         oxiroute_config::UpstreamConnectionReuse::Safe
     );
-    assert!(
-        validated_config(candidate)
-            .listeners
-            .iter()
-            .any(|listener| listener.name == "host-a")
-    );
-    assert_eq!(code_count(lowered.diagnostics(), E_LOGGING_UNSUPPORTED), 3);
-    assert_eq!(code_count(lowered.diagnostics(), E_STATS_UNSUPPORTED), 2);
-    assert!(!candidate.summary().stats);
-    assert_eq!(candidate.activation_requirements.len(), 2);
+    assert_eq!(config.upstream_pools[0].queue_timeout_ms, Some(600_000));
     assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
     assert_process_settings_are_external_warnings(lowered.diagnostics());
-    assert_eq!(candidate.summary().max_connections, Some(4096));
-    assert_has_provenance(candidate, "/max_connections");
-    assert!(!diagnostic_contains(
-        lowered.diagnostics(),
-        "forwardfor header insertion"
-    ));
-    assert!(!diagnostic_contains(
-        lowered.diagnostics(),
-        "Unix bind sockets"
-    ));
     assert!(!diagnostic_contains(
         lowered.diagnostics(),
         "DNS-named servers"
     ));
-    assert_eq!(candidate.summary().http_services, 1);
     assert_no_fallback_routes(candidate);
 }
 
 #[test]
-fn host-c_dormant_report_finalizes_with_reusable_dns_leastconn_pool() {
-    let lowered = import_fixture("host-c-dormant.cfg", host-c);
-
-    assert!(
-        lowered
-            .value()
-            .validated()
-            .map(oxiroute_config::ValidatedConfig::as_draft)
-            .is_some()
-    );
-    assert_eq!(lowered.value().summary().upstream_pools, 1);
-    assert_eq!(
-        validated_config(lowered.value()).upstream_pools[0].connection_reuse,
-        oxiroute_config::UpstreamConnectionReuse::Safe
-    );
-    assert_eq!(lowered.value().summary().listeners, 1);
-    assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
-    assert!(!diagnostic_contains(
-        lowered.diagnostics(),
-        "Unix bind sockets"
-    ));
-    assert!(!diagnostic_contains(
-        lowered.diagnostics(),
-        "DNS-named servers"
-    ));
-    assert_no_fallback_routes(lowered.value());
-}
-
-#[test]
-fn sanitized_host-b_haproxy_imports_from_the_complete_capture() {
-    assert_complete_live_haproxy("host-b", Ipv4Addr::new(10, 0, 0, 10), true);
-}
-
-#[test]
-fn sanitized_host-a_haproxy_imports_from_the_complete_capture() {
-    assert_complete_live_haproxy("host-a", Ipv4Addr::new(10, 0, 0, 1), false);
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one central live-fixture assertion pins the complete finalized policy"
-)]
-fn unmodified_live_host-a_finalizes_with_exact_compatibility_policy() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/live/host-a/haproxy.cfg");
-    let report = import_roots_with_environment(
-        &[path],
-        PreprocessingEnvironment {
-            node_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            gpu1_defined: false,
-        },
-    );
+fn unix_gateway_finalizes_with_exact_compatibility_policy() {
+    let report = import_synthetic("unix-gateway.cfg", false);
     let candidate = report.value();
-    let config = candidate
-        .validated()
-        .unwrap_or_else(|| {
-            panic!(
-                "live host-a config did not finalize: {:#?}",
-                report.diagnostics()
-            )
-        })
-        .as_draft();
+    let config = validated_config(candidate);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics());
     assert_eq!(
         code_count(report.diagnostics(), E_SEMANTICS_NOT_REPRESENTABLE),
         0
     );
-    assert_eq!(code_count(report.diagnostics(), E_UNKNOWN_DIRECTIVE), 0);
-    assert_eq!(code_count(report.diagnostics(), E_UNCONSUMED_DIRECTIVE), 0);
-    assert_eq!(code_count(report.diagnostics(), E_LOGGING_UNSUPPORTED), 7);
-    assert_eq!(code_count(report.diagnostics(), E_PROCESS_OWNED), 3);
+    assert_eq!(code_count(report.diagnostics(), E_LOGGING_UNSUPPORTED), 2);
+    assert_eq!(code_count(report.diagnostics(), E_PROCESS_OWNED), 2);
     assert!(
         report
             .diagnostics()
             .iter()
             .all(|diagnostic| diagnostic.severity() == Severity::Warning)
     );
+    assert!(!diagnostic_contains(
+        report.diagnostics(),
+        "Unix bind sockets"
+    ));
     assert!(candidate.activation_requirements.is_empty());
-    let stats = config.stats.as_ref().expect("HAProxy stats page");
-    assert_eq!(stats.pages.len(), 1);
-    assert_eq!(stats.pages[0].bind, "0.0.0.0:8404".parse().unwrap());
-    assert_eq!(stats.pages[0].uri_prefix, "/stats");
-    assert_eq!(stats.pages[0].refresh_ms, 10_000);
-    assert_eq!(
-        stats.pages[0].admin,
-        oxiroute_config::StatsPageAdminPolicy::Localhost
-    );
-    assert_eq!(stats.pages[0].max_connections, None);
-    assert_eq!(
-        stats.pages[0].downstream_timeouts.client_timeout_ms,
-        Some(600_000)
-    );
-    assert_eq!(
-        stats.pages[0].downstream_timeouts.request_timeout_ms,
-        Some(600_000)
-    );
-    assert_eq!(
-        stats.pages[0].downstream_timeouts.keepalive_timeout_ms,
-        Some(60_000)
-    );
+    assert!(candidate.operational_overlays.is_empty());
+    assert_eq!(candidate.summary().max_connections, Some(4096));
+    assert_has_provenance(candidate, "/max_connections");
+    assert_stats_page(config);
 
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
-            path: "/var/run/haproxy.sock".into(),
+            path: "/var/run/synthetic-gateway.sock".into(),
             mode: Some(0o777),
         }
     );
-    assert_eq!(
-        config.listeners[0].downstream_timeouts.client_timeout_ms,
-        Some(600_000)
-    );
-    assert_eq!(
-        config.listeners[0].downstream_timeouts.request_timeout_ms,
-        Some(600_000)
-    );
-    assert_eq!(
-        config.listeners[0].downstream_timeouts.keepalive_timeout_ms,
-        Some(60_000)
-    );
+    let timeouts = &config.listeners[0].downstream_timeouts;
+    assert_eq!(timeouts.client_timeout_ms, Some(600_000));
+    assert_eq!(timeouts.request_timeout_ms, Some(600_000));
+    assert_eq!(timeouts.keepalive_timeout_ms, Some(60_000));
+
     let service = &config.http_services[0];
     assert_eq!(service.routes.len(), 2);
     assert!(matches!(
         service.routes[0].host,
         Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
-            if value == "ollama.corp-b.test"
+            if value == "api.corp-a.test"
     ));
     assert!(matches!(
         service.routes[1].action,
@@ -238,12 +131,20 @@ fn unmodified_live_host-a_finalizes_with_exact_compatibility_policy() {
         pool.connection_reuse,
         oxiroute_config::UpstreamConnectionReuse::Safe
     );
+    assert_eq!(pool.queue_timeout_ms, None);
     let health = pool.health_check.as_ref().expect("HTTP health check");
     assert_eq!(health.interval_ms, 10_000);
     assert_eq!(health.timeout_ms, 10_000);
     assert_eq!(health.healthy_threshold, 2);
     assert_eq!(health.unhealthy_threshold, 3);
-    assert_host-a_endpoints(pool);
+    assert_eq!(
+        dns_endpoints(pool),
+        [
+            ("api01.example.net", 8080),
+            ("api02.example.net", 8080),
+            ("api03.example.net", 8081)
+        ]
+    );
     let HttpRouteAction::Proxy { policy, .. } = &service.routes[0].action else {
         panic!("host route must proxy")
     };
@@ -258,117 +159,102 @@ fn unmodified_live_host-a_finalizes_with_exact_compatibility_policy() {
         policy.retry.triggers,
         [
             oxiroute_config::HttpRetryTrigger::ConnectFailure,
-            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+            oxiroute_config::HttpRetryTrigger::ConnectTimeout
         ]
     );
 }
 
-#[test]
-fn sanitized_host-c_haproxy_imports_with_explicit_environment() {
-    assert_complete_live_haproxy("host-c", Ipv4Addr::new(10, 0, 0, 11), false);
-}
-
-#[test]
-fn live_inference_node_health_routes_and_native_default_retries_finalize() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/live/host-c/haproxy.cfg");
-    let report = import_roots_with_environment(
-        &[path],
-        PreprocessingEnvironment {
-            node_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 15)),
-            gpu1_defined: true,
-        },
-    );
-    let config = report
-        .value()
-        .validated()
-        .unwrap_or_else(|| {
-            panic!(
-                "inference-node config did not finalize: {:#?}",
-                report.diagnostics()
-            )
-        })
-        .as_draft();
-
-    assert_eq!(config.http_services.len(), 3);
-    assert_eq!(config.upstream_pools.len(), 3);
-    assert!(
-        config
-            .upstream_pools
-            .iter()
-            .all(|pool| pool.servers.len() == 2)
-    );
-    for service in &config.http_services {
-        assert_eq!(service.routes.len(), 2);
-        assert!(matches!(
-            service.routes[0].path,
-            HttpPathSelector::AsciiCaseInsensitiveExact { ref value }
-                if value == "/_infra/health"
-        ));
-        assert!(matches!(
-            service.routes[0].action,
-            HttpRouteAction::FixedResponse { status: 200, ref body, .. } if body == "ok"
-        ));
-        let HttpRouteAction::Proxy { ref policy, .. } = service.routes[1].action else {
-            panic!("inference-node fallback route")
-        };
-        assert_eq!(policy.retry.max_retries, 3);
-    }
-}
-
-fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: bool) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/live")
-        .join(host)
-        .join("haproxy.cfg");
-    let options = HaproxyImportOptions::default();
-    let report = import_roots_with_options(
-        &[path],
-        PreprocessingEnvironment {
-            node_ip: IpAddr::V4(node_ip),
-            gpu1_defined,
-        },
-        &options,
-    );
-    assert_eq!(code_count(report.diagnostics(), E_UNKNOWN_DIRECTIVE), 0);
-    assert_eq!(code_count(report.diagnostics(), E_UNCONSUMED_DIRECTIVE), 0);
-    assert_eq!(code_count(report.diagnostics(), E_ENVIRONMENT_EXPANSION), 0);
+fn assert_stats_page(config: &oxiroute_config::ConfigDraft) {
+    let stats = config.stats.as_ref().expect("HAProxy stats page");
+    assert_eq!(stats.pages.len(), 1);
+    assert_eq!(stats.pages[0].bind, "0.0.0.0:8404".parse().unwrap());
+    assert_eq!(stats.pages[0].uri_prefix, "/stats");
+    assert_eq!(stats.pages[0].refresh_ms, 10_000);
     assert_eq!(
-        code_count(report.diagnostics(), E_CONDITIONAL_PREPROCESSING),
-        0
+        stats.pages[0].admin,
+        oxiroute_config::StatsPageAdminPolicy::Localhost
     );
-    if host == "host-a" {
-        assert_eq!(report.value().summary().upstream_pools, 1);
-        assert_eq!(
-            validated_config(report.value()).upstream_pools[0].connection_reuse,
-            oxiroute_config::UpstreamConnectionReuse::Safe
-        );
-        assert!(!diagnostic_contains(
-            report.diagnostics(),
-            "requires option http-server-close"
-        ));
-        assert!(report.value().operational_overlays.is_empty());
-    } else {
-        assert_ne!(report.value().summary().upstream_pools, 0);
-    }
-    let queue_timeouts = validated_config(report.value())
-        .upstream_pools
-        .iter()
-        .map(|pool| pool.queue_timeout_ms)
-        .collect::<Vec<_>>();
-    match host {
-        "host-b" => {
-            assert!(queue_timeouts.contains(&Some(1_800_000)));
-            assert_eq!(report.value().summary().max_connections, Some(1_024));
-        }
-        "host-c" => assert!(
-            queue_timeouts
+}
+
+#[test]
+fn preprocessed_services_keep_health_routes_queue_timeouts_and_native_default_retries() {
+    for (gpu1_defined, alpha2_port) in [(true, 3001), (false, 3002)] {
+        let report = import_synthetic("env-health-routes.cfg", gpu1_defined);
+        let candidate = report.value();
+        let config = validated_config(candidate);
+
+        assert_eq!(candidate.summary().max_connections, Some(1_024));
+        assert_eq!(config.http_services.len(), 3);
+        assert_eq!(config.upstream_pools.len(), 3);
+        assert!(
+            config
+                .upstream_pools
                 .iter()
-                .all(|timeout| *timeout == Some(600_000))
-        ),
-        "host-a" => assert!(queue_timeouts.iter().all(Option::is_none)),
-        _ => unreachable!(),
+                .all(|pool| pool.servers.len() == 2)
+        );
+        assert!(
+            config
+                .upstream_pools
+                .iter()
+                .all(|pool| pool.queue_timeout_ms == Some(1_800_000))
+        );
+        let alpha_servers = &config.upstream_pools[0].servers;
+        assert!(matches!(
+            alpha_servers[1].endpoint,
+            UpstreamEndpoint::Socket { address } if address.port() == alpha2_port
+        ));
+        for service in &config.http_services {
+            assert_eq!(service.routes.len(), 2);
+            assert!(matches!(
+                service.routes[0].path,
+                HttpPathSelector::AsciiCaseInsensitiveExact { ref value } if value == "/_infra/health"
+            ));
+            assert!(matches!(
+                service.routes[0].action,
+                HttpRouteAction::FixedResponse { status: 200, ref body, .. } if body == "ok"
+            ));
+            let HttpRouteAction::Proxy { ref policy, .. } = service.routes[1].action else {
+                panic!("fallback route must proxy")
+            };
+            assert_eq!(policy.retry.max_retries, 3);
+        }
     }
+}
+
+fn synthetic_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/synthetic/haproxy")
+        .join(name)
+}
+
+fn import_synthetic(name: &str, gpu1_defined: bool) -> Report<CanonicalCandidate> {
+    let environment = PreprocessingEnvironment {
+        node_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        gpu1_defined,
+    };
+    let report = import_roots_with_options(
+        &[synthetic_path(name)],
+        environment,
+        &HaproxyImportOptions::default(),
+    );
+    for code in [
+        E_UNKNOWN_DIRECTIVE,
+        E_UNCONSUMED_DIRECTIVE,
+        E_ENVIRONMENT_EXPANSION,
+        E_CONDITIONAL_PREPROCESSING,
+    ] {
+        assert_eq!(
+            code_count(report.diagnostics(), code),
+            0,
+            "{name}: {:#?}",
+            report.diagnostics()
+        );
+    }
+    assert!(
+        report.value().validated().is_some(),
+        "{name}: {:#?}",
+        report.diagnostics()
+    );
     assert!(
         report
             .value()
@@ -376,6 +262,7 @@ fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: boo
             .environment_fingerprint_sha256
             .is_some()
     );
+    report
 }
 
 #[test]
@@ -918,11 +805,11 @@ fn audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resol
     let config = candidate
         .validated()
         .map(oxiroute_config::ValidatedConfig::as_draft)
-        .expect("finalized host-a subset");
+        .expect("finalized edge-router subset");
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
-            path: "/run/haproxy/host-a.sock".into(),
+            path: "/run/haproxy/edge-router.sock".into(),
             mode: None,
         }
     );
@@ -2998,30 +2885,14 @@ fn assert_blocker(diagnostics: &[Diagnostic], message: &str) {
     );
 }
 
-fn assert_host-a_endpoints(pool: &oxiroute_config::UpstreamPool) {
-    let endpoints = pool
-        .servers
+fn dns_endpoints(pool: &oxiroute_config::UpstreamPool) -> Vec<(&str, u16)> {
+    pool.servers
         .iter()
         .map(|server| match &server.endpoint {
             UpstreamEndpoint::Dns { host, port } => (host.as_str(), *port),
-            endpoint => panic!("unexpected host-a endpoint: {endpoint:?}"),
+            endpoint => panic!("unexpected non-DNS endpoint: {endpoint:?}"),
         })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        endpoints,
-        [
-            ("host-b.test", 11434),
-            ("host-b.test", 11435),
-            ("host-f.test", 11434),
-            ("host-f.test", 11435),
-            ("host-c.test", 11434),
-            ("host-d.test", 11434),
-            ("host-d.test", 11435),
-            ("host-e.test", 11434),
-            ("host-e.test", 11435),
-            ("host-g.test", 11434),
-        ]
-    );
+        .collect()
 }
 
 fn assert_has_provenance(candidate: &CanonicalCandidate, path: &str) {
@@ -3035,12 +2906,17 @@ fn assert_has_provenance(candidate: &CanonicalCandidate, path: &str) {
 }
 
 fn assert_no_fallback_routes(candidate: &CanonicalCandidate) {
-    assert!(validated_config(candidate).http_services.iter().all(|service| {
-        service.routes.iter().all(|route| {
-            matches!(&route.action, HttpRouteAction::Proxy { upstream_pool, .. }
-                if matches!(upstream_pool.as_str(), "app_nodes" | "administration" | "host-c_nodes"))
-        })
-    }));
+    assert!(
+        validated_config(candidate)
+            .http_services
+            .iter()
+            .all(|service| {
+                service
+                    .routes
+                    .iter()
+                    .all(|route| matches!(route.action, HttpRouteAction::Proxy { .. }))
+            })
+    );
 }
 
 fn validated_config(candidate: &CanonicalCandidate) -> &oxiroute_config::ConfigDraft {

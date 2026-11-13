@@ -6,8 +6,6 @@ mod canonical_schema;
 mod component_gates;
 #[path = "coverage_manifests/haproxy_probes.rs"]
 mod haproxy_probes;
-#[path = "coverage_manifests/host_ledger.rs"]
-mod host_ledger;
 #[path = "coverage_manifests/manifests.rs"]
 mod manifests;
 #[path = "coverage_manifests/nginx_probes.rs"]

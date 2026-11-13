@@ -423,9 +423,9 @@ async fn rtmp_file_access_log_emits_fixed_lifecycle_records_and_flushes_on_shutd
 }
 
 #[tokio::test]
-async fn host-c_continuous_recording_resumes_after_process_restart_and_publisher_reconnect() {
+async fn continuous_recording_resumes_after_process_restart_and_publisher_reconnect() {
     let recording_directory = TempDir::new().expect("recording directory");
-    let continuous_root = create_secure_root(recording_directory.path(), "host-c-recordings");
+    let continuous_root = create_secure_root(recording_directory.path(), "continuous-recordings");
     let manual_root = create_secure_root(recording_directory.path(), "unused-manual-recordings");
     let management_address = reserve_tcp_address();
     let rtmp_address = reserve_tcp_address();
@@ -466,7 +466,7 @@ async fn host-c_continuous_recording_resumes_after_process_restart_and_publisher
     let first_files = wait_for_recording_file_count(&continuous_root, 1).await;
     assert_recording_extensions(&first_files, "mp4");
     let first_path = first_files[0].clone();
-    let first_bytes = fs::read(&first_path).expect("first host-c-shaped segment");
+    let first_bytes = fs::read(&first_path).expect("first continuous segment");
     assert!(first_bytes.starts_with(b"FLV"));
 
     let mut second_server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
@@ -488,7 +488,7 @@ async fn host-c_continuous_recording_resumes_after_process_restart_and_publisher
     let resumed_files = wait_for_recording_file_count(&continuous_root, 1).await;
     assert_recording_extensions(&resumed_files, "mp4");
     assert_eq!(resumed_files, vec![first_path.clone()]);
-    let resumed_bytes = fs::read(first_path).expect("resumed host-c-shaped segment");
+    let resumed_bytes = fs::read(first_path).expect("resumed continuous segment");
     assert!(resumed_bytes.starts_with(b"FLV"));
     assert!(resumed_bytes.len() > first_bytes.len());
     second_server.shutdown();
