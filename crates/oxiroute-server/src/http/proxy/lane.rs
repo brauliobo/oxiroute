@@ -21,7 +21,7 @@ pub(in crate::http::proxy) mod timing;
 mod upload;
 
 use std::{
-    future::{Future, poll_fn},
+    future::Future,
     pin::{Pin, pin},
     sync::Arc,
     time::{Duration, Instant},
@@ -41,10 +41,7 @@ use pingora::{
     protocols::Stream,
     server::ShutdownWatch,
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Notify,
-};
+use tokio::{io::AsyncWriteExt as _, sync::Notify};
 
 use timing::within;
 
@@ -187,17 +184,7 @@ impl LaneFront {
         } else if let Some(buffer) = buffers::read_arrived(stream) {
             return Some(buffer);
         }
-        let read = async {
-            poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;
-            let mut buffer = buffers::take_read();
-            match stream.read_buf(&mut buffer).await {
-                Ok(count) if count > 0 => Some(buffer),
-                _ => {
-                    buffers::give_read(buffer);
-                    None
-                }
-            }
-        };
+        let read = buffers::read_request(stream);
         // A read that is ready at once needs no timer.
         let timed = async {
             let deadline = self
