@@ -268,7 +268,11 @@ fn america_zoneb_policy_is_deterministic_across_historical_dst_and_standard_time
     let policy = RecordingPathPolicy::new("-%Y-%m-%d_%H-%M-%S.mp4", false)
         .expect("path policy")
         .with_segment_policy(
-            RecordingTimezone::Iana("America/Argentina/Buenos_Aires".parse().expect("IANA timezone")),
+            RecordingTimezone::Iana(
+                "America/Argentina/Buenos_Aires"
+                    .parse()
+                    .expect("IANA timezone"),
+            ),
             RecordingTimeBasis::SegmentStart,
             RecordingSegmentNaming::NginxCompatible,
         );

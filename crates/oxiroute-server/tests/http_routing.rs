@@ -75,12 +75,7 @@ fn ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port() {
         Some("ollama")
     );
     assert_eq!(
-        selected_pool(
-            &table,
-            Some("ollama.corp-b.test:80"),
-            "/",
-            &Method::GET,
-        ),
+        selected_pool(&table, Some("ollama.corp-b.test:80"), "/", &Method::GET,),
         Some("fallback")
     );
 }

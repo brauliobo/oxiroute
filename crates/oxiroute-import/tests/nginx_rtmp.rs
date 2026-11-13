@@ -989,8 +989,11 @@ fn source_noop_hls_muxdelay_does_not_block_an_exact_application() {
 #[test]
 fn keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server() {
     let directory = fixture("synthetic/nginx/rtmp-partial-blocked-server.conf");
-    let report =
-        import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Argentina/Buenos_Aires");
+    let report = import_rtmp_with_timezone(
+        Path::new("nginx.conf"),
+        directory.path(),
+        "America/Argentina/Buenos_Aires",
+    );
 
     assert!(
         report
@@ -1071,7 +1074,11 @@ fn import_source(
     for (name, contents) in includes {
         fs::write(directory.path().join(name), contents).expect("write RTMP include");
     }
-    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Argentina/Buenos_Aires")
+    import_rtmp_with_timezone(
+        Path::new("nginx.conf"),
+        directory.path(),
+        "America/Argentina/Buenos_Aires",
+    )
 }
 
 fn fixture(name: &str) -> TempDir {

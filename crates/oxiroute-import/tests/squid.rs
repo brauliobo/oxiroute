@@ -687,9 +687,8 @@ fn forward_proxy_http_access_uses_ordered_first_match_and_native_default() {
 
     let unauthenticated = policy.evaluate(|term| match term.name.value.as_slice() {
         b"clients" | b"safe_ports" | b"all" => Some(true),
-        b"authenticated" | b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => {
-            Some(false)
-        }
+        b"authenticated" | b"CONNECT" | b"localhost" | b"manager" | b"to_localhost"
+        | b"to_linklocal" => Some(false),
         _ => None,
     });
     assert_eq!(

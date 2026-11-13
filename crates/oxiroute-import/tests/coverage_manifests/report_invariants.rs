@@ -171,14 +171,22 @@ pub(crate) fn import_rtmp_fixture(name: &str) -> RtmpImportReport {
     });
     let directory = TempDir::new().expect("create nginx-RTMP fixture directory");
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx-RTMP fixture root");
-    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Argentina/Buenos_Aires")
+    import_rtmp_with_timezone(
+        Path::new("nginx.conf"),
+        directory.path(),
+        "America/Argentina/Buenos_Aires",
+    )
 }
 
 fn import_rtmp_exact_fixture() -> RtmpImportReport {
     let directory = TempDir::new().expect("create exact nginx-RTMP fixture directory");
     let source = "rtmp { server { listen 127.0.0.1:1935; application live { live on; record all; record_path /var/lib/recordings; } } }\n";
     fs::write(directory.path().join("nginx.conf"), source).expect("write exact nginx-RTMP fixture");
-    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Argentina/Buenos_Aires")
+    import_rtmp_with_timezone(
+        Path::new("nginx.conf"),
+        directory.path(),
+        "America/Argentina/Buenos_Aires",
+    )
 }
 
 pub(crate) fn assert_import_report_invariants(report: &NginxImportReport) {
