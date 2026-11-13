@@ -3,10 +3,7 @@ use super::*;
 
 #[test]
 fn matching_listener_reservations_are_reused_without_rebinding() {
-    let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary bind")
-        .local_addr()
-        .expect("address");
+    let address = crate::test_ports::unused_tcp_address();
     let first = prepare_reservations(&config("edge", address), None).expect("first reservation");
     let second =
         prepare_reservations(&config("edge", address), Some(&first)).expect("reused reservation");
@@ -44,10 +41,7 @@ fn udp_listener_reservation_owns_and_releases_the_datagram_socket() {
 
 #[test]
 fn listener_reservations_are_reused_after_rename() {
-    let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary bind")
-        .local_addr()
-        .expect("address");
+    let address = crate::test_ports::unused_tcp_address();
     let first =
         prepare_reservations(&config("old-name", address), None).expect("first reservation");
     let second = prepare_reservations(&config("new-name", address), Some(&first))
@@ -61,14 +55,8 @@ fn listener_reservations_are_reused_after_rename() {
 
 #[test]
 fn statistics_reservations_are_reused_after_reorder() {
-    let first_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("first temporary bind")
-        .local_addr()
-        .expect("first address");
-    let second_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("second temporary bind")
-        .local_addr()
-        .expect("second address");
+    let first_address = crate::test_ports::unused_tcp_address();
+    let second_address = crate::test_ports::unused_tcp_address();
     let mut first_config = empty_config();
     first_config.stats = Some(oxiroute_config::Stats {
         binds: vec![first_address, second_address],
@@ -97,10 +85,7 @@ fn statistics_reservations_are_reused_after_reorder() {
 
 #[test]
 fn statistics_page_reservations_are_named_and_reused_by_bind() {
-    let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary bind")
-        .local_addr()
-        .expect("address");
+    let address = crate::test_ports::unused_tcp_address();
     let mut config = empty_config();
     config.stats = Some(oxiroute_config::Stats {
         binds: Vec::new(),
@@ -131,14 +116,8 @@ fn statistics_page_reservations_are_named_and_reused_by_bind() {
 
 #[test]
 fn traffic_name_cannot_collide_with_management_reservation() {
-    let traffic = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("traffic temporary bind")
-        .local_addr()
-        .expect("traffic address");
-    let management = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("management temporary bind")
-        .local_addr()
-        .expect("management address");
+    let traffic = crate::test_ports::unused_tcp_address();
+    let management = crate::test_ports::unused_tcp_address();
     let mut config = config("@management", traffic);
     config.management = Some(oxiroute_config::Management {
         bind: management,

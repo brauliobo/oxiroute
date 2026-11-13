@@ -244,10 +244,7 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
         .map(|index| oxiroute_config::Listener {
             name: format!("listener-{index}"),
             bind: ListenerBind::Socket {
-                address: SocketAddr::from((
-                    [127, 0, 0, 1],
-                    10_000 + u16::try_from(index).expect("bounded listener index"),
-                )),
+                address: crate::test_ports::unused_tcp_address(),
             },
             protocol: Protocol::Tcp,
             service: Some("relay".into()),
