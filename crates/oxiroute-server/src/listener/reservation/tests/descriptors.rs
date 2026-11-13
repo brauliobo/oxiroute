@@ -6,22 +6,10 @@ use super::*;
 fn descriptor_export_is_canonical_typed_and_cloexec() {
     use rustix::io::{FdFlags, fcntl_getfd};
 
-    let traffic = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("traffic temporary bind")
-        .local_addr()
-        .expect("traffic address");
-    let management = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("management temporary bind")
-        .local_addr()
-        .expect("management address");
-    let stats = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("stats temporary bind")
-        .local_addr()
-        .expect("stats address");
-    let page = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("page temporary bind")
-        .local_addr()
-        .expect("page address");
+    let traffic = crate::test_ports::unused_tcp_address();
+    let management = crate::test_ports::unused_tcp_address();
+    let stats = crate::test_ports::unused_tcp_address();
+    let page = crate::test_ports::unused_tcp_address();
     let mut config = config("@management", traffic);
     config.management = Some(oxiroute_config::Management {
         bind: management,
@@ -125,10 +113,7 @@ fn descriptor_export_and_adoption_supports_quic_listeners() {
 #[cfg(target_os = "linux")]
 #[test]
 fn descriptor_adoption_rejects_a_wrong_typed_slot() {
-    let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary bind")
-        .local_addr()
-        .expect("address");
+    let address = crate::test_ports::unused_tcp_address();
     let config = config("traffic", address);
     let reservations = prepare_reservations(&config, None).expect("reservations");
     let (manifest, originals) =
@@ -147,10 +132,7 @@ fn descriptor_adoption_rejects_a_wrong_typed_slot() {
 #[cfg(target_os = "linux")]
 #[test]
 fn descriptor_export_rejects_extra_keys_and_bind_mismatch() {
-    let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary bind")
-        .local_addr()
-        .expect("address");
+    let address = crate::test_ports::unused_tcp_address();
     let config = config("traffic", address);
     let mut reservations = prepare_reservations(&config, None).expect("reservations");
     let traffic = reservations.get("traffic").expect("traffic").clone();
