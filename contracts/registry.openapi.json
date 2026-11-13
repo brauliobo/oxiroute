@@ -473,7 +473,7 @@
   "info": {
     "description": "Lease-based dynamic server registration. The same routes are served by the management API (root token), by the registry TCP endpoint (scoped tokens) and by the registry unix sockets (access is the file mode, so no token). Every other path returns 404 on the registry endpoints.",
     "title": "OxiRoute Server Registry API",
-    "version": "6.4.0"
+    "version": "6.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
