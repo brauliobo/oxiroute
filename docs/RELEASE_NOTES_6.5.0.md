@@ -14,6 +14,16 @@
   `benchmarks/r65-memory/churn.py`). `_RJEM_MALLOC_CONF` still overrides the setting.
 - A connection's task and request context are smaller (the connection counter wraps the future without copying it,
   the cache state of a request is boxed until a cacheable request needs it).
+- An idle HTTP/1 keep-alive connection holds no read buffer while it waits: 7.1 kB instead of 12.0 kB (nginx 8.7 kB), and
+  an idle plain WebSocket 13.2 kB instead of 17.6 kB (an upgraded connection no longer keeps the first 64 KiB of the
+  tunnel, its response header's spare slots or a path-sized address per socket digest). With the opt-in rustls backend an
+  idle WebSocket over TLS is 22.6 kB (OpenSSL 35.0 kB). Details: `docs/developer/PERF_NEXT_MEMORY2_RESULTS.md`.
+- A retired generation process returns its memory when it is reaped: the growth of the process over four reloads of a
+  1,000-route configuration is 15.9 MB instead of 32.4 MB one second after the last one.
+- A cached response owns its header values instead of pinning the 4 KiB buffer it arrived in: 3.1 kB instead of 6.1 kB of
+  memory per cached 1 KiB response.
+- Regression tests keep the bytes of an idle connection (`idle_connection_memory.rs`) and the growth over many reloads
+  (`reload_memory.rs`) under ceilings.
 - Instructions per request on the fast lane, HTTP/1 1 MiB, HTTP/1 over TLS and HTTP/2 over TLS are within +0.7% of 6.4.0.
 
 ## Tools
