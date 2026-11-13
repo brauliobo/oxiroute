@@ -30,10 +30,6 @@ mod wire;
 #[cfg(test)]
 mod test_ports;
 
-#[cfg(test)]
-#[path = "../../../benchmarks/r3-routing-control/internal/mod.rs"]
-mod r3_bench;
-
 pub use config::coordinator as config_coordinator;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
