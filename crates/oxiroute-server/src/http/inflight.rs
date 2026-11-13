@@ -631,11 +631,6 @@ impl InflightGuard {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_route(&self, route: &str) {
-        self.place_route(route.into());
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_pool(&self, pool: &str) {
         self.place_pool(pool.into());
     }
