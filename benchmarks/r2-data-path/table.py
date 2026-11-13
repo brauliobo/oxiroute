@@ -6,7 +6,7 @@ Usage: table.py RESULTS.json [BEFORE.json]
        table.py --markdown OUT_DIR LANE [LANE...]
            the instruction-count comparison of `compare.sh` as a markdown table: one row per lane, a column for the
            older release, the new binary with the lane off and the new binary, the change against the older release
-           and the spread of the repetitions (the table of docs/developer/PERF_6_4_SUMMARY.md).
+           and the spread of the repetitions.
 """
 
 import json

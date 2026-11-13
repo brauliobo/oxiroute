@@ -1,9 +1,9 @@
 //! In-process cost of the head work of one proxied request: scan and write the request, scan and write the response,
 //! with the edits a lane makes (hop-by-hop removal, request id, `Date` and `Connection`).
 //!
-//! `perf stat -e instructions:u hdrbench MODE ITERS`; the cost per iteration is the difference of two ITERS, as in
-//! `benchmarks/r64-floor/src/bin/hdrbench.rs` (`run_hdrbench.sh` does that). MODE is `req`, `resp`, `scan` (both
-//! scans only), `qscan` or `pscan` (one scan only) or `all`, followed by `3` (the 1 KiB lane heads) or `12` (browser-sized heads).
+//! `perf stat -e instructions:u hdrbench MODE ITERS`; the cost per iteration is the difference of two ITERS. MODE is `req`, `resp`,
+//! `scan` (both scans only), `qscan` or `pscan` (one scan only) or `all`, followed by `3` (the 1 KiB lane heads) or `12`
+//! (browser-sized heads).
 
 use oxiroute_h1_head::{
     Automatic, Class, Edits, RequestHead, ResponseHead, Scan, ScanResponse, Value, names,

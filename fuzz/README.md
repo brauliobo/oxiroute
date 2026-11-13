@@ -114,4 +114,4 @@ These boundaries are recorded limits, not coverage claims.
 
 The RTMP harnesses do not establish FFmpeg/OBS interoperability, process-level listener behavior,
 long-running crash-corpus results, or production evidence. Those remain external or release-gate
-requirements documented in `docs/RTMP_SPEC.md` and `docs/ROADMAP.md`.
+requirements documented in `docs/RTMP_SPEC.md`.

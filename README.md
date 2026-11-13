@@ -201,7 +201,7 @@ The important current exclusions are:
 - No firewall, NAT, transparent interception, source spoofing, or arbitrary packet forwarding.
 
 See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability matrix and
-[ROADMAP.md](docs/ROADMAP.md) for future milestones. Roadmap entries are not current support.
+the `planned` entries there are not current support.
 
 ## Repository Map
 

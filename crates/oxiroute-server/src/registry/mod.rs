@@ -1,4 +1,4 @@
-//! Lease-based dynamic server registration. See `docs/developer/design/DYNAMIC_REGISTRY.md`.
+//! Lease-based dynamic server registration.
 
 pub mod auth;
 #[cfg(test)]
