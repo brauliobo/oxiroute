@@ -92,6 +92,15 @@
   write side) while its request is queued is treated as gone, as the classic path always treated it once the
   request was sent.
 
+## Measured on the integrated tree
+
+- User+sys CPU per request against 6.4.0 is 0.91x to 0.98x on the proxied, TLS keep-alive, HTTP/2 and direct rows and 1.09x
+  to 1.13x on the full TLS 1.3 handshake (equal instructions, more cycles; not yet explained). Against HAProxy it is lower on
+  every row except new connections (1.04x) and the handshake (1.11x); against nginx the proxied HTTP/1 rows stay at 1.04x to
+  1.23x. An idle WebSocket holds 16.3 kB (TLS 38.4 kB) against 31.6 kB (53.0 kB). The resident set of an idle worker reads
+  about 8 MB higher than 6.4.0 because more of the executable's text is resident (anonymous memory is equal). Tables and
+  method: [PERF_6_5_SUMMARY.md](developer/PERF_6_5_SUMMARY.md).
+
 ## Tools
 
 - `benchmarks/r65-memory/` (churn, time to first byte of a parked connection, live libc allocation tracer) and
