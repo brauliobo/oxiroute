@@ -6,6 +6,7 @@ members = [
     "crates/oxiroute-allocator",
     "crates/oxiroute-config",
     "crates/oxiroute-config-source",
+    "crates/oxiroute-cpu",
     "crates/oxiroute-forward-proxy",
     "crates/oxiroute-h1-head",
     "crates/oxiroute-h2",

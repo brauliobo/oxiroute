@@ -2,7 +2,7 @@
 
 use crate::class::{Class, TITLED, classify, same_name};
 use crate::miss::MissReason;
-use crate::tables::{NAME, UNDERSCORE, UPPER, control_at};
+use crate::tables::{TOKEN, UNDERSCORE, UPPER, control_at};
 
 /// Headers a head may carry before it is a miss (or slow).
 pub const MAX_HEADERS: usize = 64;
@@ -148,17 +148,11 @@ fn value_end(buf: &[u8], start: usize) -> Step<usize> {
 /// Length of the run of token bytes at the start of `line`, and the OR of their classes.
 #[inline(never)]
 fn name_run(line: &[u8]) -> (usize, u8) {
-    let mut bits = 0u8;
-    let mut len = 0;
-    for &c in &line[len..] {
-        let f = NAME[usize::from(c)];
-        if f == 0 {
-            break;
-        }
-        bits |= f;
-        len += 1;
-    }
-    (len, bits)
+    let run = oxiroute_cpu::token_run(line);
+    let bits = (u8::from(run.len > 0) * TOKEN)
+        | (u8::from(run.upper) * UPPER)
+        | (u8::from(run.underscore) * UNDERSCORE);
+    (run.len, bits)
 }
 
 /// Whether the name at `index`, of class [`Class::Other`], repeats one before it.

@@ -2918,6 +2918,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-cpu"
+version = "6.5.0"
+
+[[package]]
 name = "oxiroute-forward-proxy"
 version = "6.5.0"
 dependencies = [
@@ -2945,6 +2949,7 @@ dependencies = [
  "bytes",
  "http",
  "httparse",
+ "oxiroute-cpu",
  "pingora-http",
 ]
 

@@ -7,8 +7,14 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = ["dispatch"]
+# Picks the SSE4.2, AVX2 or AVX-512 scanners at run time (oxiroute-cpu); without it the scalar ones run.
+dispatch = ["oxiroute-cpu/std"]
+
 [dependencies]
 arrayvec = "0.7"
+oxiroute-cpu = { path = "../oxiroute-cpu", default-features = false }
 
 [dev-dependencies]
 bytes.workspace = true
