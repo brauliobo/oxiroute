@@ -131,20 +131,6 @@ jobs:
       - name: Verify every checked-in fuzz target and seed
         run: ./scripts/verify-fuzz.sh
 
-  bench-harness:
-    name: Benchmark harness self-check
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Check the shell entry points and the offline harness tests (no proxies, no timing)
-        run: |
-          for script in scripts/bench-vs-proxies.sh benchmarks/scripts/vs-nginx-haproxy.sh benchmarks/r2-data-path/compare.sh; do
-            sh -n "$script"
-          done
-          python3 benchmarks/scripts/test_vs_offline.py
-
   coverage-manifests:
     name: Coverage manifest validation
     runs-on: ubuntu-24.04

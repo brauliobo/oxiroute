@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
-for manifest in Cargo.toml fuzz/Cargo.toml benchmarks/loadgen/Cargo.toml; do
+for manifest in Cargo.toml fuzz/Cargo.toml benchmarks/r2-data-path/tool/Cargo.toml; do
   cargo +1.97.1 metadata \
     --manifest-path "${repo_dir}/${manifest}" \
     --format-version 1 \

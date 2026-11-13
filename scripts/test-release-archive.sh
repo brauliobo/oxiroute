@@ -48,13 +48,13 @@ cp "${repo_dir}/scripts/create-release-archive.sh" \
   "${repo_dir}/scripts/verify-release-archive.sh" \
   "${repo_dir}/scripts/release-archive-policy.sh" \
   "${test_root}/dirty-source/scripts/"
-printf '\ndirty tracked content\n' >>"${test_root}/dirty-source/AGENTS.md"
+printf '\ndirty tracked content\n' >>"${test_root}/dirty-source/README.md"
 dirty_archive="${test_root}/dirty-source.tar.gz"
 SOURCE_DATE_EPOCH=1 "${test_root}/dirty-source/scripts/create-release-archive.sh" \
   "${dirty_archive}" "${version}" >/dev/null
-git -C "${test_root}/dirty-source" show HEAD:AGENTS.md >"${test_root}/committed-agents.md"
-tar -xOzf "${dirty_archive}" "${root}/AGENTS.md" >"${test_root}/archived-agents.md"
-cmp "${test_root}/committed-agents.md" "${test_root}/archived-agents.md"
+git -C "${test_root}/dirty-source" show HEAD:README.md >"${test_root}/committed-readme.md"
+tar -xOzf "${dirty_archive}" "${root}/README.md" >"${test_root}/archived-readme.md"
+cmp "${test_root}/committed-readme.md" "${test_root}/archived-readme.md"
 
 gzip -dc -- "${valid_archive}" >"${test_root}/missing-required.tar"
 tar --delete --file="${test_root}/missing-required.tar" "${root}/Cargo.lock"
