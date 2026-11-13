@@ -44,6 +44,7 @@ fn cache_etag_matching_uses_weak_comparison_and_wildcards() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
     let first = unused_tcp_address();
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 2], first.port())))
@@ -102,11 +103,19 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
     );
     let accept = downstream_listener.accept();
     let (client, downstream) = tokio::join!(client, accept);
-    let _client = client.expect("downstream client");
+    let mut client = client.expect("downstream client");
     let (downstream, _) = downstream.expect("downstream connection");
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+        .await
+        .expect("write downstream request");
     let mut session = Session::new_h1(Box::new(pingora::protocols::l4::stream::Stream::from(
         downstream,
     )));
+    session
+        .read_request()
+        .await
+        .expect("parse downstream request");
     let mut context = proxy.new_ctx();
     context.attempted_upstreams.push("0".into());
     context.pool = Some(Arc::clone(&plan));

@@ -163,6 +163,12 @@ impl RequestStream {
         self.abort(Code::H3_REQUEST_REJECTED, Error::State("request rejected"));
     }
 
+    /// Resolves when the peer no longer wants a response: it stopped reading the stream or the connection is gone.
+    /// Nothing is read or sent, so this can be awaited while the request waits for an origin.
+    pub async fn closed(&mut self) {
+        let _ = self.send.stopped().await;
+    }
+
     /// Stops the request body; the peer sees `code`.
     pub fn stop_sending(&mut self, code: Code) {
         let _ = self.recv.stop(code.varint());

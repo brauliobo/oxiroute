@@ -727,6 +727,30 @@ impl Peek for Stream {
         }
     }
 
+    /// The kernel reports a FIN or a reset as a read-closed readiness, which the priority interest also waits for, and
+    /// which unlike a readable one does not fire for bytes the peer sent.
+    #[cfg(target_os = "linux")]
+    async fn peer_closed(&mut self) -> io::Result<()> {
+        macro_rules! closed {
+            ($socket:expr) => {
+                loop {
+                    if $socket.ready(Interest::PRIORITY).await?.is_read_closed() {
+                        return Ok(());
+                    }
+                    // Urgent data ended the wait without a close: clear it, or it is reported again at once.
+                    let _ = $socket.try_io(Interest::PRIORITY, || {
+                        Err::<(), _>(io::ErrorKind::WouldBlock.into())
+                    });
+                }
+            };
+        }
+        match &self.stream().get_ref().stream {
+            RawStream::Tcp(s) => closed!(s),
+            RawStream::Unix(s) => closed!(s),
+            RawStream::Virtual(_) => std::future::pending().await,
+        }
+    }
+
     fn can_move_to_current_runtime(&self) -> bool {
         self.tcp_socket().is_some() && !self.has_read_ahead() && !self.has_write_behind()
     }

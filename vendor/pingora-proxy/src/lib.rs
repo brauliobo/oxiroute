@@ -464,7 +464,17 @@ where
         SV: ProxyHttp + Send + Sync,
         SV::CTX: Send + Sync,
     {
-        let client_session = self.client_upstream.get_http_session(peer).await;
+        // Nothing has gone to the upstream while it connects or waits for a connection to free up: a client that
+        // leaves meanwhile ends the attempt before it starts. A connection that is ready at once never watches.
+        let mut connecting = std::pin::pin!(self.client_upstream.get_http_session(peer));
+        let client_session = match futures::FutureExt::now_or_never(connecting.as_mut()) {
+            Some(connected) => connected,
+            None => tokio::select! {
+                biased;
+                gone = session.downstream_session.closed() => return (false, Some(gone)),
+                connected = connecting => connected,
+            },
+        };
         match client_session {
             Ok((client_session, client_reused)) => {
                 let (server_reused, error) = match client_session {

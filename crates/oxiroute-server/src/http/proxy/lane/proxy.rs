@@ -52,8 +52,9 @@ use crate::{
         proxy::{
             ErrorReason, HttpRequestContext, apply_response_policy,
             attempt::{AttemptTimeouts, Exchanged},
-            classify_http_result, error_reason, error_response, failure_reason, proxy_error_status,
-            proxy_policy,
+            classify_http_result,
+            departure::{client_left, unless_gone},
+            error_reason, error_response, failure_reason, proxy_error_status, proxy_policy,
             retry::status_retry_possible,
             selected_upstream_host,
         },
@@ -220,11 +221,13 @@ impl super::LaneFront {
             .await;
         let error = outcome.err();
         if let Some(error) = &error {
-            warn!(
-                "HTTP request failed with {:?} from {:?}",
-                error.etype(),
-                error.esource()
-            );
+            if !ctx.left_unsent(error) {
+                warn!(
+                    "HTTP request failed with {:?} from {:?}",
+                    error.etype(),
+                    error.esource()
+                );
+            }
             progress.status = self
                 .fail(stream, &mut ctx, error, &forward, &mut progress)
                 .await;
@@ -391,18 +394,26 @@ impl super::LaneFront {
         forward: &Forward<'_>,
         progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
-        let timeouts = ctx
-            .next_attempt(
+        // The client may leave while the request waits for a server or a connection: nothing has gone out yet.
+        let timeouts = unless_gone(
+            ctx.next_attempt(
                 |_| None,
                 |endpoint, policy, authority| match policy {
                     HttpUpstreamHost::PreserveIncoming => Ok(None),
                     policy => selected_upstream_host(endpoint, policy, authority),
                 },
-            )
-            .await?;
+            ),
+            || client_left(stream),
+        )
+        .await?;
         let (session, reused, release) = match Self::idle_session(ctx, upstream).await {
             Some(idle) => idle,
-            None => Self::connect(ctx, upstream, timeouts).await?,
+            None => {
+                unless_gone(Self::connect(ctx, upstream, timeouts), || {
+                    client_left(stream)
+                })
+                .await?
+            }
         };
         self.send_and_open(
             stream,
