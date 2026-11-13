@@ -9,9 +9,10 @@
   the access log run when it ends.
 - A close-delimited HTTP/1 body (and so an upgraded connection) no longer allocates its 128 KiB chunk buffer before it
   reads.
-- jemalloc returns freed pages from a background thread (`background_thread:true`). After connection bursts and reloads
-  the process settles at about half of the resident memory it used to keep (97.9 MB to 48.8 MB in the compressed churn of
-  `benchmarks/r65-memory/churn.py`). `_RJEM_MALLOC_CONF` still overrides the setting.
+- jemalloc returns freed pages from a background thread, started once the process has adopted its control endpoint (a
+  supervised worker must still be single-threaded then). After connection bursts and reloads the process settles at about
+  half of the resident memory it used to keep (97.9 MB to 48.8 MB in the compressed churn of
+  `benchmarks/r65-memory/churn.py`). A `background_thread` key in `_RJEM_MALLOC_CONF` still decides for itself.
 - A connection's task and request context are smaller (the connection counter wraps the future without copying it,
   the cache state of a request is boxed until a cacheable request needs it).
 - Instructions per request on the fast lane, HTTP/1 1 MiB, HTTP/1 over TLS and HTTP/2 over TLS are within +0.7% of 6.4.0.
