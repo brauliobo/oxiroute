@@ -36,6 +36,7 @@ pub fn prepare_tls_stream<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<Ss
         .explain_err(TLSHandshakeFailure, |e| format!("ssl stream error: {e}"))?;
     stream.coalesce_writes();
     stream.probe_reads(S::poll_read_ready);
+    stream.probe_closes(|io| io.peer_closed());
     Ok(stream)
 }
 

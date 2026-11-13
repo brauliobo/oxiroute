@@ -206,6 +206,29 @@ async fn read_ready_follows_the_socket_without_reading_it() {
     assert_eq!(&buf, b"ready");
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn peer_closed_waits_for_the_close_and_not_for_bytes() {
+    use crate::protocols::Peek;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut peer = TcpStream::connect(addr).await.unwrap();
+    let mut stream: Stream = listener.accept().await.unwrap().0.into();
+
+    // Bytes are not a close, and they stay unread.
+    assert!(futures::poll!(stream.peer_closed()).is_pending());
+    peer.write_all(b"body").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(futures::poll!(stream.peer_closed()).is_pending());
+
+    // A close is, even with unread bytes in front of it.
+    drop(peer);
+    stream.peer_closed().await.unwrap();
+    let mut buf = [0; 4];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"body");
+}
+
 #[tokio::test]
 async fn test_buffer_state_of_a_tcp_stream_is_visible_for_kernel_offload() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

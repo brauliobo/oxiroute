@@ -166,3 +166,7 @@ Then run formatting and diff checks.
   smaller future, lives for hours. The hooks and the end of the request (`conclude`) run as before. `process_request`
   takes the request context boxed (`Box<CTX>`, so the context moves to the tunnel without a copy), hence the `'static`
   bounds. The response filters of the relay run as pooled leaf futures. Tests in `proxy_h1_inline.rs`.
+- `src/lib.rs` `HttpProxy::proxy_attempt` watches the downstream session (`Session::closed`) while the upstream session
+  is being obtained, which can queue for a connection of a capped server: a client that leaves meanwhile ends the
+  attempt with a downstream `ConnectionClosed` error before anything goes upstream. The watch is built only when the
+  connection is not ready on the first poll.
