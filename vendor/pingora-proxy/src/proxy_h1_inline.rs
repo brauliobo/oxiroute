@@ -127,6 +127,9 @@ where
             )
             .await?;
         if end == LoopEnd::Upgraded {
+            if let Some(downstream) = session.downstream_session.as_http1_mut() {
+                downstream.settle_upgraded();
+            }
             session.tunnel = Some(Box::new(TunnelState::new(exchange)));
             return Ok((false, false));
         }
@@ -190,16 +193,26 @@ where
             match Self::next_event(session, client_session, exchange).await {
                 Event::Response(first) => {
                     let upgrading = may_tunnel && !session.was_upgraded();
-                    self.relay_response(
-                        session,
-                        client_session,
-                        exchange,
-                        first,
-                        ctx,
-                        serve_from_cache,
-                        range_body_filter,
-                    )
-                    .await?;
+                    // On the heap, in a pooled block: the state of relaying a response is 800 bytes that a tunnel
+                    // would otherwise hold for as long as it lasts, while it waits for the next event.
+                    {
+                        let (session, client_session, exchange) =
+                            (&mut *session, &mut *client_session, &mut *exchange);
+                        let (ctx, serve_from_cache, range_body_filter) =
+                            (&mut *ctx, &mut *serve_from_cache, &mut *range_body_filter);
+                        PooledFuture::new(move || {
+                            self.relay_response(
+                                session,
+                                client_session,
+                                exchange,
+                                first,
+                                ctx,
+                                serve_from_cache,
+                                range_body_filter,
+                            )
+                        })
+                        .await?;
+                    }
                     if upgrading && Self::can_tunnel(session, client_session, exchange) {
                         return Ok(LoopEnd::Upgraded);
                     }
@@ -220,8 +233,16 @@ where
                     }
                     let end = session.is_body_done();
                     exchange.reading_done = end || body.is_none();
-                    self.forward_request_body(session, client_session, exchange, body, end, ctx)
-                        .await?;
+                    let (session, client_session, exchange, ctx) = (
+                        &mut *session,
+                        &mut *client_session,
+                        &mut *exchange,
+                        &mut *ctx,
+                    );
+                    PooledFuture::new(move || {
+                        self.forward_request_body(session, client_session, exchange, body, end, ctx)
+                    })
+                    .await?;
                 }
             }
         }

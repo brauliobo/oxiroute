@@ -12,3 +12,7 @@ on every request), which the previous direct map insert did not cost. Callers us
 case-preserving calls for headers that have a case map. `scripts/test-vendored.sh http` runs the crate's tests.
 
 Upgrade by importing the published crate as its own commit and re-adding the accessor.
+
+- `ResponseHeader::compact` (6.5, second memory round) rebuilds the header map with room for the headers it holds; a parsed
+  response reserves room for filters that add headers, which an upgraded connection's retained header never gets. Test in
+  `lib.rs`.

@@ -1175,12 +1175,16 @@ where
                         return None;
                     }
                 }
-                let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
-                connection.apply_to_session(&mut session);
                 // On the heap per request: the connection's own future stays small while it waits between requests.
-                let after = PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
-                    .await
-                    .map(ReusedHttpStream::consume);
+                // The session is made where the request's future is written: a session that is a local of this
+                // function is kept in the connection's future (800 bytes) whether the connection waits or serves.
+                let after = PooledFuture::new(|| {
+                    let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
+                    connection.apply_to_session(&mut session);
+                    self.process_new_http_inline(session, shutdown)
+                })
+                .await
+                .map(ReusedHttpStream::consume);
                 match after {
                     Some(AfterRequest::Reuse(next, settings)) => {
                         stream = next;
