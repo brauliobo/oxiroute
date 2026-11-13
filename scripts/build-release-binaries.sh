@@ -19,6 +19,10 @@
 # TLS handshake and does not start on older CPUs, so it is never the default artefact. Every flavour compiles that C code
 # with -O3 (CFLAGS for the target only; a plain `cargo build` keeps the cc crate default).
 #
+# Every flavour but v3 must run on generic x86-64 and pick AVX at run time (crate oxiroute-cpu): the build refuses a
+# RUSTFLAGS or CFLAGS that bakes in a CPU target (scripts/lib/reject-isa-flags.sh), and scripts/verify-baseline-isa.sh
+# checks the binaries (disassembly, and `version` under qemu CPUs without AVX when qemu-x86_64 is installed).
+#
 # Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind, abort or v3, default unwind), PGO_TARGET (default
 # x86_64-unknown-linux-gnu), PGO_WORK and the other benchmarks/scripts/pgo.sh variables, BOLT_BIN_DIR (directory of
 # llvm-bolt and merge-fdata, see scripts/install-bolt.sh) and the other benchmarks/scripts/bolt.sh variables,
@@ -37,6 +41,9 @@ flavour=${FLAVOUR:-unwind}
 [[ ${pgo} == 0 || ${pgo} == 1 ]] || { echo "PGO must be 0 or 1" >&2; exit 2; }
 [[ ${bolt} == 0 || ${bolt} == 1 ]] || { echo "BOLT must be 0 or 1" >&2; exit 2; }
 [[ ${flavour} == unwind || ${flavour} == abort || ${flavour} == v3 ]] || { echo "FLAVOUR must be unwind, abort or v3" >&2; exit 2; }
+source "${repo}/scripts/lib/reject-isa-flags.sh"
+reject_isa_flags
+export ISA_GUARD_DONE=1 # the CFLAGS_* below are ours, pgo.sh must not reject the v3 flavour's
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
 bolt_script=${repo}/benchmarks/scripts/bolt.sh
 work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
@@ -65,6 +72,8 @@ if [[ ${bolt} == 1 ]]; then
     exit 1
   }
 fi
+# The v3 flavour needs AVX2 by design; the launcher has no `version` command, so only `oxiroute` runs under qemu.
+verify_isa() { [[ ${flavour} == v3 ]] || "${repo}/scripts/verify-baseline-isa.sh" "$@"; }
 out=$(realpath -m -- "${out}")
 mkdir -p -- "${out}"
 
@@ -85,7 +94,9 @@ else
 fi
 for binary in oxiroute oxiroute-worker-launcher; do
   "${repo}/scripts/verify-binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+  verify_isa "${release}/${binary}"
 done
+verify_isa --run "${release}/oxiroute"
 "${pgo_script}" smoke "${release}/oxiroute"
 
 shipped=${release}/oxiroute
@@ -95,6 +106,7 @@ if [[ ${bolt} == 1 ]]; then
   mkdir -p "${BOLT_WORK}"
   "${bolt_script}" all "${release}/oxiroute" "${shipped}"
   "${repo}/scripts/verify-binary-paths.sh" "${shipped}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+  verify_isa --run "${shipped}"
   "${pgo_script}" smoke "${shipped}"
   note="${note}, then relinked by BOLT for instruction layout"
 fi
