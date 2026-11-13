@@ -116,24 +116,30 @@ struct RejectingAdmissionApp;
 
 #[async_trait]
 impl ServerApp for ProcessProbe {
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         _session: Stream,
         _shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        self.called.store(true, Ordering::Release);
-        None
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            self.called.store(true, Ordering::Release);
+            None
+        }
     }
 }
 
 #[async_trait]
 impl ServerApp for CleanupApp {
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         _session: Stream,
         _shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        None
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move { None }
     }
 
     async fn cleanup(&self) {
@@ -151,12 +157,14 @@ impl ServerApp for RejectingAdmissionApp {
         None
     }
 
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         _session: Stream,
         _shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        None
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move { None }
     }
 }
 

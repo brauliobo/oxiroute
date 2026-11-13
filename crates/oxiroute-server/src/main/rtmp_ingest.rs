@@ -127,238 +127,242 @@ impl ServerApp for RtmpIngest {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         mut downstream: Stream,
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        let Some(mut at_unix_ms) = unix_time_ms() else {
-            warn!("cannot start RTMP session because the system clock is invalid");
-            return None;
-        };
-        let session_started_at = Instant::now();
-        let peer_addr = downstream
-            .get_socket_digest()
-            .and_then(|digest| {
-                digest
-                    .peer_addr()
-                    .and_then(|address| address.as_inet().copied())
-            })
-            .map(|address| address.ip());
-        let mut session = self.runtime.session_with_peer_addr(peer_addr);
-        let mut previous_snapshot = session.client_snapshot();
-        let mut access_counters = RtmpAccessCounters::default();
-        let mut last_failure_code = None;
-        let mut buffer = [0; RTMP_READ_BUFFER_SIZE];
-        let mut shutdown = shutdown.clone();
-        let mut playback_drain = interval(RTMP_PLAYBACK_DRAIN_INTERVAL);
-        playback_drain.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let mut control_poll = interval(RTMP_CONTROL_POLL_INTERVAL);
-        control_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let mut publisher_liveness = interval(RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL);
-        publisher_liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        loop {
-            let outbound = tokio::select! {
-                _ = shutdown.changed() => break,
-                _ = control_poll.tick() => {
-                    if session.take_control_action().is_some() {
-                        break;
-                    }
-                    Vec::new()
-                }
-                _ = publisher_liveness.tick() => {
-                    let Some(now_unix_ms) = unix_time_ms() else {
-                        warn!("closing RTMP session because the system clock is invalid");
-                        break;
-                    };
-                    at_unix_ms = now_unix_ms;
-                    if session.is_publisher_stale(now_unix_ms) {
-                        warn!("closing stale RTMP publisher session after media inactivity");
-                        break;
-                    }
-                    Vec::new()
-                }
-                _ = playback_drain.tick(), if session.is_playback_active() => {
-                    match session.drain_playback(MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN) {
-                        Ok(outbound) => outbound,
-                        Err(error) => {
-                            warn!("RTMP playback serialization failed: {error}");
-                            break;
-                        }
-                    }
-                }
-                read = downstream.read(&mut buffer) => {
-                    let bytes_read = match read {
-                        Ok(0) => break,
-                        Ok(bytes_read) => bytes_read,
-                        Err(error) => {
-                            warn!("RTMP transport read failed: {error}");
-                            break;
-                        }
-                    };
-                    let Ok(bytes_received) = u64::try_from(bytes_read) else {
-                        warn!("RTMP read size exceeds the supported metrics range");
-                        break;
-                    };
-                    access_counters.bytes_received = access_counters
-                        .bytes_received
-                        .saturating_add(bytes_received);
-                    access_counters.messages_received = access_counters
-                        .messages_received
-                        .saturating_add(1);
-                    if let Err(error) = self.metrics.record_bytes_received(bytes_received) {
-                        warn!("could not account for RTMP ingress: {error}");
-                        break;
-                    }
-                    let Some(now_unix_ms) = unix_time_ms() else {
-                        warn!("closing RTMP session because the system clock is invalid");
-                        break;
-                    };
-                    at_unix_ms = now_unix_ms;
-
-                    match session.receive(&buffer[..bytes_read], at_unix_ms) {
-                        Ok(outbound) => {
-                            if let Some(code) = session.take_access_failure_code()
-                                && let Some(snapshot) = session.client_snapshot()
-                            {
-                                log_rtmp_access_event(
-                                    &self.service,
-                                    &self.listener,
-                                    rejection_event(code),
-                                    RtmpAccessResult::Rejected,
-                                    &snapshot,
-                                    &access_counters,
-                                    session_started_at,
-                                    at_unix_ms,
-                                    Some(rejection_failure_code(code)),
-                                );
-                            }
-                            outbound
-                        }
-                        Err(error) => {
-                            let failure_code = rtmp_session_failure_code(&error);
-                            last_failure_code = Some(failure_code);
-                            if let Some(snapshot) = session.client_snapshot()
-                                && snapshot.connected
-                            {
-                                log_rtmp_access_event(
-                                    &self.service,
-                                    &self.listener,
-                                    event_for_role(snapshot.role),
-                                    RtmpAccessResult::Failed,
-                                    &snapshot,
-                                    &access_counters,
-                                    session_started_at,
-                                    at_unix_ms,
-                                    Some(failure_code),
-                                );
-                            }
-                            warn!("RTMP session failed: {error}");
-                            break;
-                        }
-                    }
-                }
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            let Some(mut at_unix_ms) = unix_time_ms() else {
+                warn!("cannot start RTMP session because the system clock is invalid");
+                return None;
             };
-            if let Some(current_snapshot) = session.client_snapshot() {
-                log_rtmp_state_transition(
+            let session_started_at = Instant::now();
+            let peer_addr = downstream
+                .get_socket_digest()
+                .and_then(|digest| {
+                    digest
+                        .peer_addr()
+                        .and_then(|address| address.as_inet().copied())
+                })
+                .map(|address| address.ip());
+            let mut session = self.runtime.session_with_peer_addr(peer_addr);
+            let mut previous_snapshot = session.client_snapshot();
+            let mut access_counters = RtmpAccessCounters::default();
+            let mut last_failure_code = None;
+            let mut buffer = [0; RTMP_READ_BUFFER_SIZE];
+            let mut shutdown = shutdown.clone();
+            let mut playback_drain = interval(RTMP_PLAYBACK_DRAIN_INTERVAL);
+            playback_drain.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut control_poll = interval(RTMP_CONTROL_POLL_INTERVAL);
+            control_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut publisher_liveness = interval(RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL);
+            publisher_liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                let outbound = tokio::select! {
+                    _ = shutdown.changed() => break,
+                    _ = control_poll.tick() => {
+                        if session.take_control_action().is_some() {
+                            break;
+                        }
+                        Vec::new()
+                    }
+                    _ = publisher_liveness.tick() => {
+                        let Some(now_unix_ms) = unix_time_ms() else {
+                            warn!("closing RTMP session because the system clock is invalid");
+                            break;
+                        };
+                        at_unix_ms = now_unix_ms;
+                        if session.is_publisher_stale(now_unix_ms) {
+                            warn!("closing stale RTMP publisher session after media inactivity");
+                            break;
+                        }
+                        Vec::new()
+                    }
+                    _ = playback_drain.tick(), if session.is_playback_active() => {
+                        match session.drain_playback(MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN) {
+                            Ok(outbound) => outbound,
+                            Err(error) => {
+                                warn!("RTMP playback serialization failed: {error}");
+                                break;
+                            }
+                        }
+                    }
+                    read = downstream.read(&mut buffer) => {
+                        let bytes_read = match read {
+                            Ok(0) => break,
+                            Ok(bytes_read) => bytes_read,
+                            Err(error) => {
+                                warn!("RTMP transport read failed: {error}");
+                                break;
+                            }
+                        };
+                        let Ok(bytes_received) = u64::try_from(bytes_read) else {
+                            warn!("RTMP read size exceeds the supported metrics range");
+                            break;
+                        };
+                        access_counters.bytes_received = access_counters
+                            .bytes_received
+                            .saturating_add(bytes_received);
+                        access_counters.messages_received = access_counters
+                            .messages_received
+                            .saturating_add(1);
+                        if let Err(error) = self.metrics.record_bytes_received(bytes_received) {
+                            warn!("could not account for RTMP ingress: {error}");
+                            break;
+                        }
+                        let Some(now_unix_ms) = unix_time_ms() else {
+                            warn!("closing RTMP session because the system clock is invalid");
+                            break;
+                        };
+                        at_unix_ms = now_unix_ms;
+
+                        match session.receive(&buffer[..bytes_read], at_unix_ms) {
+                            Ok(outbound) => {
+                                if let Some(code) = session.take_access_failure_code()
+                                    && let Some(snapshot) = session.client_snapshot()
+                                {
+                                    log_rtmp_access_event(
+                                        &self.service,
+                                        &self.listener,
+                                        rejection_event(code),
+                                        RtmpAccessResult::Rejected,
+                                        &snapshot,
+                                        &access_counters,
+                                        session_started_at,
+                                        at_unix_ms,
+                                        Some(rejection_failure_code(code)),
+                                    );
+                                }
+                                outbound
+                            }
+                            Err(error) => {
+                                let failure_code = rtmp_session_failure_code(&error);
+                                last_failure_code = Some(failure_code);
+                                if let Some(snapshot) = session.client_snapshot()
+                                    && snapshot.connected
+                                {
+                                    log_rtmp_access_event(
+                                        &self.service,
+                                        &self.listener,
+                                        event_for_role(snapshot.role),
+                                        RtmpAccessResult::Failed,
+                                        &snapshot,
+                                        &access_counters,
+                                        session_started_at,
+                                        at_unix_ms,
+                                        Some(failure_code),
+                                    );
+                                }
+                                warn!("RTMP session failed: {error}");
+                                break;
+                            }
+                        }
+                    }
+                };
+                if let Some(current_snapshot) = session.client_snapshot() {
+                    log_rtmp_state_transition(
+                        &self.service,
+                        &self.listener,
+                        &self.control,
+                        previous_snapshot.as_ref(),
+                        &current_snapshot,
+                        &access_counters,
+                        session_started_at,
+                        at_unix_ms,
+                    );
+                    previous_snapshot = Some(current_snapshot);
+                }
+                if outbound.is_empty() {
+                    continue;
+                }
+                if let Err(error) = write_rtmp_packets(
+                    &mut downstream,
+                    &outbound,
+                    &self.metrics,
+                    &mut access_counters,
+                )
+                .await
+                {
+                    last_failure_code = Some("transport_write_failed");
+                    if let Some(snapshot) = session.client_snapshot()
+                        && snapshot.connected
+                    {
+                        log_rtmp_access_event(
+                            &self.service,
+                            &self.listener,
+                            event_for_role(snapshot.role),
+                            RtmpAccessResult::Failed,
+                            &snapshot,
+                            &access_counters,
+                            session_started_at,
+                            at_unix_ms,
+                            last_failure_code,
+                        );
+                    }
+                    warn!("RTMP transport write failed: {error}");
+                    break;
+                }
+            }
+
+            let terminal_snapshot = session.client_snapshot();
+            if let Some(snapshot) = terminal_snapshot.as_ref()
+                && snapshot.connected
+                && snapshot.role == RtmpSessionRole::Publisher
+            {
+                log_rtmp_auxiliary_failures(
                     &self.service,
                     &self.listener,
                     &self.control,
-                    previous_snapshot.as_ref(),
-                    &current_snapshot,
+                    snapshot,
                     &access_counters,
                     session_started_at,
                     at_unix_ms,
                 );
-                previous_snapshot = Some(current_snapshot);
             }
-            if outbound.is_empty() {
-                continue;
-            }
-            if let Err(error) = write_rtmp_packets(
-                &mut downstream,
-                &outbound,
-                &self.metrics,
-                &mut access_counters,
-            )
-            .await
-            {
-                last_failure_code = Some("transport_write_failed");
-                if let Some(snapshot) = session.client_snapshot()
-                    && snapshot.connected
-                {
+            let close_failed = if let Err(error) = session.close(at_unix_ms) {
+                last_failure_code = Some("session_close_failed");
+                warn!("could not detach RTMP media role: {error}");
+                true
+            } else {
+                false
+            };
+            if let Some(snapshot) = terminal_snapshot {
+                if snapshot.connected {
                     log_rtmp_access_event(
                         &self.service,
                         &self.listener,
-                        event_for_role(snapshot.role),
-                        RtmpAccessResult::Failed,
+                        RtmpAccessEvent::Disconnect,
+                        if close_failed {
+                            RtmpAccessResult::Failed
+                        } else {
+                            RtmpAccessResult::Closed
+                        },
                         &snapshot,
                         &access_counters,
                         session_started_at,
                         at_unix_ms,
                         last_failure_code,
                     );
+                } else {
+                    log_rtmp_access_event(
+                        &self.service,
+                        &self.listener,
+                        RtmpAccessEvent::Connect,
+                        RtmpAccessResult::Rejected,
+                        &snapshot,
+                        &access_counters,
+                        session_started_at,
+                        at_unix_ms,
+                        Some(last_failure_code.unwrap_or("connect_rejected")),
+                    );
                 }
-                warn!("RTMP transport write failed: {error}");
-                break;
             }
+            None
         }
-
-        let terminal_snapshot = session.client_snapshot();
-        if let Some(snapshot) = terminal_snapshot.as_ref()
-            && snapshot.connected
-            && snapshot.role == RtmpSessionRole::Publisher
-        {
-            log_rtmp_auxiliary_failures(
-                &self.service,
-                &self.listener,
-                &self.control,
-                snapshot,
-                &access_counters,
-                session_started_at,
-                at_unix_ms,
-            );
-        }
-        let close_failed = if let Err(error) = session.close(at_unix_ms) {
-            last_failure_code = Some("session_close_failed");
-            warn!("could not detach RTMP media role: {error}");
-            true
-        } else {
-            false
-        };
-        if let Some(snapshot) = terminal_snapshot {
-            if snapshot.connected {
-                log_rtmp_access_event(
-                    &self.service,
-                    &self.listener,
-                    RtmpAccessEvent::Disconnect,
-                    if close_failed {
-                        RtmpAccessResult::Failed
-                    } else {
-                        RtmpAccessResult::Closed
-                    },
-                    &snapshot,
-                    &access_counters,
-                    session_started_at,
-                    at_unix_ms,
-                    last_failure_code,
-                );
-            } else {
-                log_rtmp_access_event(
-                    &self.service,
-                    &self.listener,
-                    RtmpAccessEvent::Connect,
-                    RtmpAccessResult::Rejected,
-                    &snapshot,
-                    &access_counters,
-                    session_started_at,
-                    at_unix_ms,
-                    Some(last_failure_code.unwrap_or("connect_rejected")),
-                );
-            }
-        }
-        None
     }
 }
 

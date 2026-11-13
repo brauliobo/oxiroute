@@ -95,12 +95,12 @@ where
         Some(Box::new((lease, inner)))
     }
 
-    async fn process_new(
+    fn process_new(
         self: &Arc<Self>,
         downstream: Stream,
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        self.inner.process_new(downstream, shutdown).await
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        self.inner.process_new(downstream, shutdown)
     }
 
     async fn cleanup(&self) {
@@ -197,86 +197,90 @@ where
         self.inner.admit_owned_connection()
     }
 
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         mut downstream: Stream,
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        if self.h2_only && !matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
-            // A ClientHello without ALPN completes TLS, so close before Pingora's HTTP/1 fallback.
-            downstream.shutdown().await;
-            return None;
-        }
-        // H2 has its own connection lifetime after HTTP/1 accept admission and retains this
-        // protocol reference to drive generation GOAWAY and drain independently.
-        let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
-            if let Some(generation) = self.generation.as_ref() {
-                let Some(reference) = generation.begin_reference(RuntimeReferenceKind::Http2)
-                else {
-                    downstream.shutdown().await;
-                    return None;
-                };
-                Some(reference)
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            if self.h2_only && !matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
+                // A ClientHello without ALPN completes TLS, so close before Pingora's HTTP/1 fallback.
+                downstream.shutdown().await;
+                return None;
+            }
+            // H2 has its own connection lifetime after HTTP/1 accept admission and retains this
+            // protocol reference to drive generation GOAWAY and drain independently.
+            let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
+                if let Some(generation) = self.generation.as_ref() {
+                    let Some(reference) = generation.begin_reference(RuntimeReferenceKind::Http2)
+                    else {
+                        downstream.shutdown().await;
+                        return None;
+                    };
+                    Some(reference)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
-        let (h2_shutdown, h2_monitor) = if h2_reference.is_some() {
-            let generation = self
-                .generation
-                .as_ref()
-                .expect("H2 reference has a generation");
-            let mut gate = generation.accept_gate().register();
-            let (shutdown_tx, shutdown_rx) = watch::channel(false);
-            let mut process_shutdown = shutdown.clone();
-            let gate_state = gate.state();
-            if *process_shutdown.borrow() || !gate_state.accepting {
-                let _ = shutdown_tx.send(true);
-                if !gate_state.accepting {
-                    gate.acknowledge(gate_state.epoch);
+            };
+            let (h2_shutdown, h2_monitor) = if h2_reference.is_some() {
+                let generation = self
+                    .generation
+                    .as_ref()
+                    .expect("H2 reference has a generation");
+                let mut gate = generation.accept_gate().register();
+                let (shutdown_tx, shutdown_rx) = watch::channel(false);
+                let mut process_shutdown = shutdown.clone();
+                let gate_state = gate.state();
+                if *process_shutdown.borrow() || !gate_state.accepting {
+                    let _ = shutdown_tx.send(true);
+                    if !gate_state.accepting {
+                        gate.acknowledge(gate_state.epoch);
+                    }
                 }
-            }
-            let monitor = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        changed = gate.changed() => {
-                            let Ok(state) = changed else { break };
-                            if !state.accepting {
-                                let _ = shutdown_tx.send(true);
-                                gate.acknowledge(state.epoch);
-                                break;
+                let monitor = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            changed = gate.changed() => {
+                                let Ok(state) = changed else { break };
+                                if !state.accepting {
+                                    let _ = shutdown_tx.send(true);
+                                    gate.acknowledge(state.epoch);
+                                    break;
+                                }
                             }
-                        }
-                        changed = process_shutdown.changed() => {
-                            if changed.is_err() {
-                                break;
-                            }
-                            if *process_shutdown.borrow() {
-                                let _ = shutdown_tx.send(true);
-                                break;
+                            changed = process_shutdown.changed() => {
+                                if changed.is_err() {
+                                    break;
+                                }
+                                if *process_shutdown.borrow() {
+                                    let _ = shutdown_tx.send(true);
+                                    break;
+                                }
                             }
                         }
                     }
-                }
-            });
-            (Some(shutdown_rx), Some(monitor))
-        } else {
-            (None, None)
-        };
-        let result = if let Some(h2_shutdown) = h2_shutdown.as_ref() {
-            self.inner.process_new(downstream, h2_shutdown).await
-        } else {
-            let shutdown = self.http1_shutdown(shutdown);
-            self.inner.process_new(downstream, &shutdown).await
-        };
-        if let Some(monitor) = h2_monitor {
-            monitor.abort();
-            let _ = monitor.await;
+                });
+                (Some(shutdown_rx), Some(monitor))
+            } else {
+                (None, None)
+            };
+            let result = if let Some(h2_shutdown) = h2_shutdown.as_ref() {
+                self.inner.process_new(downstream, h2_shutdown).await
+            } else {
+                let shutdown = self.http1_shutdown(shutdown);
+                self.inner.process_new(downstream, &shutdown).await
+            };
+            if let Some(monitor) = h2_monitor {
+                monitor.abort();
+                let _ = monitor.await;
+            }
+            drop(h2_reference);
+            result
         }
-        drop(h2_reference);
-        result
     }
 
     async fn cleanup(&self) {

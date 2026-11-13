@@ -286,6 +286,14 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
   connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).
 
+- `apps/mod.rs` and `services/listening.rs`, connection machinery of a new connection: `ServerApp::process_new` returns its future
+  (`impl Future + Send`, where `Self: Send + Sync`) instead of an `async_trait` box, so the layers of an application (the blanket
+  impl for `HttpServerApp`, OxiRoute's wrappers) call each other without a heap block and a copy of the state machine per layer and
+  connection; `Service::spawn_accepted` boxes the connection future once (`Box::pin`) where it is handed to the runtime, so the
+  task machinery moves a pointer. `Service::run_endpoint` has one accept loop: an application without an accept gate gets
+  `AcceptGate::open()` (new, a gate that is already accepting), which the loop treats like any other (the second loop body for
+  gate-less applications is gone). Test: `accept_gate_tests::an_open_gate_accepts_until_it_is_closed`.
+
 - `protocols/l4/stream.rs` and `protocols/l4/lazy_read.rs` expose `Stream::tcp_socket`, `has_read_ahead` and
   `has_write_behind`: the TCP socket under the buffers and whether bytes are held in user space on either side. OxiRoute moves
   bulk payload on the socket itself (`splice(2)`) only when both are empty. Tests in `protocols/l4/stream/tests.rs`.
@@ -365,7 +373,7 @@ response facts, noted request write, inline request loop, zero-copy request body
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
-cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, the plain-connection `ready` path and the accept-loop fast path, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, the plain-connection `ready` path and the accept-loop fast path (one accept loop over an `AcceptGate`, `AcceptGate::open`), the unboxed `ServerApp::process_new` and the once-boxed connection future, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
 `ServerConf::connection_age_ms`, the custom TLS acceptor (`listeners/custom_tls.rs`), the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`), the
 sendfile body write (`write_body_from_file`), the kernel TLS offload (`ktls` modules, `Ssl::poll_kernel_tx`, `build.rs`), the owned header values and compact raw head of an upgraded connection
 (`own_header_values` in `protocols/http/v1/common.rs`, used by the server and client sessions).
