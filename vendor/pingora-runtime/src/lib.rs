@@ -1234,6 +1234,52 @@ mod connection_tests {
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
 
+    /// Connections that are ready all the time cannot hold another one back for longer than a few ages: the light
+    /// connection is woken from outside while 256 busy ones keep queueing themselves behind it, and runs within the age
+    /// (plus the batch being polled) every time.
+    #[test]
+    fn a_flood_of_busy_connections_cannot_delay_a_light_one_beyond_its_age() {
+        let age = Duration::from_millis(20);
+        let runtime = aged_runtime(1, "flood", age);
+        let (late_tx, late_rx) = std::sync::mpsc::channel();
+        let wake = Arc::new(Notify::new());
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let wanted = Arc::new(AtomicUsize::new(0));
+        let (light_wake, light_wanted) = (wake.clone(), wanted.clone());
+        runtime.get_handle().block_on_spawned(async move {
+            for _ in 0..256 {
+                spawn_connection(async {
+                    loop {
+                        tokio::task::yield_now().await;
+                    }
+                });
+            }
+            spawn_connection(async move {
+                ready_tx.send(()).unwrap();
+                loop {
+                    light_wake.notified().await;
+                    let asked = light_wanted.load(Ordering::Acquire) as u64;
+                    let waited = std::time::UNIX_EPOCH.elapsed().unwrap().as_micros() as u64 - asked;
+                    late_tx.send(Duration::from_micros(waited)).unwrap();
+                }
+            });
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut slowest = Duration::ZERO;
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(10));
+            let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_micros() as usize;
+            wanted.store(now, Ordering::Release);
+            wake.notify_one();
+            slowest = slowest.max(late_rx.recv_timeout(Duration::from_secs(5)).expect("the light connection ran"));
+        }
+        assert!(
+            slowest < age * 4 + Duration::from_millis(100),
+            "the light connection waited {slowest:?} behind busy ones, age {age:?}"
+        );
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
     #[test]
     fn a_work_stealing_runtime_spawns_on_itself() {
         let runtime = Runtime::new_steal(2, "steal");

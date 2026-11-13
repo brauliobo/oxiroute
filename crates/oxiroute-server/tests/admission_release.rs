@@ -44,16 +44,20 @@ impl ServerApp for AdmissionApp {
         Some(Box::new(Slot(Arc::clone(&self.released))))
     }
 
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         stream: Stream,
         _shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        // Like an app that awaits cleanup tasks after its connection closed: the client sees the
-        // close here, long before the service task ends.
-        drop(stream);
-        sleep(Duration::from_millis(200)).await;
-        None
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            // Like an app that awaits cleanup tasks after its connection closed: the client sees the
+            // close here, long before the service task ends.
+            drop(stream);
+            sleep(Duration::from_millis(200)).await;
+            None
+        }
     }
 }
 

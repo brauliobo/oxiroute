@@ -18,7 +18,7 @@
 //! Each [Service] can be configured with custom application logic (e.g. an `HTTPProxy`) and one or
 //! more endpoints to listen to.
 
-use crate::apps::{ConnectionAdmission, ServerApp};
+use crate::apps::{AcceptGate, ConnectionAdmission, ServerApp};
 use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
@@ -237,9 +237,11 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         shutdown: &ShutdownWatch,
     ) {
         io.hold_admission(admission);
+        // One heap allocation holds the whole connection state machine, so the spawn machinery moves a pointer
+        // instead of the state (a plain connection's is several kilobytes, copied on every hand-over).
         spawn_connection_as(
             !io.is_tls(),
-            Self::serve_accepted(io, app.clone(), shutdown.clone()),
+            Box::pin(Self::serve_accepted(io, app.clone(), shutdown.clone())),
         );
     }
 
@@ -248,97 +250,51 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         mut stack: TransportStack,
         mut shutdown: ShutdownWatch,
     ) {
-        let mut gate = app_logic.accept_gate().map(|gate| gate.register());
+        // An application without a gate accepts for as long as the service runs.
+        let mut participant = app_logic
+            .accept_gate()
+            .unwrap_or_else(AcceptGate::open)
+            .register();
         // the accept loop, until the system is shutting down
         loop {
-            let new_io = if let Some(participant) = &mut gate {
-                let state = participant.state();
-                if !state.accepting {
-                    participant.acknowledge(state.epoch);
-                    tokio::select! {
-                        biased;
-                        shutdown_signal = shutdown.changed() => {
-                            if shutdown_signal.is_err() || *shutdown.borrow() {
-                                break;
-                            }
-                        }
-                        changed = participant.changed() => {
-                            if changed.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                let Some(ownership) = participant.claim() else {
-                    continue;
-                };
-                // A connection already waiting in the kernel's queue is taken without registering on the gate
-                // and shutdown signals, which only matter while the accept would block (a gate change is seen
-                // at the top of the loop, a pending shutdown signal here).
-                let ready = if matches!(shutdown.has_changed(), Ok(false)) {
-                    stack.accept().now_or_never()
-                } else {
-                    None
-                };
-                let accepted = match ready {
-                    Some(accepted) => accepted,
-                    None => tokio::select! {
-                        biased;
-                        shutdown_signal = shutdown.changed() => {
-                            drop(ownership);
-                            match shutdown_signal {
-                                Ok(()) => {
-                                    if !*shutdown.borrow() {
-                                        continue;
-                                    }
-                                    info!("Shutting down {}", stack.as_str());
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!("shutdown_signal error {e}");
-                                    break;
-                                }
-                            }
-                        }
-                        changed = participant.changed() => {
-                            drop(ownership);
-                            match changed {
-                                Ok(state) => {
-                                    if !state.accepting {
-                                        participant.acknowledge(state.epoch);
-                                    }
-                                    continue;
-                                }
-                                Err(error) => {
-                                    error!("accept gate error {error}");
-                                    break;
-                                }
-                            }
-                        }
-                        accepted = stack.accept() => accepted,
-                    },
-                };
-                let admission = app_logic.admit_owned_connection();
-                drop(ownership);
-                let Some(admission) = admission else {
-                    continue;
-                };
-                match accepted {
-                    Ok(io) => {
-                        Self::spawn_accepted(io, admission, &app_logic, &shutdown);
-                        continue;
-                    }
-                    Err(error) => Err(error),
-                }
-            } else {
-                tokio::select! { // TODO: consider biased for perf reason?
-                    new_io = stack.accept() => new_io,
+            let state = participant.state();
+            if !state.accepting {
+                participant.acknowledge(state.epoch);
+                tokio::select! {
+                    biased;
                     shutdown_signal = shutdown.changed() => {
+                        if shutdown_signal.is_err() || *shutdown.borrow() {
+                            break;
+                        }
+                    }
+                    changed = participant.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            let Some(ownership) = participant.claim() else {
+                continue;
+            };
+            // A connection already waiting in the kernel's queue is taken without registering on the gate
+            // and shutdown signals, which only matter while the accept would block (a gate change is seen
+            // at the top of the loop, a pending shutdown signal here).
+            let ready = if matches!(shutdown.has_changed(), Ok(false)) {
+                stack.accept().now_or_never()
+            } else {
+                None
+            };
+            let accepted = match ready {
+                Some(accepted) => accepted,
+                None => tokio::select! {
+                    biased;
+                    shutdown_signal = shutdown.changed() => {
+                        drop(ownership);
                         match shutdown_signal {
                             Ok(()) => {
                                 if !*shutdown.borrow() {
-                                    // happen in the initial read
                                     continue;
                                 }
                                 info!("Shutting down {}", stack.as_str());
@@ -350,15 +306,31 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                             }
                         }
                     }
-                }
+                    changed = participant.changed() => {
+                        drop(ownership);
+                        match changed {
+                            Ok(state) => {
+                                if !state.accepting {
+                                    participant.acknowledge(state.epoch);
+                                }
+                                continue;
+                            }
+                            Err(error) => {
+                                error!("accept gate error {error}");
+                                break;
+                            }
+                        }
+                    }
+                    accepted = stack.accept() => accepted,
+                },
             };
-            match new_io {
-                Ok(io) => {
-                    let Some(admission) = app_logic.admit_connection() else {
-                        continue;
-                    };
-                    Self::spawn_accepted(io, admission, &app_logic, &shutdown);
-                }
+            let admission = app_logic.admit_owned_connection();
+            drop(ownership);
+            let Some(admission) = admission else {
+                continue;
+            };
+            match accepted {
+                Ok(io) => Self::spawn_accepted(io, admission, &app_logic, &shutdown),
                 Err(e) => {
                     error!("Accept() failed {e}");
                     if let Some(io_error) = e
@@ -517,12 +489,14 @@ mod tests {
 
     #[async_trait]
     impl ServerApp for TestApp {
-        async fn process_new(
+        // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+        #[allow(clippy::manual_async_fn)]
+        fn process_new(
             self: &Arc<Self>,
             _session: Stream,
             _shutdown: &ShutdownWatch,
-        ) -> Option<Stream> {
-            None
+        ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+            async move { None }
         }
     }
 

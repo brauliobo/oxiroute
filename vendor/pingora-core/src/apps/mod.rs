@@ -83,6 +83,14 @@ pub struct AcceptGateClose {
 }
 
 impl AcceptGate {
+    /// A gate that accepts, for an application that has no generations to hand over.
+    #[must_use]
+    pub fn open() -> Self {
+        let gate = Self::closed();
+        gate.enable();
+        gate
+    }
+
     #[must_use]
     pub fn closed() -> Self {
         let published = AcceptGateState {
@@ -428,6 +436,25 @@ mod accept_gate_tests {
 
     use super::AcceptGate;
 
+    #[test]
+    fn an_open_gate_accepts_until_it_is_closed() {
+        let gate = AcceptGate::open();
+        let participant = gate.register();
+        assert!(gate.accepting());
+        assert!(participant.state().accepting);
+        let claim = participant.claim().expect("an open gate hands out claims");
+        let close = gate.close();
+        assert!(!gate.accepting());
+        assert!(participant.claim().is_none());
+        participant.acknowledge(close_epoch(&participant));
+        drop(claim);
+        assert!(close.wait(Duration::from_secs(1)));
+    }
+
+    fn close_epoch(participant: &super::AcceptGateParticipant) -> u64 {
+        participant.state().epoch
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn close_waits_for_every_participant_and_ownership_claim() {
         let gate = AcceptGate::closed();
@@ -580,12 +607,17 @@ pub trait ServerApp {
     ///
     /// The `shutdown` argument will change from `false` to `true` when the server receives a
     /// signal to shutdown. This argument allows the application to react accordingly.
-    async fn process_new(
+    ///
+    /// The future is returned as is, not boxed: the layers of an application call each other, and a box per layer
+    /// and connection would be an allocation and a copy of a state machine that nothing needs.
+    fn process_new(
         self: &Arc<Self>,
-        mut session: Stream,
+        session: Stream,
         // TODO: make this ShutdownWatch so that all task can await on this event
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream>;
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send
+    where
+        Self: Send + Sync;
 
     /// This callback will be called once after the service stops listening to its endpoints.
     async fn cleanup(&self) {}
@@ -1104,94 +1136,99 @@ impl<T> ServerApp for T
 where
     T: HttpServerApp + Send + Sync + 'static,
 {
-    async fn process_new(
+    // `async_trait` boxes an `async fn`, which is what `ServerApp::process_new` avoids.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new(
         self: &Arc<Self>,
         mut stream: Stream,
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        let mut h2c = self.server_options().as_ref().map_or(false, |o| o.h2c);
-        let custom = self
-            .server_options()
-            .as_ref()
-            .map_or(false, |o| o.force_custom);
-
-        // h2c is for cleartext connections; on TLS, ALPN handles protocol negotiation.
-        // Otherwise, h2c stays true on TLS streams, forcing HTTP/1.1 clients into HTTP/2
-        if stream.get_ssl_digest().is_some() {
-            h2c = false;
-        }
-        // try to read h2 preface
-        else if h2c && !custom {
-            let mut buf = [0u8; H2_PREFACE.len()];
-            let peeked = stream
-                .try_peek(&mut buf)
-                .await
-                .map_err(|e| {
-                    // this error is normal when h1 reuse and close the connection
-                    debug!("Read error while peeking h2c preface {e}");
-                    e
-                })
-                .ok()?;
-            // not all streams support peeking
-            if peeked {
-                // turn off h2c (use h1) if h2 preface doesn't exist
-                h2c = buf == H2_PREFACE;
-            }
-        }
-        if h2c || matches!(stream.selected_alpn_proto(), Some(ALPN::H2)) {
-            return Box::pin(process_h2(self, stream, shutdown)).await;
-        } else if custom || matches!(stream.selected_alpn_proto(), Some(ALPN::Custom(_))) {
-            return self.clone().process_custom_session(stream, shutdown).await;
-        } else {
-            // No ALPN or ALPN::H1 and h2c was not configured, fallback to HTTP/1.1
-            let limit = self
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        async move {
+            let mut h2c = self.server_options().as_ref().map_or(false, |o| o.h2c);
+            let custom = self
                 .server_options()
-                .and_then(|opts| opts.keepalive_request_limit);
-            let mut connection = Http1Connection::first(*shutdown.borrow(), limit);
-            let front = self.http1_front();
-            loop {
-                let mut preloaded = Bytes::new();
-                if let Some(front) = front.filter(|_| !connection.has_buffered_request()) {
-                    match front.serve(stream, &mut connection, shutdown).await {
-                        Http1FrontOutcome::Closed => return None,
-                        Http1FrontOutcome::Handoff {
-                            stream: handed,
-                            preloaded: bytes,
-                        } => {
-                            stream = handed;
-                            preloaded = bytes;
+                .as_ref()
+                .map_or(false, |o| o.force_custom);
+
+            // h2c is for cleartext connections; on TLS, ALPN handles protocol negotiation.
+            // Otherwise, h2c stays true on TLS streams, forcing HTTP/1.1 clients into HTTP/2
+            if stream.get_ssl_digest().is_some() {
+                h2c = false;
+            }
+            // try to read h2 preface
+            else if h2c && !custom {
+                let mut buf = [0u8; H2_PREFACE.len()];
+                let peeked = stream
+                    .try_peek(&mut buf)
+                    .await
+                    .map_err(|e| {
+                        // this error is normal when h1 reuse and close the connection
+                        debug!("Read error while peeking h2c preface {e}");
+                        e
+                    })
+                    .ok()?;
+                // not all streams support peeking
+                if peeked {
+                    // turn off h2c (use h1) if h2 preface doesn't exist
+                    h2c = buf == H2_PREFACE;
+                }
+            }
+            if h2c || matches!(stream.selected_alpn_proto(), Some(ALPN::H2)) {
+                return Box::pin(process_h2(self, stream, shutdown)).await;
+            } else if custom || matches!(stream.selected_alpn_proto(), Some(ALPN::Custom(_))) {
+                return self.clone().process_custom_session(stream, shutdown).await;
+            } else {
+                // No ALPN or ALPN::H1 and h2c was not configured, fallback to HTTP/1.1
+                let limit = self
+                    .server_options()
+                    .and_then(|opts| opts.keepalive_request_limit);
+                let mut connection = Http1Connection::first(*shutdown.borrow(), limit);
+                let front = self.http1_front();
+                loop {
+                    let mut preloaded = Bytes::new();
+                    if let Some(front) = front.filter(|_| !connection.has_buffered_request()) {
+                        match front.serve(stream, &mut connection, shutdown).await {
+                            Http1FrontOutcome::Closed => return None,
+                            Http1FrontOutcome::Handoff {
+                                stream: handed,
+                                preloaded: bytes,
+                            } => {
+                                stream = handed;
+                                preloaded = bytes;
+                            }
+                        }
+                    } else if connection.is_reused() && !connection.has_buffered_request() {
+                        // The connection waits for its next request holding no session and no request state.
+                        let idle = self
+                            .idle_keepalive_timeout()
+                            .or_else(|| connection.idle_timeout());
+                        let stop = self.closes_idle_on_shutdown().then_some(shutdown);
+                        if relocate_idle_connection(&mut stream).await.is_err() {
+                            return None;
+                        }
+                        if !idle_wait::wait_for_next_request(&mut stream, idle, stop).await {
+                            return None;
                         }
                     }
-                } else if connection.is_reused() && !connection.has_buffered_request() {
-                    // The connection waits for its next request holding no session and no request state.
-                    let idle = self
-                        .idle_keepalive_timeout()
-                        .or_else(|| connection.idle_timeout());
-                    let stop = self.closes_idle_on_shutdown().then_some(shutdown);
-                    if relocate_idle_connection(&mut stream).await.is_err() {
-                        return None;
+                    let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
+                    connection.apply_to_session(&mut session);
+                    // On the heap per request: the connection's own future stays small while it waits between requests.
+                    let after =
+                        PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
+                            .await
+                            .map(ReusedHttpStream::consume);
+                    match after {
+                        Some(AfterRequest::Reuse(next, settings)) => {
+                            stream = next;
+                            connection = Http1Connection::after(settings);
+                        }
+                        // The request future is gone (its block is back in the pool); the tunnel is what is left.
+                        Some(AfterRequest::Tunnel(tunnel)) => {
+                            tunnel.await;
+                            return None;
+                        }
+                        None => return None,
                     }
-                    if !idle_wait::wait_for_next_request(&mut stream, idle, stop).await {
-                        return None;
-                    }
-                }
-                let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
-                connection.apply_to_session(&mut session);
-                // On the heap per request: the connection's own future stays small while it waits between requests.
-                let after = PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
-                    .await
-                    .map(ReusedHttpStream::consume);
-                match after {
-                    Some(AfterRequest::Reuse(next, settings)) => {
-                        stream = next;
-                        connection = Http1Connection::after(settings);
-                    }
-                    // The request future is gone (its block is back in the pool); the tunnel is what is left.
-                    Some(AfterRequest::Tunnel(tunnel)) => {
-                        tunnel.await;
-                        return None;
-                    }
-                    None => return None,
                 }
             }
         }

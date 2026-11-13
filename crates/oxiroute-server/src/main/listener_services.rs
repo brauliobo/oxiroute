@@ -351,12 +351,12 @@ where
         Some(Box::new((lease, inner)))
     }
 
-    async fn process_new(
+    fn process_new(
         self: &Arc<Self>,
         downstream: Stream,
         shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        self.inner.process_new(downstream, shutdown).await
+    ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        self.inner.process_new(downstream, shutdown)
     }
 
     async fn cleanup(&self) {
