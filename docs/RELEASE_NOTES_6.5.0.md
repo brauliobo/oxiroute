@@ -104,12 +104,15 @@
 
 ## Measured on the integrated tree
 
-- User+sys CPU per request against 6.4.0 is 0.91x to 0.98x on the proxied, TLS keep-alive, HTTP/2 and direct rows and 1.09x
-  to 1.13x on the full TLS 1.3 handshake (equal instructions, more cycles; not yet explained). Against HAProxy it is lower on
-  every row except new connections (1.04x) and the handshake (1.11x); against nginx the proxied HTTP/1 rows stay at 1.04x to
-  1.23x. An idle WebSocket holds 16.3 kB (TLS 38.4 kB) against 31.6 kB (53.0 kB). The resident set of an idle worker reads
-  about 8 MB higher than 6.4.0 because more of the executable's text is resident (anonymous memory is equal). Tables and
-  method: [PERF_6_5_SUMMARY.md](developer/PERF_6_5_SUMMARY.md).
+- User+sys CPU per request against 6.4.0 is 0.91x to 0.98x on the proxied, TLS keep-alive, HTTP/2 and direct rows. A full TLS 1.3
+  handshake costs the same CPU as 6.4.0 (the 9% to 13% first measured did not reproduce over 25 interleaved runs), and the
+  higher resident set of an idle worker first measured was the page-cache state of a freshly linked binary, not the code
+  ([regression note](developer/PERF_NEXT_REG_RESULTS.md)). Against HAProxy CPU is lower on every row except new connections (1.04x);
+  against nginx the proxied HTTP/1 rows stay at 1.04x to 1.23x.
+- Idle memory against 6.4.0, nginx and HAProxy in one invocation: a WebSocket holds 13.1 kB (6.4.0 31.6 kB, nginx 18.4 kB, HAProxy
+  6.1 kB), over TLS 35.1 kB (53.6, 60.1, 31.5), an HTTP/1 keep-alive connection 8.7 kB (15.0, 9.6, 11.6), over TLS 29.9 kB (36.2,
+  34.6, 35.6) and an HTTP/2 connection over TLS 41.5 kB (50.2, 50.3, 46.0). Four reloads of a 1,000-route configuration grow the
+  process by 16.2 MB (6.4.0: 47.8 MB). Tables and method: [PERF_6_5_SUMMARY.md](developer/PERF_6_5_SUMMARY.md).
 
 ## Tools
 
@@ -126,3 +129,4 @@
 - `benchmarks/scripts/vs_nginx_haproxy.py`: the connection-count scenarios cover 64, 256, 512, 1,024 and 2,048 connections and HAProxy;
   `VS_PERF_EXTRA` adds counters such as `cache-misses:u` per request to every run; `VS_ALT_BINS` builds can carry their own environment
   (`label=/path@KEY=VALUE`); runs disturbed on the SMT siblings of the proxy CPUs are discarded (`--sibling-max`).
+- The harness evicts every OxiRoute binary from the page cache before it starts it, and the `idle_h2tls` scenario runs against nginx.
