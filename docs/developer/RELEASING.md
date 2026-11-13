@@ -184,6 +184,37 @@ scratch data, `PGO_LANES` and `PGO_SCALE` shorten the training for a local check
 or different workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked
 against the glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
 
+## Runtime CPU dispatch and the ISA guard
+
+Every artefact but `x86-64-v3` is a generic x86-64 binary: SSE4.2, AVX2 and AVX-512 code paths are compiled as
+`#[target_feature]` variants and chosen at run time by the `oxiroute-cpu` crate, on by default. The original failure was
+a `SIGILL` on an Intel Celeron J4125 (SSE4.2 and POPCNT, no AVX) from a build that had baked AVX in. For triage and
+tests, `OXIROUTE_CPU_LEVEL=scalar|sse42|avx2|avx512` forces a level; it can only lower the level and never exceeds what
+the CPU supports.
+
+Three gates keep a CPU target out of the shipped bytes:
+
+- `scripts/lib/reject-isa-flags.sh` (`reject_isa_flags`, called by `scripts/build-release-binaries.sh`,
+  `benchmarks/scripts/pgo.sh` and, as an inline copy, `packaging/arch/PKGBUILD`) fails the build with a one-line message
+  when `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS` or `CARGO_TARGET_*_RUSTFLAGS` contain any
+  `-Ctarget-cpu` or `-Ctarget-feature`, or when `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `CFLAGS_<target>` and
+  friends (the cc crate inherits them for OpenSSL, aws-lc and Lua) carry `-march=`, `-mavx*`, `-msse4*`, `-mbmi*`, `-mfma`
+  and the like. Only `-march=x86-64`, `-march=x86-64-v1` and `-mtune=generic` (the makepkg defaults) pass; nothing is
+  stripped silently. Arch users whose `makepkg.conf` sets `-march=native` set generic flags in `~/.makepkg.conf`.
+- `scripts/verify-baseline-isa.sh BIN` disassembles the binary and fails on VEX/EVEX, BMI, FMA, LZCNT and MOVBE
+  instructions in any function that is not runtime-dispatched (`oxiroute_cpu::`, memchr, aho-corasick, aws-lc and ring
+  assembly, zlib-ng, zstd, glibc, ... or a symbol that names its ISA); the allow-list is `DISPATCHED_SYMBOL_PATTERNS` in the
+  script. A stripped binary fails closed: pass `--symbols UNSTRIPPED` (same build-id). It runs on the release binaries
+  in `build-release-binaries.sh`, not for the `v3` flavour.
+- `scripts/verify-baseline-isa.sh --run BIN` also runs `BIN version` under `qemu-x86_64 -cpu Nehalem` and
+  `-cpu Denverton` (a Goldmont-class Atom: SSE4.2, no AVX; qemu has no Goldmont Plus, the J4125 core) and fails on a
+  non-zero exit or `SIGILL`. Without `qemu-x86_64` (package `qemu-user`) it prints `SKIPPED` and exits 0; `--require`
+  makes that exit 1. A dynamic binary needs the host loader or `QEMU_LD_PREFIX=<baseline sysroot>`; a host glibc built
+  for x86-64-v3 raises `SIGILL` before the binary runs.
+
+`scripts/test-verify-baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
+"Release archive policy").
+
 ## Binary Package
 
 `packaging/arch/bin/` is the `oxiroute-bin` recipe: it installs the release tarball above and the same service,

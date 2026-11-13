@@ -20,12 +20,16 @@
 # Every lane keeps its own merged profile ($PGO_WORK/lane/NAME.profdata), so the mix can be changed without training
 # again: PGO_LANES entries are NAME or NAME:WEIGHT (llvm-profdata -weighted-input, default 1); `merge` combines them.
 #
+# A RUSTFLAGS or CFLAGS that sets a CPU target (-Ctarget-cpu, -Ctarget-feature, -march) fails the build
+# (scripts/lib/reject-isa-flags.sh; build-release-binaries.sh has already checked it and sets ISA_GUARD_DONE).
+#
 # Environment: PGO_WORK (scratch and default profile location), PGO_PROFILE, PGO_LANES, PGO_CARGO_PROFILE, PGO_SCALE
 # (request-count multiplier of every lane), PGO_JOBS, PGO_TARGET, LLVM_PROFDATA, CARGO_TARGET_DIR (final build only),
 # R2_PROXY_CPUS / R2_UPSTREAM_CPUS / R2_LOAD_CPUS (default: derived from nproc below 16 CPUs, harness defaults above).
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+source "${repo}/scripts/lib/reject-isa-flags.sh"
 target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
 work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
@@ -53,6 +57,7 @@ remap_rustflags() {
 # The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments. A profile other
 # than release (PGO_CARGO_PROFILE=release-abort) has its own profile data: unwinding changes the control-flow hashes.
 cargo_build() {
+  [[ ${ISA_GUARD_DONE:-} == 1 ]] || reject_isa_flags
   local select=(--release)
   [[ ${cargo_profile} == release ]] || select=(--profile "${cargo_profile}")
   (cd "${repo}" && RUSTFLAGS="${RUSTFLAGS:-} $(remap_rustflags)" nice cargo build "${select[@]}" --locked \
