@@ -1,0 +1,28 @@
+[package]
+name = "oxiroute-cpu"
+description = "Runtime CPU level detection and the SIMD byte scanners that dispatch on it"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = ["std"]
+# Detects the CPU at run time (and honours OXIROUTE_CPU_LEVEL). Without it every scanner takes the scalar path.
+std = []
+
+# The only crate besides the allocator that cannot forbid unsafe code: calling a `#[target_feature]` function and loading
+# a vector register from a slice are `unsafe`. Both live in `simd.rs`, behind one `#[allow]`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Lane counts are at most 64 and offsets are bounded by the slice they index.
+cast_possible_truncation = "allow"
+# The intrinsics are used by name, as in `core::arch` examples.
+wildcard_imports = "allow"
+# Benchmark arithmetic.
+cast_precision_loss = "allow"

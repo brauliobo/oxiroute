@@ -2384,6 +2384,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-cpu"
+version = "6.5.0"
+
+[[package]]
 name = "oxiroute-forward-proxy"
 version = "6.5.0"
 dependencies = [
@@ -2424,6 +2428,7 @@ name = "oxiroute-h1-head"
 version = "6.5.0"
 dependencies = [
  "arrayvec",
+ "oxiroute-cpu",
 ]
 
 [[package]]
