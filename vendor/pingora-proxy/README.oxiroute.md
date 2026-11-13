@@ -166,3 +166,9 @@ Then run formatting and diff checks.
   smaller future, lives for hours. The hooks and the end of the request (`conclude`) run as before. `process_request`
   takes the request context boxed (`Box<CTX>`, so the context moves to the tunnel without a copy), hence the `'static`
   bounds. The response filters of the relay run as pooled leaf futures. Tests in `proxy_h1_inline.rs`.
+- The tunnel of an upgraded connection settles its downstream session (6.5, second memory round): `relay_inline` calls
+  `HttpSession::settle_upgraded` when the exchange continues as a tunnel, so the session holds no retry buffer and a
+  header map sized to its headers for the life of the connection.
+  `relay_loop` awaits `relay_response` and `forward_request_body` from the thread's block pool (`PooledFuture`) and
+  `run_tunnel` takes the session boxed, so the future of a tunnel is 1.2 KiB where it was 2.1 KiB (a future that is handed
+  its argument by value stores it twice).

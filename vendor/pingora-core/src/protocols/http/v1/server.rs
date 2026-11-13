@@ -1407,6 +1407,16 @@ impl HttpSession {
         }
     }
 
+    /// Gives back what a session that only relays an upgraded connection no longer needs: the request body kept for a
+    /// retry, and nothing more is kept (the bytes of an upgraded connection are not a request body to send again, so
+    /// the request is not retryable from here on), and the room the response header reserved for headers it never got.
+    pub fn settle_upgraded(&mut self) {
+        self.retry_buffer = Some(FixedBuffer::truncated());
+        if let Some(response) = self.response_written.as_mut() {
+            response.compact();
+        }
+    }
+
     pub fn get_retry_buffer(&self) -> Option<Bytes> {
         self.retry_buffer.as_ref().and_then(|b| {
             if b.is_truncated() {
@@ -3855,6 +3865,25 @@ mod tests_stream {
         let kept = http_stream.get_retry_buffer().unwrap();
         assert_eq!(kept.as_ptr(), read.as_ptr());
         assert!(!http_stream.retry_buffer_truncated());
+    }
+
+    #[tokio::test]
+    async fn a_session_settled_as_upgraded_keeps_no_body_and_cannot_be_retried() {
+        init_log();
+        let head = b"POST /a HTTP/1.1\r\nHost: pingora.org\r\nContent-Length: 6\r\n\r\nabc";
+        let mock_io = Builder::new().read(&head[..]).read(&b"def"[..]).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.read_request().await.unwrap();
+        http_stream.enable_retry_buffering();
+        http_stream.read_body_bytes().await.unwrap().unwrap();
+        assert!(http_stream.get_retry_buffer().is_some());
+
+        http_stream.settle_upgraded();
+        assert!(http_stream.get_retry_buffer().is_none());
+        assert!(http_stream.retry_buffer_truncated());
+        http_stream.read_body_bytes().await.unwrap().unwrap();
+        assert!(http_stream.get_retry_buffer().is_none());
+        assert!(http_stream.retry_buffer_truncated());
     }
 
     #[tokio::test]

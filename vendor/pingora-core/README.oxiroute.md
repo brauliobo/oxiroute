@@ -376,3 +376,15 @@ tests and strict clippy.
   `UninitializedStream` (a connection task that waits for its first request no longer carries the stream inline).
   `protocols/http/v1/body.rs`: `convert_to_close_delimited` no longer allocates the 128 KiB chunk buffer before the
   connection reads (the bytes read ahead after the headers still move into the buffer); tests in the same file.
+- Upgraded connections keep no request body (6.5, second memory round): `HttpSession::settle_upgraded` (`v1/server.rs`)
+  replaces the retry buffer with an already truncated `FixedBuffer::truncated()` (`body_buffer.rs`), so the first 64 KiB
+  of a tunnel are no longer copied and held, and the request is not retryable, as it was not after 64 KiB before; it also
+  compacts the response header it kept. `HttpSession::as_http1_mut` (`server.rs`). Tests in the same files.
+- The connection's future of an HTTP/1 connection is 800 bytes smaller (6.5, second memory round): `apps/mod.rs` makes the
+  `ServerSession` inside the closure that writes the request's future into its pooled block, so the session is not a
+  local of the connection loop (a local that lives across two awaits is stored in every state of the connection's
+  future, including the ones where it waits between requests).
+- Path addresses are boxed (6.5, second memory round): `protocols/l4/socket.rs` `SocketAddr::Unix` holds a
+  `Box<std::os::unix::net::SocketAddr>`, so `SocketAddr` is the size of an IP address instead of a path one and the
+  `SocketDigest` of every connection (and every `HttpPeer`) is about 350 bytes smaller; path addresses are built
+  through `From`.

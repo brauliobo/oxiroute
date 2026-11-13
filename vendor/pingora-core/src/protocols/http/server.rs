@@ -833,6 +833,13 @@ impl Session {
         }
     }
 
+    pub fn as_http1_mut(&mut self) -> Option<&mut SessionV1> {
+        match self {
+            Self::H1(s) => Some(s),
+            Self::H2(_) | Self::Subrequest(_) | Self::Custom(_) => None,
+        }
+    }
+
     pub fn as_http1(&self) -> Option<&SessionV1> {
         match self {
             Self::H1(s) => Some(s),
