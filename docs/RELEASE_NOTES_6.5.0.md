@@ -1,4 +1,112 @@
-# OxiRoute 6.5.0 (Unreleased)
+# OxiRoute 6.5.0
+
+Released 2026-11-13.
+
+OxiRoute 6.5.0 makes open connections cheaper, closes the gap of the rustls TLS backend, stops serving requests nobody
+waits for, and tightens the test suite. The release remains pre-alpha and retains conservative compatibility claims. No
+configuration change is needed and no default changed.
+
+## Headlines
+
+- **Memory per idle connection is about halved.** Resident memory per idle connection against 6.4.0, nginx and
+  HAProxy in one invocation: plain WebSocket 13.1 kB (6.4.0 31.6 kB, nginx 18.4 kB, HAProxy 6.1 kB), WebSocket over TLS
+  35.1 kB (53.6, 60.1, 31.5), HTTP/1 keep-alive 8.7 kB (15.0, 9.6, 11.6), HTTP/1 over TLS 29.9 kB (36.2, 34.6, 35.6) and
+  HTTP/2 over TLS 41.5 kB (50.2, 50.3, 46.0). Four reloads of a 1,000-route configuration grow the process by 16.2 MB
+  instead of 47.8 MB, and the process settles at about half of the resident memory it used to keep after connection
+  bursts.
+- **HTTP/2 over TLS serves more requests per second and costs less CPU.** 1 KiB responses on one worker: 86.1k requests
+  per second against 65.1k for 6.4.0 in the first invocation (nginx 87.1k, HAProxy 78.7k), user+sys CPU 7.8 us per
+  request against 8.3 us, p99 2.3 ms against 3.3 ms. The noisier rerun measured 1.03x of 6.4.0's rate and the same CPU
+  ratio (0.94x); the host was shared and loaded, so read the CPU column and the ratios inside one invocation first.
+  [Summary](developer/PERF_6_5_SUMMARY.md).
+- **A request whose client has left is dropped from the queue.** A request waiting for an origin when its client closes
+  the connection (or resets the stream) leaves the pool queue at once and never reaches the origin. The new counter
+  `oxiroute_pool_queue_cancellations_total{pool}` counts them.
+- **The rustls TLS backend accepts every TLS policy option** (`cipher_list`, `dh_parameters_path`) and behaves like
+  OpenSSL for session tickets, session timeout and TLS 1.2 cipher names, so a profile switches backends by changing one
+  line. An idle WebSocket over TLS holds 22.6 kB on rustls (35.0 kB on OpenSSL).
+- **Reverse HTTP/3 scales across workers and streams long answers.** `listener_workers` above 1 runs one QUIC endpoint per
+  worker, and an origin answer without a declared length, or above 256 KiB, reaches the client as it arrives.
+- **The proxied request costs 5% to 10% fewer user instructions** than in 6.4.0 (HTTP/1 1 KiB 27.1k to 25.2k, new
+  connection 33.2k to 29.9k, TLS keep-alive 37.7k to 35.8k, direct response 8.0k to 7.4k); user+sys CPU per request is
+  0.91x to 0.98x of 6.4.0 on the proxied, TLS keep-alive, HTTP/2 and direct rows. The direct response is level with nginx
+  in rate and CPU.
+- **Flaky tests are fixed at their cause.** The supervisor replacement tests, the lane differential corpus and a pooled
+  timer test no longer depend on how late a loaded host schedules them (see [Tests](#tests)); no assertion was loosened.
+
+## Behaviour changes to know before upgrading
+
+- **Abandoned requests leave the queue.** A request that waits for a pool slot, a retry delay or an origin connection
+  is dropped when its client closes the connection. Before, it stayed queued, was sent to the origin when a slot freed
+  up and ran there for nobody. An HTTP/1.1 client that half-closes its connection while its request is queued is treated
+  as gone. A request that was sent to the origin already is handled as before. See [Fixes](#fixes).
+- **TLS session tickets.** A full TLS 1.3 handshake sends one session ticket on both backends (OpenSSL sent two, rustls
+  four) and none when the profile has neither tickets nor a cache. The rustls default session timeout is 7200 s, as on
+  OpenSSL (it was 300 s).
+- **TLS 1.2 cipher names on rustls** in the access-log digest and in variables are the OpenSSL names.
+- **rustls accepts `cipher_list` and `dh_parameters_path`** (validation refused them before). The cipher list keeps its
+  OpenSSL meaning; suites rustls does not implement are named once in the log, and a list that leaves no TLS 1.2 suite
+  fails to start unless `min_version` is `1.3`.
+- **Reverse HTTP/3.** With `listener_workers` above 1 the listener binds one `SO_REUSEPORT` socket per worker. A response
+  without a declared length, or above 256 KiB, is streamed: it has no `content-length` unless the origin gave one, is not
+  bound by the 64 MiB response limit, and a failure after the head resets the stream. Cache fills and `HEAD` stay
+  buffered.
+- **HTTP/2 lane.** It now serves services with an access log (line identical to the classic path, `protocol` `h2`),
+  requests with a body but no `content-length` (chunked to the origin; `413` once the route's limit is passed) and
+  requests with `Expect` (forwarded as a plain field).
+- **Allocator.** jemalloc returns freed pages from a background thread that starts once the process has adopted its
+  control endpoint. A `background_thread` key in `_RJEM_MALLOC_CONF` still decides for itself.
+- **Cached responses** own their header values: 3.1 kB instead of 6.1 kB per cached 1 KiB response.
+- **Routing internals.** A request's route is selected by position from the host as written instead of a lookup by route
+  identity; the routes chosen are the same.
+- **Aged scheduler fairness.** With `connection_scheduling = "aged_per_worker"`, a flood of always-ready connections can
+  no longer delay a lighter connection beyond the age.
+
+## Decisions left to operators
+
+None of these defaults changed in 6.5.0. The measurements are in [the summary](developer/PERF_6_5_SUMMARY.md).
+
+| Option | Default in 6.5.0 | State |
+| --- | --- | --- |
+| `backend` (per TLS profile) | `openssl` | **Not flipped to rustls.** rustls costs 58% fewer instructions per full handshake and 3% to 14% fewer per keep-alive or HTTP/2 request, with every option, resumption and log name at parity. It has no kernel TLS for large downloads, no FIPS module and no DHE-only TLS 1.2 clients. Set `backend = "rustls"` per profile to opt in. See [the TLS recommendation](developer/PERF_NEXT_TLS_RESULTS.md). |
+| `connection_scheduling` | `work_stealing` when omitted | **Aged scheduler stays opt-in.** `aged_per_worker` (and `auto`, which selects it from two workers) serves 1.2x to 1.5x of nginx's rate at 1,024 and 2,048 connections on one worker with a p99 of 1.6x and 1.4x nginx's (work stealing: 3.3x to 5.5x), at 0.7x of work stealing's rate at 1,024 connections. From two workers up the orders are within noise. |
+| `worker_scaling` | `static` | `dynamic` saves wake-ups only at 8 or more workers under light load; unchanged. |
+| `h2_initial_stream_window`, `h2_initial_connection_window` | 1 MiB and 8 MiB | Unchanged; see [the window note](developer/PERF_6_4_H2_WINDOWS.md) for the memory bound per listener. |
+
+## Known limits
+
+- **A request already sent to the origin is cancelled only where the path watches its client.** The HTTP/1.1 classic
+  path and HTTP/2 (classic and stream lane) cancel it early. The HTTP/1.1 fast lane does not while it waits for the
+  response head of a request without a body (a request with a body notices through the upload), and HTTP/3 does not after
+  the route is selected; there the request finishes at the origin and the departure shows when the response is written.
+  Cancellation of a queued request covers every path.
+- **A chunked request with a bad chunk size** gets the same `400` and a closed connection on the fast lane and the
+  classic path, but the lane has already forwarded the request head to the origin when it reads the bad size, and the
+  classic path forwards nothing. The amount of a request forwarded before it fails is not promised. See
+  [the note](developer/research/LANE_PARTIAL_REQUEST_FORWARDING.md).
+- **No kernel TLS on the rustls backend:** large static files over TLS use `sendfile` with kernel TLS only on the OpenSSL
+  backend.
+- **The OpenSSL full handshake costs about 1.4x of nginx's CPU** (1.64M instructions, 1.40M of them inside OpenSSL) and
+  1.12x of HAProxy's, unchanged from 6.4.0. The rustls backend uses 58% fewer instructions for it.
+- nginx is still ahead on the proxied HTTP/1 rows: 1.04x to 1.23x of its CPU per request and 0.86x to 0.90x of its rate
+  on one worker (POST, direct response and TLS keep-alive are level).
+
+## Tests
+
+- The supervisor master replacement tests no longer time out because a loaded host is slow, a probe that gave up no
+  longer stops the worker from serving, and a crashing candidate is a crash however late the test polls.
+- The lane differential corpus compares only requests an origin received whole, and the origin notes a request cut short
+  when the proxy closes its upstream connection, so a cut request no longer appears in the next case.
+- The pooled-timer test no longer counts the waker its own work timer keeps.
+- New regression tests hold the bytes of an idle connection, the growth over reloads and the allocator calls per request
+  of each route shape under ceilings, and `queue_cancel_wire` covers queue cancellation over HTTP/1.1, HTTP/2 and HTTP/3 on the lanes and the classic paths.
+
+## Upgrade notes
+
+- No configuration change is needed; a 6.4.0 configuration loads unchanged.
+- Dashboards that alert on pool queue length can add `oxiroute_pool_queue_cancellations_total{pool}`.
+- A profile that switches to `backend = "rustls"` keeps its `cipher_list`; check the startup log for the suites rustls
+  does not implement.
 
 ## Memory
 
