@@ -213,19 +213,34 @@ pub(crate) fn selected_upstream_host(
     }
 }
 
+/// The `Host` a request came with, taken out of its head so that choosing the upstream host does not hold the session.
+pub(super) struct IncomingHost {
+    header: Option<HeaderValue>,
+    origin_form: bool,
+}
+
+impl IncomingHost {
+    pub(super) fn of(request: &pingora::http::RequestHeader) -> Self {
+        Self {
+            header: request.headers.get(HOST).cloned(),
+            origin_form: request.uri.authority().is_none(),
+        }
+    }
+}
+
 /// [`selected_upstream_host`] for a request that is at hand: an origin-form request whose host is passed on
 /// as it came has its `Host` value, already built, instead of a copy made from the parsed authority.
 pub(super) fn selected_upstream_host_for(
-    request: &pingora::http::RequestHeader,
+    request: &IncomingHost,
     endpoint: &RuntimeEndpoint,
     policy: &HttpUpstreamHost,
     incoming: Option<&Authority>,
 ) -> pingora::Result<Option<HeaderValue>> {
     if matches!(policy, HttpUpstreamHost::PreserveIncoming)
         && incoming.is_some()
-        && request.uri.authority().is_none()
+        && request.origin_form
     {
-        return Ok(request.headers.get(HOST).cloned());
+        return Ok(request.header.clone());
     }
     selected_upstream_host(endpoint, policy, incoming)
 }

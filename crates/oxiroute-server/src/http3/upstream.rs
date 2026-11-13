@@ -28,45 +28,55 @@ pub(super) async fn dispatch_h3_upstream_request(
     let mut last_error = H3UpstreamError::Connect;
 
     for attempt in 0..max_attempts {
-        let mut selected = if let Some(server) = retry_server.take() {
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    let _ = changed;
-                    return None;
-                }
-                result = timeout_at(deadline, proxy.pool.select_server_endpoint(&server, QueueTag::default())) => {
-                    match result {
-                        Ok(Ok(selected)) => selected,
-                        Ok(Err(_)) => {
-                            last_error = H3UpstreamError::PoolUnavailable;
-                            break;
-                        }
-                        Err(_) => {
-                            last_error = H3UpstreamError::Timeout;
-                            break;
-                        }
+        // A client that leaves while the request waits for a server takes it along; one whose server is free at once
+        // is served.
+        let retry = retry_server.take();
+        let selection = {
+            let mut selecting = std::pin::pin!(timeout_at(deadline, async {
+                match &retry {
+                    Some(server) => {
+                        proxy
+                            .pool
+                            .select_server_endpoint(server, QueueTag::default())
+                            .await
                     }
+                    None => {
+                        proxy
+                            .pool
+                            .select_endpoint(&attempted, QueueTag::default())
+                            .await
+                    }
+                }
+            }));
+            if let Some(done) = futures_util::FutureExt::now_or_never(selecting.as_mut()) {
+                done
+            } else {
+                tokio::select! {
+                    biased;
+                    changed = shutdown.changed() => {
+                        let _ = changed;
+                        return None;
+                    }
+                    () = stream.closed() => {
+                        log::debug!(
+                            target: "oxiroute::queue",
+                            "client left before its request reached an origin"
+                        );
+                        return None;
+                    }
+                    done = selecting => done,
                 }
             }
-        } else {
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    let _ = changed;
-                    return None;
-                }
-                result = timeout_at(deadline, proxy.pool.select_endpoint(&attempted, QueueTag::default())) => {
-                    match result {
-                        Ok(Ok(selected)) => selected,
-                        Ok(Err(_)) => {
-                            last_error = H3UpstreamError::PoolUnavailable;
-                            break;
-                        }
-                        Err(_) => {
-                            last_error = H3UpstreamError::Timeout;
-                            break;
-                        }
-                    }
-                }
+        };
+        let mut selected = match selection {
+            Ok(Ok(selected)) => selected,
+            Ok(Err(_)) => {
+                last_error = H3UpstreamError::PoolUnavailable;
+                break;
+            }
+            Err(_) => {
+                last_error = H3UpstreamError::Timeout;
+                break;
             }
         };
         let Ok(Some(selected_host)) = selected_upstream_host(

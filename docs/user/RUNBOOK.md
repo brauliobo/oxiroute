@@ -297,7 +297,10 @@ page) instead of an empty `503`; `oxiroute_pool_fail_open_selections_total` and 
 tell that it is happening.
 
 **Saturation.** `oxiroute_pool_queue_depth` above 0, active connections at the caps,
-`oxiroute_pool_queue_timeouts_total` rising (those callers get `503` after `queue_timeout_ms`). Add
+`oxiroute_pool_queue_timeouts_total` rising (those callers get `503` after `queue_timeout_ms`).
+`oxiroute_pool_queue_cancellations_total` counts the callers that gave up first: a client that closes its connection,
+or resets its HTTP/2 or HTTP/3 stream, while its request waits leaves the queue at once and the origin never receives
+the request (the `log_filter` target `oxiroute::queue` at `debug` names each one). Add
 machines, lengthen `queue_timeout_ms` to the callers' patience, or for an emergency
 `oxiroute server max-connections set --pool P S 2` then `max-connections reset`. Never exceed what the
 GPU's VRAM holds.
