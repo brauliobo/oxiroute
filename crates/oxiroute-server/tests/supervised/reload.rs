@@ -438,12 +438,13 @@ pub(super) fn reload_that_cannot_bind_a_new_listener_changes_nothing_and_can_be_
     // Nothing moved: the master is idle on the old revision and its request is still in flight.
     assert_eq!(harness.master.state(), MasterState::Running);
     assert!(harness.pending.is_none());
+    // A worker reports its changed counters whenever its status check is due, so only a lifecycle event is a move.
+    let events = harness.master.poll(Instant::now()).expect("master poll");
     assert!(
-        harness
-            .master
-            .poll(Instant::now())
-            .expect("master poll")
-            .is_empty()
+        events
+            .iter()
+            .all(|event| matches!(event, MasterEvent::WorkerStatusUpdated { .. })),
+        "{events:?}"
     );
     release.send(()).expect("release the origin");
     finish_streaming_request(&mut in_flight);
