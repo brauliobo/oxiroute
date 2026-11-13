@@ -724,7 +724,7 @@ pub(super) async fn the_cli_registers_over_the_lan_with_a_scoped_token_file() {
     let secret = farm.state.path().join("voice.secret");
     fs::write(&secret, &farm.voice_secret).expect("secret file");
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).expect("mode");
-    let lan = format!("http://{}", farm.test);
+    let lan = format!("http://{}", farm.lan);
     let secret = secret.display().to_string();
     let (second, _s) = stub("tts-2").await;
     let second = second.to_string();

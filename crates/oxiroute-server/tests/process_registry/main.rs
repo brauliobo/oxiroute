@@ -120,7 +120,7 @@ impl Farm {
                         pools: vec!["voice".into()],
                     },
                     RegistryEndpoint::Tcp {
-                        bind: self.test,
+                        bind: self.lan,
                         allow_cidrs: self.lan_cidrs.clone(),
                     },
                 ],
@@ -167,7 +167,7 @@ impl Farm {
     async fn ready(&self, mut server: ServerProcess) -> ServerProcess {
         server.wait_for_tcp(self.management).await;
         server.wait_for_tcp(self.traffic).await;
-        server.wait_for_tcp(self.test).await;
+        server.wait_for_tcp(self.lan).await;
         eventually("the registry sockets", async || {
             self.socket("read").exists() && self.socket("register").exists()
         })
@@ -246,7 +246,7 @@ impl Farm {
         } else {
             &headers[..]
         };
-        let response = http_request(self.test, method, path, headers, &bytes).await;
+        let response = http_request(self.lan, method, path, headers, &bytes).await;
         let body = if response.body.is_empty() {
             Value::Null
         } else {
