@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Post-link optimisation (BOLT) of a profile-guided release binary, see docs/developer/PERF_6_4_BINARY_LEVEL.md.
+# Post-link optimisation (BOLT) of a profile-guided release binary.
 #
 #   bolt.sh all IN OUT          instrument IN, replay the R2 lanes through it, rewrite IN into OUT, check OUT
 #   bolt.sh instrument IN OUT   add BOLT counters to IN (OUT runs about 3x slower; needs no perf and no LBR)

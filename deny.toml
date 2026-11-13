@@ -3,8 +3,7 @@ all-features = true
 
 [advisories]
 version = 2
-# Keep every RustSec advisory fail-closed. The current Pingora dependency chain is documented in
-# docs/developer/SECURITY_AUDIT.md and is intentionally not an exception here.
+# Keep every RustSec advisory fail-closed: no advisory is an exception here.
 unmaintained = "all"
 ignore = []
 

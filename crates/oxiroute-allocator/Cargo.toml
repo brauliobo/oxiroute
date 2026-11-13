@@ -9,7 +9,7 @@ version.workspace = true
 
 [features]
 # Allocator statistics (mallctl `stats.*`, `stats_print` at exit) and heap profiling for memory investigations
-# (benchmarks/r2-data-path/heapsum.py); not part of release builds.
+# (`benchmarks/r2-data-path/heapsum.py` summarises the profiles); not part of release builds.
 profiling = ["tikv-jemallocator/profiling", "tikv-jemallocator/stats"]
 # Counts allocator calls and requested bytes (`counting::snapshot`) for the allocation ceilings of the fast lanes.
 count = []
