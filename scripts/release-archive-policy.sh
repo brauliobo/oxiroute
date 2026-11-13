@@ -2,7 +2,6 @@
 
 RELEASE_ARCHIVE_EXCLUDES=(
   ':(exclude)packaging/arch/**'
-  ':(exclude)benchmarks/reports/**'
   ':(exclude)target/**'
   ':(exclude)**/target/**'
   ':(exclude)node_modules/**'
@@ -16,7 +15,7 @@ RELEASE_REQUIRED_PATHS=(
   Cargo.toml
   LICENSE
   fuzz/Cargo.lock
-  benchmarks/loadgen/Cargo.lock
+  benchmarks/r2-data-path/tool/Cargo.lock
   ui/pnpm-lock.yaml
   ui/stats.html
   contracts/stats-page.openapi.json
@@ -48,7 +47,6 @@ RELEASE_DENIED_PATH_PATTERNS=(
   node_modules 'node_modules/*' '*/node_modules' '*/node_modules/*'
   remotion/out 'remotion/out/*' '*/remotion/out' '*/remotion/out/*'
   test-results 'test-results/*' '*/test-results' '*/test-results/*'
-  benchmarks/reports 'benchmarks/reports/*' '*/benchmarks/reports' '*/benchmarks/reports/*'
   .git '.git/*' '*/.git' '*/.git/*'
 )
 

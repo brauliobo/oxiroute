@@ -96,7 +96,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/advisory-db
             ~/.cargo/bin/cargo-audit
-          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'benchmarks/loadgen/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'benchmarks/r2-data-path/tool/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-audit-
 
@@ -106,7 +106,7 @@ jobs:
       - name: Deny vulnerabilities and audit warnings in every Cargo lockfile
         run: |
           result=0
-          for lockfile in Cargo.lock fuzz/Cargo.lock benchmarks/loadgen/Cargo.lock; do
+          for lockfile in Cargo.lock fuzz/Cargo.lock benchmarks/r2-data-path/tool/Cargo.lock; do
             if ! cargo audit -D warnings --file "${lockfile}"; then
               result=1
             fi
