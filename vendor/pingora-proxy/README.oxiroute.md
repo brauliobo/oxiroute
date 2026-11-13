@@ -170,3 +170,9 @@ Then run formatting and diff checks.
   is being obtained, which can queue for a connection of a capped server: a client that leaves meanwhile ends the
   attempt with a downstream `ConnectionClosed` error before anything goes upstream. The watch is built only when the
   connection is not ready on the first poll.
+- The tunnel of an upgraded connection settles its downstream session (6.5, second memory round): `relay_inline` calls
+  `HttpSession::settle_upgraded` when the exchange continues as a tunnel, so the session holds no retry buffer and a
+  header map sized to its headers for the life of the connection.
+  `relay_loop` awaits `relay_response` and `forward_request_body` from the thread's block pool (`PooledFuture`) and
+  `run_tunnel` takes the session boxed, so the future of a tunnel is 1.2 KiB where it was 2.1 KiB (a future that is handed
+  its argument by value stores it twice).

@@ -1435,6 +1435,8 @@ where
         // request's state machine is gone.
         if session.tunnel.is_some() {
             let proxy = self.clone();
+            // On the heap: a future that is handed its session by value stores it twice.
+            let session = Box::new(session);
             return Some(ReusedHttpStream::tunnel(ErasedFuture::new(move || {
                 proxy.run_tunnel(session, owned_ctx)
             })));

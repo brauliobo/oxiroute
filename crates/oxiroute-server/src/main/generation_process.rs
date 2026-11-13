@@ -458,6 +458,8 @@ pub(super) fn shutdown_generation_processes(
 /// Returns whether every finished generation shut down cleanly.
 fn reap_retired(manager: &GenerationManager, retired: &mut Vec<GenerationProcess>) -> bool {
     let mut successful = true;
+    #[cfg(target_os = "linux")]
+    let draining = retired.len();
     *retired = std::mem::take(retired)
         .into_iter()
         .filter_map(|process| {
@@ -478,6 +480,13 @@ fn reap_retired(manager: &GenerationManager, retired: &mut Vec<GenerationProcess
             }
         })
         .collect();
+    // A generation that left freed its plans and pools: their pages go back now, not when their decay is up.
+    #[cfg(target_os = "linux")]
+    {
+        if retired.len() < draining {
+            oxiroute_allocator::release_unused();
+        }
+    }
     for expired in manager.expire_retired() {
         if let Some(process) = retired
             .iter()

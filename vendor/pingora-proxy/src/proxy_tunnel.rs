@@ -61,7 +61,7 @@ where
     /// the logging hook.
     pub(crate) async fn run_tunnel(
         self: Arc<Self>,
-        mut session: Session,
+        mut session: Box<Session>,
         mut ctx: Box<<SV as ProxyHttp>::CTX>,
     ) where
         SV: ProxyHttp + Send + Sync + 'static,
@@ -104,6 +104,6 @@ where
         // The upstream connection of an upgrade is not reused.
         drop(client);
         // On the heap: the end of a request is 5 KiB of hooks, needed once, after the tunnel.
-        Box::pin(self.conclude(session, &mut ctx, server_reuse, error, 1)).await;
+        Box::pin(self.conclude(*session, &mut ctx, server_reuse, error, 1)).await;
     }
 }

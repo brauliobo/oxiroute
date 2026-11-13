@@ -533,6 +533,18 @@ impl ResponseHeader {
         }
     }
 
+    /// Gives back the room the header map holds for headers that were never added (a parsed response reserves some
+    /// for the filters that add headers).
+    pub fn compact(&mut self) {
+        let mut compact = HMap::with_capacity(self.base.headers.len());
+        let mut name = None;
+        for (next, value) in std::mem::take(&mut self.base.headers) {
+            name = next.or(name);
+            compact.append(name.clone().expect("a header map starts every value with its name"), value);
+        }
+        self.base.headers = compact;
+    }
+
     /// Create a new [ResponseHeader] with the given status code.
     pub fn build(code: impl TryInto<StatusCode>, size_hint: Option<usize>) -> Result<Self> {
         let mut resp = Self::new(size_hint);
@@ -1072,6 +1084,24 @@ fn case_header_iter<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compacted_response_header_keeps_its_headers_and_their_order_in_less_room() {
+        let mut resp = ResponseHeader::build_no_case(101, Some(64)).unwrap();
+        resp.append_header("Upgrade", "websocket").unwrap();
+        resp.append_header("Set-Cookie", "a=1").unwrap();
+        resp.append_header("Set-Cookie", "b=2").unwrap();
+        resp.append_header("Connection", "Upgrade").unwrap();
+        let room = resp.headers.capacity();
+        let before: Vec<_> = resp.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+        resp.compact();
+
+        let after: Vec<_> = resp.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        assert_eq!(before, after);
+        assert!(resp.headers.capacity() < room);
+        assert_eq!(resp.headers.get_all("set-cookie").iter().count(), 2);
+    }
 
     #[test]
     fn header_map_upper_bound() {
