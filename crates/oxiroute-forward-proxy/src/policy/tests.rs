@@ -67,7 +67,7 @@ fn empty_allow_lists_permit_anonymous_public_destinations() {
             &destination,
             &[
                 "93.184.216.34".parse().unwrap(),
-                "192.0.2.254".parse().unwrap()
+                "172.31.255.7".parse().unwrap()
             ]
         ),
         Err(PolicyError::ForbiddenAddress)
