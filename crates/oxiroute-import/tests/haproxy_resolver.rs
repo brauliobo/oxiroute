@@ -11,7 +11,7 @@ use oxiroute_import::haproxy::{
 use oxiroute_import::{DiagnosticStage, Report, Severity, SourceFile, SourceId};
 
 #[test]
-fn resolves_host-a_unix_frontend_and_dns_backend_without_lowering() {
+fn resolves_unix_frontend_and_dns_backend_without_lowering() {
     let contents = b"global
   log /dev/log local0
   chroot /var/lib/haproxy
@@ -50,8 +50,8 @@ backend app_nodes
     assert_eq!(report.value().global.maxconn.as_ref().unwrap().value, 4096);
     assert_eq!(report.value().frontends.len(), 1);
     assert_eq!(report.value().backends.len(), 1);
-    assert_host-a_frontend(report.value());
-    assert_host-a_backend(report.value());
+    assert_unix_frontend(report.value());
+    assert_dns_backend(report.value());
 
     assert_eq!(code_count(&report, E_LOGGING_UNSUPPORTED), 3);
     assert_eq!(code_count(&report, E_PROCESS_OWNED), 4);
@@ -250,7 +250,7 @@ fn unsupported_stats_forms_remain_externalized_and_block_page_activation() {
     );
 }
 
-fn assert_host-a_frontend(configuration: &EffectiveConfiguration) {
+fn assert_unix_frontend(configuration: &EffectiveConfiguration) {
     let frontend = &configuration.frontends[0];
     assert_eq!(
         frontend.binds[0].value,
@@ -297,7 +297,7 @@ fn assert_host-a_frontend(configuration: &EffectiveConfiguration) {
     );
 }
 
-fn assert_host-a_backend(configuration: &EffectiveConfiguration) {
+fn assert_dns_backend(configuration: &EffectiveConfiguration) {
     let backend = &configuration.backends[0];
     assert_eq!(
         backend.settings.balance.as_ref().unwrap().value,
@@ -342,7 +342,7 @@ fn assert_host-a_backend(configuration: &EffectiveConfiguration) {
 }
 
 #[test]
-fn resolves_dormant_host-c_shape_with_eight_servers() {
+fn resolves_dormant_shape_with_eight_servers() {
     let mut contents = String::from(
         "defaults host-c\n  mode http\n  option forwardfor\n  timeout connect 2s\n  timeout client 30s\n  timeout server 30s\nfrontend host-c\n  bind /run/haproxy/host-c.sock\n  acl host-c_host hdr(host) -i host-c.test\n  use_backend host-c_nodes if host-c_host\nbackend host-c_nodes\n  balance leastconn\n",
     );

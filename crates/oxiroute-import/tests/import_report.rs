@@ -32,7 +32,7 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
     let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/haproxy/minimal-representable.cfg");
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/squid/host-a-sanitized.conf");
+        .join("tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let varnish_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/varnish/exact.vcl");
 
@@ -333,7 +333,7 @@ fn haproxy_report_identifies_strict_capability_and_retains_ordinary_source_prove
 #[test]
 fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/squid/host-a-sanitized.conf");
+        .join("tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let report = ImportReportEnvelope::from_squid(&import_squid(&squid_path));
     let value: Value =
         serde_json::from_str(&report.to_json().expect("Squid capability report JSON"))

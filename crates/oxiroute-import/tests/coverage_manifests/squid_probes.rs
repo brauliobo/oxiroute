@@ -11,11 +11,11 @@ use crate::{
 };
 
 #[test]
-fn squid_host-a_manifest_accounts_for_the_exact_sanitized_inventory() {
-    assert_host-a_squid_inventory();
+fn squid_forward_proxy_manifest_accounts_for_the_exact_sanitized_inventory() {
+    assert_forward_proxy_squid_inventory();
 }
 
-pub(crate) fn assert_host-a_squid_inventory() {
+pub(crate) fn assert_forward_proxy_squid_inventory() {
     let manifest: SquidDirectiveManifest = read_manifest("squid-directives.json");
     let fixture = workspace_path(&manifest.audit.fixture);
     assert!(fixture.is_file());
@@ -67,7 +67,7 @@ pub(crate) fn assert_host-a_squid_inventory() {
         .filter(|entry| observed.contains(&entry.key))
         .map(|entry| entry.key.clone())
         .collect::<BTreeSet<_>>();
-    assert_set_equality("host-a Squid directive keys", &observed, &manifested);
+    assert_set_equality("synthetic Squid directive keys", &observed, &manifested);
 
     for (ordinal, decision) in report.decision_ledger.decisions.iter().enumerate() {
         assert_eq!(decision.origin.occurrence.get(), ordinal);

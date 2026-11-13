@@ -33,7 +33,7 @@ fn imported_http_services_enable_automatic_response_headers_in_canonical_renderi
 
 #[test]
 fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
-    let directory = fixture("representable.conf");
+    let directory = fixture("nginx/representable.conf");
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
 
     assert!(
@@ -497,7 +497,7 @@ fn lowering_uses_only_first_wins_exact_and_leading_dot_name_claims() {
 
 #[test]
 fn accepts_matching_secure_test_key_without_exposing_material() {
-    let directory = fixture("representable.conf");
+    let directory = fixture("nginx/representable.conf");
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
 
     assert!(
@@ -722,8 +722,8 @@ fn finalizes_explicit_ipv6_proxy_topology() {
 }
 
 #[test]
-fn host-a_shaped_dns_service_finalizes_without_a_placeholder() {
-    let directory = fixture("host-a-partial.conf");
+fn dns_upstream_shared_by_tcp_and_unix_listeners_finalizes_without_a_placeholder() {
+    let directory = fixture("synthetic/nginx/dns-upstream-two-listeners.conf");
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
 
     assert!(
@@ -2088,7 +2088,7 @@ fn rejects_invalid_duplicate_and_unsupported_response_directive_forms_with_sourc
 }
 
 #[test]
-fn host-c_shaped_error_page_is_an_explicit_internal_redirect() {
+fn static_server_error_page_is_an_explicit_internal_redirect() {
     let report = import_source(
         r"http {
           default_type application/octet-stream;
@@ -2103,7 +2103,7 @@ fn host-c_shaped_error_page_is_an_explicit_internal_redirect() {
     let config = report
         .validated()
         .map(oxiroute_config::ValidatedConfig::as_draft)
-        .expect("host-c static server");
+        .expect("static server");
     let HttpRouteAction::StaticFiles {
         error_responses, ..
     } = &config.http_services[0].routes[0].action
@@ -2349,7 +2349,7 @@ fn blocks_unmodeled_try_files_reroutes_but_models_exact_index_policy_reselection
 
 fn fixture(name: &str) -> TempDir {
     let directory = tempfile::tempdir().expect("create fixture directory");
-    let source = fs::read(Path::new("tests/fixtures/nginx").join(name)).expect("read fixture");
+    let source = fs::read(Path::new("tests/fixtures").join(name)).expect("read fixture");
     let certificate =
         fs::canonicalize("tests/fixtures/nginx/proxy.pem").expect("canonical certificate fixture");
     let private_key = copy_secure_key(&directory, "proxy-key.pem", "proxy-key.pem");

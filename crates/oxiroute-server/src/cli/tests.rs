@@ -189,10 +189,10 @@ fn haproxy_gpu_presence_requires_a_node_ip() {
 #[test]
 fn haproxy_shadow_preview_shifts_only_listener_ports() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/live/host-c/haproxy.cfg");
+        .join("../oxiroute-import/tests/fixtures/synthetic/haproxy/env-health-routes.cfg");
     let output = import_haproxy(
         &[fixture],
-        Some("192.0.2.37".parse().unwrap()),
+        Some("192.0.2.15".parse().unwrap()),
         true,
         Some(10_000),
         ConfigFormat::Hocon,
@@ -200,20 +200,20 @@ fn haproxy_shadow_preview_shifts_only_listener_ports() {
     )
     .expect("shadow preview");
 
-    for listener in ["192.0.2.37:20440", "192.0.2.37:22002", "192.0.2.37:18080"] {
+    for listener in ["192.0.2.15:21434", "192.0.2.15:21435", "192.0.2.15:21436"] {
         assert!(output.contains(listener), "missing {listener}");
     }
-    assert!(output.contains("127.0.0.1:10450"));
-    assert!(output.contains("127.0.0.1:10451"));
+    assert!(output.contains("127.0.0.1:3000"));
+    assert!(output.contains("127.0.0.1:3001"));
     assert!(oxiroute_config_source::decode_value(ConfigFormat::Hocon, output.as_bytes()).is_ok());
 }
 
 #[test]
 fn haproxy_shadow_preview_rejects_port_overflow_and_report_mode() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/live/host-c/haproxy.cfg");
+        .join("../oxiroute-import/tests/fixtures/synthetic/haproxy/env-health-routes.cfg");
     let paths = [fixture];
-    let node_ip = Some("192.0.2.37".parse().unwrap());
+    let node_ip = Some("192.0.2.15".parse().unwrap());
 
     assert!(
         import_haproxy(

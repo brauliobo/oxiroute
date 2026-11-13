@@ -25,7 +25,7 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
           record_interval 1s500ms;
           server {
             listen 127.0.0.1:1935;
-            application host-c {}
+            application live {}
           }
         }
         ",
@@ -46,7 +46,7 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
     );
     assert_eq!(config.rtmp_services[0].ack_window_size, 5_000_000);
     let application = &config.rtmp_services[0].applications[0];
-    assert_eq!(application.name, "host-c");
+    assert_eq!(application.name, "live");
     assert!(application.live);
     assert!(!application.idle_streams);
     let recorder = &application.recorders[0];
@@ -988,7 +988,7 @@ fn source_noop_hls_muxdelay_does_not_block_an_exact_application() {
 
 #[test]
 fn keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server() {
-    let directory = fixture("host-c-audited-partial.conf");
+    let directory = fixture("synthetic/nginx/rtmp-partial-blocked-server.conf");
     let report =
         import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Argentina/Buenos_Aires");
 
@@ -1077,7 +1077,7 @@ fn import_source(
 fn fixture(name: &str) -> TempDir {
     let directory = TempDir::new().expect("RTMP fixture directory");
     fs::copy(
-        Path::new("tests/fixtures/nginx").join(name),
+        Path::new("tests/fixtures").join(name),
         directory.path().join("nginx.conf"),
     )
     .expect("copy RTMP fixture");

@@ -110,7 +110,6 @@ pub(super) fn all_manifest_ids_are_globally_unique() {
     let rtmp: RtmpDirectiveManifest = read_manifest("nginx-rtmp-directives.json");
     let squid: SquidDirectiveManifest = read_manifest("squid-directives.json");
     let components: ComponentManifest = read_manifest("components.json");
-    let hosts: crate::host_ledger::HostManifest = read_manifest("host-cases.json");
 
     assert_unique_ids(
         "coverage ID",
@@ -124,8 +123,7 @@ pub(super) fn all_manifest_ids_are_globally_unique() {
             .chain(rtmp.entries.iter().map(|entry| entry.id.as_str()))
             .chain(rtmp.import_forms.iter().map(|entry| entry.id.as_str()))
             .chain(squid.entries.iter().map(|entry| entry.id.as_str()))
-            .chain(components.entries.iter().map(|entry| entry.id.as_str()))
-            .chain(hosts.cases.iter().map(|case| case.id.as_str())),
+            .chain(components.entries.iter().map(|entry| entry.id.as_str())),
     );
 }
 
@@ -138,7 +136,6 @@ pub(super) fn manifest_evidence_resolves_to_current_test_functions() {
     let rtmp: RtmpDirectiveManifest = read_manifest("nginx-rtmp-directives.json");
     let squid: SquidDirectiveManifest = read_manifest("squid-directives.json");
     let components: ComponentManifest = read_manifest("components.json");
-    let hosts: crate::host_ledger::HostManifest = read_manifest("host-cases.json");
     let evidence: EvidenceManifest = read_manifest("evidence.json");
     assert_eq!(evidence.schema_version, 1);
 
@@ -150,7 +147,6 @@ pub(super) fn manifest_evidence_resolves_to_current_test_functions() {
         rtmp.evidence,
         squid.evidence,
         components.evidence,
-        hosts.evidence,
     ]
     .into_iter()
     .flatten()

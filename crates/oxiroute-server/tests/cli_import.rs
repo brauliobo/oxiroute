@@ -33,7 +33,7 @@ fn import_previews_default_to_kdl_and_round_trip_every_format() {
     let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let apache_path = directory.path().join("httpd.conf");
     fs::write(
         &apache_path,
@@ -277,7 +277,7 @@ fn haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and
 #[test]
 fn squid_import_report_publishes_the_target_capability_registry() {
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let report = cli()
         .args(["import", "squid", squid_path.to_str().unwrap()])
         .output()

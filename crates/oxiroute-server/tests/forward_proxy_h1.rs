@@ -1387,7 +1387,7 @@ async fn imported_squid_candidate_serves_authenticated_http_over_daemon() {
     let proxy_address = process_support::reserve_tcp_address();
     let squid = directory.path().join("squid.conf");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oxiroute-import/tests/fixtures/squid/host-a-sanitized.conf");
+        .join("../oxiroute-import/tests/fixtures/synthetic/squid/forward-proxy-auth.conf");
     let source = fs::read_to_string(fixture)
         .expect("read audited Squid fixture")
         .replace("http_port 31280", &format!("http_port {proxy_address}"))

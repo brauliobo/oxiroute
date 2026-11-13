@@ -204,10 +204,10 @@
       ]
     },
     {
-      "id": "evidence.squid.host-a",
+      "id": "evidence.squid.forward-proxy",
       "tests": [
-        "crates/oxiroute-import/tests/squid.rs#host-a_sanitized_shape_classifies_every_reachable_directive",
-        "crates/oxiroute-import/tests/squid.rs#host-a_report_lowers_to_a_complete_forward_proxy_candidate",
+        "crates/oxiroute-import/tests/squid.rs#forward_proxy_sanitized_shape_classifies_every_reachable_directive",
+        "crates/oxiroute-import/tests/squid.rs#forward_proxy_report_lowers_to_a_complete_forward_proxy_candidate",
         "crates/oxiroute-import/tests/squid.rs#canonical_lowering_fails_closed_for_unrepresented_defaults_and_connect_ranges",
         "crates/oxiroute-import/tests/squid.rs#include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance",
         "crates/oxiroute-import/tests/squid.rs#canonical_provenance_retains_include_file_and_stack_for_finalized_fields",
@@ -292,10 +292,11 @@
       ]
     },
     {
-      "id": "evidence.host.behavior",
+      "id": "evidence.haproxy.runtime-behavior",
       "tests": [
-        "crates/oxiroute-import/tests/haproxy_lower.rs#unmodified_live_host-a_finalizes_with_exact_compatibility_policy",
-        "crates/oxiroute-import/tests/haproxy_lower.rs#sanitized_host-a_haproxy_imports_from_the_complete_capture",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#unix_gateway_finalizes_with_exact_compatibility_policy",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#dns_leastconn_pool_finalizes_with_reusable_connections_and_queue_timeout",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#preprocessed_services_keep_health_routes_queue_timeouts_and_native_default_retries",
         "crates/oxiroute-import/tests/haproxy_lower.rs#ordered_default_server_health_options_materialize_on_subsequent_servers",
         "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#reusable_upstream_connection_holds_its_lease_until_the_socket_closes",
@@ -319,7 +320,7 @@
     {
       "id": "evidence.import.no-placeholder",
       "tests": [
-        "crates/oxiroute-import/tests/nginx_lower.rs#host-a_shaped_dns_service_finalizes_without_a_placeholder",
+        "crates/oxiroute-import/tests/nginx_lower.rs#dns_upstream_shared_by_tcp_and_unix_listeners_finalizes_without_a_placeholder",
         "crates/oxiroute-import/tests/haproxy_lower.rs#automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder"
       ]
     }

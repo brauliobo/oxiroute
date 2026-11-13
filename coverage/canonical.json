@@ -12,7 +12,8 @@
     "evidence.canonical.rtmp-recorders",
     "evidence.endpoint.dns",
     "evidence.endpoint.unix",
-    "evidence.admission.nullable"
+    "evidence.admission.nullable",
+    "evidence.import.no-placeholder"
   ],
   "entries": [
     {
