@@ -280,7 +280,11 @@ fn hourly_zoneb_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names
     let path = RecordingPathPolicy::new("-%Y-%m-%d_%H.mp4", false)
         .expect("path policy")
         .with_segment_policy(
-            RecordingTimezone::Iana("America/Argentina/Buenos_Aires".parse().expect("IANA timezone")),
+            RecordingTimezone::Iana(
+                "America/Argentina/Buenos_Aires"
+                    .parse()
+                    .expect("IANA timezone"),
+            ),
             RecordingTimeBasis::SegmentStart,
             RecordingSegmentNaming::NginxCompatible,
         );

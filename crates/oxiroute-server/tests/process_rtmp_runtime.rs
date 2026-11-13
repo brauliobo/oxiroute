@@ -438,7 +438,8 @@ async fn continuous_recording_resumes_after_process_restart_and_publisher_reconn
     let recorder = &mut config.rtmp_services[0].applications[0].recorders[0];
     recorder.suffix_template = "-%Y%m%d_%H%M%S.mp4".into();
     recorder.append_unix_seconds = true;
-    recorder.timezone = oxiroute_config::RtmpRecorderTimezone::Iana("America/Argentina/Buenos_Aires".into());
+    recorder.timezone =
+        oxiroute_config::RtmpRecorderTimezone::Iana("America/Argentina/Buenos_Aires".into());
     recorder.time_basis = oxiroute_config::RtmpRecorderTimeBasis::SegmentStart;
     recorder.segment_naming = oxiroute_config::RtmpRecorderSegmentNaming::NginxCompatible;
     recorder.rotation_interval_ms = Some(3_600_000);
