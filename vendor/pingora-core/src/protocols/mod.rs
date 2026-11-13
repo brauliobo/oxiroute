@@ -127,6 +127,12 @@ pub trait Peek {
         std::task::Poll::Ready(Ok(()))
     }
 
+    /// Resolves when the peer has closed its end of the transport (it sent a FIN or reset the connection), without
+    /// reading anything: what the peer sent before stays unread. A transport that cannot tell never resolves.
+    async fn peer_closed(&mut self) -> std::io::Result<()> {
+        std::future::pending().await
+    }
+
     /// Whether [`Self::move_to_current_runtime`] can move this transport: a plain TCP stream can, anything layered on
     /// top of one (TLS) cannot.
     fn can_move_to_current_runtime(&self) -> bool {

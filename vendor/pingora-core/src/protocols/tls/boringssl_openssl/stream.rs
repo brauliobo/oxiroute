@@ -82,6 +82,8 @@ pub struct SslStream<T> {
     coalesce: bool,
     /// Asks the transport whether a read could make progress, without reading.
     read_probe: Option<ReadProbe<T>>,
+    /// Asks the transport whether the peer closed it, without reading.
+    close_probe: Option<CloseProbe<T>>,
     /// The last `SSL_read` ran out of ciphertext and the transport had nothing more either.
     read_blocked: bool,
     ktls: KtlsTx,
@@ -89,6 +91,9 @@ pub struct SslStream<T> {
 }
 
 type ReadProbe<T> = fn(&mut T, &mut Context<'_>) -> Poll<io::Result<()>>;
+
+type CloseProbe<T> =
+    for<'a> fn(&'a mut T) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + 'a>>;
 
 impl<T> SslStream<T>
 where
@@ -110,6 +115,7 @@ where
             sent: 0,
             coalesce: false,
             read_probe: None,
+            close_probe: None,
             read_blocked: false,
             ktls: KtlsTx::Off,
             socket_of: None,
@@ -134,6 +140,12 @@ where
     /// call could only run the record layer again to report the same "want read".
     pub(super) fn probe_reads(&mut self, probe: ReadProbe<T>) {
         self.read_probe = Some(probe);
+    }
+
+    /// Lets [`Peek::peer_closed`] ask the transport: a TLS connection ends with its transport, whether the peer sent
+    /// `close_notify` first or not.
+    pub(super) fn probe_closes(&mut self, probe: CloseProbe<T>) {
+        self.close_probe = Some(probe);
     }
 
     /// Connect to the remote TLS server as a client
@@ -526,7 +538,15 @@ impl<T> SslStream<T> {
     }
 }
 
-impl<T> Peek for SslStream<T> {
+#[async_trait::async_trait]
+impl<T: Send> Peek for SslStream<T> {
+    async fn peer_closed(&mut self) -> io::Result<()> {
+        match self.close_probe {
+            Some(probe) => probe(self.ssl.get_mut()).await,
+            None => std::future::pending().await,
+        }
+    }
+
     /// What an idle connection waits on instead of `SSL_read`, which would need the connection's request state to
     /// wait. Bytes the TLS layer already holds are readable; anything else needs the transport to have bytes: the
     /// rest of a partial record, the next record and a `close_notify` all arrive there. A stream without a probe

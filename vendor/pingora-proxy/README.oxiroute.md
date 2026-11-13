@@ -159,3 +159,7 @@ Then run formatting and diff checks.
   upstream attempts too (upstream's only honors it for errors before peer selection): a hook that wrote a complete
   response and ends the request through an error, as OxiRoute's cache does after a revalidation, keeps the keep-alive
   connection. The default hook still returns `false`. `proxy_trait.rs` documents the changed contract.
+- `src/lib.rs` `HttpProxy::proxy_attempt` watches the downstream session (`Session::closed`) while the upstream session
+  is being obtained, which can queue for a connection of a capped server: a client that leaves meanwhile ends the
+  attempt with a downstream `ConnectionClosed` error before anything goes upstream. The watch is built only when the
+  connection is not ready on the first poll.

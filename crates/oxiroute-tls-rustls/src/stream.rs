@@ -276,7 +276,13 @@ impl GetSocketDigest for TlsStream {
     }
 }
 
+#[async_trait]
 impl Peek for TlsStream {
+    /// A TLS connection ends with its transport, whether the peer sent `close_notify` first or not.
+    async fn peer_closed(&mut self) -> io::Result<()> {
+        self.pump.io.peer_closed().await
+    }
+
     /// Ready while decrypted bytes wait or the connection has ended; otherwise the transport decides, so a connection
     /// with nothing to read is not decrypted again to find that out.
     fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {

@@ -1417,6 +1417,15 @@ impl HttpSession {
         })
     }
 
+    /// Resolves when the client closes the connection, without reading any of it: what it sent stays unread, so
+    /// this can wait while a request body is still to come.
+    pub async fn closed(&mut self) -> Result<()> {
+        self.underlying_stream
+            .peer_closed()
+            .await
+            .or_err(ReadError, "while waiting for the client to close")
+    }
+
     /// This function will (async) block forever until the client closes the connection.
     pub async fn idle(&mut self) -> Result<usize> {
         // OpenSSL read requires a non-empty buffer. Keep this probe at one byte

@@ -349,6 +349,12 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   whose head the caller wrote with `write_request_head_raw` (`FastFraming`: chunked or a content length); the body then
   goes out with `write_body` and `finish_body`.
 
+- Client departure: `Peek::peer_closed` (`protocols/mod.rs`) resolves when the peer closed the transport without reading
+  anything (the L4 stream waits for the kernel's read-closed readiness, which bytes do not raise; the OpenSSL stream
+  asks its transport through `close_probe`), and `Session::closed` (`protocols/http/server.rs`) turns it, or an HTTP/2
+  stream reset, into a downstream `ConnectionClosed` error. A caller that waits for something other than the client
+  selects against it, and the wait is dropped when the client is gone.
+
 `protocols/http/v1/header.rs`: `test_header_write_timeout_persists` cancels the header write by yielding to the scheduler instead
 of by 10 ms sleeps, so the number of cancelled attempts before its 100 ms timeout no longer depends on how late a loaded
 host wakes the timer (the pristine test failed with fewer than 5 attempts).
@@ -362,7 +368,7 @@ response facts, noted request write, inline request loop, zero-copy request body
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
-cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, the plain-connection `ready` path and the accept-loop fast path, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, `Peek::peer_closed` and `Session::closed`, the plain-connection `ready` path and the accept-loop fast path, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
 `ServerConf::connection_age_ms`, the custom TLS acceptor (`listeners/custom_tls.rs`), the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`), the
 sendfile body write (`write_body_from_file`), the kernel TLS offload (`ktls` modules, `Ssl::poll_kernel_tx`, `build.rs`), the owned header values and compact raw head of an upgraded connection
 (`own_header_values` in `protocols/http/v1/common.rs`, used by the server and client sessions).
