@@ -141,8 +141,7 @@ are zero). Counts are per request, summed over every target of the call; each ta
 absent in the event of a pool). Only HTTP reverse proxy
 requests are counted; other traffic is drain only. A forced request whose response had not started gets
 `503` with `x-oxiroute-reason: evacuated`. The rules and limits are in the
-[runbook](../user/RUNBOOK.md#evacuate-a-server) and the
-[design](../developer/design/EVACUATE.md).
+[runbook](../user/RUNBOOK.md#evacuate-a-server).
 
 Avoid putting the token in shell history in long-lived environments; use the installed client or a
 process-safe secret mechanism instead.

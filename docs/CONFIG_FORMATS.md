@@ -71,8 +71,7 @@ and null are `#true`, `#false`, and `#null`.
 Files in exactly the canonical rendering are decoded by a dedicated single-pass reader; any other
 KDL (comments, `;` separators, raw or escaped strings beyond `\"`, `\\`, `\n`, `\r`, `\t`, `\b`,
 `\f`, CRLF endings, tabs) goes through the generic KDL parser, which also produces every syntax
-diagnostic. Both paths accept the same documents and produce the same values; see
-[config load performance](developer/CONFIG_LOAD_PERFORMANCE.md).
+diagnostic. Both paths accept the same documents and produce the same values.
 
 ## Generic Templates
 

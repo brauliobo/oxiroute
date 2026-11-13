@@ -75,4 +75,4 @@ The management API offers the same operations as `POST /api/v1/servers/evacuate`
   dispatched again. Nothing changes for deployments that never run `evacuate`, and the vendored Pingora
   version is the same as in 6.0. The advisories listed in the 6.0.0 known limits still apply.
 
-See [the runbook](user/RUNBOOK.md#evacuate-a-server) and [the design](developer/design/EVACUATE.md).
+See [the runbook](user/RUNBOOK.md#evacuate-a-server) and the design.

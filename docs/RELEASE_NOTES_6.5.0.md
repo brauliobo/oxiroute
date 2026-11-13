@@ -18,7 +18,7 @@ configuration change is needed and no default changed.
   per second against 65.1k for 6.4.0 in the first invocation (nginx 87.1k, HAProxy 78.7k), user+sys CPU 7.8 us per
   request against 8.3 us, p99 2.3 ms against 3.3 ms. The noisier rerun measured 1.03x of 6.4.0's rate and the same CPU
   ratio (0.94x); the host was shared and loaded, so read the CPU column and the ratios inside one invocation first.
-  [Summary](developer/PERF_6_5_SUMMARY.md).
+  Summary.
 - **A request whose client has left is dropped from the queue.** A request waiting for an origin when its client closes
   the connection (or resets the stream) leaves the pool queue at once and never reaches the origin. The new counter
   `oxiroute_pool_queue_cancellations_total{pool}` counts them.
@@ -64,14 +64,14 @@ configuration change is needed and no default changed.
 
 ## Decisions left to operators
 
-None of these defaults changed in 6.5.0. The measurements are in [the summary](developer/PERF_6_5_SUMMARY.md).
+None of these defaults changed in 6.5.0. The measurements are in the summary.
 
 | Option | Default in 6.5.0 | State |
 | --- | --- | --- |
-| `backend` (per TLS profile) | `openssl` | **Not flipped to rustls.** rustls costs 58% fewer instructions per full handshake and 3% to 14% fewer per keep-alive or HTTP/2 request, with every option, resumption and log name at parity. It has no kernel TLS for large downloads, no FIPS module and no DHE-only TLS 1.2 clients. Set `backend = "rustls"` per profile to opt in. See [the TLS recommendation](developer/PERF_NEXT_TLS_RESULTS.md). |
+| `backend` (per TLS profile) | `openssl` | **Not flipped to rustls.** rustls costs 58% fewer instructions per full handshake and 3% to 14% fewer per keep-alive or HTTP/2 request, with every option, resumption and log name at parity. It has no kernel TLS for large downloads, no FIPS module and no DHE-only TLS 1.2 clients. Set `backend = "rustls"` per profile to opt in. See the TLS recommendation. |
 | `connection_scheduling` | `work_stealing` when omitted | **Aged scheduler stays opt-in.** `aged_per_worker` (and `auto`, which selects it from two workers) serves 1.2x to 1.5x of nginx's rate at 1,024 and 2,048 connections on one worker with a p99 of 1.6x and 1.4x nginx's (work stealing: 3.3x to 5.5x), at 0.7x of work stealing's rate at 1,024 connections. From two workers up the orders are within noise. |
 | `worker_scaling` | `static` | `dynamic` saves wake-ups only at 8 or more workers under light load; unchanged. |
-| `h2_initial_stream_window`, `h2_initial_connection_window` | 1 MiB and 8 MiB | Unchanged; see [the window note](developer/PERF_6_4_H2_WINDOWS.md) for the memory bound per listener. |
+| `h2_initial_stream_window`, `h2_initial_connection_window` | 1 MiB and 8 MiB | Unchanged; see the window note for the memory bound per listener. |
 
 ## Known limits
 
@@ -83,7 +83,7 @@ None of these defaults changed in 6.5.0. The measurements are in [the summary](d
 - **A chunked request with a bad chunk size** gets the same `400` and a closed connection on the fast lane and the
   classic path, but the lane has already forwarded the request head to the origin when it reads the bad size, and the
   classic path forwards nothing. The amount of a request forwarded before it fails is not promised. See
-  [the note](developer/research/LANE_PARTIAL_REQUEST_FORWARDING.md).
+  the note.
 - **No kernel TLS on the rustls backend:** large static files over TLS use `sendfile` with kernel TLS only on the OpenSSL
   backend.
 - **The OpenSSL full handshake costs about 1.4x of nginx's CPU** (1.64M instructions, 1.40M of them inside OpenSSL) and
@@ -119,14 +119,13 @@ None of these defaults changed in 6.5.0. The measurements are in [the summary](d
   reads.
 - jemalloc returns freed pages from a background thread, started once the process has adopted its control endpoint (a
   supervised worker must still be single-threaded then). After connection bursts and reloads the process settles at about
-  half of the resident memory it used to keep (97.9 MB to 48.8 MB in the compressed churn of
-  `benchmarks/r65-memory/churn.py`). A `background_thread` key in `_RJEM_MALLOC_CONF` still decides for itself.
+  half of the resident memory it used to keep (97.9 MB to 48.8 MB in a compressed churn run). A `background_thread` key in `_RJEM_MALLOC_CONF` still decides for itself.
 - A connection's task and request context are smaller (the connection counter wraps the future without copying it,
   the cache state of a request is boxed until a cacheable request needs it).
 - An idle HTTP/1 keep-alive connection holds no read buffer while it waits: 7.1 kB instead of 12.0 kB (nginx 8.7 kB), and
   an idle plain WebSocket 13.2 kB instead of 17.6 kB (an upgraded connection no longer keeps the first 64 KiB of the
   tunnel, its response header's spare slots or a path-sized address per socket digest). With the opt-in rustls backend an
-  idle WebSocket over TLS is 22.6 kB (OpenSSL 35.0 kB). Details: `docs/developer/PERF_NEXT_MEMORY2_RESULTS.md`.
+  idle WebSocket over TLS is 22.6 kB (OpenSSL 35.0 kB).
 - A retired generation process returns its memory when it is reaped: the growth of the process over four reloads of a
   1,000-route configuration is 15.9 MB instead of 32.4 MB one second after the last one.
 - A cached response owns its header values instead of pinning the 4 KiB buffer it arrived in: 3.1 kB instead of 6.1 kB of
@@ -178,7 +177,7 @@ None of these defaults changed in 6.5.0. The measurements are in [the summary](d
   27.2k to 25.5k for a 1 KiB response, 28.9k to 27.2k with header rules, 28.2k to 26.6k for a 1 KiB POST, 8.0k to 7.5k
   for a direct response) and makes 4 fewer allocator calls. The direct response is now ahead of nginx in rate and CPU
   per request; the proxied rows still trail it by 10% to 16% in rate on the same host. Details:
-  [results](developer/PERF_NEXT_REQUEST_FLOOR_RESULTS.md).
+  results.
 - Deadlines of the HTTP/1 and HTTP/2 lanes reuse timers kept per worker thread; the lane applies the origin read limits
   itself. No behaviour change.
 - New build feature `alloc-count` (test and benchmark builds only) and the `lane_allocations` test that holds the
@@ -192,7 +191,7 @@ None of these defaults changed in 6.5.0. The measurements are in [the summary](d
   request)** and 12 kB less copying: the connection future is boxed once where it is spawned, the layers of an HTTP listener hand
   each other their futures instead of a box each, and the accept loop is one loop for every listener. Behaviour, limits, drain
   and socket options are unchanged.
-- No scheduling default changed. Measured against nginx and HAProxy on one worker (`docs/developer/PERF_NEXT_CONNECTIONS_RESULTS.md`):
+- No scheduling default changed. Measured against nginx and HAProxy on one worker:
   `connection_scheduling = "aged_per_worker"` serves 1.2x to 1.5x of nginx's rate at 1,024 and 2,048 connections with a p99 of 1.6x and 1.4x
   nginx's (work stealing: 3.3x to 5.5x), at 0.7x of work stealing's rate at 1,024 connections on one worker (1.0x at 2,048 and at 256);
   from two workers up the two are within noise. It stays opt-in (and `auto` selects it from two workers).
@@ -215,26 +214,14 @@ None of these defaults changed in 6.5.0. The measurements are in [the summary](d
 - User+sys CPU per request against 6.4.0 is 0.91x to 0.98x on the proxied, TLS keep-alive, HTTP/2 and direct rows. A full TLS 1.3
   handshake costs the same CPU as 6.4.0 (the 9% to 13% first measured did not reproduce over 25 interleaved runs), and the
   higher resident set of an idle worker first measured was the page-cache state of a freshly linked binary, not the code
-  ([regression note](developer/PERF_NEXT_REG_RESULTS.md)). Against HAProxy CPU is lower on every row except new connections (1.04x);
+  (regression note). Against HAProxy CPU is lower on every row except new connections (1.04x);
   against nginx the proxied HTTP/1 rows stay at 1.04x to 1.23x.
 - Idle memory against 6.4.0, nginx and HAProxy in one invocation: a WebSocket holds 13.1 kB (6.4.0 31.6 kB, nginx 18.4 kB, HAProxy
   6.1 kB), over TLS 35.1 kB (53.6, 60.1, 31.5), an HTTP/1 keep-alive connection 8.7 kB (15.0, 9.6, 11.6), over TLS 29.9 kB (36.2,
   34.6, 35.6) and an HTTP/2 connection over TLS 41.5 kB (50.2, 50.3, 46.0). Four reloads of a 1,000-route configuration grow the
-  process by 16.2 MB (6.4.0: 47.8 MB). Tables and method: [PERF_6_5_SUMMARY.md](developer/PERF_6_5_SUMMARY.md).
+  process by 16.2 MB (6.4.0: 47.8 MB).
 
 ## Tools
 
-- `benchmarks/r65-memory/` (churn, time to first byte of a parked connection, live libc allocation tracer) and
-  `benchmarks/scripts/memsample.py` measure the memory of a proxy including its kernel socket memory;
-  `benchmarks/scripts/vs_nginx_haproxy.py` has the scenarios `idle_h1`, `idle_h1tls` and `idle_h2tls` next to `idle_ws` and
-  `idle_wstls` and reports anonymous memory, socket buffers and kernel socket structures per connection.
 - The `heap-profile` cargo feature of `oxiroute` builds jemalloc with profiling and statistics, for memory investigations
   only.
-- `benchmarks/scripts/vs_nginx_haproxy.py` compares the TLS rows: TLS 1.2 ECDHE handshakes, resumption by ticket and by
-  session id, client certificates, `VS_TLS_VARIANTS` for OxiRoute columns (OpenSSL, rustls, inline or offloaded
-  handshakes), and `vs_tls_tables.py` renders them. `r2tool` can present a client certificate; the R2 `--mem` mode runs on
-  hosts without the `tls` kernel module.
-- `benchmarks/scripts/vs_nginx_haproxy.py`: the connection-count scenarios cover 64, 256, 512, 1,024 and 2,048 connections and HAProxy;
-  `VS_PERF_EXTRA` adds counters such as `cache-misses:u` per request to every run; `VS_ALT_BINS` builds can carry their own environment
-  (`label=/path@KEY=VALUE`); runs disturbed on the SMT siblings of the proxy CPUs are discarded (`--sibling-max`).
-- The harness evicts every OxiRoute binary from the page cache before it starts it, and the `idle_h2tls` scenario runs against nginx.

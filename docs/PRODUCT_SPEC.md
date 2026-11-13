@@ -190,7 +190,7 @@ complete Squid parity while such entries remain.
 
 The package currently declares version `6.5.0`. The current release line is pre-alpha, not a 1.0
 stability claim. The compatibility matrix records the supported narrow paths for this working
-release line, while the roadmap records work that is not yet available.
+release line, and marks work that is not yet available as `planned`.
 
 The current contract is:
 

@@ -91,9 +91,7 @@ recording roots, or package files.
 
 `.github/workflows/release.yml` has a second job, `binaries`, that runs after the archive job and builds the
 `x86_64-unknown-linux-gnu` binaries (`oxiroute`, the `oxr` alias and `oxiroute-worker-launcher`) with
-profile-guided optimization, which cuts user-space instructions per request by 14 to 27%
-([PERF_6_3_BUILD_AND_ALLOCATOR.md](PERF_6_3_BUILD_AND_ALLOCATOR.md)), and lays the result out with BOLT
-([PERF_6_4_BINARY_LEVEL.md](PERF_6_4_BINARY_LEVEL.md)). The job is a thin call of
+profile-guided optimization, which cuts user-space instructions per request by 14 to 27%, and lays the result out with BOLT. The job is a thin call of
 `scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls `benchmarks/scripts/pgo.sh` and
 `benchmarks/scripts/bolt.sh`:
 
@@ -154,7 +152,7 @@ bad request can take down every connection of the worker; it measures 3 to 9% fe
 
 Every flavour compiles the C dependencies (the vendored OpenSSL above all, also aws-lc, Lua, jemalloc) with `-O3`
 (`CFLAGS_x86_64_unknown_linux_gnu` exported by `scripts/build-release-binaries.sh`; the flags are recorded as `c_flags`
-in `BUILD-INFO.json`): 7% to 10% fewer instructions per TLS handshake ([PERF_6_4_TLS_OPTIONS.md](PERF_6_4_TLS_OPTIONS.md)).
+in `BUILD-INFO.json`): 7% to 10% fewer instructions per TLS handshake.
 `FLAVOUR=v3` adds `-march=x86-64-v3` and publishes `oxiroute-VERSION-TARGET-x86-64-v3.tar.gz`: another 2.5% to 4% on
 handshakes, and the binary does not start on a CPU without AVX2 and BMI2. It is therefore never part of a tag run and
 never the default artefact; start the release workflow manually with `v3_flavour: true` and `publish: true` to attach it. Source builds
@@ -240,8 +238,7 @@ or touching the source archive. A checksum mismatch is a deliberate release bloc
 `cargo audit -D warnings`, all committed lockfile checks, and high-severity audits for the UI and
 Remotion dependency roots. `deny.toml` rejects unknown registries and Git sources except the pinned
 h3 repository and intentionally has no RustSec exceptions. The Pingora dependency paths are kept
-auditable through vendored manifests and their clean replacement record is maintained in
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+auditable through vendored manifests.
 
 `.github/workflows/pages.yml` uploads the `website/` directory using the official Pages artifact and
 deployment actions. It runs on pushes to `main` and can be started manually. Repository Pages settings

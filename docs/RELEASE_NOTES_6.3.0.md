@@ -36,7 +36,7 @@ User-space instructions (`perf stat -e instructions:u`) per request from `benchm
 thread, 16 keep-alive connections unless the lane says otherwise, 6.2.0 and `release/6.3` built the same way (shipped
 release profile, no PGO) and measured one after the other on the same host. The full table, the idle, startup and
 routing rows and the comparison with nginx and HAProxy are in
-[the 6.3 performance summary](developer/PERF_6_3_SUMMARY.md).
+the 6.3 performance summary.
 
 | Lane | 6.2.0 | 6.3 | Change |
 | --- | ---: | ---: | ---: |
@@ -56,9 +56,6 @@ routing rows and the comparison with nginx and HAProxy are in
 
 ## Request path
 
-Details: [fast path](developer/PERF_6_3_FAST_PATH.md), [HTTP/1 path](developer/PERF_6_3_H1_PATH.md),
-[request context](developer/PERF_6_3_REQUEST_CONTEXT.md), [bodied relay](developer/PERF_6_3_BODIED_RELAY.md).
-
 - Proxied HTTP/1.1 requests cost about 19% fewer instructions (1 KiB response: 58.5k to 47.4k per request) from the
   single relay loop and native `async fn` hooks, a further 8% to 18% from per-request context (1 KiB proxied: 47.5k to
   42.1k; with forwarded headers and a host rewrite: 64.2k to 52.9k), and fixed responses cost about 15% fewer from the
@@ -72,8 +69,6 @@ Details: [fast path](developer/PERF_6_3_FAST_PATH.md), [HTTP/1 path](developer/P
 
 ## Connections and upstream reuse
 
-Details: [connection lifecycle](developer/PERF_6_3_CONNECTION_LIFECYCLE.md).
-
 - Idle HTTP/1 upstream connections are tracked by one pool task instead of one task per connection; closed or noisy
   idle connections are still dropped promptly, a connection the peer closed before it is pooled is not pooled, and
   idle connections are closed when the service that owns them stops.
@@ -85,8 +80,6 @@ Details: [connection lifecycle](developer/PERF_6_3_CONNECTION_LIFECYCLE.md).
 
 ## Bodies, static files, TLS and HTTP/2
 
-Details: [bodies and static files](developer/PERF_6_3_BODIES_AND_STATIC.md), [TLS and HTTP/2](developer/PERF_6_3_TLS_H2.md).
-
 - Proxied response bodies reach the client in chunks of up to 128 KiB instead of 64 KiB (first-byte latency is
   unchanged: a read returns what is available). Each worker thread keeps up to 1 MiB of idle body buffers.
 - A TLS 1.3 server with `session_tickets = false` and no `session_cache` no longer sends session tickets (clients
@@ -95,8 +88,6 @@ Details: [bodies and static files](developer/PERF_6_3_BODIES_AND_STATIC.md), [TL
   unchanged). An accepted HTTPS connection holds up to about 2 KiB of pending plaintext after a response.
 
 ## Routing and pools
-
-Details: [routing and pools](developer/PERF_6_3_ROUTING_AND_POOLS.md).
 
 - Least connections and weighted round robin keep an index once a pool has more than eight selectable servers; the
   chosen server is the same one the one-pass code chose (a randomized comparison test replays the original scan).
@@ -111,7 +102,7 @@ The built-in page of a `stats.pages[]` listener is an interactive dashboard: lis
 details, generation, process, certificates and warnings, live rates, latency percentiles, filters, sorting, pause,
 theme, keyboard shortcuts, CSV and JSON export, and, for loopback peers of a page with `admin = "localhost"`, Ready,
 Drain and Maintenance with a confirmation. It needs no token and ships inside the binary. Design and contract:
-[observability](developer/design/OBSERVABILITY.md), [API and UI specification](API_UI_SPEC.md),
+observability, [API and UI specification](API_UI_SPEC.md),
 [operations](OPERATIONS.md), [dashboard](user/DASHBOARD.md).
 
 - **Interactive page.** `GET <uri_prefix>` serves a script page that polls `snapshot.json`. A browser with script
@@ -209,7 +200,7 @@ or for the management API. Contributors: see the UI stack notes in [testing](dev
 
 The release binaries attached to the GitHub release are built with profile-guided optimization from the training
 workload of the data-path harness (14% to 27% fewer instructions per request than the plain build; see
-[build levers and allocator](developer/PERF_6_3_BUILD_AND_ALLOCATOR.md)) and the archive records whether a build is
+build levers and allocator) and the archive records whether a build is
 profile-guided. The Arch package and the source archive are built without a profile and are unchanged. The numbers
 in these notes are from plain builds.
 
@@ -235,7 +226,7 @@ in these notes are from plain builds.
 - Against nginx and HAProxy at one worker OxiRoute is still behind on the small-request lanes: about 0.7x to 0.75x
   the requests per second of nginx and 0.75x to 0.9x those of HAProxy (it was 0.5x and 0.6x), and about 1.9x to 2.7x
   the instructions of nginx and 1.0x to 1.6x those of HAProxy. It is ahead on 64 KiB bodies, the static file and 2048
-  keep-alive connections. See [the comparison](developer/BENCHMARK_VS_NGINX_HAPROXY.md#630-re-measured).
+  keep-alive connections. See the comparison.
 - Least-connections selection in a pool where no server is ever saturated costs about 30% to 40% more per selection
   than the 6.2 one-pass code (the index pays for itself as soon as no server is idle).
 - A client's `Connection: close` still takes the request-rewrite path.

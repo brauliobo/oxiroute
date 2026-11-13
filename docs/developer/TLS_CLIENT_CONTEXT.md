@@ -26,7 +26,7 @@ single parse.
 
 ## Reload attribution
 
-Measured with `benchmarks/r1-idle-startup` and per-process `perf record` (farm, first reload with an
+Measured with per-process `perf record` (farm, first reload with an
 empty audit store, instructions in user space):
 
 | part | before | after |
