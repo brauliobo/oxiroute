@@ -136,37 +136,32 @@ Current nginx, HAProxy, Apache, Squid, and Varnish fixtures live under:
 
 ```text
 crates/oxiroute-import/tests/fixtures/<product>/
-crates/oxiroute-import/tests/fixtures/live/<host>/
+crates/oxiroute-import/tests/fixtures/synthetic/<product>/
 ```
 
-The live fixture directories contain sanitized HAProxy sources, nginx source trees reconstructed
-from `nginx -T` source markers, and live-origin hashed/read-only capture metadata. Tests pin the
-exact direct origin hash commands and 2026-07-26 origin hashes without retaining raw capture bytes;
-host-b HAProxy remains pending after its live configuration changed. Separate tests verify the
-post-sanitization hash of every listed file, reject missing or extra files, compare operational
-overlay inventories, and enforce the recorded sanitizer process. This evidence does not claim a
-cryptographic signer. Tests also require stable complete source graphs, deterministic preprocessing, and
-terminal accounting without treating remaining semantic blockers as a finalized-candidate claim.
+The synthetic fixture directories contain invented HAProxy sources, nginx source trees and a Squid
+forward proxy that use only reserved names and documentation-range addresses. Tests require stable
+complete source graphs, deterministic preprocessing, and terminal accounting without treating
+remaining semantic blockers as a finalized-candidate claim.
 
 The current suite combines source files with parser/semantic/lowering assertions and repository
 coverage manifests. Apache vhost merge, HAProxy strict HTTP/TCP/stats, Squid static parent-peer and
 direct-fallback, and Varnish exact static-cache paths have executable tests; Varnish report tests
 also prove deterministic provenance and blocked-candidate preservation. Their broader product parity
 remains open. The product/category layout, capability profiles, expected-model sidecars, and
-optional native-validator output remain target fixture structure. Synthetic fixtures do not count
-as live-host evidence unless `coverage/host-cases.json` explicitly maps them to live-origin hashed
-metadata.
+optional native-validator output remain target fixture structure. Synthetic fixtures are not
+evidence about any deployed host.
 
 HAProxy lowering tests include an error-free static TCP fixture with a Unix listener, DNS
 `leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus direct
 tests named `positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance`,
 `non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes`,
-`unmodified_live_host-a_finalizes_with_exact_compatibility_policy`,
+`unix_gateway_finalizes_with_exact_compatibility_policy`,
 `dedicated_supported_stats_sections_lower_only_to_canonical_pages`,
 `stats_frontend_response_rules_fail_closed_instead_of_disappearing`,
 `bare_redispatch_lowers_to_delayed_same_server_retries_and_final_redispatch`, and
-`redispatch_interval_forms_remain_blocking`. They cover the live host-a page, `unix@` mode,
-case-insensitive Host route and fixed fallback, the non-audited host-shaped Host-plus-path fixture,
+`redispatch_interval_forms_remain_blocking`. They cover the synthetic gateway's statistics page, `unix@` mode,
+case-insensitive Host route and fixed fallback, the Host-plus-path fixture,
 ACL reference provenance, reusable least-connections, final redispatch, and exact
 listener/statistics-page timeout policy while retaining blockers for dynamic, negated, duplicate,
 and unsupported forms. The `http-check send` tests additionally cover parser token retention,

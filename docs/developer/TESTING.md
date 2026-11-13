@@ -35,8 +35,7 @@ pnpm --dir remotion audit --audit-level high
 ```
 
 The RustSec commands remain intentionally fail-closed. The current dependency graph passes both
-advisory checks after replacing the affected Pingora dependency paths; see
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the policy and replacement record.
+advisory checks after replacing the affected Pingora dependency paths.
 
 The bounded fuzz contract is required and validates the target/corpus set before the isolated compile;
 the optional smoke command reports and skips execution when `cargo-fuzz` is unavailable. None of these local checks is
@@ -71,7 +70,7 @@ Build tasks should use at most four workers in constrained environments. For mak
 | --- | --- |
 | Unit/property | Bounds, normalization, defaults, validation, rendering, state machines, counters, and diagnostics |
 | Integration | Loopback listener behavior, generation lifecycle, APIs, health checks, recording, files, and shutdown |
-| Import conformance | Include graphs, provenance, decision ledgers, blockers, finalized candidate behavior, and sanitized live fixtures |
+| Import conformance | Include graphs, provenance, decision ledgers, blockers, finalized candidate behavior, and synthetic fixtures |
 | Protocol interoperability | Independent HTTP/TLS/H2/gRPC/WebSocket/RTMP clients and wire behavior |
 | UI contract/component | Exact API shapes, stale/conflict behavior, responsive controls, navigation, and redaction |
 | Real browser | Built dashboard desktop/mobile layout, in-memory token lifecycle, config writes/conflicts/external edits, SSE reconnect, controls, redaction, and provenance boundaries |
@@ -160,8 +159,7 @@ claim daemon, CA-staging, production, or FFmpeg/OBS interoperability.
 Dependency and release gates live in `.github/workflows/audit.yml` and
 `.github/workflows/release.yml`. `deny.toml` denies unknown dependency sources, unapproved licenses,
 and unmaintained advisories; RustSec, cargo-deny, all lockfiles, both JavaScript dependency roots,
-archive contents, and build provenance are separate checks rather than silent fallbacks. See
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the current advisory policy.
+archive contents, and build provenance are separate checks rather than silent fallbacks.
 
 The dependency audit passes locally: `cargo audit -D warnings` and the pinned cargo-deny policy
 report no advisory findings after the Pingora dependency paths were replaced with maintained

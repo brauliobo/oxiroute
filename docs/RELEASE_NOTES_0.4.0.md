@@ -89,5 +89,5 @@ Squid, RTMP, or any native proxy product.
   restart, and crash recovery under active traffic must be demonstrated before supervised operation
   is treated as the default deployment path.
 
-See [COMPATIBILITY.md](COMPATIBILITY.md), [ROADMAP.md](ROADMAP.md), and the protocol specifications
+See [COMPATIBILITY.md](COMPATIBILITY.md) and the protocol specifications
 for exact supported forms, limits, and remaining work.

@@ -6,8 +6,7 @@ failure behavior before a capability is advertised.
 
 ## Contribution Route
 
-1. Read [the architecture](ARCHITECTURE.md) and identify the owning crate. For planned ownership
-   changes, consult the [architecture refactor roadmap](ARCHITECTURE_REFACTOR_ROADMAP.md).
+1. Read [the architecture](ARCHITECTURE.md) and identify the owning crate. 
 2. Find or add the smallest failing test at that abstraction.
 3. Keep configuration, runtime planning, activation, and observability changes separate when possible.
 4. Update the compatibility matrix and the relevant user/reference docs in the same change.
@@ -52,6 +51,3 @@ runtime path and failure cases are tested.
 - [Compatibility matrix](../COMPATIBILITY.md)
 - [Test strategy](../TEST_STRATEGY.md)
 - [Shared TLS client context and reload cost](TLS_CLIENT_CONTEXT.md)
-- [Connection layer: TLS, per-connection memory, new-connection cost](CONNECTION_LAYER_PERFORMANCE.md)
-- [Throughput against nginx and HAProxy](BENCHMARK_VS_NGINX_HAPROXY.md): `scripts/bench-vs-proxies.sh`, its self-checks and the manual smoke workflow
-- [6.4 performance summary](PERF_6_4_SUMMARY.md): every 6.4 branch with before and after numbers, and how to re-measure

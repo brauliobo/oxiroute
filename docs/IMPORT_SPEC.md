@@ -83,7 +83,7 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   `default-server` health intervals/capacity and passive observation, thresholds, and mark-down
   policy, and server-close connection reuse. A backend-scoped, uniquely consumed
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
-  surrounding evidence, such as host-a's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
+  surrounding evidence, such as an nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
   names remain canonical and are not resolved during import. A positive `use_backend` condition may
   combine exactly one exact `hdr(host)` ACL, optionally with `-i`, and one case-sensitive `path_beg` ACL;
   the conjunction lowers to one canonical route with both selectors and retains both ACL references.
@@ -101,12 +101,9 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   that exact two-criterion family block the affected candidate. A conditional backend with no native
   default receives one final fixed `503` catch-all so unmatched requests do not acquire a fabricated
   upstream destination. `unix@` listener binds retain the Unix path and explicit mode.
-- The synthetic `host-a-static-representable.cfg` fixture proves that an audited-shaped Unix
-  frontend plus DNS `leastconn` backend can finalize; it is not live-host evidence. Live sanitized
-  fixture trees are mapped in `coverage/host-cases.json` as live-origin hashed/read-only captured
-  evidence. Their metadata separates direct origin hashes and exact hash commands from checked-in
-  post-sanitization per-file hashes, records the sanitizer steps, and states that raw bytes were not
-  stored. This is not cryptographic signer authentication. Logging and process policy remain typed
+- The synthetic `unix-gateway.cfg` and `dns-leastconn-pool.cfg` fixtures prove that a Unix
+  frontend plus DNS `leastconn` backend can finalize; they are invented shapes, not captures of a
+  deployed host. Logging and process policy remain typed
   deployment warnings that an operator MUST reproduce outside OxiRoute; import does not implement
   HAProxy syslog formats, user/chroot/daemon, or worker topology. A dedicated HTTP frontend/listen
   containing a supported `stats uri` (which implicitly enables HAProxy stats), refresh, optional
@@ -350,6 +347,7 @@ additional evidence, not proof that translated behavior is equivalent.
 The bounded corpus groups fixtures by product and category: `valid`, `invalid`, `unsupported`, and
 `edge`. Each fixture records its expected include graph, canonical model, diagnostics, and optional
 native-validator output. Current synthetic nginx, HAProxy, Squid, Apache, and Varnish fixtures live
-under `crates/oxiroute-import/tests/fixtures/<product>/`; authenticated sanitized host trees and
-metadata live under `crates/oxiroute-import/tests/fixtures/live/<host>/`. Coverage manifests and
+under `crates/oxiroute-import/tests/fixtures/<product>/` and
+`crates/oxiroute-import/tests/fixtures/synthetic/<product>/`, which hold invented hosts and
+documentation-range addresses only. Coverage manifests and
 focused importer tests remain the evidence boundary; they do not claim complete native parity.

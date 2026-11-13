@@ -324,8 +324,7 @@ Current constraints:
   listener `aged_per_worker` can lose request rate (0.6x to 0.8x at 512 and 2048 busy connections), so it is
   recommended from two workers (`listener_workers`) up. `auto` makes that choice: `aged_per_worker` when
   `listener_workers` is 2 or more, `work_stealing` with one (or omitted); `connection_age_ms` is accepted with it and
-  applies when it resolves to `aged_per_worker`. Changing it is an ordinary reload. See
-  `docs/developer/PERF_6_4_CONNECTION_SCHEDULING.md`.
+  applies when it resolves to `aged_per_worker`. Changing it is an ordinary reload.
 - Root `worker_scaling` is optional: `static` (the default) spreads connections over all `listener_workers` workers of
   a listener; `dynamic` keeps only as many of them active as the offered load needs, placing new connections on, and
   moving idle keep-alive HTTP/1 connections to, the active ones, and activates more workers under pressure. It needs
@@ -950,8 +949,7 @@ The current certificate and profile rules are:
   issue two tickets per full handshake (+10% on a full handshake) and pay back only when more than
   about half of the handshakes resume. The cache holds `size_bytes / 256` sessions (10 MiB: 40,960), evicting
   the oldest; by default there is no cache and no tickets, so a returning client always runs a full
-  handshake. See
-  `docs/developer/PERF_6_4_TLS_OPTIONS.md`.
+  handshake.
 - `key_exchange_groups` is an optional nonempty list of unique group names: `x25519`, `secp256r1`,
   `secp384r1` and `x25519mlkem768`. The list is the set of groups the server accepts; absent keeps the TLS
   backend's default list, which prefers the post-quantum hybrid `x25519mlkem768` for clients that offer it
@@ -1036,7 +1034,6 @@ The current certificate and profile rules are:
   `dh_parameters_path` is read and ignored (a warning says so): rustls offers no DHE suites.
   Upstream TLS, ACME and HTTP/3 are not affected by the setting. Changing it is an ordinary reload: new connections
   of the new generation use the new library and connections of the replaced generation finish as they were accepted.
-  See `docs/developer/PERF_6_4_RUSTLS.md` for the differences and the measurements.
 - Downstream TLS session caching and tickets are disabled. Every new handshake selects one identity
   and takes one immutable certificate-generation snapshot through the TLS callback, so an atomic
   generation publication cannot mix key and chain material and existing connections retain their
@@ -1225,9 +1222,7 @@ A pool opts in to servers that register themselves at runtime with a `registrati
 pool with `registration` may have no `servers` at all; without it, an empty server list is
 rejected. Registrations never enter the configuration file or its revision: they live in a
 persisted store under `registry.state_dir`, and a reload or `config apply` neither loses nor
-rewrites them. The design and its trade-offs are in
-[`developer/design/DYNAMIC_REGISTRY.md`](developer/design/DYNAMIC_REGISTRY.md); the operator view
-is in [`user/RUNBOOK.md`](user/RUNBOOK.md).
+rewrites them. The operator view is in [`user/RUNBOOK.md`](user/RUNBOOK.md).
 
 ```lua
 registry = {

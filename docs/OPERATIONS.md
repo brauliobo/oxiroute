@@ -121,7 +121,6 @@ change or a retired generation drains, and sends nothing when the status is unch
 master is served at once. The status carries traffic and listener counters only; process, host, pool and
 certificate sampling happens when the management API or `/metrics` asks for it. The shared Pingora timer
 thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
-`docs/developer/PERF_6_2_IDLE_AUDIT.md` has the measurements.
 
 ## TLS handshake threads
 
@@ -189,7 +188,7 @@ grep -E 'TlsTxSw|TlsCurrTxSw|TlsDecryptError' /proc/net/tls_stat   # converted s
 Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend, `"auto"` behaves exactly as
 `"off"`; the log of the profile says once (info) whether kernel TLS is active or why not. Set `ktls = "off"` to keep
 all TLS in user space. A converted connection that then serves small responses costs 1% to 4% more instructions per
-request; the break-even is one large file per 200 small requests. Details: `developer/PERF_6_4_KTLS.md`.
+request; the break-even is one large file per 200 small requests.
 
 ## TLS backend
 
@@ -197,8 +196,7 @@ request; the break-even is one large file per 200 small requests. Details: `deve
 listeners with rustls and aws-lc-rs. It offers only the TLS 1.3 and ECDHE AEAD suites (a `cipher_list` is followed with
 OpenSSL's semantics and the DHE, CBC and RSA key exchange suites it selects are left out, with a warning at start;
 `dh_parameters_path` is ignored), and has no kernel TLS. Switch one profile at a time (a reload applies it to new
-connections) and compare the handshake and error counters before moving more. Differences, the parity audit and the
-numbers: `developer/PERF_6_4_RUSTLS.md`, `developer/research/PERF_NEXT_TLS.md`.
+connections) and compare the handshake and error counters before moving more.
 
 ## Shutdown
 

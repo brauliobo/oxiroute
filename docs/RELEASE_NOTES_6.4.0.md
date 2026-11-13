@@ -58,7 +58,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   request to the classic path: an HTTP/1.1 POST of 64 KiB costs 52% fewer instructions (96.8k to 46.2k) and an HTTP/2
   POST of 1 KiB 30% fewer (85.6k to 59.8k), without LTO. An answer that comes before the upload ends is relayed and
   the client connection is closed (HTTP/1.1) or the stream is reset with `NO_ERROR` (HTTP/2) rather than kept for
-  another request. Details: [request bodies](developer/PERF_6_4_REQUEST_BODIES.md).
+  another request. Details: request bodies.
 - **Idle connections.** A keep-alive connection that waits for its next request holds no session, no header buffer and
   no request future, also over TLS (-9% to -12% resident memory per open connection) and for WebSocket (-15% to
   -27%); 2,048 busy HTTP/1 connections: 140 MB to 86 MB. The 6.4 figure of 2.2 kB per idle connection was the residue
@@ -82,7 +82,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   RUSTSEC-2026-0253 are no longer reported against the build.
 - **rustls backend (opt-in).** `tls_profiles[].policy.backend = "rustls"` runs the handshakes and records of a profile's
   listeners with rustls and aws-lc-rs instead of OpenSSL; `openssl` stays the default. See
-  [the rustls backend](developer/PERF_6_4_RUSTLS.md).
+  the rustls backend.
 - **Configuration.** New options: `tls_profiles[].policy.backend`, `tls_profiles[].policy.ktls`,
   `tls_profiles[].policy.key_exchange_groups`, `h2_initial_stream_window`, `h2_initial_connection_window`,
   `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling` (with `auto`), `connection_age_ms`, `worker_scaling`
@@ -156,7 +156,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   unprivileged service cannot load it: the Arch packages load it at boot, elsewhere add `tls` to `/etc/modules-load.d/`;
   kernel older than 6.5; unsupported cipher;
   the `rustls` backend). The vendored OpenSSL is now built with kernel TLS support. Details:
-  [kernel TLS](developer/PERF_6_4_KTLS.md).
+  kernel TLS.
 - **Static files on the fast lane.** A plain `GET` or `HEAD` of a file the static cache holds is answered by the HTTP/1.1
   fast lane (plain and TLS) with the same bytes, access line and metrics as the classic path; requests with `Range` or a
   condition header (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`), other methods, a
@@ -171,7 +171,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   copy costs hundreds of microseconds (ZFS here) is limited to one core's rate, like nginx (3.3k to 2.0k requests per
   second on one worker); use more `listener_workers` for such loads.
   Measured: 1 KiB 26,949 to 9,298 and 1 MiB 95,827 to 10,540 (ZFS), 40,971 to 11,689 (btrfs) user instructions per request
-  (nginx 13.2k to 13.6k); see [static files](developer/PERF_6_4_STATIC_FILES.md).
+  (nginx 13.2k to 13.6k); see static files.
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
 - **Environment variables** that now have a configuration option keep working as fallbacks that the configuration
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
@@ -180,7 +180,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
 - **Tail latency at many busy connections** is unchanged: 1,024 to 2,048 busy keep-alive connections on one work-stealing
   worker still see a p99 of 157 to 360 ms. Serving the queues in arrival order cut it 2.5x to 2.9x but also cut the
   saturated rate of the worker about 3x, with no way back, so it is not in 6.4; `connection_scheduling` is where tail work
-  belongs (see [tail latency and idle memory](developer/PERF_6_4_TAIL_AND_MEMORY.md)).
+  belongs (see tail latency and idle memory).
 - **Upgraded connections** (WebSocket) hold 7.7 kB less while idle: 47.2 kB to 39.5 kB, over TLS 69.6 kB to 61.5 kB
   (the request and response head buffers are released once the connection is upgraded).
 - **Costs.** A WebSocket message costs about 1% more user-space instructions than in 6.3.1 (the 0.9.1 base; upgraded
@@ -193,7 +193,7 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
 User-space instructions per request from `benchmarks/r2-data-path`, 6.3.1 and the integrated 6.4 tree built the same
 way (shipped profile without fat LTO, no profile-guided optimization), three repetitions, alternated on one shared host.
 The full table, the lane-off column, the CPU columns of the kernel-offload lanes, the handshake storm and the method are
-in [the 6.4 performance summary](developer/PERF_6_4_SUMMARY.md).
+in the 6.4 performance summary.
 
 | Lane | 6.3.1 | 6.4 | Change |
 | --- | ---: | ---: | ---: |
@@ -214,8 +214,6 @@ The CPU time per request of a 1 MiB static file also fell by 65% to 75% (kernel 
 
 ## Request path and connections
 
-Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane coverage](developer/PERF_6_4_LANE_COVERAGE_2.md), [footprint](developer/PERF_6_4_FOOTPRINT.md).
-
 - The fast lane scans the head with `oxiroute-h1-head`, forwards a request (with its body, streamed to the origin as it
   arrives) to an HTTP/1.1 server of a pool and relays the response; whatever it cannot prove equivalent (chunked
   bodies, `Expect`, rescue pools, cache, affinity, rewrites, buffering, HTTP/2 upstreams, gzip, pipelining,
@@ -229,18 +227,16 @@ Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane co
   non-blocking `recv` right after accept; a miss falls back to the readiness wait). The accept loop takes a connection
   that is already waiting before it arms its shutdown and gate watchers, plain TCP no longer calls `shutdown` before the
   close that follows (TLS still does), and the receive-timestamp buffer is allocated only when timestamps are enabled.
-  About 2% fewer instructions per new connection. Details: [connect path](developer/PERF_6_4_CONNECT_PATH.md).
+  About 2% fewer instructions per new connection.
 - A plain connection that fails before its first request is logged without the peer address.
 
 ## TLS and HTTP/2
-
-Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H2.md).
 
 - **TLS key exchange groups (opt-in).** `tls_profiles[].policy.key_exchange_groups` lists the groups a profile accepts
   (`x25519`, `secp256r1`, `secp384r1`, `x25519mlkem768`), in all configuration formats and the management UI. Absent
   keeps the default, which prefers the post-quantum hybrid group that browsers offer. `{ "x25519", "secp256r1" }`
   leaves the hybrid out: a browser handshake costs 29% fewer instructions and its key exchange is no longer protected
-  against a future quantum computer. Details and the resumption options: [TLS options](developer/PERF_6_4_TLS_OPTIONS.md).
+  against a future quantum computer. Details and the resumption options: TLS options.
 - Every TLS listener hands the accepted socket to `tls_handshake_threads` threads (default one per 8 CPUs, 1 to 4; `0`
   keeps handshakes on the workers). Certificate selection, SNI, ALPN, client certificates, session cache and tickets are
   unchanged. Handshakes waiting for a thread count against `max_connections` and the handshake timeout. A reload applies
@@ -261,8 +257,6 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
   certificate from a key that is built once per certificate generation instead of on every handshake.
 
 ## HTTP/3
-
-Details: [HTTP/3 layer and origins](developer/PERF_6_4_HTTP3.md).
 
 - **Cheaper requests.** The reverse `http3` listener reads and answers requests with a purpose-built layer over QUIC
   streams (`oxiroute-h3`): a 1 KiB fixed response needs 33% fewer user-space instructions (70,279 to 46,672), a request on
@@ -307,14 +301,12 @@ Details: [HTTP/3 layer and origins](developer/PERF_6_4_HTTP3.md).
 
 ## Kernel offload
 
-Details: [kernel offload](developer/PERF_6_4_KERNEL_OFFLOAD.md). `splice` and `sendfile` are Linux-only; nothing is
+`splice` and `sendfile` are Linux-only; nothing is
 configured. Large static files over TLS use `sendfile` too when the host has kernel TLS (`ktls = "auto"`, the default):
-[kernel TLS](developer/PERF_6_4_KTLS.md) (1 MiB over TLS 1.3: 1.78M / 1.50M cycles per request in user space against
+kernel TLS (1 MiB over TLS 1.3: 1.78M / 1.50M cycles per request in user space against
 0.87M / 0.81M, user-space instructions 1,064k against 66k; 256 KiB: -30% to -32% cycles).
 
 ## Connection scheduling
-
-Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
 
 - `connection_scheduling = "aged_per_worker"` gives every listener worker its own runtime, queue and I/O driver, places
   each new connection on the worker with the fewest open connections, and serves the newest ready connection first and
@@ -339,7 +331,7 @@ Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
   connections cannot move, so they keep spreading over every worker (no saving, no loss); cleartext HTTP/2 is not
   distinguished from HTTP/1 at accept time and may pack. The default stays `static`: the saving is measured only at 8
   or more workers under light load, and the p99 gate was missed by 0.5 ms at the edge. See
-  [worker consolidation](developer/PERF_6_4_WORKER_CONSOLIDATION.md).
+  worker consolidation.
 - With `aged_per_worker` a pooled upstream connection taken by another worker is registered with that worker's I/O
   driver, so its readiness wakes the thread that serves the request (it woke the thread that had pooled it).
 - The idle upstream connection pool has one stripe per CPU (at least eight) instead of eight, so listeners with more than
@@ -347,7 +339,7 @@ Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
 
 ## Release binaries
 
-Details: [binary-level work](developer/PERF_6_4_BINARY_LEVEL.md), [releasing](developer/RELEASING.md).
+Details: [releasing](developer/RELEASING.md).
 
 - **Wider profile-guided training.** The default training mix is the ten 6.3 lanes (weight 4) plus fourteen feature lanes
   (HTTP/2 64 KiB and POST, WebSocket, TCP relay, cache hit, gzip, 1 MiB, TLS 1 MiB and 1.2, all 6.0 features,
@@ -369,7 +361,7 @@ Details: [binary-level work](developer/PERF_6_4_BINARY_LEVEL.md), [releasing](de
 
 ## Pingora 0.9.1
 
-Details: [rebase](developer/PERF_6_4_PINGORA_REBASE.md). The vendored `pingora-core`, `pingora-proxy`, `pingora-timeout`
+The vendored `pingora-core`, `pingora-proxy`, `pingora-timeout`
 and `pingora-load-balancing` are rebased from 0.8.1 onto the published 0.9.1; `pingora-http` is vendored (pristine plus
 one accessor) and `pingora-rustls` is no longer vendored. The delta records are in each crate's
 `README.oxiroute.md`.
@@ -425,7 +417,7 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 
 ## Memory of open connections
 
-Details: [connection memory](developer/PERF_6_5_CONNECTION_MEMORY.md). An idle TLS keep-alive connection is parked like a
+An idle TLS keep-alive connection is parked like a
 plain one (the stream can tell whether its socket is readable without decrypting, the handshake state is released, the
 coalescing buffer returns to a per-thread spare), and an idle WebSocket holds no body or head buffer. Resident memory
 per open idle connection at 10,000 connections: TLS 1.3 38.7 kB to 34.2 kB (-11.5%), WebSocket 49.3 kB to 35.8 kB
@@ -434,8 +426,7 @@ per open idle connection at 10,000 connections: TLS 1.3 38.7 kB to 34.2 kB (-11.
 
 ## HTTP/2 lane and windows
 
-Details: [HTTP/2 lane](developer/PERF_6_5_H2_LANE.md), [view API](developer/PERF_6_5_H2_VIEW_API.md),
-[receive windows](developer/PERF_6_4_H2_WINDOWS.md). The lane reads the decoded request head instead of building an
+The lane reads the decoded request head instead of building an
 `http` request, writes the response fields from the scanned origin head, and batches the responses of ready streams into
 one write (2.35 system calls per request instead of 3.09). Against the build before it: `h2_b1k_c4s16` 70.9k to 43.7k
 instructions (-38%), 64 KiB responses -17%, the classic path with the lane off -10%, a request with a body -4%. Larger
@@ -443,7 +434,7 @@ receive windows cut the `WINDOW_UPDATE` frames of an upload from 64 to 2 per MiB
 
 ## Control plane
 
-Details: [control plane](developer/PERF_6_5_CONTROL_PLANE.md). Instructions per call at 1,000 servers: `/ready` 731k to
+Instructions per call at 1,000 servers: `/ready` 731k to
 28k to 36k, `/api/v1/listeners` 723k to 38k to 51k, `/servers` 13.1M to 7.0M, `/pools` 12.7M to 7.0M, `/monitoring`
 12.9M to 7.2M, `/topology` 92.8M to 6.9M, `oxiroute --output json server list` 56M to 13M. A registrar that shells out
 every few seconds pays about 21M client instructions per cycle with `--output json` instead of about 65M. The table
@@ -480,12 +471,8 @@ output is unchanged.
 
 ## Benchmark tooling
 
-`scripts/bench-vs-proxies.sh` is the one entry point of the nginx and HAProxy comparison (`--scenarios`, `--budget`,
-`--classic`, `--binary`; scratch and results on disk under `~/.local/state/oxiroute-bench`, it refuses to start when
-`MemAvailable` is low). `benchmarks/r2-data-path/compare.sh` and `table.py --markdown` produce the release comparison
-table of instructions per request. CI runs the offline harness checks (`benchmarks/scripts/test_vs_offline.py`); the
-`Benchmark smoke` workflow runs a short comparison and is started by hand only. See
-[the benchmark note](developer/BENCHMARK_VS_NGINX_HAPROXY.md).
+`benchmarks/r2-data-path/compare.sh` and `table.py --markdown` produce the release comparison table of
+instructions per request.
 
 ## Vendored Pingora
 

@@ -43,40 +43,40 @@ its method and caveats, in the linked note.
 
 | Area | Measure | 6.1 | 6.2 | Note |
 | --- | --- | --- | --- | --- |
-| Idle, minimal config | worker instr/s | 622 k | 9.6 k | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
-| Idle, minimal config | wake-ups per second | 198 | 2 | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
-| Idle, farm config | worker instr/s | 3.43 M | 78 k | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
-| Audit append | instr per record, store at its cap | 931 M | 33 k | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
-| Farm startup to quiet, store at its cap | wall | 40.0 s | 4.5 s | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
-| Farm reload to quiet | instr | 91.6 G | 53.0 G | [idle audit](developer/PERF_6_2_IDLE_AUDIT.md) |
+| Idle, minimal config | worker instr/s | 622 k | 9.6 k | idle audit |
+| Idle, minimal config | wake-ups per second | 198 | 2 | idle audit |
+| Idle, farm config | worker instr/s | 3.43 M | 78 k | idle audit |
+| Audit append | instr per record, store at its cap | 931 M | 33 k | idle audit |
+| Farm startup to quiet, store at its cap | wall | 40.0 s | 4.5 s | idle audit |
+| Farm reload to quiet | instr | 91.6 G | 53.0 G | idle audit |
 | Reload, old worker prepare | instr | about 27 G | about 1.4 G | [TLS client context](developer/TLS_CLIENT_CONTEXT.md) |
-| `config compose --format kdl`, farm (341 KB) | instr | 1.321 G | 106.6 M | [config load](developer/CONFIG_LOAD_PERFORMANCE.md) |
-| Master 30 s reconcile, farm | instr per spike | 1.25 G | about 1 M | [config load](developer/CONFIG_LOAD_PERFORMANCE.md) |
-| `config get`, farm | worker instr | 1.362 G | 14.4 M | [config load](developer/CONFIG_LOAD_PERFORMANCE.md) |
-| Registrar poll cycle | instr | 1.947 G | 54.2 M | [config load](developer/CONFIG_LOAD_PERFORMANCE.md) |
-| Proxied request, no feature | instr per request | 88,719 | 79,820 | [request path](developer/design/REQUEST_PATH_COST.md) |
-| Proxied request, access log on | instr per request | 177,761 | 93,600 | [request path](developer/design/REQUEST_PATH_COST.md) |
-| Access-log cost per request | instr | 89,042 | 13,780 | [request path](developer/design/REQUEST_PATH_COST.md) |
-| Static file, 1 KiB | instr per request | 66,291 | 43,201 | [request residual](developer/PERF_6_2_REQUEST_RESIDUAL.md) |
-| Static file, 1 KiB | syscalls per request | 32.4 | 2.1 | [request residual](developer/PERF_6_2_REQUEST_RESIDUAL.md) |
-| 8 KiB of custom request headers | instr per request | 223,265 | 194,439 | [request residual](developer/PERF_6_2_REQUEST_RESIDUAL.md) |
-| Gzip, 64 KiB HTML | bytes allocated per request | 581,530 | 198,204 | [request residual](developer/PERF_6_2_REQUEST_RESIDUAL.md) |
-| New connection per request | syscalls per request | 25.45 | 11.31 | [connection layer](developer/CONNECTION_LAYER_PERFORMANCE.md) |
-| Idle keep-alive connection, HTTP | live heap | 94,330 B | 28,781 B | [connection layer](developer/CONNECTION_LAYER_PERFORMANCE.md) |
-| 4,096 live connections | process RSS | 427 MB | 165 MB | [connection layer](developer/CONNECTION_LAYER_PERFORMANCE.md) |
-| Route match, 1,000 normalized-host routes | instr | 1,398,601 | 1,301 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| Round robin, 2,000 servers | instr per selection | 377,044 | 1,340 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| Least connections, 2,000 servers | instr per selection | 393,494 | 237,276 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| Hash affinity, 2,000 servers | instr per request | 6,924,724 | 59,872 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| Cookie affinity, 2,000 servers | instr per request | 11,851,181 | 36,167 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| Breaker success, 2,000 servers | instr | 94,392 | 319 | [routing and selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md) |
-| 4 listeners with queueing | instr per request | 309,874 | 100,454 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| `on_connect` DNS lane | instr per request | 142,117 | 99,779 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| One capacity event, 1,000 weighted waiters | instr | 347,644 | 9,724 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| Membership update, 2,000 servers | instr | 10,108,078 | 14,383 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| Registry expire all, 1,000 records | instr | 9,855,167,931 | 37,071,922 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| `/metrics`, 500 pools x 20 servers | instr | 667,881,894 | 186,985,160 | [pool, queue, registry](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md) |
-| Select + release, 20 servers, 4 threads | instr | 18.4 M | 9.5 M | [multi-core scaling](developer/MULTI_CORE_SCALING.md) |
+| `config compose --format kdl`, farm (341 KB) | instr | 1.321 G | 106.6 M | config load |
+| Master 30 s reconcile, farm | instr per spike | 1.25 G | about 1 M | config load |
+| `config get`, farm | worker instr | 1.362 G | 14.4 M | config load |
+| Registrar poll cycle | instr | 1.947 G | 54.2 M | config load |
+| Proxied request, no feature | instr per request | 88,719 | 79,820 | request path |
+| Proxied request, access log on | instr per request | 177,761 | 93,600 | request path |
+| Access-log cost per request | instr | 89,042 | 13,780 | request path |
+| Static file, 1 KiB | instr per request | 66,291 | 43,201 | request residual |
+| Static file, 1 KiB | syscalls per request | 32.4 | 2.1 | request residual |
+| 8 KiB of custom request headers | instr per request | 223,265 | 194,439 | request residual |
+| Gzip, 64 KiB HTML | bytes allocated per request | 581,530 | 198,204 | request residual |
+| New connection per request | syscalls per request | 25.45 | 11.31 | connection layer |
+| Idle keep-alive connection, HTTP | live heap | 94,330 B | 28,781 B | connection layer |
+| 4,096 live connections | process RSS | 427 MB | 165 MB | connection layer |
+| Route match, 1,000 normalized-host routes | instr | 1,398,601 | 1,301 | routing and selection |
+| Round robin, 2,000 servers | instr per selection | 377,044 | 1,340 | routing and selection |
+| Least connections, 2,000 servers | instr per selection | 393,494 | 237,276 | routing and selection |
+| Hash affinity, 2,000 servers | instr per request | 6,924,724 | 59,872 | routing and selection |
+| Cookie affinity, 2,000 servers | instr per request | 11,851,181 | 36,167 | routing and selection |
+| Breaker success, 2,000 servers | instr | 94,392 | 319 | routing and selection |
+| 4 listeners with queueing | instr per request | 309,874 | 100,454 | pool, queue, registry |
+| `on_connect` DNS lane | instr per request | 142,117 | 99,779 | pool, queue, registry |
+| One capacity event, 1,000 weighted waiters | instr | 347,644 | 9,724 | pool, queue, registry |
+| Membership update, 2,000 servers | instr | 10,108,078 | 14,383 | pool, queue, registry |
+| Registry expire all, 1,000 records | instr | 9,855,167,931 | 37,071,922 | pool, queue, registry |
+| `/metrics`, 500 pools x 20 servers | instr | 667,881,894 | 186,985,160 | pool, queue, registry |
+| Select + release, 20 servers, 4 threads | instr | 18.4 M | 9.5 M | multi-core scaling |
 
 Notes on reading the table:
 
@@ -85,7 +85,7 @@ Notes on reading the table:
   3.9x, not by orders of magnitude.
 - The same row can differ between notes because each note measured against the tree at its own merge point.
   Compare a before with its own after. The combined comparison of v6.1.0 with the final 6.2 tree
-  ([performance summary](developer/PERF_6_2_SUMMARY.md)) is the reference for the whole release; it shows
+  (the 6.2 performance summary) is the reference for the whole release; it shows
   larger request-path gains (about 17% fewer instructions per keep-alive HTTP/1.1 request, 54% fewer with the
   access log on), a farm reload that needs 469 M instructions until quiet instead of 119 G, and a farm that
   reaches ready in 70 ms instead of 2.3 s.
@@ -96,7 +96,7 @@ Notes on reading the table:
 
 ## Idle cost, startup and reload
 
-Details: [idle audit](developer/PERF_6_2_IDLE_AUDIT.md), [shared TLS client context](developer/TLS_CLIENT_CONTEXT.md).
+Details: [shared TLS client context](developer/TLS_CLIENT_CONTEXT.md).
 
 - **Audit store.** Records live in an in-memory ring. An append serializes one line and no longer re-reads or
   re-parses the store, and exceeding the record limit no longer rewrites files (they are trimmed to the limit
@@ -114,7 +114,7 @@ Details: [idle audit](developer/PERF_6_2_IDLE_AUDIT.md), [shared TLS client cont
 
 ## Configuration reads
 
-Details: [configuration load performance](developer/CONFIG_LOAD_PERFORMANCE.md).
+Details: configuration load performance.
 
 - Canonical KDL files load and render about 12x faster; any other KDL falls back to the generic parser with the
   same diagnostics as before.
@@ -130,10 +130,6 @@ Details: [configuration load performance](developer/CONFIG_LOAD_PERFORMANCE.md).
   dependency.
 
 ## Request path
-
-Details: [request path cost](developer/design/REQUEST_PATH_COST.md),
-[per-request residual](developer/PERF_6_2_REQUEST_RESIDUAL.md),
-[connection layer](developer/CONNECTION_LAYER_PERFORMANCE.md).
 
 - **Access log.** A typed record is rendered directly into a reused buffer and written in batches. Keys, order
   and values are unchanged.
@@ -156,7 +152,7 @@ Details: [request path cost](developer/design/REQUEST_PATH_COST.md),
 
 ## Selection scaling
 
-Details: [route matching and server selection](developer/ROUTING_AND_SELECTION_PERFORMANCE.md).
+Details: route matching and server selection.
 
 - **Routes.** An index by host class and a byte trie by path replace the scan of every route. Precedence is
   unchanged and a randomized test compares the index with the original scan.
@@ -172,7 +168,7 @@ Details: [route matching and server selection](developer/ROUTING_AND_SELECTION_P
 
 ## Queue, registry and metrics
 
-Details: [pool queue, DNS, registry and metrics](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md).
+Details: pool queue, DNS, registry and metrics.
 
 - A request first checks an atomic waiter count and selects directly when nobody is queued; it enters the queue
   only when the pool is saturated. Fairness (FIFO, class weights, tenant turns, aging) is unchanged.
@@ -187,7 +183,7 @@ Details: [pool queue, DNS, registry and metrics](developer/POOL_QUEUE_REGISTRY_P
 
 ## Multi-core scaling: `listener_workers`
 
-Details: [multi-core scaling](developer/MULTI_CORE_SCALING.md), [CONFIG_SPEC](CONFIG_SPEC.md).
+Details: multi-core scaling, [CONFIG_SPEC](CONFIG_SPEC.md).
 
 ```lua
 return { version = 1, listener_workers = 4, --[[ ... ]] }
@@ -326,7 +322,7 @@ The vendored version is the same as in 6.1 (0.8.1).
   It was hidden for clients that sent `Connection: close`, which 6.1 forwarded upstream so that every request
   opened a new connection; 6.2 no longer forwards it, so such clients now take the reusable-connection path.
   A request that is bound to a server waits for that server and is not selected again. `connection_reuse never`
-  gives the ideal makespan. See [the pool note](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md#known-limitation-late-binding-with-reusable-upstream-connections).
+  gives the ideal makespan. See the pool note.
 - **Adding or removing a pool member costs more in small pools.** Each membership change now republishes the
   selectable view. One server added and removed costs about 7 k instructions in a 20-server pool on 6.1 and
   about 38 k on 6.2 (+443%), +75% at 200 servers, and 81% less at 2,000 servers (20.2 M to 3.8 M). Updates that
@@ -344,4 +340,4 @@ See the developer notes linked in each section, [CONFIG_SPEC](CONFIG_SPEC.md) fo
 The advisories against the vendored Pingora crates remain open in 6.2.0. They are cleared only by the rebase
 onto Pingora 0.9.1, which is not part of this release (the vendored version is still 0.8.1). Treat the
 `cargo audit` and `cargo deny` advisory findings for the Pingora dependency paths as known until that rebase,
-and see [the security audit](developer/SECURITY_AUDIT.md) for the current record.
+and the current advisory record is kept up to date in the repository.

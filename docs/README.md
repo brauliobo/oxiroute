@@ -3,9 +3,6 @@
 This documentation is organized by the decision a reader is trying to make. Start with a job guide,
 then open the reference contract only when you need exact fields, bounds, or failure behavior.
 
-The full communication model, source-of-truth rules, site interaction design, and media/deployment
-workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
-
 ## Choose A Path
 
 | Audience | First stop | Then |
@@ -38,8 +35,6 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [Environment variables](developer/ENV_TO_CONFIG.md): every variable the daemon reads and its
   configuration option or reason to stay.
 - [Releasing](developer/RELEASING.md): versioning, packages, source archives, and Pages deployment.
-- [Security audit](developer/SECURITY_AUDIT.md): RustSec policy, lockfiles, dependency audits, and
-  release-artifact secret checks.
 
 ## Reference Contracts
 
@@ -56,7 +51,6 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [RTMP specification](RTMP_SPEC.md): directive inventory, runtime behavior, and compatibility status.
 - [ACME specification](ACME_SPEC.md): managed lifecycle, challenge types, Certbot lineage behavior, and release gates.
 - [Test strategy](TEST_STRATEGY.md): repository-wide test policy and release gates.
-- [Roadmap](ROADMAP.md): milestones and future work, not a support promise.
 
 ## Status Vocabulary
 
@@ -65,10 +59,10 @@ Use the same words everywhere:
 - `stable`: part of the current narrow release contract with implementation and required evidence.
 - `partial`: a narrow path works, but a broader compatibility or production gate remains.
 - `foundation`: tested code that is not an active daemon capability.
-- `planned`: a goal or roadmap item; not available in the current daemon.
+- `planned`: a committed goal; not available in the current daemon.
 - `research`: an evaluated possibility requiring a product or design decision.
 - `not-planned`: deliberately excluded from the current product plan.
 - `out-of-scope`: intentionally outside the user-space proxy boundary.
 
-The README and compatibility matrix describe current behavior. Product specs and roadmaps describe
+The README and compatibility matrix describe current behavior. Product specs describe
 requirements and direction; they must not be used alone to decide whether a feature is deployable.
