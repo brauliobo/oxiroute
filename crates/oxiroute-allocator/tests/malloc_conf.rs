@@ -45,3 +45,34 @@ fn jemalloc_reports_the_embedded_thread_cache_sizes() {
     assert_eq!(option::<u32>(b"opt.tcache_nslots_large\0"), 400);
     assert_eq!(option::<usize>(b"opt.tcache_max\0"), 1 << 17);
 }
+
+fn resident_bytes() -> usize {
+    let statm = std::fs::read_to_string("/proc/self/statm").expect("statm");
+    let pages: usize = statm
+        .split_whitespace()
+        .nth(1)
+        .expect("resident pages")
+        .parse()
+        .expect("number");
+    pages * 4096
+}
+
+#[test]
+fn unused_memory_is_returned_when_asked_for() {
+    let baseline = resident_bytes();
+    let blocks: Vec<Vec<u8>> = (0..64_u8).map(|index| vec![index | 1; 1 << 20]).collect();
+    let held = resident_bytes();
+    assert!(
+        held > baseline + (48 << 20),
+        "the blocks are resident ({baseline} before, {held} held)"
+    );
+    drop(blocks);
+
+    oxiroute_allocator::release_unused();
+
+    let released = resident_bytes();
+    assert!(
+        released < baseline + (16 << 20),
+        "the pages of 64 freed blocks are returned at once ({baseline} before, {released} after)"
+    );
+}
