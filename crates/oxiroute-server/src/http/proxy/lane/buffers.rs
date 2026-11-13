@@ -2,11 +2,12 @@
 //! a request starts to arrive and goes back when the request is served, so the buffers a thread needs are the ones
 //! its busy connections use at the same time.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, future::poll_fn, pin::Pin, task::Poll};
 
 use bytes::BytesMut;
 use oxiroute_h1_head::{RequestHead, ResponseHead};
 use pingora::protocols::Stream;
+use tokio::io::{AsyncRead, ReadBuf};
 
 const READ_CAPACITY: usize = 8 * 1024;
 /// What one read of an upload takes from the client: a request body larger than the head's read buffer is read in
@@ -25,8 +26,8 @@ thread_local! {
     static RESPONSES: RefCell<Vec<Box<ResponseHead>>> = const { RefCell::new(Vec::new()) };
     static WRITE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     static UPLOADS: RefCell<Vec<BytesMut>> = const { RefCell::new(Vec::new()) };
-    // Where a new connection's request is read before it is known to be there: initialised once, so an empty read
-    // costs no buffer.
+    // Where the bytes of a request are read before a pooled buffer is taken for them: initialised once, so a read
+    // that finds nothing costs no buffer.
     static ARRIVAL: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -42,10 +43,45 @@ pub(in crate::http::proxy) fn read_arrived(stream: &mut Stream) -> Option<BytesM
         let Ok(Some(count @ 1..)) = stream.try_read_now(&mut scratch) else {
             return None;
         };
-        let mut buffer = take_read();
-        buffer.extend_from_slice(&scratch[..count]);
-        Some(buffer)
+        Some(pooled_copy(&scratch[..count]))
     })
+}
+
+/// Waits for the stream's next bytes and returns them in a pooled buffer, `None` when the stream ended or failed. The
+/// wait is on readiness, which costs no read of the transport (a TLS stream would try to decrypt), and the read goes into
+/// the thread's scratch, so a connection that is waiting holds no buffer: a wait that is woken without bytes (readiness
+/// the last read left behind) would otherwise leave an 8 KiB buffer taken for as long as it lasts.
+pub(in crate::http::proxy) async fn read_request(stream: &mut Stream) -> Option<BytesMut> {
+    poll_fn(|cx| {
+        match stream.poll_read_ready(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(_)) => return Poll::Ready(None),
+            Poll::Ready(Ok(())) => {}
+        }
+        ARRIVAL.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            if scratch.is_empty() {
+                scratch.resize(READ_CAPACITY, 0);
+            }
+            let mut read = ReadBuf::new(&mut scratch);
+            match Pin::new(&mut *stream).poll_read(cx, &mut read) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(())) => Poll::Ready(
+                    Some(read.filled())
+                        .filter(|bytes| !bytes.is_empty())
+                        .map(pooled_copy),
+                ),
+                Poll::Ready(Err(_)) => Poll::Ready(None),
+            }
+        })
+    })
+    .await
+}
+
+fn pooled_copy(bytes: &[u8]) -> BytesMut {
+    let mut buffer = take_read();
+    buffer.extend_from_slice(bytes);
+    buffer
 }
 
 pub(in crate::http::proxy) fn take_read() -> BytesMut {
@@ -137,4 +173,67 @@ pub(in crate::http::proxy) fn give_response_head(head: Box<ResponseHead>) {
             pool.push(head);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::{
+        io::AsyncWriteExt as _,
+        net::{TcpListener, TcpStream},
+        time::timeout,
+    };
+
+    use super::*;
+
+    async fn connected() -> (TcpStream, Stream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let client = TcpStream::connect(listener.local_addr().expect("address"))
+            .await
+            .expect("connect");
+        let (server, _) = listener.accept().await.expect("accept");
+        let stream = pingora::protocols::l4::stream::Stream::from(server);
+        (client, Box::new(stream))
+    }
+
+    fn pooled() -> usize {
+        READ.with(|pool| pool.borrow().len())
+    }
+
+    #[tokio::test]
+    async fn a_connection_waiting_for_its_next_request_holds_no_read_buffer() {
+        let (mut client, mut stream) = connected().await;
+        give_read(BytesMut::with_capacity(READ_CAPACITY));
+        let request = b"GET / HTTP/1.1\r\nHost: idle.test\r\n\r\n";
+
+        // The first request, then a wait that starts with the readiness of the first still set.
+        client.write_all(request).await.expect("write");
+        let first = read_request(&mut stream).await.expect("the first request");
+        assert_eq!(&first[..], request);
+        assert_eq!(
+            pooled(),
+            0,
+            "the bytes of a request are read into a pooled buffer"
+        );
+        give_read(first);
+
+        let waiting = timeout(Duration::from_millis(50), read_request(&mut stream)).await;
+        assert!(waiting.is_err(), "nothing was sent");
+        assert_eq!(
+            pooled(),
+            1,
+            "a wait for bytes that have not come holds a buffer"
+        );
+
+        client.write_all(request).await.expect("write");
+        let second = read_request(&mut stream).await.expect("the second request");
+        assert_eq!(&second[..], request);
+
+        drop(client);
+        assert!(
+            read_request(&mut stream).await.is_none(),
+            "a closed stream ends the read"
+        );
+    }
 }
