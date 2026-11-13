@@ -2341,6 +2341,7 @@ dependencies = [
 name = "oxiroute-allocator"
 version = "6.4.0"
 dependencies = [
+ "tikv-jemalloc-sys",
  "tikv-jemallocator",
 ]
 
@@ -2421,6 +2422,9 @@ dependencies = [
 [[package]]
 name = "oxiroute-h1-head"
 version = "6.4.0"
+dependencies = [
+ "arrayvec",
+]
 
 [[package]]
 name = "oxiroute-h2"
