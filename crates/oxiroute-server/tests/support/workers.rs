@@ -112,9 +112,10 @@ pub fn service_tasks(root: u32) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The inodes of the server-side sockets of the given client ports, from the kernel's TCP table.
+/// The inodes of the server-side sockets of the given client ports, from the kernel's TCP table. The table is read in
+/// several chunks while connections come and go, so a socket can be listed twice.
 pub fn connection_inodes(server: SocketAddr, client_ports: &[u16]) -> Vec<String> {
-    fs::read_to_string("/proc/net/tcp")
+    let inodes = fs::read_to_string("/proc/net/tcp")
         .expect("tcp table")
         .lines()
         .skip(1)
@@ -125,7 +126,8 @@ pub fn connection_inodes(server: SocketAddr, client_ports: &[u16]) -> Vec<String
             (local == server.port() && client_ports.contains(&remote))
                 .then(|| columns[9].to_owned())
         })
-        .collect()
+        .collect::<BTreeSet<_>>();
+    inodes.into_iter().collect()
 }
 
 /// For every epoll instance of the process, how many of the given socket inodes it watches. A runtime keeps a duplicate
