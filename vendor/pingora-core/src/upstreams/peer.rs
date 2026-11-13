@@ -343,7 +343,7 @@ impl BasicPeer {
     /// Create a new [`BasicPeer`] with the given path to a Unix domain socket.
     #[cfg(unix)]
     pub fn new_uds<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let addr = SocketAddr::Unix(
+        let addr = SocketAddr::from(
             UnixSocketAddr::from_pathname(path.as_ref())
                 .or_err(InternalError, "while creating BasicPeer")?,
         );
@@ -803,7 +803,7 @@ impl HttpPeer {
     /// Create a new [`HttpPeer`] with the given path to Unix domain socket and TLS settings.
     #[cfg(unix)]
     pub fn new_uds(path: &str, tls: bool, sni: String) -> Result<Self> {
-        let addr = SocketAddr::Unix(
+        let addr = SocketAddr::from(
             UnixSocketAddr::from_pathname(Path::new(path)).or_err(SocketError, "invalid path")?,
         );
         Ok(Self::new_from_sockaddr(addr, tls, sni))
@@ -1047,9 +1047,9 @@ mod tests {
     fn standard_and_proxy_peers_match_cached_unix_pathnames() {
         let direct = BasicPeer::new_uds("/tmp/direct.sock").unwrap();
         let direct_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/direct.sock").unwrap());
+            SocketAddr::from(UnixSocketAddr::from_pathname("/tmp/direct.sock").unwrap());
         let other_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/other.sock").unwrap());
+            SocketAddr::from(UnixSocketAddr::from_pathname("/tmp/other.sock").unwrap());
         assert_eq!(direct.matches_cached_addr(&direct_addr), Some(true));
         assert_eq!(direct.matches_cached_addr(&other_addr), Some(false));
 
@@ -1062,7 +1062,7 @@ mod tests {
             BTreeMap::new(),
         );
         let proxy_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/proxy.sock").unwrap());
+            SocketAddr::from(UnixSocketAddr::from_pathname("/tmp/proxy.sock").unwrap());
         assert_eq!(proxy.matches_cached_addr(&proxy_addr), Some(true));
         assert_eq!(proxy.matches_cached_addr(&direct_addr), Some(false));
         assert_eq!(

@@ -181,7 +181,7 @@ impl Cache {
             identity: Arc::clone(&self.shared.identity),
             key,
             status,
-            headers: headers.clone(),
+            headers: owned_headers(headers),
             body,
             tags,
             policy,
@@ -557,4 +557,18 @@ impl Cache {
         }
         state.stats.fill_cancelled = state.stats.fill_cancelled.saturating_add(count as u64);
     }
+}
+
+/// The headers with every value in an allocation of its own. The values of a parsed response are slices of the buffer it
+/// was read into (4 KiB for a response of 1 KiB, body included), and an entry that kept them would pin that buffer for
+/// as long as it is cached: several times the bytes its bound charges for it.
+fn owned_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut owned = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let mut copy = HeaderValue::from_bytes(value.as_bytes())
+            .expect("the bytes of a header value are valid");
+        copy.set_sensitive(value.is_sensitive());
+        owned.append(name.clone(), copy);
+    }
+    owned
 }

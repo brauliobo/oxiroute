@@ -1590,3 +1590,43 @@ fn fill_keys_and_follower_fanout_are_bounded() {
     ));
     drop(leader);
 }
+
+#[test]
+fn a_stored_response_keeps_no_buffer_its_header_values_were_read_from() {
+    let (cache, _clock) = cache();
+    let request_headers = HeaderMap::new();
+    // A parsed response's values are slices of the buffer it was read into, which also holds the body and room to spare.
+    let mut text = b"public, max-age=60".to_vec();
+    text.resize(4096, b'x');
+    let buffer = Bytes::from(text);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_maybe_shared(buffer.slice(0..18)).expect("value"),
+    );
+    store(
+        &cache,
+        &request_headers,
+        "/asset",
+        &headers,
+        b"body",
+        0,
+        &[],
+    );
+
+    let Ok(Lookup::Hit { response, .. }) =
+        cache.lookup(request(&Method::GET, "/asset", &request_headers))
+    else {
+        panic!("a stored response is a hit");
+    };
+    let kept = response
+        .headers
+        .get(http::header::CACHE_CONTROL)
+        .expect("header");
+    assert_eq!(kept.as_bytes(), b"public, max-age=60");
+    let range = buffer.as_ptr_range();
+    assert!(
+        !range.contains(&kept.as_bytes().as_ptr()),
+        "the cached header value is a slice of the buffer it was read in"
+    );
+}

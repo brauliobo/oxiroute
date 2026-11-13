@@ -42,10 +42,7 @@ use pingora::{
     protocols::Stream,
     server::ShutdownWatch,
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Notify,
-};
+use tokio::{io::AsyncWriteExt as _, sync::Notify};
 
 use stop::Stop;
 use timing::{Wait, within};
@@ -206,17 +203,7 @@ impl LaneFront {
         } else if let Some(buffer) = buffers::read_arrived(stream) {
             return Some(buffer);
         }
-        let mut read = pin!(async {
-            poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;
-            let mut buffer = buffers::take_read();
-            match stream.read_buf(&mut buffer).await {
-                Ok(count) if count > 0 => Some(buffer),
-                _ => {
-                    buffers::give_read(buffer);
-                    None
-                }
-            }
-        });
+        let mut read = pin!(buffers::read_request(stream));
         // A read that is ready at once needs no timer.
         let deadline = self
             .idle_timeout(connection, stop.stopping())

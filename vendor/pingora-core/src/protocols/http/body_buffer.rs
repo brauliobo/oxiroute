@@ -42,6 +42,14 @@ impl FixedBuffer {
         }
     }
 
+    /// A buffer that has already let go of its data and keeps none.
+    pub fn truncated() -> Self {
+        FixedBuffer {
+            truncated: true,
+            ..Self::new(0)
+        }
+    }
+
     pub fn write_to_buffer(&mut self, data: &Bytes) {
         if self.truncated || self.len + data.len() > self.capacity {
             self.truncated = true;
@@ -116,6 +124,14 @@ mod tests {
         let joined = buffer.get_buffer().unwrap();
         assert_eq!(joined.len(), SHARE_MIN_BYTES + 2);
         assert_eq!(&joined[SHARE_MIN_BYTES - 1..], b"xyz");
+    }
+
+    #[test]
+    fn a_truncated_buffer_keeps_nothing_it_is_given() {
+        let mut buffer = FixedBuffer::truncated();
+        buffer.write_to_buffer(&Bytes::from_static(b"abc"));
+        assert!(buffer.is_truncated() && buffer.is_empty());
+        assert!(buffer.get_buffer().is_none());
     }
 
     #[test]

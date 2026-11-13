@@ -31,8 +31,9 @@ use tokio::net::unix::SocketAddr as TokioUnixSockAddr;
 #[derive(Debug, Clone)]
 pub enum SocketAddr {
     Inet(StdSockAddr),
+    // Boxed: a path address is four times the size of an IP one, and every connection holds a few addresses.
     #[cfg(unix)]
-    Unix(StdUnixSockAddr),
+    Unix(Box<StdUnixSockAddr>),
 }
 
 impl SocketAddr {
@@ -49,7 +50,7 @@ impl SocketAddr {
     #[cfg(unix)]
     pub fn as_unix(&self) -> Option<&StdUnixSockAddr> {
         if let SocketAddr::Unix(addr) = self {
-            Some(addr)
+            Some(addr.as_ref())
         } else {
             None
         }
@@ -76,11 +77,12 @@ impl SocketAddr {
 
         // TODO: don't set abstract / unnamed for now,
         // for parity with how we treat these types in TryFrom<TokioUnixSockAddr>
-        Some(SocketAddr::Unix(
+        Some(
             sock.as_unix_addr()
                 .map(|addr| addr.path().map(StdUnixSockAddr::from_pathname))??
-                .ok()?,
-        ))
+                .ok()?
+                .into(),
+        )
     }
 
     #[cfg(unix)]
@@ -208,7 +210,7 @@ impl std::str::FromStr for SocketAddr {
             let path = s.trim_start_matches("unix:");
             let uds_socket = StdUnixSockAddr::from_pathname(path)
                 .or_err(crate::BindError, "invalid UDS path")?;
-            Ok(SocketAddr::Unix(uds_socket))
+            Ok(uds_socket.into())
         } else {
             match StdSockAddr::from_str(s) {
                 Ok(addr) => Ok(SocketAddr::Inet(addr)),
@@ -217,7 +219,7 @@ impl std::str::FromStr for SocketAddr {
                     let uds_socket = StdUnixSockAddr::from_pathname(s)
                         .or_err(crate::BindError, "invalid UDS path")?;
                     warn!("Raw Unix domain socket path support will be deprecated, add 'unix:' prefix instead");
-                    Ok(SocketAddr::Unix(uds_socket))
+                    Ok(uds_socket.into())
                 }
             }
         }
@@ -254,7 +256,7 @@ impl From<StdSockAddr> for SocketAddr {
 #[cfg(unix)]
 impl From<StdUnixSockAddr> for SocketAddr {
     fn from(sockaddr: StdUnixSockAddr) -> Self {
-        SocketAddr::Unix(sockaddr)
+        SocketAddr::Unix(Box::new(sockaddr))
     }
 }
 
