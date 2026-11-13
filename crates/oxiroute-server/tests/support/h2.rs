@@ -531,6 +531,22 @@ impl H2Client {
             .await
     }
 
+    /// Starts a request and hands back its handles without waiting for the response: dropping them resets the
+    /// stream, and finishing the client closes the connection.
+    #[allow(dead_code)]
+    pub async fn start_request(
+        &mut self,
+        method: Method,
+        path: &str,
+    ) -> Result<(h2::client::ResponseFuture, h2::SendStream<Bytes>), BoxError> {
+        let mut sender = self.sender.clone().ready().await?;
+        let request = Request::builder()
+            .method(method)
+            .uri(format!("https://{PROXY_SERVER_NAME}{path}"))
+            .body(())?;
+        Ok(sender.send_request(request, true)?)
+    }
+
     /// Starts a request and resets it once `in_flight` resolves (the proxy has taken the request on).
     pub async fn cancel_request(
         &mut self,

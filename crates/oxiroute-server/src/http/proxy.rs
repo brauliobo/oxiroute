@@ -408,8 +408,30 @@ impl HttpRequestContext {
                 Some("client_closed") => AttemptOutcome::ClientClosed,
                 _ => AttemptOutcome::ProtocolError,
             };
+            self.note_client_left_unsent();
             let outcome = self.trace.pending_outcome.take().unwrap_or(fallback);
             self.trace.finish(outcome, None);
+        }
+    }
+
+    /// The client left before anything of its request went to an origin.
+    fn left_unsent(&self, error: &Error) -> bool {
+        error.esource() == &ErrorSource::Downstream
+            && error.etype() == &ErrorType::ConnectionClosed
+            && self.trace.connected_at.is_none()
+    }
+
+    /// Says that a request which never reached an origin ended because its client left; the pool's
+    /// `queue_cancellations` counts the ones that were queued.
+    fn note_client_left_unsent(&self) {
+        if self.trace.failure_reason == Some("client_closed") && self.trace.connected_at.is_none() {
+            debug!(
+                target: "oxiroute::queue",
+                "client left before its request reached an origin: request_id={}, route={}, pool={}",
+                self.request_id.as_ref().and_then(|id| id.to_str().ok()).unwrap_or_default(),
+                self.route.as_ref().map_or("", |route| route.route_id.logged()),
+                self.pool.as_ref().map_or("", |pool| pool.label().logged()),
+            );
         }
     }
 
@@ -618,6 +640,7 @@ mod action;
 mod attempt;
 mod cache;
 mod compression;
+mod departure;
 mod evacuation;
 mod h2lane;
 pub(crate) mod lane;

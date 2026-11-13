@@ -1,3 +1,4 @@
+use super::departure::unless_gone;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -191,13 +192,18 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
+        let affinity = affinity_server(session, ctx);
+        let incoming = IncomingHost::of(session.req_header());
         let host = |endpoint: &RuntimeEndpoint,
                     policy: &HttpUpstreamHost,
                     authority: Option<&Authority>| {
-            selected_upstream_host_for(session.req_header(), endpoint, policy, authority)
+            selected_upstream_host_for(&incoming, endpoint, policy, authority)
         };
-        let affinity = |ctx: &HttpRequestContext| affinity_server(session, ctx);
-        ctx.next_peer(affinity, host).await
+        // The client may leave while the request waits for a server: nothing has gone to an origin yet.
+        unless_gone(ctx.next_peer(|_| affinity, host), || {
+            session.downstream_session.closed()
+        })
+        .await
     }
 
     fn upstream_attempt_cancelled(
@@ -233,9 +239,10 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.attempt_failed(error, exchanged)
     }
 
-    /// A cached response that was written in full ends the request through an error; it is not a failure.
-    fn suppress_error_log(&self, _session: &Session, ctx: &Self::CTX, _error: &Error) -> bool {
-        ctx.cache_response_written
+    /// A cached response that was written in full ends the request through an error, and so does a client that left
+    /// before its request went anywhere: neither is a failure.
+    fn suppress_error_log(&self, _session: &Session, ctx: &Self::CTX, error: &Error) -> bool {
+        ctx.cache_response_written || ctx.left_unsent(error)
     }
 
     async fn fail_to_proxy(
