@@ -192,7 +192,9 @@ mod tests {
         let task = std::sync::Arc::new(Task(0.into()));
         let waker = Waker::from(std::sync::Arc::clone(&task));
         let mut cx = Context::from_waker(&waker);
-        let mut sleep = pin!(tokio::time::sleep(Duration::from_secs(1)));
+        // The work is a timer too, and a timer registers the waker it is polled with even when it has already fired:
+        // it is dropped with the wait, so what the assertion counts is the pool's timer.
+        let mut sleep = Box::pin(tokio::time::sleep(Duration::from_secs(1)));
         let mut wait = Box::pin(within_for(
             Wait::Total,
             Some(Duration::from_mins(1)),
@@ -202,6 +204,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         assert!(wait.as_mut().poll(&mut cx).is_ready());
         drop(wait);
+        drop(sleep);
         drop(waker);
         assert_eq!(
             std::sync::Arc::strong_count(&task),
