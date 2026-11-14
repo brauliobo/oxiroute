@@ -145,3 +145,31 @@ fn traffic_name_cannot_collide_with_management_reservation() {
         }
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn wildcard_ipv6_listener_reservation_is_dual_stack() {
+    use rustix::net::sockopt::ipv6_v6only;
+
+    let probe = std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, 0));
+    let Ok(probe) = probe else {
+        eprintln!("IPv6 is unavailable in this environment: dual-stack bind not exercised");
+        return;
+    };
+    let address = probe.local_addr().expect("probe address");
+    drop(probe);
+    let reservation = ListenerReservation::bind("dual", &ListenerBind::Socket { address })
+        .expect("wildcard IPv6 reservation");
+    let listener =
+        std::net::TcpListener::from(reservation.duplicate_owned_fd().expect("duplicate"));
+    assert!(!ipv6_v6only(&listener).expect("IPV6_V6ONLY"));
+
+    let port = address.port();
+    for client in [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+    ] {
+        std::net::TcpStream::connect(client).unwrap_or_else(|error| panic!("{client}: {error}"));
+        listener.accept().expect("accepted client");
+    }
+}
