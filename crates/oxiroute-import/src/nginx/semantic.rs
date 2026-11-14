@@ -28,14 +28,14 @@ mod locations;
 mod model;
 mod servers;
 
-pub(super) use helpers::certbot_host_condition;
 use helpers::{
     ascii_lowercase, has_variable, include_failure, ipv4_wildcard_pair, is_http_policy,
-    is_location_policy, is_scalar_policy, is_server_policy, is_supported_location,
-    is_supported_server_name, listen_endpoints_overlap, listen_ssl, parse_listen_endpoint,
-    parse_proxy_pass, parse_static_endpoint, policy_allows_variables, policy_argument_count_valid,
-    server_name_claims, server_name_kind,
+    is_location_policy, is_scalar_policy, is_server_policy, is_special_location,
+    is_supported_location, is_supported_server_name, listen_endpoints_overlap, listen_ssl,
+    parse_listen_endpoint, parse_proxy_pass, parse_static_endpoint, policy_allows_variables,
+    policy_argument_count_valid, server_name_claims, server_name_kind,
 };
+pub(super) use helpers::{bearer_gate_condition, certbot_host_condition};
 pub use model::*;
 
 /// Resolves an expanded nginx fragment whose root contains only an `http` block.

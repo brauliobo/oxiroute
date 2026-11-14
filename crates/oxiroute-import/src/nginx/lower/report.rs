@@ -139,6 +139,8 @@ impl Lowerer {
             }
         }
 
+        let no_effect = self.no_effect_warnings();
+        self.diagnostics.extend(no_effect);
         let draft = std::mem::replace(&mut self.draft, empty_config());
         let state = self.finalize(draft);
         let used_upstream_tls_overlays = self.used_upstream_tls_overlays.into_inner();
@@ -226,6 +228,11 @@ impl Lowerer {
         reason = "canonical object insertion and complete provenance are committed atomically"
     )]
     fn commit_candidate(&mut self, candidate: super::BindCandidate) {
+        for warning in candidate.warnings {
+            if !self.diagnostics.contains(&warning) {
+                self.diagnostics.push(warning);
+            }
+        }
         for certificate in candidate.certificates {
             if let Some(index) = self
                 .draft

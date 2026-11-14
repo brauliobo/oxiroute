@@ -26,24 +26,12 @@ impl Lowerer {
         };
         let mut uses_default_access_log = false;
         let mut disables_access_log = false;
+        let mut access_log_warnings = Vec::new();
         for server in &servers {
-            match self.effective_policy(server.origin.occurrence, b"access_log") {
-                None if self.default_access_log_path.is_some() => uses_default_access_log = true,
-                None => issues.push(issue(
-                    &server.origin,
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "omitted nginx access_log enables the unrepresented default combined log",
-                )),
-                Some(access_log)
-                    if access_log.arguments.first().is_some_and(|value| value == b"off") =>
-                {
-                    disables_access_log = true;
-                }
-                Some(access_log) => issues.push(issue(
-                    access_log.origins.last().unwrap_or(&server.origin),
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "nginx formatted access_log output is not equivalent to canonical JSON access logging",
-                )),
+            match self.server_access_log(http, server, &mut access_log_warnings, &mut issues) {
+                AccessLog::Migrated => uses_default_access_log = true,
+                AccessLog::Disabled => disables_access_log = true,
+                AccessLog::Rejected => {}
             }
         }
         if uses_default_access_log && disables_access_log {
@@ -78,7 +66,7 @@ impl Lowerer {
                 .iter()
                 .any(|option| option.value == b"ssl")
         });
-        let candidate = self.lower_bind_routes(
+        let mut candidate = self.lower_bind_routes(
             http,
             bind,
             &servers,
@@ -92,6 +80,9 @@ impl Lowerer {
             gzip_origins,
             &mut issues,
         );
+        if let Some(candidate) = &mut candidate {
+            candidate.warnings.extend(access_log_warnings);
+        }
         BindBlock {
             bind: Some(listener_bind),
             issues,
@@ -124,6 +115,7 @@ impl Lowerer {
         let mut pool_names = HashSet::new();
         let mut route_origins = Vec::new();
         let mut all_origins = Vec::new();
+        let mut warnings = Vec::new();
         let (downstream_timeouts, downstream_timeout_origins) =
             self.lower_downstream_timeouts(bind, servers, issues);
         for server in servers {
@@ -137,23 +129,15 @@ impl Lowerer {
                     continue;
                 }
             };
-            let nginx_host_fallback = server.server_names.iter().find_map(|name| {
-                (name.kind == ServerNameKind::Exact)
-                    .then(|| utf8(&name.normalized))
-                    .flatten()
-                    .and_then(canonical_exact_host)
-                    .map(|host| match host.parse::<IpAddr>() {
-                        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
-                        _ => host,
-                    })
-            });
+            let nginx_host_fallback = nginx_primary_name(server);
+            let mut rewrite_hosts = Vec::new();
             all_origins.push(server.origin.clone());
             let mut has_local_catch_all = false;
             for location in &server.locations {
                 let synthetic_name = self
                     .occurrence(location.origin.occurrence)
                     .map(|occurrence| occurrence.directive.name.value.as_slice());
-                let location_hosts = if synthetic_name == Some(b"if") {
+                let mut location_hosts = if synthetic_name == Some(b"if") {
                     let host = self
                         .occurrence(location.origin.occurrence)
                         .and_then(|occurrence| certbot_host_condition(&occurrence.directive))
@@ -172,7 +156,14 @@ impl Lowerer {
                 } else {
                     hosts.clone()
                 };
-                let top_level_catch_all = location.kind == LocationKind::Prefix
+                if matches!(synthetic_name, Some(b"if" | b"return")) {
+                    location_hosts.retain(|host| !rewrite_hosts.contains(host));
+                    if location_hosts.is_empty() {
+                        continue;
+                    }
+                    rewrite_hosts.extend(location_hosts.iter().cloned());
+                }
+                let top_level_catch_all = location.kind.route_identity() == LocationKind::Prefix
                     && location
                         .path
                         .as_ref()
@@ -186,9 +177,10 @@ impl Lowerer {
                     http_index,
                     routes.len(),
                     downstream_tls,
-                    nginx_host_fallback.as_deref(),
+                    &nginx_host_fallback,
                 ) {
                     Ok(lowered) => {
+                        warnings.extend(lowered.warnings);
                         for mut route in lowered.routes {
                             route.origins.push(server.origin.clone());
                             route.origins.extend(
@@ -302,6 +294,7 @@ impl Lowerer {
             origins: all_origins,
             gzip_origins,
             route_origins,
+            warnings,
         })
     }
 

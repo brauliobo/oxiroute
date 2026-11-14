@@ -1,12 +1,16 @@
-use crate::{E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
-use oxiroute_config::{UpstreamEndpoint, UpstreamTls};
+use crate::{Diagnostic, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
+use oxiroute_config::{UpstreamEndpoint, UpstreamTls, UpstreamTlsVerify};
 
 use crate::nginx::{
     EffectiveHttp, EffectiveProxyPass, EffectiveUpstream, ProxyPassScheme, StaticEndpoint,
     UpstreamReference,
 };
 
-use super::{LowerIssue, Lowerer, provenance::issue};
+use super::{
+    LowerIssue, Lowerer,
+    provenance::{issue, warning},
+    warnings::W_UPSTREAM_TLS_UNVERIFIED,
+};
 
 pub(super) fn canonical_endpoint(endpoint: &StaticEndpoint) -> UpstreamEndpoint {
     match endpoint {
@@ -25,8 +29,9 @@ impl Lowerer {
         http: &EffectiveHttp,
         proxy: &EffectiveProxyPass,
         downstream_tls: bool,
+        warnings: &mut Vec<Diagnostic>,
     ) -> Result<Option<UpstreamTls>, Vec<LowerIssue>> {
-        let tls = self.proxy_origin_tls(proxy, downstream_tls)?;
+        let tls = self.proxy_origin_tls(proxy, downstream_tls, warnings)?;
         match proxy.upstream {
             UpstreamReference::Direct => Self::validate_direct_origin(proxy),
             UpstreamReference::Resolved(occurrence) => {
@@ -46,10 +51,13 @@ impl Lowerer {
         Ok(tls)
     }
 
+    /// nginx encrypts to an https origin without verifying it and without SNI unless `proxy_ssl_*` says
+    /// otherwise; only an explicit overlay asks for a verified origin.
     fn proxy_origin_tls(
         &self,
         proxy: &EffectiveProxyPass,
         downstream_tls: bool,
+        warnings: &mut Vec<Diagnostic>,
     ) -> Result<Option<UpstreamTls>, Vec<LowerIssue>> {
         let secure = match proxy.scheme {
             ProxyPassScheme::Http => false,
@@ -77,18 +85,16 @@ impl Lowerer {
                 .insert(authority);
             return Ok(Some(tls.clone()));
         }
-        if let Some(StaticEndpoint::Dns { host, .. }) = &proxy.direct_endpoint {
-            return Ok(Some(UpstreamTls {
-                server_name: Some(host.clone()),
-                verify: oxiroute_config::UpstreamTlsVerify::Full,
-                ca_certificate_path: None,
-            }));
-        }
-        Err(vec![issue(
+        warnings.push(warning(
             &proxy.origin,
-            E_SEMANTICS_NOT_REPRESENTABLE,
-            "HTTPS proxy origin with an IP or named-upstream authority requires an explicit verified DNS SNI/trust overlay",
-        )])
+            W_UPSTREAM_TLS_UNVERIFIED,
+            "nginx does not verify https origins or send SNI by default, so the pool accepts any certificate; an upstream_tls overlay for this authority verifies the origin",
+        ));
+        Ok(Some(UpstreamTls {
+            server_name: None,
+            verify: UpstreamTlsVerify::None,
+            ca_certificate_path: None,
+        }))
     }
 
     fn validate_direct_origin(proxy: &EffectiveProxyPass) -> Result<(), Vec<LowerIssue>> {

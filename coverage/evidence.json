@@ -89,7 +89,19 @@
         "crates/oxiroute-import/tests/nginx_lower.rs#blocks_x_accel_response_controls_that_the_runtime_does_not_implement",
         "crates/oxiroute-import/tests/nginx_lower.rs#one_named_upstream_is_shared_by_routes_and_listeners",
         "crates/oxiroute-import/tests/nginx_lower.rs#complete_nginx_configs_are_rejected_by_the_http_fragment_api",
-        "crates/oxiroute-import/tests/nginx_root.rs#complete_root_merges_http_and_rtmp_and_externalizes_process_concerns"
+        "crates/oxiroute-import/tests/nginx_root.rs#complete_root_merges_http_and_rtmp_and_externalizes_process_concerns",
+        "crates/oxiroute-import/tests/nginx_root.rs#bare_https_origins_lower_unverified_with_a_warning_and_need_no_overlay",
+        "crates/oxiroute-import/tests/nginx_root.rs#explicit_upstream_tls_overlay_verifies_the_origin_and_requests_activation",
+        "crates/oxiroute-import/tests/nginx_root.rs#acme_webroot_caret_tilde_prefix_lowers_as_a_plain_static_prefix",
+        "crates/oxiroute-import/tests/nginx_root.rs#certbot_return_after_an_exact_host_redirect_does_not_duplicate_the_route",
+        "crates/oxiroute-import/tests/nginx_root.rs#bearer_gate_accepts_any_literal_and_never_keeps_it",
+        "crates/oxiroute-import/tests/nginx_root.rs#cookie_path_rewrites_keep_the_full_nginx_replacement_text",
+        "crates/oxiroute-import/tests/nginx_root.rs#host_header_fallback_is_the_first_server_name_verbatim",
+        "crates/oxiroute-import/tests/nginx_root.rs#default_proxy_buffering_streams_with_one_warning_per_location",
+        "crates/oxiroute-import/tests/nginx_root.rs#formatted_access_log_migrates_through_the_overlay_and_lists_dropped_fields",
+        "crates/oxiroute-import/tests/nginx_root.rs#accepted_directives_without_runtime_effect_are_reported_individually",
+        "crates/oxiroute-import/tests/nginx_router_shape.rs#router_shape_skeleton_finalizes_end_to_end",
+        "crates/oxiroute-import/tests/nginx_lower.rs#caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations"
       ]
     },
     {

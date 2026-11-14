@@ -7,8 +7,8 @@ pub fn import_root(root: &Path, root_prefix: &Path) -> NginxImportReport {
     import_root_with_options(root, root_prefix, &NginxImportOptions::default())
 }
 
-/// Imports a complete root with explicit security overlays for native policy that is not safe to
-/// infer from an IP-only authority.
+/// Imports a complete root with the operator overlays (upstream TLS, bearer token files, log and error-page
+/// migration, timezone, recording root) that native policy cannot supply.
 #[must_use]
 #[expect(
     clippy::too_many_lines,

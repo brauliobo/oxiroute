@@ -13,10 +13,11 @@ impl Lowerer {
         http_index: usize,
         route_ordinal: usize,
         downstream_tls: bool,
-        nginx_host_fallback: Option<&str>,
+        nginx_host_fallback: &str,
     ) -> Result<LoweredLocation, Vec<LowerIssue>> {
         let mut issues = Vec::new();
-        if !matches!(location.kind, LocationKind::Exact | LocationKind::Prefix) {
+        let mut warnings = Vec::new();
+        if !matches!(location.kind.route_identity(), LocationKind::Exact | LocationKind::Prefix) {
             issues.push(issue(
                 &location.origin,
                 E_UNSUPPORTED_FEATURE,
@@ -46,7 +47,7 @@ impl Lowerer {
         let body_bytes =
             self.body_policy(location.origin.occurrence, &location.origin, &mut issues);
         let access_policy = self.lower_access_policy(location, &mut issues);
-        let selector = match location.kind {
+        let selector = match location.kind.route_identity() {
             LocationKind::Exact => HttpPathSelector::Exact {
                 value: path_prefix.unwrap_or("/").into(),
             },
@@ -107,6 +108,7 @@ impl Lowerer {
                 downstream_tls,
                 nginx_host_fallback,
                 &mut issues,
+                &mut warnings,
             ) {
                 Some(proxy) => (
                     HttpRouteAction::Proxy {
@@ -147,6 +149,7 @@ impl Lowerer {
             return Err(issues);
         }
         Ok(LoweredLocation {
+            warnings,
             routes: hosts
                 .iter()
                 .cloned()
@@ -173,6 +176,7 @@ impl Lowerer {
                                 .is_none_or(|value| {
                                     value.arguments.as_slice() != [b"off".to_vec()]
                                 }),
+                            // nginx buffering is spooling, which the runtime lacks; see `W_PROXY_BUFFERING_STREAMED`.
                             response_buffering: false,
                         },
                         action: action.clone(),
@@ -203,20 +207,6 @@ impl Lowerer {
                 origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
                 "proxy_http_version must be 1.1 for the canonical upstream HTTP policy",
-            ));
-        }
-        let response_buffering = self.effective_policy(scope, b"proxy_buffering");
-        if response_buffering
-            .as_ref()
-            .is_none_or(|value| value.arguments.as_slice() != [b"off".to_vec()])
-        {
-            issues.push(issue(
-                response_buffering
-                    .as_ref()
-                    .and_then(|value| value.origins.last())
-                    .unwrap_or(fallback_origin),
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_buffering must explicitly be off to match unbuffered runtime semantics",
             ));
         }
         if issues.is_empty() {
@@ -266,12 +256,7 @@ impl Lowerer {
         if let Some(conditional) = self.graph.expanded_occurrences.iter().find(|occurrence| {
             occurrence.parent == Some(location.origin.occurrence)
                 && occurrence.directive.name.value == b"if"
-                && occurrence.directive.arguments.iter().any(|argument| {
-                    argument
-                        .value
-                        .windows(b"<redacted>".len())
-                        .any(|window| window == b"<redacted>")
-                })
+                && bearer_gate_condition(&occurrence.directive)
         }) {
             let server = self
                 .resolution
@@ -293,7 +278,7 @@ impl Lowerer {
                 issues.push(issue(
                     &self.origin(conditional.id),
                     E_SEMANTICS_NOT_REPRESENTABLE,
-                    "redacted nginx authorization rule requires an explicit bearer token file overlay",
+                    "nginx bearer authorization rule requires an explicit bearer token file overlay",
                 ));
                 return None;
             };
@@ -360,7 +345,7 @@ impl Lowerer {
         &self,
         value: &PolicyValue,
         fallback: &DirectiveOrigin,
-        nginx_host_fallback: Option<&str>,
+        nginx_host_fallback: &str,
         mut headers: Vec<HttpLiteralHeader>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<HttpRouteAction> {
@@ -399,7 +384,7 @@ impl Lowerer {
             let location = if payload.contains('$') {
                 HttpRedirectLocation::RequestTemplate {
                     value: payload.into(),
-                    nginx_host_fallback: nginx_host_fallback.map(str::to_owned),
+                    nginx_host_fallback: Some(nginx_host_fallback.to_owned()),
                 }
             } else {
                 HttpRedirectLocation::Literal {
