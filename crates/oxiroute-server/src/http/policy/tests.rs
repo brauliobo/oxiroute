@@ -67,6 +67,7 @@ fn response_policy() -> ProxyPolicyPlan {
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
             from: "/internal".into(),
             to: "/".into(),
+            mode: oxiroute_config::CookiePathMatch::Exact,
         }],
         response_cookie_attributes: vec![HttpCookieAttributePolicy {
             name: "sid".into(),
@@ -195,6 +196,102 @@ fn cookie_rewrite_table_preserves_exact_case_whitespace_and_malformed_values() {
 
     let non_utf8 = HeaderValue::from_bytes(b"sid=\xff; Path=/internal").unwrap();
     assert_eq!(rewrite_cookie(&non_utf8, &policy).unwrap(), non_utf8);
+}
+
+fn prefix_policy(from: &str, to: &str) -> ProxyPolicyPlan {
+    ProxyPolicyPlan::compile(&HttpProxyPolicy {
+        response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
+            from: from.into(),
+            to: to.into(),
+            mode: oxiroute_config::CookiePathMatch::NginxPrefix,
+        }],
+        ..HttpProxyPolicy::default()
+    })
+}
+
+#[test]
+fn nginx_prefix_cookie_rewrite_splices_the_replacement_verbatim() {
+    let policy = prefix_policy("/", "/; SameSite=none; Secure");
+    for (input, expected) in [
+        ("sid=1; Path=/", "sid=1; Path=/; SameSite=none; Secure"),
+        ("sid=1; Path=/x", "sid=1; Path=/; SameSite=none; Securex"),
+        (
+            "sid=1; Path=/a/b; HttpOnly",
+            "sid=1; Path=/; SameSite=none; Securea/b; HttpOnly",
+        ),
+        ("sid=1; HttpOnly", "sid=1; HttpOnly"),
+        ("sid=1; Path=relative", "sid=1; Path=relative"),
+    ] {
+        assert_eq!(
+            rewrite_cookie(&HeaderValue::from_static(input), &policy).unwrap(),
+            expected
+        );
+    }
+
+    let policy = prefix_policy("/internal/", "/public/");
+    for (input, expected) in [
+        ("sid=1; Path=/internal/app", "sid=1; Path=/public/app"),
+        ("sid=1; Path=/internal", "sid=1; Path=/internal"),
+        ("sid=1; Path=/Internal/app", "sid=1; Path=/Internal/app"),
+    ] {
+        assert_eq!(
+            rewrite_cookie(&HeaderValue::from_static(input), &policy).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn the_first_matching_cookie_rewrite_wins_across_modes() {
+    let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+        response_cookie_path_rewrites: vec![
+            HttpCookiePathRewrite {
+                from: "/app".into(),
+                to: "/exact".into(),
+                mode: oxiroute_config::CookiePathMatch::Exact,
+            },
+            HttpCookiePathRewrite {
+                from: "/app".into(),
+                to: "/prefix".into(),
+                mode: oxiroute_config::CookiePathMatch::NginxPrefix,
+            },
+        ],
+        ..HttpProxyPolicy::default()
+    });
+    for (input, expected) in [
+        ("sid=1; Path=/app", "sid=1; Path=/exact"),
+        ("sid=1; Path=/app/x", "sid=1; Path=/prefix/x"),
+    ] {
+        assert_eq!(
+            rewrite_cookie(&HeaderValue::from_static(input), &policy).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn an_empty_nginx_host_removes_the_header_instead_of_sending_it_empty() {
+    let headers = HeaderMap::new();
+    let policy = request_mutation(HttpRequestHeaderValue::NginxHost {
+        fallback: String::new(),
+    });
+    let context = |authority| request_context(authority, None, &headers);
+    assert!(matches!(
+        decide_request_header(&policy.request_headers[0], context(None)).unwrap(),
+        RequestHeaderDecision::Remove(name) if name.as_str() == "x-result"
+    ));
+    let authority: Authority = "Client.Example:8443".parse().unwrap();
+    assert_eq!(
+        value_decision(&policy, context(Some(&authority))),
+        RequestHeaderValueDecision::Value(HeaderValue::from_static("client.example"))
+    );
+    let wildcard = request_mutation(HttpRequestHeaderValue::NginxHost {
+        fallback: "*.example.com".into(),
+    });
+    assert_eq!(
+        value_decision(&wildcard, context(None)),
+        RequestHeaderValueDecision::Value(HeaderValue::from_static("*.example.com"))
+    );
 }
 
 fn value_decision(

@@ -193,25 +193,32 @@ fn is_valid_location_template(template: &str) -> bool {
     true
 }
 
+/// Accepts what nginx sends as `$host` without a request host: its primary server name, which is a normalized
+/// exact name or address, `_`, a `*.`/`.` leading or `.*` trailing wildcard, or empty (the header is then omitted).
 pub(super) fn validate_nginx_host_fallback(value: &str) -> Result<(), &'static str> {
-    if value.is_empty() || value.len() > MAX_HTTP_AUTHORITY_BYTES || value.contains('@') {
-        return Err("nginx host fallback must be a bounded host without a port or userinfo");
+    const DETAIL: &str = "nginx host fallback must be empty or a normalized nginx server name without a port or userinfo";
+    if value.is_empty() || value == "_" {
+        return Ok(());
+    }
+    if value.len() > MAX_HTTP_AUTHORITY_BYTES || value.contains('@') {
+        return Err(DETAIL);
     }
     if let Some(ip) = value
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
         .and_then(|value| value.parse::<std::net::Ipv6Addr>().ok())
     {
-        return (value == format!("[{ip}]"))
-            .then_some(())
-            .ok_or("nginx host fallback must be a normalized exact DNS name or IP address");
+        return (value == format!("[{ip}]")).then_some(()).ok_or(DETAIL);
     }
     if value.contains(':') {
-        return Err("nginx host fallback must be a bounded host without a port or userinfo");
+        return Err(DETAIL);
     }
-    let mut normalized = value.to_owned();
-    if !normalize_host(&mut normalized) || normalized != value.to_ascii_lowercase() {
-        return Err("nginx host fallback must be a normalized exact DNS name or IP address");
-    }
-    Ok(())
+    let name = match (value.strip_prefix('.'), value.strip_suffix(".*")) {
+        (Some(name), _) | (None, Some(name)) => name,
+        (None, None) => value,
+    };
+    let mut normalized = name.to_owned();
+    (normalize_host(&mut normalized) && normalized == name.to_ascii_lowercase())
+        .then_some(())
+        .ok_or(DETAIL)
 }

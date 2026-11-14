@@ -191,9 +191,9 @@ pub(crate) fn selected_upstream_host(
         HttpUpstreamHost::NginxHost { fallback } => {
             let fallback = HeaderValue::from_str(fallback)
                 .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))?;
-            Ok(nginx_request_host(incoming, &fallback)
-                .map(Some)
-                .map_err(pingora_request_policy_error)?)
+            let host =
+                nginx_request_host(incoming, &fallback).map_err(pingora_request_policy_error)?;
+            Ok((!host.is_empty()).then_some(host))
         }
         HttpUpstreamHost::Endpoint { unix_fallback } => match endpoint {
             RuntimeEndpoint::Socket { address } => IpText::socket(*address).map_or_else(

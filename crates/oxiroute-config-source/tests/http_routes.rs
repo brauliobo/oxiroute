@@ -810,3 +810,110 @@ fn validates_secret_backed_bearer_access_without_inline_tokens() {
         assert!(error.contains("access") || error.contains("unknown field"));
     }
 }
+
+const ENDPOINT: &str = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+
+fn policy_error(policy: &str) -> String {
+    error(&config(&proxy_route("", policy), ENDPOINT))
+}
+
+#[test]
+fn nginx_prefix_cookie_rewrites_accept_header_safe_replacement_text() {
+    let policy = r#"              response_cookie_path_rewrites = {
+                { from = "/", to = "/; SameSite=none; Secure", mode = "nginx_prefix" },
+              },"#;
+    let source = config(&proxy_route("", policy), ENDPOINT);
+    let rewrite = &first_route(&source)["action"]["policy"]["response_cookie_path_rewrites"][0];
+    assert_eq!(rewrite["mode"], "nginx_prefix");
+    let loaded = load_lua(&source).expect("nginx_prefix cookie rewrite");
+    let rendered = render_lua(&loaded).expect("render cookie rewrite");
+    assert_eq!(
+        load_lua(&rendered).expect("cookie rewrite roundtrip"),
+        loaded
+    );
+
+    let exact = r#"              response_cookie_path_rewrites = { { from = "/", to = "/app" } },"#;
+    let rewrite = &first_route(&config(&proxy_route("", exact), ENDPOINT))["action"]["policy"]["response_cookie_path_rewrites"]
+        [0];
+    assert!(
+        rewrite.get("mode").is_none(),
+        "the default mode stays out of the canonical form"
+    );
+}
+
+#[test]
+fn cookie_rewrites_reject_unsafe_text_per_mode() {
+    for (rewrite, expected) in [
+        (r#"{ from = "/", to = "/a; Secure" }"#, "cookie path"),
+        (
+            r#"{ from = "/", to = "/a\r\nX: y", mode = "nginx_prefix" }"#,
+            "replacement",
+        ),
+        (
+            r#"{ from = "/", to = "", mode = "nginx_prefix" }"#,
+            "replacement",
+        ),
+        (
+            r#"{ from = "/a; b", to = "/", mode = "nginx_prefix" }"#,
+            "cookie path",
+        ),
+        (
+            r#"{ from = "/", to = "/", mode = "regex" }"#,
+            "unknown variant",
+        ),
+    ] {
+        let policy = format!("              response_cookie_path_rewrites = {{ {rewrite} }},");
+        let message = policy_error(&policy);
+        assert!(message.contains(expected), "{rewrite}: {message}");
+    }
+    let duplicate = r#"              response_cookie_path_rewrites = {
+                { from = "/", to = "/a" },
+                { from = "/", to = "/b" },
+              },"#;
+    assert!(policy_error(duplicate).contains("duplicate"));
+    let both_modes = r#"              response_cookie_path_rewrites = {
+                { from = "/", to = "/a" },
+                { from = "/", to = "/b", mode = "nginx_prefix" },
+              },"#;
+    load_lua(&config(&proxy_route("", both_modes), ENDPOINT)).expect("one rewrite per mode");
+}
+
+#[test]
+fn nginx_host_fallback_accepts_any_primary_server_name_and_empty() {
+    for fallback in [
+        "",
+        "_",
+        "*.example.com",
+        ".example.org",
+        "www.example.org",
+        "192.0.2.7",
+        "[2001:db8::1]",
+    ] {
+        let policy = format!(
+            "              upstream_host = {{ type = \"nginx_host\", fallback = \"{fallback}\" }},"
+        );
+        load_lua(&config(&proxy_route("", &policy), ENDPOINT))
+            .unwrap_or_else(|error| panic!("fallback `{fallback}`: {error}"));
+        let header = format!(
+            "              request_headers = {{ {{ operation = \"set\", name = \"x-host\", value = {{ type = \"nginx_host\", fallback = \"{fallback}\" }} }} }},"
+        );
+        load_lua(&config(&proxy_route("", &header), ENDPOINT))
+            .unwrap_or_else(|error| panic!("header fallback `{fallback}`: {error}"));
+    }
+    for fallback in [
+        "host:8080",
+        "user@example.org",
+        "bad name",
+        "*",
+        "a.*.example.org",
+        "~^re$",
+    ] {
+        let policy = format!(
+            "              upstream_host = {{ type = \"nginx_host\", fallback = \"{fallback}\" }},"
+        );
+        assert!(
+            policy_error(&policy).contains("nginx host fallback"),
+            "{fallback}"
+        );
+    }
+}
