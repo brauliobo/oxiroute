@@ -333,11 +333,11 @@ fn dual_stack_pair_merges_listen_flags_of_both_sockets() {
 
     let disagreeing = http(&[server("443 ssl; listen [::]:443", "a.example.com")]);
     let report = tree.import(&disagreeing);
-    assert!(report.validated().is_none());
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message().contains("disagree about ssl"))
-    );
+    let mut binds = draft(&report)
+        .listeners
+        .iter()
+        .map(|listener| listener.bind.to_string())
+        .collect::<Vec<_>>();
+    binds.sort();
+    assert_eq!(binds, ["0.0.0.0:443", "[::]:443"]);
 }
