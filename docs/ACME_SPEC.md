@@ -139,11 +139,14 @@ Otherwise the local renewal policy applies.
 ### HTTP-01: implemented
 
 - OxiRoute will own an explicit port-80 HTTP listener or an explicitly delegated challenge route.
-- `/.well-known/acme-challenge/<token>` is matched before redirects and normal routes.
+- `GET` and `HEAD` for `/.well-known/acme-challenge/<token>` are matched before redirects and normal routes, but only
+  for a token the store holds and has not expired.
 - Only pending authorizations are challenged; already-valid authorizations are reused.
 - Tokens are exact, short-lived records tied to the account, order, authorization, and challenge.
 - The handler serves only the required key authorization and no files.
-- Requests with malformed or unknown tokens return not found without exposing order state.
+- Requests with malformed or unknown tokens, other methods, and every request while no challenge is pending are not the
+  store's: they are routed normally, so an operator route for the prefix (for example a static webroot served for
+  Certbot) is honoured and an unrouted request receives the default not found, without exposing order state.
 - If another process owns port 80, validation fails with an actionable diagnostic rather than changing firewall rules.
 - All required challenge material is provisioned before the CA is notified. Cleanup is attempted
   after a terminal result or timeout when control returns; durable ownership remains pending if

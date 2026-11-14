@@ -1406,6 +1406,14 @@ schema.
 - Proxy, redirect, static response, or reject action.
 - Explicit URI transformation rather than implicit trailing-slash behavior.
 
+##### ACME HTTP-01 challenge prefix
+
+An HTTP listener answers `GET` and `HEAD` for `/.well-known/acme-challenge/<token>` itself, before route selection,
+only while the managed HTTP-01 challenge store holds that token. Every other request under the prefix (an unknown or
+malformed token, another method, or any request while no managed HTTP-01 challenge is pending) is routed like any other
+path, so an operator route for the prefix, such as a static webroot that another ACME client such as Certbot writes,
+is reached and an unrouted request gets the default `404`.
+
 #### Request ids and access log fields
 
 Every HTTP request is tagged with `x-request-id`; there is no configuration to switch it on. A

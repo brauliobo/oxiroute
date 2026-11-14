@@ -51,15 +51,6 @@ pub struct ChallengeHttpResponse {
 }
 
 impl ChallengeHttpResponse {
-    fn not_found() -> Self {
-        Self {
-            status: 404,
-            body: Vec::new(),
-            content_type: "text/plain; charset=utf-8",
-            cache_control: "no-store",
-        }
-    }
-
     fn found(body: &str, head: bool) -> Self {
         Self {
             status: 200,
@@ -172,17 +163,23 @@ impl ChallengeStore {
             .map(|stored| stored.record.key_authorization.clone())
     }
 
-    /// Whether `path` is under the challenge prefix, so [`Self::route`] handles it; lets a caller skip reading the
-    /// clock for every other request.
+    /// Whether the store holds the token `path` names, expired or not: the one test for a request that
+    /// [`Self::route`] may answer, so a caller can leave every other request to normal routing without reading the
+    /// clock.
     #[must_use]
-    pub fn serves(path: &str) -> bool {
-        path.starts_with(CHALLENGE_PATH_PREFIX)
+    pub fn holds(&self, path: &str) -> bool {
+        challenge_token(path).is_some_and(|token| {
+            self.inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(token)
+        })
     }
 
-    /// Handles only the exact ACME challenge path before normal routing.
+    /// Answers a `GET` or `HEAD` for the exact path of a live challenge token before normal routing.
     ///
-    /// A path under the challenge prefix is always handled, including malformed or unknown tokens;
-    /// those cases return an empty 404 without revealing challenge state.
+    /// Every other request, including an unknown or malformed token under the challenge prefix, is not the store's:
+    /// `None` leaves it to the operator's routes, such as a webroot served for another ACME client.
     #[must_use]
     pub fn route(
         &self,
@@ -190,20 +187,13 @@ impl ChallengeStore {
         path: &str,
         now_unix_seconds: u64,
     ) -> Option<ChallengeHttpResponse> {
-        let token = path.strip_prefix(CHALLENGE_PATH_PREFIX)?;
-        if token.is_empty() || token.contains('/') || token.contains('?') || !valid_token(token) {
-            return Some(ChallengeHttpResponse::not_found());
-        }
-        let head = method == "HEAD";
-        if method != "GET" && !head {
-            return Some(ChallengeHttpResponse::not_found());
-        }
-        Some(
-            self.lookup(token, now_unix_seconds)
-                .map_or_else(ChallengeHttpResponse::not_found, |key_authorization| {
-                    ChallengeHttpResponse::found(&key_authorization, head)
-                }),
-        )
+        let head = match method {
+            "GET" => false,
+            "HEAD" => true,
+            _ => return None,
+        };
+        let key_authorization = self.lookup(challenge_token(path)?, now_unix_seconds)?;
+        Some(ChallengeHttpResponse::found(&key_authorization, head))
     }
 
     /// Removes one token without exposing whether its associated order existed.
@@ -350,6 +340,11 @@ fn validate_record(record: &ChallengeRecord) -> Result<(), ChallengeStoreError> 
         return Err(ChallengeStoreError::InvalidRecord);
     }
     Ok(())
+}
+
+fn challenge_token(path: &str) -> Option<&str> {
+    path.strip_prefix(CHALLENGE_PATH_PREFIX)
+        .filter(|token| valid_token(token))
 }
 
 fn valid_token(token: &str) -> bool {

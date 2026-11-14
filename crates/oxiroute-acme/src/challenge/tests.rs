@@ -14,7 +14,7 @@ fn record(token: &str, expires_at_unix_seconds: u64) -> ChallengeRecord {
 }
 
 #[test]
-fn exact_token_route_wins_and_unknown_values_are_empty_not_found() {
+fn exact_token_route_wins_and_every_other_request_is_left_to_routing() {
     let store = ChallengeStore::default();
     let lease = store
         .provision(record("abc_DEF-1", 100))
@@ -26,21 +26,43 @@ fn exact_token_route_wins_and_unknown_values_are_empty_not_found() {
             .status,
         200
     );
-    assert_eq!(
-        store
-            .route("GET", "/.well-known/acme-challenge/unknown", 50)
-            .expect("unknown challenge route"),
-        ChallengeHttpResponse::not_found()
-    );
-    assert_eq!(
-        store
-            .route("GET", "/.well-known/acme-challenge/abc_DEF-1/extra", 50)
-            .expect("malformed challenge route"),
-        ChallengeHttpResponse::not_found()
-    );
-    assert!(store.route("GET", "/normal", 50).is_none());
+    for path in [
+        "/.well-known/acme-challenge/unknown",
+        "/.well-known/acme-challenge/abc_DEF-1/extra",
+        "/.well-known/acme-challenge/abc_DEF-1?x",
+        "/.well-known/acme-challenge/",
+        "/normal",
+    ] {
+        assert!(store.route("GET", path, 50).is_none(), "{path}");
+    }
     lease.complete();
     assert!(store.is_empty());
+}
+
+#[test]
+fn only_get_and_head_are_answered_for_a_held_token() {
+    let store = ChallengeStore::default();
+    let _lease = store.provision(record("token", 100)).expect("provision");
+    for method in ["POST", "PUT", "DELETE", "OPTIONS", "get"] {
+        assert!(
+            store
+                .route(method, "/.well-known/acme-challenge/token", 50)
+                .is_none(),
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn an_expired_token_is_left_to_routing() {
+    let store = ChallengeStore::default();
+    let _lease = store.provision(record("token", 100)).expect("provision");
+    assert!(
+        store
+            .route("GET", "/.well-known/acme-challenge/token", 100)
+            .is_none()
+    );
+    assert!(!store.holds("/.well-known/acme-challenge/token"));
 }
 
 #[test]
@@ -122,18 +144,20 @@ fn cleanup_can_target_authorization_without_revealing_other_records() {
 }
 
 #[test]
-fn serves_exactly_the_paths_route_handles() {
+fn holds_exactly_the_paths_of_provisioned_tokens() {
     let store = ChallengeStore::default();
+    let lease = store.provision(record("x", 100)).expect("provision");
+    assert!(store.holds("/.well-known/acme-challenge/x"));
     for path in [
+        "/",
+        "/.well-known/acme-challenge",
         "/.well-known/acme-challenge/",
-        "/.well-known/acme-challenge/a/b",
-        "/.well-known/acme-challenge/x",
+        "/.well-known/acme-challenge/y",
+        "/.well-known/acme-challenge/x/y",
+        "/.well-known/other/x",
     ] {
-        assert!(ChallengeStore::serves(path));
-        assert!(store.route("GET", path, 0).is_some());
+        assert!(!store.holds(path), "{path}");
     }
-    for path in ["/", "/.well-known/acme-challenge", "/.well-known/other/x"] {
-        assert!(!ChallengeStore::serves(path));
-        assert!(store.route("GET", path, 0).is_none());
-    }
+    lease.complete();
+    assert!(!store.holds("/.well-known/acme-challenge/x"));
 }

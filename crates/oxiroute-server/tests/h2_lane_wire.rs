@@ -156,10 +156,14 @@ fn moved_route() -> HttpRoute {
 }
 
 fn fixed_route() -> HttpRoute {
+    fixed_route_at("/fixed")
+}
+
+fn fixed_route_at(prefix: &str) -> HttpRoute {
     HttpRoute {
         host: None,
         path: HttpPathSelector::SegmentPrefix {
-            value: "/fixed".into(),
+            value: prefix.into(),
         },
         methods: Vec::new(),
         access_policy: None,
@@ -433,9 +437,55 @@ async fn requests_the_lane_does_not_take_are_the_classic_paths_on_both_sides() {
             vec![("proxy-authorization", "Basic eA==")],
         ),
         (Method::GET, "/plain", vec![("x-padded", " value")]),
-        (Method::GET, "/.well-known/acme-challenge/x", Vec::new()),
     ];
     same(requests, 0).await;
+}
+
+const ACME_PREFIX: &str = "/.well-known/acme-challenge";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tokens_the_challenge_store_does_not_hold_are_routed_like_any_path() {
+    let requests = vec![
+        get("/.well-known/acme-challenge/unknown"),
+        (
+            Method::POST,
+            "/.well-known/acme-challenge/unknown",
+            Vec::new(),
+        ),
+        get("/.well-known/acme-challenge/"),
+    ];
+    let served = requests.len();
+    same(requests, served).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_route_under_the_acme_prefix_is_honoured_by_the_lane() {
+    let configure = |config: &mut ConfigDraft| {
+        config.http_services[0]
+            .routes
+            .insert(0, fixed_route_at(ACME_PREFIX));
+    };
+    let lane = Side::start_with(true, configure).await;
+    let mut client = lane.client().await;
+    let requests = vec![
+        get("/.well-known/acme-challenge/unknown"),
+        (
+            Method::HEAD,
+            "/.well-known/acme-challenge/a-token_1",
+            Vec::new(),
+        ),
+    ];
+    let seen = run(&mut client, &requests).await;
+    let answered: Vec<_> = seen
+        .iter()
+        .map(|(status, _, body)| (*status, body.as_slice()))
+        .collect();
+    assert_eq!(
+        answered,
+        [(200, b"fixed\n".as_slice()), (200, b"".as_slice())]
+    );
+    client.finish().await;
+    assert_eq!(lane.served(), requests.len(), "streams the lane served");
 }
 
 #[tokio::test(flavor = "multi_thread")]

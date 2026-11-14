@@ -243,7 +243,11 @@ impl LaneFront {
         if authority.as_str().contains('@') {
             return None;
         }
-        if self.challenge.is_some() && ChallengeStore::serves(path) {
+        if self
+            .challenge
+            .as_ref()
+            .is_some_and(|store| store.holds(path))
+        {
             return None;
         }
         let (route, file) = if let Some(selected) = early.route(buffer, request) {

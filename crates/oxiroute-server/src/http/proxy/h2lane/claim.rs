@@ -3,7 +3,6 @@
 use std::{net::IpAddr, sync::Arc};
 
 use http::{HeaderValue, Method, uri::Authority};
-use oxiroute_acme::ChallengeStore;
 use pingora::{
     apps::{ClaimedStream, Http2Claim},
     protocols::{
@@ -116,7 +115,11 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
     let authority = Authority::try_from(request.authority()?).ok()?;
     let target = request.path();
     let path = std::str::from_utf8(target.split(|byte| *byte == b'?').next()?).ok()?;
-    if front.challenge.is_some() && ChallengeStore::serves(path) {
+    if front
+        .challenge
+        .as_ref()
+        .is_some_and(|store| store.holds(path))
+    {
         return None;
     }
     let route = front
