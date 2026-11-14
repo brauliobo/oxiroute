@@ -50,6 +50,8 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
                     root_prefix,
                     host_timezone,
                     default_access_log_file,
+                    bearer_token_file,
+                    upstream_tls,
                     recording_root,
                     default_error_server,
                     x_accel_controls_absent,
@@ -62,6 +64,8 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             root_prefix,
             host_timezone.as_deref(),
             default_access_log_file.as_deref(),
+            bearer_token_file,
+            upstream_tls,
             recording_root.as_deref(),
             default_error_server.as_deref(),
             *x_accel_controls_absent,
@@ -175,6 +179,8 @@ fn import_nginx(
     root_prefix: &Path,
     host_timezone: Option<&str>,
     default_access_log_file: Option<&Path>,
+    bearer_tokens: &[oxiroute_import::nginx::NginxBearerTokenOverlay],
+    upstream_tls: &[oxiroute_import::nginx::NginxUpstreamTlsOverlay],
     recording_root: Option<&Path>,
     default_error_server: Option<&str>,
     x_accel_controls_absent: bool,
@@ -207,7 +213,8 @@ fn import_nginx(
             }
         }),
         x_accel_controls_absent,
-        ..oxiroute_import::nginx::NginxImportOptions::default()
+        bearer_tokens: bearer_tokens.to_vec(),
+        upstream_tls: upstream_tls.to_vec(),
     };
     let report = oxiroute_import::nginx::import_root_with_options(path, root_prefix, &options);
     match output {
