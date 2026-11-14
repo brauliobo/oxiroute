@@ -56,6 +56,31 @@ fn shares_udp(config: &ValidatedConfig) -> bool {
         .is_some_and(|workers| workers > 1)
 }
 
+/// A non-blocking listening TCP socket on `address`. `[::]` is dual-stack whatever the host's `bindv6only` says.
+#[cfg(unix)]
+fn bind_tcp(address: std::net::SocketAddr) -> io::Result<std::net::TcpListener> {
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, bind, listen, socket_with, sockopt};
+
+    let family = if address.is_ipv4() {
+        AddressFamily::INET
+    } else {
+        AddressFamily::INET6
+    };
+    let socket = socket_with(
+        family,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )?;
+    sockopt::set_socket_reuseaddr(&socket, true)?;
+    if address.ip() == std::net::Ipv6Addr::UNSPECIFIED {
+        sockopt::set_ipv6_v6only(&socket, false)?;
+    }
+    bind(&socket, &address)?;
+    listen(&socket, -1)?;
+    Ok(socket.into())
+}
+
 /// A non-blocking UDP socket bound to `address`; with `share` it joins the `SO_REUSEPORT` group of that address, whose
 /// sockets the kernel gives the peers of its datagrams to, one socket per peer address.
 #[cfg(unix)]
@@ -117,7 +142,7 @@ impl ListenerReservation {
 
             let (socket, unix_socket, bind_text) = match bind {
                 ListenerBind::Socket { address } => {
-                    let listener = std::net::TcpListener::bind(address).map_err(|source| {
+                    let listener = bind_tcp(*address).map_err(|source| {
                         io::Error::new(
                             source.kind(),
                             format!(
@@ -125,7 +150,6 @@ impl ListenerReservation {
                             ),
                         )
                     })?;
-                    listener.set_nonblocking(true)?;
                     (ReservedSocket::Tcp(listener), None, address.to_string())
                 }
                 ListenerBind::Udp { address } => {
