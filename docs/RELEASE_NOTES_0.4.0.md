@@ -1,6 +1,6 @@
 # OxiRoute 0.4.0
 
-OxiRoute 0.4.0 is a pre-alpha release that expands the tested narrow runtime and control-plane
+OxiRoute 0.4.0 expands the tested narrow runtime and control-plane
 surface while keeping compatibility claims explicit. It does not represent full parity with HTTP/3,
 Squid, RTMP, or any native proxy product.
 

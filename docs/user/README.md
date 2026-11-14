@@ -1,24 +1,28 @@
-# User Guides
+# User and operator guides
 
-These pages answer operator questions in the order they usually occur: get a safe local instance
-running, understand what the dashboard reports, operate changes, then migrate existing proxy
-configuration.
+Start with [Run a local proxy](GETTING_STARTED.md). It builds from source, sends a request through
+the HTTP listener, and checks the daemon without installing a service.
 
-## Recommended Sequence
+## Choose your next task
 
-1. [Getting started](GETTING_STARTED.md) runs a local HTTP path from origin to listener.
-2. [Dashboard](DASHBOARD.md) explains what is live telemetry and what is configuration state.
-3. [Operations](OPERATING.md) covers readiness, generations, drains, and runtime controls.
-   The [runbook](RUNBOOK.md) is the task-oriented version for GPU farms and worker pools: adding and
-   removing machines, drains, safe applies, rollbacks, outages, hardening and alerts.
-4. [Migration](MIGRATION.md) explains how to test native configuration without rewriting it.
-5. [RTMP](RTMP.md) covers live media and recorder-specific behavior.
-6. [Troubleshooting](TROUBLESHOOTING.md) gives evidence-first recovery steps.
-7. [Security](SECURITY.md) should be read before binding anything beyond a private host.
+| Goal | Guide | Result |
+| --- | --- | --- |
+| Run and verify a local instance | [Getting started](GETTING_STARTED.md) | HTTP `200` through the proxy and readable runtime state |
+| Understand the dashboard | [Dashboard](DASHBOARD.md) | Distinguish live traffic, configured objects, and stale samples |
+| Reload or operate the daemon | [Operations](OPERATING.md) | Check readiness, apply a generation, and inspect drains |
+| Add, remove, or evacuate workers | [Runbook](RUNBOOK.md) | Perform pool changes and recover from failures |
+| Migrate native configuration | [Migration](MIGRATION.md) | Review blockers and a finalized preview before cutover |
+| Publish or record live media | [RTMP](RTMP.md) | Inspect streams and recorder state within supported codec limits |
+| Diagnose a failure | [Troubleshooting](TROUBLESHOOTING.md) | Collect evidence and identify the responsible layer |
+| Secure management and sources | [Security](SECURITY.md) | Check token files, loopback access, and trusted inputs |
+| Evaluate performance | [Benchmarks](../BENCHMARKS.md) | Interpret measured results and identify evaluation requirements |
 
-## Before Production
+## Before deployment
 
-OxiRoute is pre-alpha. Confirm each required feature in [COMPATIBILITY.md](../COMPATIBILITY.md),
-run the relevant wire and failure-path tests, and keep management listeners on loopback. The current
-runtime is a useful narrow proxy and observability stack, not a drop-in replacement for nginx,
-HAProxy, Squid, or a firewall.
+Check each required capability in the
+[compatibility matrix](../COMPATIBILITY.md); protocol names and importer names do not imply complete
+parity. Keep management on loopback and review [security](SECURITY.md). Local tests and historical
+benchmarks do not close the production-traffic and CA-staging gates.
+
+For exact syntax, use the [CLI](../reference/CLI.md), [configuration](../reference/CONFIGURATION.md),
+and [API](../reference/API.md) references.

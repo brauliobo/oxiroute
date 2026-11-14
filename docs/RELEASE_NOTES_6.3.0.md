@@ -6,7 +6,7 @@ fewer, and large bodies, uploads, WebSocket messages and TCP relays 30% to 80% f
 and weighted round robin, and pool membership changes, no longer grow with the number of servers. One product bug
 is fixed: an HTTP/2 request that reaches a connection while its generation is being replaced is answered instead of
 waiting for the client to give up. The built-in statistics page is now an interactive dashboard and the management
-UI runs on Vue 3.6 in Vapor mode. The release remains pre-alpha and retains conservative compatibility claims.
+UI runs on Vue 3.6 in Vapor mode. The release retains conservative compatibility claims.
 
 ## Summary
 

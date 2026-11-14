@@ -3,7 +3,7 @@
 OxiRoute 6.2.0 makes the same router cheaper to leave running, to start and reload, to query and to scale: an
 idle instance costs about 1.4% of what it did, a farm-size configuration loads about twelve times faster, a
 proxied request needs 10% to 20% fewer instructions, and route matching and the common server selection
-algorithms no longer grow with the number of routes and servers. The release remains pre-alpha and retains conservative compatibility claims.
+algorithms no longer grow with the number of routes and servers. The release retains conservative compatibility claims.
 
 ## Summary
 

@@ -1,6 +1,6 @@
 # OxiRoute 0.5.0
 
-OxiRoute 0.5.0 advances the pre-alpha runtime with broader HTTP/3 and cache behavior, more durable
+OxiRoute 0.5.0 advances the runtime with broader HTTP/3 and cache behavior, more durable
 control-plane state, stronger native-import evidence, and tighter supervision and RTMP lifecycle
 boundaries. It also reorganizes large implementation modules behind their existing public facades so
 future protocol work can remain isolated without changing the current configuration contract.
@@ -28,7 +28,7 @@ future protocol work can remain isolated without changing the current configurat
 
 ## Operational Notes
 
-- The release line remains pre-alpha. Existing configuration is validated before activation, and
+- Existing configuration is validated before activation, and
   unsupported native semantics continue to fail closed.
 - Packaged Linux installations include the supervised launcher; eligible listener topologies use the
   supervised master/worker path, while unsupported topologies retain the direct runtime.

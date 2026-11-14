@@ -1,7 +1,7 @@
 # OxiRoute 6.1.0
 
 OxiRoute 6.1.0 lets an operator free a machine immediately: `evacuate` is `drain` plus a one-shot move of
-the requests running on it. The release remains pre-alpha and retains conservative compatibility claims.
+the requests running on it. The release retains conservative compatibility claims.
 
 ## Summary
 

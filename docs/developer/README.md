@@ -1,53 +1,94 @@
-# Developer Guide
+# Developer guide
 
-OxiRoute is a Rust workspace with a Vue/Pug client and a static documentation site. The project
-values small owning abstractions, bounded resource use, explicit status, and tests that demonstrate
-failure behavior before a capability is advertised.
+Start here to build, test, and change OxiRoute. The Rust workspace owns the proxy and control plane;
+the Vue/Pug dashboard consumes the management API. A successful build alone does not establish
+protocol support. The [compatibility matrix](../COMPATIBILITY.md) records that boundary.
 
-## Contribution Route
+## Set up a checkout
 
-1. Read [the architecture](ARCHITECTURE.md) and identify the owning crate. 
-2. Find or add the smallest failing test at that abstraction.
-3. Keep configuration, runtime planning, activation, and observability changes separate when possible.
-4. Update the compatibility matrix and the relevant user/reference docs in the same change.
-5. Run the focused test, then the repository gates in [TESTING.md](TESTING.md).
-6. If the user-facing behavior changed, update the website content or its status data.
+Run commands from the repository root. Use Rust `1.97.1`, Node.js `22`, and pnpm `11.3.0`, matching
+CI. The workspace declares `rust-version = "1.97"`; the tested patch release is `1.97.1`.
+Native dependencies need a C/C++ toolchain, CMake, pkg-config, and OpenSSL development files.
+See the [local walkthrough](../user/GETTING_STARTED.md) for runtime prerequisites and verification.
 
-Do not describe a parser, build flag, or standalone crate as a daemon capability until the active
-runtime path and failure cases are tested.
+```sh
+rustup toolchain install 1.97.1 --component rustfmt --component clippy
+pnpm --dir ui install --frozen-lockfile
+nice pnpm --dir ui build
+nice cargo +1.97.1 build --locked --jobs 4 -p oxiroute
+./target/debug/oxiroute version
+```
 
-## Workspaces
+Use the binary at `target/debug/oxiroute`; a source build does not put `oxiroute` on your PATH or
+install a service. Linux has the full-build CI gate. Platform metadata checks are a narrower claim;
+read [testing](TESTING.md) before treating another platform as supported.
 
-| Crate/path | Owning concern |
+## Find the owner
+
+Read [architecture](ARCHITECTURE.md) for the source-to-generation lifecycle. This table groups the
+workspace by responsibility rather than listing every internal type.
+
+| Crate or directory | Owns |
 | --- | --- |
-| `oxiroute-server` | Binary, CLI, runtime planning, generation lifecycle, listeners, APIs, monitoring, topology, TLS |
-| `oxiroute-config` | Canonical typed model, defaults, lexical policy, and validation |
-| `oxiroute-config-source` | Format adapters, restricted Lua, generic values, templates, native references, composition, and rendering |
-| `oxiroute-import` | Native parsers, semantic reports, provenance, diagnostics, canonical lowering |
-| `oxiroute-forward-proxy` | Explicit forward-proxy target/auth/policy/tunnel primitives without socket I/O |
-| `oxiroute-rtmp` | RTMP transport adapter, sessions, catalog, fanout, recording, FLV, relay, directive registry |
-| `oxiroute-tls-client` | The process-wide OpenSSL client context for outbound connections that trust the system CA store (RTMPS, VOD, RTMP callbacks, ACME) |
-| `oxiroute-cache` | Bounded RFC-aware memory and descriptor-safe persistent cache core used by reverse HTTP and eligible forward HTTP/1 requests |
-| `oxiroute-supervision*` | Platform-neutral protocol/state machines and Linux master/worker transport |
-| `ui` | Vue API contract, runtime observatory, topology, recording panel, configuration editors |
-| `website` | Public static communication surface |
-| `remotion` | Documentation media source and repeatable dashboard recordings |
+| `crates/oxiroute-server` | CLI, daemon, planning, generations, listeners, management APIs, monitoring, topology |
+| `crates/oxiroute-config` | Canonical typed model, defaults, validation, restricted Lua |
+| `crates/oxiroute-config-source` | Source adapters, templates, native references, composition, rendering |
+| `crates/oxiroute-import` | Native parsers, provenance, diagnostics, conservative lowering |
+| `crates/oxiroute-forward-proxy` | Target parsing, authentication, destination policy, tunnel primitives |
+| `crates/oxiroute-h1-head`, `oxiroute-h2`, `oxiroute-h3` | HTTP protocol components |
+| `crates/oxiroute-cache` | Bounded memory and persistent cache core |
+| `crates/oxiroute-rtmp` | RTMP sessions, catalog, fanout, recording, FLV, relays |
+| `crates/oxiroute-acme`, `oxiroute-tls-client`, `oxiroute-tls-rustls` | Certificate lifecycle and TLS components |
+| `crates/oxiroute-supervision*`, `oxiroute-supervisor-*` | Replacement state machines, Unix transport, Linux master/worker processes |
+| `crates/oxiroute-aged-executor`, `oxiroute-cpu`, `oxiroute-worker-scaling` | Execution, CPU discovery, worker scaling |
+| `crates/oxiroute-allocator`, `vendor/` | Allocator selection, upstream integrations, documented local patches |
+| `ui/` | Dashboard, client contracts, component and browser tests |
+| `contracts/` | Checked control-plane API artifact |
+| `website/` | Static public documentation site |
+| `remotion/` | Reproducible documentation media |
 
-## Before You Edit
+A component crate's existence does not mean every listener uses it. Trace the active daemon path
+before describing an implementation detail as a feature.
 
-- Check the worktree; unrelated user changes may already be present.
-- Search the existing tests and normative docs before adding a new abstraction.
-- For existing product symbols, run impact analysis before editing and inspect direct callers.
-- Prefer correcting the owner of an invalid state over adding a call-site fallback.
-- Avoid broad compatibility shims unless a persisted or shipped contract requires one.
+## Make a change
 
-## Key Contracts
+1. Check the worktree and leave unrelated changes alone. Read the workspace instructions.
+2. Read the relevant contract and the nearest tests. Reproduce a reported failure at its owning layer.
+3. Run GitNexus impact analysis before editing an existing function, class, or method; inspect callers
+   and execution flows. Investigate stale or degraded results before relying on them.
+4. Correct the owning abstraction and add focused behavior coverage. Verify failure, bounds,
+   redaction, and lifecycle behavior when relevant.
+5. Update the affected guide/reference and compatibility status together. Planned behavior stays
+   labeled planned until runtime evidence exists.
+6. Run the focused checks, then the applicable repository gates in [testing](TESTING.md).
 
-- [Configuration specification](../CONFIG_SPEC.md)
-- [API/UI specification](../API_UI_SPEC.md)
-- [Operations contract](../OPERATIONS.md)
-- [RTMP specification](../RTMP_SPEC.md)
-- [Import specification](../IMPORT_SPEC.md)
-- [Compatibility matrix](../COMPATIBILITY.md)
-- [Test strategy](../TEST_STRATEGY.md)
-- [Shared TLS client context and reload cost](TLS_CLIENT_CONTEXT.md)
+For example, configuration and resolver changes can start with:
+
+```sh
+nice cargo +1.97.1 test --locked --jobs 4 -p oxiroute-config --test lua_config
+nice cargo +1.97.1 test --locked --jobs 4 -p oxiroute-config-source --test resolver
+```
+
+The core Rust and dashboard checks are:
+
+```sh
+cargo +1.97.1 fmt --all --check
+nice cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
+nice cargo +1.97.1 test --workspace --locked --jobs 4
+pnpm --dir ui test
+nice pnpm --dir ui build
+```
+
+These commands are a starting set. [Testing](TESTING.md) defines additional required contract,
+fuzz, browser, dependency, and release gates; a focused test is not a substitute for them.
+
+## Contracts and evidence
+
+- [Configuration](../CONFIG_SPEC.md) and [source formats](../CONFIG_FORMATS.md): accepted objects and validation.
+- [API/UI](../API_UI_SPEC.md) and [CLI](../reference/CLI.md): external behavior and revisions.
+- [Operations](../OPERATIONS.md): activation, readiness, reload, drain, and shutdown.
+- [Import](../IMPORT_SPEC.md) and [RTMP](../RTMP_SPEC.md): feature-specific contracts.
+- [Benchmarks](../BENCHMARKS.md): historical measurements, scope, and reproducibility.
+- [Documentation maintenance](DOCUMENTATION.md): audience, language, evidence, and source ownership.
+- [Releasing](RELEASING.md): release artifacts and maintainer checks.
+- [Shared TLS context](TLS_CLIENT_CONTEXT.md): outbound trust ownership and reload cost.

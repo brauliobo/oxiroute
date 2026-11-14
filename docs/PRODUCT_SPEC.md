@@ -188,9 +188,8 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-The package currently declares version `6.5.2`. The current release line is pre-alpha, not a 1.0
-stability claim. The compatibility matrix records the supported narrow paths for this working
-release line, and marks work that is not yet available as `planned`.
+The package currently declares version `6.5.2`. The compatibility matrix records the supported
+narrow paths for this release line, and marks work that is not yet available as `planned`.
 
 The current contract is:
 

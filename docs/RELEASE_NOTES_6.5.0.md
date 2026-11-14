@@ -3,7 +3,7 @@
 Released 2026-11-13.
 
 OxiRoute 6.5.0 makes open connections cheaper, closes the gap of the rustls TLS backend, stops serving requests nobody
-waits for, and tightens the test suite. The release remains pre-alpha and retains conservative compatibility claims. No
+waits for, and tightens the test suite. The release retains conservative compatibility claims. No
 configuration change is needed and no default changed.
 
 ## Headlines

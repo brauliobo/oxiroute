@@ -1,94 +1,147 @@
-# Getting Started
+# Run a local proxy
 
-This guide uses the repository's complete KDL example. It gives you one reverse HTTP proxy, one
-opaque TCP relay, one RTMP listener, and the loopback management UI.
+Run one verified HTTP request through the checked-in example, then inspect the daemon in the dashboard.
+This is a local evaluation, not a production deployment. The example also opens TCP and RTMP listeners.
+All commands below run from the root of a source checkout.
 
 ## Requirements
 
-- Rust `1.97.1` or a compatible toolchain for the checked-in release line.
-- Node.js and pnpm `11.3.0` for the dashboard build.
-- OpenSSL for the local token-generation example.
-- A Linux host for the full monitoring and supervision surface. Unprivileged local listeners work on
-  other supported Rust platforms where the relevant transport exists.
+- Linux for the full supported build, monitoring, and supervision path. Other platforms do not have
+  the same full-build CI gate; see [compatibility](../COMPATIBILITY.md).
+- Rust `1.97.1`, the toolchain tested in CI. The workspace declares Rust `1.97` as its minimum.
+- A native C/C++ build toolchain, CMake, pkg-config, and OpenSSL development headers/libraries for
+  the native dependencies. Package names depend on your distribution.
+- Node.js `22` and pnpm `11.3.0`, matching the dashboard CI setup.
+- Python 3, OpenSSL, and curl for this walkthrough; jq for formatted API output.
+- Free loopback ports `3000`, `8080`, `15432`, `1935`, and `9080`.
 
-## Run The Example
+## 1. Start a local origin
 
-Start an origin on `127.0.0.1:3000` that answers `GET /healthz` with `200`. A small Python origin is
-included in the [top-level quickstart](../../README.md#five-minute-local-run).
-
-Build the UI and create a restrictive token file:
+In terminal A, create a temporary directory containing a health response and start Python's HTTP server:
 
 ```sh
-pnpm --dir ui install
-pnpm --dir ui build
+demo_dir=$(mktemp -d)
+printf 'ok\n' > "$demo_dir/healthz"
+python3 -m http.server 3000 --bind 127.0.0.1 --directory "$demo_dir"
+```
+
+Leave it running. The proxy checks `GET /healthz` on this origin before selecting it.
+
+## 2. Build and validate
+
+In terminal B, from the repository root:
+
+```sh
+pnpm --dir ui install --frozen-lockfile
+nice pnpm --dir ui build
+nice cargo +1.97.1 build --locked --jobs 4 -p oxiroute
+```
+
+Create a private temporary directory and token file, validate, then start the daemon:
+
+```sh
+session_dir=$(mktemp -d)
+chmod 700 "$session_dir"
 umask 077
-openssl rand -hex 32 > /tmp/oxiroute-management.token
+openssl rand -hex 32 > "$session_dir/management.token"
+export OXIROUTE_MANAGEMENT_TOKEN_FILE="$session_dir/management.token"
+printf 'Token file: %s\n' "$OXIROUTE_MANAGEMENT_TOKEN_FILE"
+./target/debug/oxiroute config check oxiroute.example.kdl
+./target/debug/oxiroute serve oxiroute.example.kdl
 ```
 
-Validate the configuration before starting the daemon:
+A successful check prints `configuration is valid and runtime-preparable`. It loads and prepares the
+configuration locally, including listener reservations, without serving traffic. The example ports
+must be free during this check. If reservation fails, use an unused bind in a copy of the example;
+do not stop an unrelated service. Ports must still be free when the daemon starts.
+
+Leave terminal B running. The token authenticates management operations and is unrelated to the
+HTTP proxy listener. Keep it out of source control and support reports.
+
+| Listener | Address | What this example exercises |
+| --- | --- | --- |
+| HTTP | `127.0.0.1:8080` | Reverse HTTP/1 proxy to the origin on port `3000` |
+| TCP | `127.0.0.1:15432` | Relay to port `5432`; no database is needed for the HTTP walkthrough |
+| RTMP | `127.0.0.1:1935` | Configured live media listener; no publisher is needed here |
+| Management/UI | `127.0.0.1:9080` | Dashboard and authenticated management API |
+
+The source build runs directly unless an eligible Linux supervision launcher is installed. See
+[operations](OPERATING.md) for the runtime modes.
+
+## 3. Verify traffic and inspect state
+
+In terminal C, from the repository root:
 
 ```sh
-cargo run -p oxiroute -- config check oxiroute.example.kdl
-```
-
-Start it with the token file in the environment:
-
-```sh
-OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token \
-  cargo run -p oxiroute -- serve oxiroute.example.kdl
-```
-
-The `management` object in the example binds `127.0.0.1:9080` and serves `ui/dist`. The HTTP proxy
-binds `127.0.0.1:8080` and uses an active HTTP health check against `/healthz` on port `3000`. This
-example is HTTP/1-only; H2 and H3 listener shapes are documented in the
-[configuration specification](../CONFIG_SPEC.md).
-
-## Verify It
-
-```sh
-TOKEN=$(tr -d '\r\n' < /tmp/oxiroute-management.token)
+curl -i http://127.0.0.1:3000/healthz
 curl -i http://127.0.0.1:8080/healthz
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:9080/api/v1/monitoring | jq .
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:9080/api/v1/topology | jq '.state, (.nodes | length), (.edges | length)'
+./target/debug/oxiroute --endpoint http://127.0.0.1:9080 ready
 ```
 
-Open `http://127.0.0.1:9080/` for the dashboard. The first page is the runtime observatory. The
-Statistics view is the HAProxy-oriented table; Configuration asks for the bearer token and retains
-it only in page memory.
+Both HTTP requests should return `200` with an `ok` body. Wait for the first health check if the
+proxy initially returns `503`. If it persists, inspect the origin and pool health using
+[troubleshooting](TROUBLESHOOTING.md).
 
-## Make A First Change
-
-Copy the example before editing it. Run `config check` against the copy, then use a revision-aware
-management operation or restart the local process. Do not edit the packaged or production file while
-another editor may be saving it without understanding disk revisions.
-
-```sh
-cp oxiroute.example.kdl /tmp/oxiroute-local.kdl
-cargo run -p oxiroute -- config check /tmp/oxiroute-local.kdl
-```
-
-For a real management client, set the endpoint and token explicitly:
+Open `http://127.0.0.1:9080/`. Read the token file locally and enter its contents when prompted;
+the dashboard keeps the token in page memory. For CLI access, use the **token-file path** printed in
+terminal B as the value below:
 
 ```sh
 export OXIROUTE_ENDPOINT=http://127.0.0.1:9080
-export OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token
-oxiroute status
-oxiroute monitoring
-oxiroute generation status
+export OXIROUTE_MANAGEMENT_TOKEN_FILE=/path/to/management.token
+./target/debug/oxiroute status
+./target/debug/oxiroute --output json monitoring | jq .
+./target/debug/oxiroute generation status
 ```
 
-## Package Installation
+The explicit endpoint matters: the CLI default is port `9900`, while this example uses `9080`.
+Readiness and metrics probes need no token; recognized management API routes do.
 
-The repository contains an AUR-ready Arch Linux recipe under `packaging/arch`. It installs the
-daemon, offline importer, management client, systemd metadata, examples, and the `oxr` alias. The
-package does not enable or start the service automatically; review the installed configuration first.
-See [the packaging notes](../../packaging/arch/README.md) for permissions, token setup, recording
-roots, and systemd drop-ins.
+## 4. Make a first change
 
-## Next Reading
+Stop the local daemon in terminal B with Ctrl-C so the listener ports are free. In terminal C,
+with the token-file environment still set, copy the example, edit the copy, and validate it:
 
-- [Dashboard guide](DASHBOARD.md) for the browser's views and data boundaries.
-- [Operations guide](OPERATING.md) for production-shaped lifecycle actions.
-- [Configuration reference](../reference/CONFIGURATION.md) for the smallest useful objects.
+```sh
+cp oxiroute.example.kdl /tmp/oxiroute-local.kdl
+./target/debug/oxiroute config check /tmp/oxiroute-local.kdl
+```
+
+For a local experiment, start the daemon with the copy from terminal B. For live configuration changes,
+follow [operations](OPERATING.md): validation, disk revisions, and generation publication are
+separate steps. A failed candidate leaves the active generation serving.
+
+KDL 2.0 is recommended for new configurations. The [configuration reference](../reference/CONFIGURATION.md)
+contains a smaller HTTP-only shape; the [configuration specification](../CONFIG_SPEC.md) defines
+TLS, HTTP/2, HTTP/3, defaults, and limits.
+
+## Stop and clean up
+
+Stop the daemon in terminal B and the origin in terminal A with Ctrl-C. In terminal B, remove only
+the temporary session created above:
+
+```sh
+rm "$session_dir/management.token"
+rmdir "$session_dir"
+unset OXIROUTE_MANAGEMENT_TOKEN_FILE
+```
+
+In terminal A:
+
+```sh
+rm "$demo_dir/healthz"
+rmdir "$demo_dir"
+```
+
+Remove `/tmp/oxiroute-local.kdl` if you created the copy and no longer need it.
+
+## Install a package or continue
+
+The repository includes an Arch Linux package recipe. It installs the daemon, importer, management
+client, systemd metadata, examples, and `oxr` alias. It does not start or enable the service.
+Review [packaging instructions](../../packaging/arch/README.md) before installing or enabling it.
+
+- [Operations](OPERATING.md): health, reloads, generations, and drains.
+- [Dashboard](DASHBOARD.md): live telemetry and configuration state.
+- [Security](SECURITY.md): trust boundaries and token permissions.
+- [Benchmarks](../BENCHMARKS.md): measured workloads and limits of the evidence.

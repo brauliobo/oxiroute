@@ -1,7 +1,7 @@
 # OxiRoute 6.0.0
 
 OxiRoute 6.0.0 makes a router in front of a farm of uneven machines keep working when machines fail,
-slow down, join or leave. The release remains pre-alpha and retains conservative compatibility claims.
+slow down, join or leave. The release retains conservative compatibility claims.
 
 ## Summary
 

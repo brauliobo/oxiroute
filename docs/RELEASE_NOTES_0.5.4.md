@@ -1,7 +1,7 @@
 # OxiRoute 0.5.4
 
 OxiRoute 0.5.4 stops a cluster pool from sending all of its traffic to a node that cannot serve it.
-The release remains pre-alpha and retains conservative compatibility claims.
+The release retains conservative compatibility claims.
 
 ## Highlights
 

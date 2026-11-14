@@ -3,11 +3,14 @@
 Documentation is part of the product contract. The source tree contains detailed specifications, but
 readers should not have to understand the entire roadmap before they can run one safe local request.
 
+For the sourced redesign rationale and writing standards, read
+[documentation design](DOCUMENTATION_DESIGN.md).
+
 ## Content Hierarchy
 
 Use this order when adding or reorganizing content:
 
-1. **README:** product identity, current boundaries, first run, and links only.
+1. **README:** product identity, current features, measured evidence, first action, and audience links.
 2. **Docs hub:** audience and job navigation.
 3. **User guide:** one operational task with copyable commands and failure meaning.
 4. **Reference:** exact fields, commands, routes, and status values.
@@ -32,9 +35,25 @@ When a capability changes:
 - update release notes when user-visible; and
 - search the website for stale wording.
 
+## Language and measured claims
+
+Lead with the task or behavior. Prefer “Run a local proxy” to an abstract capability heading.
+Explain a specialist term at first use, use consistent nouns, and give each guide an observable
+success condition. Keep future requirements separate from available behavior. Capability-specific
+`partial` status is not a product maturity label.
+
+Performance claims must identify the binary or revision, workload, units, worker count, sample count,
+and available provenance. Put material measurement limits next to the numbers. Keep historical
+results labeled historical; never infer TLS, HTTP/2, HTTP/3, cache, or production capacity from an
+HTTP/1 loopback result. Link [the benchmark summary](../BENCHMARKS.md) for public measurements and
+the precise source report for each quoted value. Do not turn an unavailable raw artifact into a
+reproducibility claim.
+
 ## Examples
 
-Prefer a complete runnable example plus one small concept snippet. Label examples as local, production
+Prefer a complete runnable example plus one small concept snippet. Keep the first-run walkthrough
+self-contained, run commands from a stated directory, and use an explicit binary path after a source
+build. Pin lockfiles and use `nice` with at most four workers for compilation. Label examples as local, production
 starting points, or illustrative. Never use real hostnames, tokens, private keys, recording roots, or
 stream keys in documentation or media.
 

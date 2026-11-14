@@ -1,68 +1,61 @@
-# OxiRoute Documentation
+# Documentation
 
-This documentation is organized by the decision a reader is trying to make. Start with a job guide,
-then open the reference contract only when you need exact fields, bounds, or failure behavior.
+Choose a task below. Guides explain how to complete it; references define exact commands, fields,
+and failure behavior. Use the
+[compatibility matrix](COMPATIBILITY.md) to decide whether a required capability is available.
 
-## Choose A Path
+## Start here
 
-| Audience | First stop | Then |
+| You want to | Start with | Then |
 | --- | --- | --- |
-| New operator | [Getting started](user/GETTING_STARTED.md) | [Dashboard](user/DASHBOARD.md), [operations](user/OPERATING.md) |
-| Existing proxy operator | [Migration](user/MIGRATION.md) | [compatibility matrix](COMPATIBILITY.md), [import specification](IMPORT_SPEC.md) |
-| RTMP operator | [RTMP guide](user/RTMP.md) | [RTMP specification](RTMP_SPEC.md), [dashboard](user/DASHBOARD.md) |
-| API/UI integrator | [API reference](reference/API.md) | [API/UI specification](API_UI_SPEC.md), [management CLI](MANAGEMENT_CLI.md) |
-| Rust contributor | [Developer guide](developer/README.md) | [architecture](developer/ARCHITECTURE.md), [testing](developer/TESTING.md) |
-| Release or package maintainer | [Release guide](developer/RELEASING.md) | [Arch packaging notes](../packaging/arch/README.md) |
+| Evaluate a local proxy | [Getting started](user/GETTING_STARTED.md) | [Dashboard](user/DASHBOARD.md), [operations](user/OPERATING.md) |
+| Operate a deployment | [User guides](user/README.md) | [Runbook](user/RUNBOOK.md), [security](user/SECURITY.md), [troubleshooting](user/TROUBLESHOOTING.md) |
+| Migrate another proxy | [Migration](user/MIGRATION.md) | [Compatibility](COMPATIBILITY.md), [import contract](IMPORT_SPEC.md) |
+| Publish or record media | [RTMP guide](user/RTMP.md) | [RTMP contract](RTMP_SPEC.md) |
+| Integrate the management API | [API reference](reference/API.md) | [API/UI contract](API_UI_SPEC.md), [CLI](reference/CLI.md) |
+| Contribute code | [Developer guide](developer/README.md) | [Architecture](developer/ARCHITECTURE.md), [testing](developer/TESTING.md) |
+| Evaluate speed or resource use | [Benchmarks](BENCHMARKS.md) | Workload definitions, historical measurements, and reproduction limits |
+| Package or release | [Releasing](developer/RELEASING.md) | [Arch packaging](../packaging/arch/README.md) |
 
-## User Guides
+## Guides and explanations
 
-- [Getting started](user/GETTING_STARTED.md): install/build, run the example, and verify traffic.
-- [Dashboard](user/DASHBOARD.md): understand Overview, Statistics, Operations, Audit, Provenance, topology, RTMP, and Configuration.
-- [Operations](user/OPERATING.md): health, generations, drains, server state, metrics, and recovery.
-- [Migration](user/MIGRATION.md): report versus preview, native references, composition, and cutover.
-- [RTMP](user/RTMP.md): live publish/play, fanout, recording, HLS/DASH, VOD, and current codec limits.
-- [Troubleshooting](user/TROUBLESHOOTING.md): symptoms, evidence, and safe next actions.
-- [Security](user/SECURITY.md): loopback boundaries, token files, source trust, and redaction.
+- [User guides](user/README.md): running, operating, migrating, securing, and diagnosing the daemon.
+- [Developer guide](developer/README.md): setup, ownership, and contribution workflow.
+- [Architecture](developer/ARCHITECTURE.md): configuration resolution, generations, and runtime boundaries.
+- [Testing](developer/TESTING.md): focused commands, required gates, and what each layer proves.
+- [Environment variables](developer/ENV_TO_CONFIG.md): runtime inputs and their configuration equivalents.
+- [Benchmarks](BENCHMARKS.md): what was measured and what the results establish.
+- [Documentation maintenance](developer/DOCUMENTATION.md): language, examples, and evidence policy.
+- [Documentation research and design](developer/DOCUMENTATION_DESIGN.md): rationale and external sources for this structure.
 
-## Developer Guides
+## Exact references and contracts
 
-- [Developer guide](developer/README.md): contribution route, crate map, and behavior boundaries.
-- [Architecture](developer/ARCHITECTURE.md): source-to-generation flow, data plane, control plane,
-  RTMP, and supervision.
-- [Testing](developer/TESTING.md): test layers, focused commands, and release gates.
-- [Documentation maintenance](developer/DOCUMENTATION.md): status labels, examples, website content,
-  and Remotion media.
-- [Environment variables](developer/ENV_TO_CONFIG.md): every variable the daemon reads and its
-  configuration option or reason to stay.
-- [Releasing](developer/RELEASING.md): versioning, packages, source archives, and Pages deployment.
+| Need | Reference | Complete contract |
+| --- | --- | --- |
+| Commands and exits | [CLI](reference/CLI.md) | [Management CLI](MANAGEMENT_CLI.md) |
+| API endpoints and revisions | [API](reference/API.md) | [API/UI specification](API_UI_SPEC.md), [OpenAPI](../contracts/control-plane.openapi.json) |
+| Configuration and formats | [Configuration](reference/CONFIGURATION.md) | [Schema](CONFIG_SPEC.md), [formats](CONFIG_FORMATS.md) |
+| Current support | [Compatibility matrix](COMPATIBILITY.md) | [Current release notes](RELEASE_NOTES_6.5.2.md) |
+| Runtime lifecycle | [Operations guide](user/OPERATING.md) | [Operations contract](OPERATIONS.md) |
+| Native import | [Migration guide](user/MIGRATION.md) | [Import specification](IMPORT_SPEC.md) |
+| Media | [RTMP guide](user/RTMP.md) | [RTMP specification](RTMP_SPEC.md) |
+| Managed certificates | [Security guide](user/SECURITY.md) | [ACME specification](ACME_SPEC.md) |
 
-## Reference Contracts
+The [reference index](reference/README.md) collects the command, configuration, and API entry points.
 
-- [CLI reference](reference/CLI.md): command families, output modes, authentication, and exit codes.
-- [API reference](reference/API.md): endpoint groups, authentication, revisions, and response rules.
-- [Configuration reference](reference/CONFIGURATION.md): formats, smallest useful objects, and save behavior.
-- [Configuration specification](CONFIG_SPEC.md): normative schema and validation contract.
-- [Configuration formats](CONFIG_FORMATS.md): KDL, Lua, HOCON, UCI, templates, and native references.
-- [Management CLI](MANAGEMENT_CLI.md): complete capability matrix and HAProxy intent mapping.
-- [API/UI specification](API_UI_SPEC.md): exact control-plane response and browser behavior.
-- [Compatibility matrix](COMPATIBILITY.md): implemented, partial, planned, and excluded features.
-- [Operations contract](OPERATIONS.md): generations, watcher behavior, shutdown, readiness, and metrics.
-- [Import specification](IMPORT_SPEC.md): native source boundaries and provenance requirements.
-- [RTMP specification](RTMP_SPEC.md): directive inventory, runtime behavior, and compatibility status.
-- [ACME specification](ACME_SPEC.md): managed lifecycle, challenge types, Certbot lineage behavior, and release gates.
-- [Test strategy](TEST_STRATEGY.md): repository-wide test policy and release gates.
+## Read status precisely
 
-## Status Vocabulary
+| Status | Meaning |
+| --- | --- |
+| `stable` | Implemented and evidenced within the stated narrow release contract |
+| `partial` | An implemented path has remaining compatibility or evidence gates |
+| `foundation` | Tested component code, without an active daemon capability |
+| `planned` | Future goal, unavailable in the current daemon |
+| `research` | Requires a product or design decision |
+| `not-planned` | Deliberately excluded from the current plan |
+| `out-of-scope` | Outside the user-space proxy boundary |
 
-Use the same words everywhere:
-
-- `stable`: part of the current narrow release contract with implementation and required evidence.
-- `partial`: a narrow path works, but a broader compatibility or production gate remains.
-- `foundation`: tested code that is not an active daemon capability.
-- `planned`: a committed goal; not available in the current daemon.
-- `research`: an evaluated possibility requiring a product or design decision.
-- `not-planned`: deliberately excluded from the current product plan.
-- `out-of-scope`: intentionally outside the user-space proxy boundary.
-
-The README and compatibility matrix describe current behavior. Product specs describe
-requirements and direction; they must not be used alone to decide whether a feature is deployable.
+`stable` describes the named behavior, not overall production maturity or complete parity with another
+product. Roadmaps and product specifications contain future requirements; use the compatibility
+matrix and the current runtime evidence when making deployment decisions. Historical performance
+notes describe their recorded binaries and workloads, not a current-release guarantee.

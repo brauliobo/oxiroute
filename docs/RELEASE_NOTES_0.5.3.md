@@ -2,7 +2,7 @@
 
 OxiRoute 0.5.3 makes a configuration reload apply listener changes. Adding, removing or moving a
 listener no longer needs a service restart, and the traffic on every other listener keeps flowing.
-The release remains pre-alpha and retains conservative compatibility claims.
+The release retains conservative compatibility claims.
 
 ## Highlights
 

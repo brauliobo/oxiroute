@@ -1,7 +1,7 @@
 # OxiRoute 0.5.2
 
 OxiRoute 0.5.2 adds an explicit, opt-in retry path for selected requests whose bodies must be
-replayed after an upstream response timeout. The release remains pre-alpha and retains
+replayed after an upstream response timeout. The release retains
 conservative compatibility claims.
 
 ## Highlights

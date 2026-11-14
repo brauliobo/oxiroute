@@ -10,7 +10,7 @@ for WebSocket), TLS handshakes run on their own threads, TCP relays and large st
 kernel (`splice`, `sendfile`, and kernel TLS where the host has it), HTTP/3 and the HTTP/2 session are purpose-built,
 and the vendored Pingora is rebased from 0.8.1 onto 0.9.1, which closes three advisories. Settings that were
 environment variables are configuration options (log verbosity, the management token file, the audit log), in every
-source format. The release remains pre-alpha and retains conservative compatibility claims.
+source format. The release retains conservative compatibility claims.
 
 ## Behaviour decisions
 

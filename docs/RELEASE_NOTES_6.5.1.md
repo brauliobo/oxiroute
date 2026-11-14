@@ -5,7 +5,7 @@ Released 2026-11-14.
 OxiRoute 6.5.1 makes `oxiroute import nginx` work on complete, real-world router configurations: certificate identities
 from the issued certificates, nginx's socket-wide HTTP/2 rule, IPv4 and IPv6 listeners on one port, unverified https
 origins, nginx cookie path rewrites, `^~` locations, bearer gates served from operator token files and access-log
-migration. The proxy, TLS and benchmarking behaviour of 6.5.0 is otherwise unchanged. The release remains pre-alpha and
+migration. The proxy, TLS and benchmarking behaviour of 6.5.0 is otherwise unchanged. The release
 retains conservative compatibility claims.
 
 ## Behaviour changes to know before upgrading

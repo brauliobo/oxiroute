@@ -4,7 +4,7 @@ Released 2026-11-14.
 
 OxiRoute 6.5.2 is a bug-fix release: an operator route for `/.well-known/acme-challenge/` is now reached, so a webroot
 served for Certbot or another ACME client keeps renewing certificates behind OxiRoute. Nothing else changes from 6.5.1.
-The release remains pre-alpha and retains conservative compatibility claims.
+The release retains conservative compatibility claims.
 
 ## Fixed
 

@@ -1,8 +1,7 @@
 # OxiRoute 0.5.1
 
 OxiRoute 0.5.1 reduces idle CPU use and completes the runtime, configuration-proof, supervision, and
-control-plane ownership work developed after the published 0.5.0 release. The release remains
-pre-alpha and retains conservative compatibility claims.
+control-plane ownership work developed after the published 0.5.0 release. The release retains conservative compatibility claims.
 
 ## Highlights
 
