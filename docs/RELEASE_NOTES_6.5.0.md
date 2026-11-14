@@ -221,6 +221,14 @@ None of these defaults changed in 6.5.0. The measurements are in the summary.
   34.6, 35.6) and an HTTP/2 connection over TLS 41.5 kB (50.2, 50.3, 46.0). Four reloads of a 1,000-route configuration grow the
   process by 16.2 MB (6.4.0: 47.8 MB).
 
+## Build
+
+- Header scanning picks its SSE4.2, AVX2 or AVX-512 code path at run time from the CPU, so the generic x86-64 binary
+  still runs on CPUs without AVX.
+- Release builds refuse `-Ctarget-cpu`, `-Ctarget-feature` and `-march` style flags, and the release binaries are checked
+  for baseline x86-64 compatibility.
+- The release assets were rebuilt from the final release commit.
+
 ## Tools
 
 - The `heap-profile` cargo feature of `oxiroute` builds jemalloc with profiling and statistics, for memory investigations
