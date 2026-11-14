@@ -314,23 +314,33 @@ fn router_shape_requires_exactly_the_operator_overlays_and_the_audit_assertion()
     let import = |options: &NginxImportOptions| {
         import_root_with_options(Path::new("etc/nginx.conf"), directory.path(), options)
     };
-    let bare = import(&NginxImportOptions::default());
-    assert!(bare.has_errors());
-    assert!(bare.candidate.validated().is_none());
-    let messages = bare
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity() == Severity::Error)
-        .map(oxiroute_import::Diagnostic::message)
-        .collect::<Vec<_>>();
+    // Each layer hides the next: a bind with an unmigratable access log is not lowered further.
+    let errors = |report: &NginxImportReport| {
+        assert!(report.candidate.validated().is_none());
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity() == Severity::Error)
+            .map(|diagnostic| diagnostic.message().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let bare = errors(&import(&NginxImportOptions::default()));
+    assert!(
+        bare.iter()
+            .any(|message| message.contains("formatted access_log output is not equivalent"))
+    );
+
+    let logged = errors(&import(&NginxImportOptions {
+        default_access_log: options().default_access_log,
+        ..NginxImportOptions::default()
+    }));
     for expected in [
-        "formatted access_log output is not equivalent",
         "bearer authorization rule requires an explicit bearer token file overlay",
         "proxy_ignore_headers must explicitly disable",
     ] {
         assert!(
-            messages.iter().any(|message| message.contains(expected)),
-            "{expected}: {messages:#?}"
+            logged.iter().any(|message| message.contains(expected)),
+            "{expected}: {logged:#?}"
         );
     }
     assert!(!import(&options()).has_errors());
