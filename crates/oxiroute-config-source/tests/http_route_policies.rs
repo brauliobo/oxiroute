@@ -314,7 +314,7 @@ fn rejects_the_removed_proxy_only_route_and_service_fields() {
 
 #[test]
 fn retains_source_and_render_size_bounds_for_http_actions() {
-    let oversized = "x".repeat(1024 * 1024);
+    let oversized = "x".repeat(oxiroute_config_source::MAX_SOURCE_BYTES);
     let route = format!(
         r#"        {{
           path = {{ kind = "exact", value = "/" }},

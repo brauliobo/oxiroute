@@ -60,7 +60,7 @@ pub(super) fn add_plain_listener<A>(
     bind: &ListenerBind,
 ) -> io::Result<()> {
     match bind {
-        ListenerBind::Socket { address } => {
+        ListenerBind::Socket { address, .. } => {
             service.add_tcp(&address.to_string());
             Ok(())
         }
@@ -266,7 +266,7 @@ pub(super) fn add_http_listener<A>(
     handshake_threads: usize,
 ) -> Result<(), Box<dyn Error>> {
     match (bind, tls) {
-        (ListenerBind::Socket { address }, Some(tls)) => {
+        (ListenerBind::Socket { address, .. }, Some(tls)) => {
             tls.listen(service, &address.to_string(), handshake_threads)?;
             Ok(())
         }

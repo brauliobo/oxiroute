@@ -93,7 +93,10 @@ fn ordinary_preparation_failure_quarantines_even_after_deadline() {
     config.http_services.push(service);
     config.listeners.push(oxiroute_config::Listener {
         name: "occupied".into(),
-        bind: oxiroute_config::ListenerBind::Socket { address },
+        bind: oxiroute_config::ListenerBind::Socket {
+            address,
+            ipv6_only: false,
+        },
         protocol: oxiroute_config::Protocol::Http,
         service: Some("occupied-service".into()),
         tls_profile: None,

@@ -32,7 +32,10 @@ fn config(name: &str, address: SocketAddr) -> ConfigDraft {
         retirement: None,
         listeners: vec![oxiroute_config::Listener {
             name: name.into(),
-            bind: ListenerBind::Socket { address },
+            bind: ListenerBind::Socket {
+                address,
+                ipv6_only: false,
+            },
             protocol: oxiroute_config::Protocol::Rtmp,
             service: Some("rtmp".into()),
             tls_profile: None,
@@ -245,6 +248,7 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
             name: format!("listener-{index}"),
             bind: ListenerBind::Socket {
                 address: crate::test_ports::unused_tcp_address(),
+                ipv6_only: false,
             },
             protocol: Protocol::Tcp,
             service: Some("relay".into()),

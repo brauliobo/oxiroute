@@ -210,7 +210,10 @@ fn failed_listener_candidate_releases_resources_and_preserves_active_generation(
     let mut candidate = active.config().to_draft();
     candidate.listeners.push(oxiroute_config::Listener {
         name: "live".into(),
-        bind: oxiroute_config::ListenerBind::Socket { address },
+        bind: oxiroute_config::ListenerBind::Socket {
+            address,
+            ipv6_only: false,
+        },
         protocol: oxiroute_config::Protocol::Rtmp,
         service: Some("live".into()),
         tls_profile: None,

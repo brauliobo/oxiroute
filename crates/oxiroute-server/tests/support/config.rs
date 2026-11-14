@@ -96,7 +96,10 @@ pub fn loopback_address(port: u16) -> SocketAddr {
 }
 
 pub fn socket_bind(address: SocketAddr) -> ListenerBind {
-    ListenerBind::Socket { address }
+    ListenerBind::Socket {
+        address,
+        ipv6_only: false,
+    }
 }
 
 pub fn loopback_bind(port: u16) -> ListenerBind {

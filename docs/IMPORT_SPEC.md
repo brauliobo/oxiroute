@@ -232,10 +232,11 @@ source order alone is incorrect.
   agree and that value applies; mixed directive-only values stay blocked because per-server ALPN is not representable.
   `W_HTTP2_SOCKET_WIDE` names each server that gets HTTP/2 although its own configuration did not enable it. A plaintext bind
   whose effective `http2` is on stays blocked.
-- IPv6: `*` (`0.0.0.0`) and `[::]` are distinct endpoints. `listen P` plus `listen [::]:P`, with the same virtual servers,
-  the same default server and the same `ssl` flag on both sockets, lowers to one dual-stack `[::]:P` listener and emits
-  `W_DUAL_STACK_LISTENER`; the runtime binds it with `IPV6_V6ONLY` off. Pairs whose server sets differ are blocked. `listen [::]:P`
-  without the IPv4 counterpart stays blocked until the listener schema can express an IPv6-only socket.
+- IPv6: `*` (`0.0.0.0`) and `[::]` are distinct endpoints, as in nginx (`listen [::]:P` is its own IPv6-only socket). `listen P`
+  plus `listen [::]:P`, with the same virtual servers, the same default server and the same `ssl` flag on both sockets, lowers
+  to one dual-stack `[::]:P` listener and emits `W_DUAL_STACK_LISTENER`. Any other pair lowers to two listeners, `0.0.0.0:P`
+  and `[::]:P` with `ipv6_only = true`, each with its own virtual servers; `listen [::]:P` alone is likewise `[::]:P` with
+  `ipv6_only = true`. The runtime sets `IPV6_V6ONLY` from the option.
 
 ### nginx HTTP routes, proxy and operator overlays
 

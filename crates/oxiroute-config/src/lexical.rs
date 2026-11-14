@@ -250,7 +250,7 @@ fn validate_path(
 pub(crate) fn normalize_listener_binds(listeners: &mut [Listener]) -> Result<(), ConfigError> {
     for listener in listeners {
         match &mut listener.bind {
-            ListenerBind::Socket { address } | ListenerBind::Udp { address } => {
+            ListenerBind::Socket { address, .. } | ListenerBind::Udp { address } => {
                 normalize_socket_address(address);
             }
             ListenerBind::Unix { path, .. } => {

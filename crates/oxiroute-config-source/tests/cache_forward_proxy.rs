@@ -657,7 +657,7 @@ fn rejects_aliases_inline_secrets_and_oversized_sources() {
 
     let oversized = format!(
         "return {{ version = 1, listeners = {{}}, padding = {:?} }}",
-        "x".repeat(1024 * 1024)
+        "x".repeat(oxiroute_config_source::MAX_SOURCE_BYTES)
     );
     assert!(error(&oversized).contains("source limit"));
 }

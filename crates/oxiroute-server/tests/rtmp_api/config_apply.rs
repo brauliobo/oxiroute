@@ -405,7 +405,7 @@ pub(super) async fn chunked_config_body_is_bounded_while_streaming() {
     )
     .into_bytes();
     let chunk = vec![b'a'; 64 * 1024];
-    for _ in 0..16 {
+    for _ in 0..MAX_CANONICAL_CONFIG_BYTES / chunk.len() {
         request.extend_from_slice(b"10000\r\n");
         request.extend_from_slice(&chunk);
         request.extend_from_slice(b"\r\n");

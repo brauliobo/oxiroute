@@ -451,7 +451,10 @@ fn serves_topology_with_a_stats_page_runtime_overlay() {
         .register_configured_listener(
             "@stats-page-0",
             "http",
-            &ListenerBind::Socket { address: page_bind },
+            &ListenerBind::Socket {
+                address: page_bind,
+                ipv6_only: false,
+            },
             Some(20),
         )
         .expect("stats page metrics")
@@ -711,7 +714,7 @@ fn topology_runtime_generation(
     let mut activation = config.to_draft();
     for (index, listener) in activation.listeners.iter_mut().enumerate() {
         match &mut listener.bind {
-            ListenerBind::Socket { address } => {
+            ListenerBind::Socket { address, .. } => {
                 let mut probe_address = *address;
                 probe_address.set_port(0);
                 let probe = std::net::TcpListener::bind(probe_address)

@@ -120,7 +120,7 @@ pub(crate) fn protected_addresses(config: &ConfigDraft) -> Vec<SocketAddr> {
         .listeners
         .iter()
         .filter_map(|listener| match listener.bind {
-            ListenerBind::Socket { address } | ListenerBind::Udp { address } => Some(address),
+            ListenerBind::Socket { address, .. } | ListenerBind::Udp { address } => Some(address),
             ListenerBind::Unix { .. } => None,
         });
     let stats = config.stats.iter().flat_map(|stats| {

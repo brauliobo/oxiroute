@@ -373,7 +373,10 @@ impl Lowerer<'_> {
         for (index, address) in invocation_policy.listeners.iter().copied().enumerate() {
             self.draft.listeners.push(Listener {
                 name: format!("varnish-listener-{}", index + 1),
-                bind: ListenerBind::Socket { address },
+                bind: ListenerBind::Socket {
+                    address,
+                    ipv6_only: false,
+                },
                 protocol: Protocol::Http,
                 service: Some(service_name.clone()),
                 tls_profile: None,

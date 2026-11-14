@@ -262,6 +262,7 @@ fn snapshot_serializes_to_the_monitoring_contract() {
             "http",
             &ListenerBind::Socket {
                 address: "[::]:8080".parse().expect("socket address"),
+                ipv6_only: false,
             },
             Some(100),
         )
@@ -488,6 +489,7 @@ fn configured_bind_identities_distinguish_socket_and_unix_without_redaction() {
             "http",
             &ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().expect("socket address"),
+                ipv6_only: false,
             },
             Some(10),
         )

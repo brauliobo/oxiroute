@@ -86,6 +86,7 @@ fn socket_addr(endpoint: &ListenEndpoint) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, *port))
 }
 
+/// An unpaired `[::]` wildcard is nginx's separate IPv6-only socket.
 fn listener_bind(bind: &EffectiveBind, _servers: &[&EffectiveServer]) -> Option<ListenerBind> {
     match &bind.endpoint {
         ListenEndpoint::Unix { path } => Some(ListenerBind::Unix {
@@ -96,7 +97,12 @@ fn listener_bind(bind: &EffectiveBind, _servers: &[&EffectiveServer]) -> Option<
             .or_else(|| {
                 (address == b"*").then(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), *port))
             })
-            .map(|address| ListenerBind::Socket { address }),
+            .map(|address| ListenerBind::Socket {
+                address,
+                ipv6_only: address.is_ipv6()
+                    && address.ip().is_unspecified()
+                    && bind.paired_endpoint.is_none(),
+            }),
     }
 }
 

@@ -147,6 +147,7 @@ fn descriptor_export_rejects_extra_keys_and_bind_mismatch() {
     let mut changed = config;
     changed.listeners[0].bind = ListenerBind::Socket {
         address: "127.0.0.1:1".parse().expect("changed address"),
+        ipv6_only: false,
     };
     let error = export_reservations(&reservations, &changed).expect_err("bind mismatch must fail");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -164,6 +165,7 @@ fn worker_descriptor_limit_is_explicitly_sixty_four() {
                     [127, 0, 0, 1],
                     10_000 + u16::try_from(index).expect("bounded listener index"),
                 )),
+                ipv6_only: false,
             },
             protocol: oxiroute_config::Protocol::Http,
             service: Some("http".into()),

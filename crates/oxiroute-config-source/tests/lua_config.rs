@@ -534,7 +534,8 @@ fn loads_the_canonical_configuration() {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Socket {
-            address: "127.0.0.1:8080".parse().expect("socket address")
+            address: "127.0.0.1:8080".parse().expect("socket address"),
+            ipv6_only: false
         }
     );
     assert_eq!(config.listeners[0].protocol, Protocol::Http);
@@ -3334,7 +3335,7 @@ return { version = 1, listeners = {} }
 
 #[test]
 fn enforces_the_source_size_limit() {
-    let source = " ".repeat(1024 * 1024 + 1);
+    let source = " ".repeat(oxiroute_config_source::MAX_SOURCE_BYTES + 1);
     let error = lua_error_from(&source);
 
     assert!(matches!(

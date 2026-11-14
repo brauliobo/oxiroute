@@ -26,8 +26,9 @@ use cache::LoadCache;
 pub use candidate::PersistableConfigCandidate;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
-/// The canonical file is bounded to the same one-MiB limit as the restricted Lua loader.
-pub const MAX_CANONICAL_CONFIG_BYTES: usize = 1024 * 1024;
+/// The canonical file is bounded to the same four-MiB limit as every config source and rendering. A router-sized
+/// import is about 1.5 MiB because each static route carries its own MIME table.
+pub const MAX_CANONICAL_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 
 /// A SHA-256 revision of exact authored bytes stored in the canonical file.
 ///
@@ -792,7 +793,7 @@ fn source_error_class(error: &ConfigSourceError) -> ConfigDiagnostic {
         ConfigSourceError::SourceTooLarge => diagnostic(
             "E_CONFIG_TOO_LARGE",
             ConfigDiagnosticStage::Read,
-            "canonical configuration exceeds the one-MiB limit",
+            "canonical configuration exceeds the four-MiB limit",
         ),
         ConfigSourceError::Utf8(_)
         | ConfigSourceError::Parse { .. }
