@@ -156,9 +156,11 @@ fn import_nginx(
     dependencies: &mut Dependencies,
 ) -> Result<ImportedNative, ConfigSourceError> {
     use oxiroute_import::nginx::{
-        NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay, NginxHostTimezoneOverlay,
-        NginxImportOptions, NginxRecordingRootOverlay, import_root_with_options,
+        NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
+        NginxHostTimezoneOverlay, NginxImportOptions, NginxRecordingRootOverlay,
+        NginxUpstreamTlsOverlay, import_root_with_options,
     };
+    use oxiroute_config::{UpstreamTls, UpstreamTlsVerify};
 
     let path = resolve_path(parent, &source.path);
     let root_prefix = resolve_path(parent, &source.root_prefix);
@@ -188,7 +190,30 @@ fn import_nginx(
             }
         }),
         x_accel_controls_absent: source.x_accel_controls_absent,
-        ..NginxImportOptions::default()
+        bearer_tokens: source
+            .bearer_token_file
+            .iter()
+            .map(|entry| NginxBearerTokenOverlay {
+                server_name: entry.server_name.clone(),
+                token_file_path: resolve_path(parent, &entry.path),
+            })
+            .collect(),
+        upstream_tls: source
+            .upstream_tls
+            .iter()
+            .map(|entry| NginxUpstreamTlsOverlay {
+                authority: entry.authority.clone(),
+                tls: UpstreamTls {
+                    server_name: Some(entry.server_name.clone()),
+                    verify: UpstreamTlsVerify::Full,
+                    ca_certificate_path: entry
+                        .ca_certificate_path
+                        .as_ref()
+                        .map(|path| resolve_path(parent, path)),
+                },
+                require_connectivity_activation: false,
+            })
+            .collect(),
     };
     let report = import_root_with_options(&path, &root_prefix, &options);
     let config = report
