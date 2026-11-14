@@ -121,6 +121,8 @@ nginx_server "/etc/nginx/nginx.conf" {
   default_access_log_file "/var/lib/oxiroute/http-access.jsonl"
   recording_root "/mnt/cloud/4tb/cam-rtmp"
   default_error_server "nginx/1.30.2"
+  bearer_token_file "api.example.com" "/run/secrets/api.token"
+  upstream_tls "192.0.2.44:8443" "origin.example.com" "/etc/oxiroute/origin-ca.pem"
 }
 
 haproxy_server "/etc/haproxy/haproxy.cfg" "/etc/haproxy/conf.d" {
@@ -140,6 +142,9 @@ varnish_server "/etc/varnish/default.vcl" "varnishd" "-a" ":6081" "-s" "cache=ma
 KDL permits repeated native server nodes. nginx, Squid, and Apache take exactly one positional path;
 HAProxy takes one or more ordered positional paths; Varnish takes one positional path followed by
 optional ordered invocation arguments. Child options must be untyped scalar nodes, and properties are rejected.
+The two repeatable nginx options `bearer_token_file "<server_name>" "<path>"` and
+`upstream_tls "<authority>" "<sni>" ["<ca>"]` are the only exception: each occurrence takes its
+positional string arguments (no properties, types, or children), and every other option still rejects duplicates.
 
 HOCON uses a single object or an array of objects with these exact shapes:
 
@@ -147,6 +152,8 @@ HOCON uses a single object or an array of objects with these exact shapes:
 nginx_server = {
   path = "nginx.conf"
   root_prefix = "."
+  bearer_token_file = [{ server_name = "api.example.com", path = "/run/secrets/api.token" }]
+  upstream_tls = [{ authority = "192.0.2.44:8443", server_name = "origin.example.com", ca_certificate_path = "/etc/oxiroute/origin-ca.pem" }]
 }
 haproxy_server = [{
   paths = ["frontend.cfg", "backend.cfg"]
@@ -166,7 +173,9 @@ varnish_server = {
 }
 ```
 
-UCI uses named source sections. `nginx_server`, `squid_server`, and `apache_server` accept scalar `option` entries;
+UCI uses named source sections. `nginx_server`, `squid_server`, and `apache_server` accept scalar `option` entries
+(nginx also accepts the repeatable `list bearer_token_file '<server_name>=<path>'` and
+`list upstream_tls '<authority>=<sni>[,ca=<path>]'` entries);
 `haproxy_server` uses ordered `list path` entries and optional scalar preprocessing values; Varnish uses
 one scalar `option path` and ordered `list arguments` entries:
 
@@ -174,6 +183,8 @@ one scalar `option path` and ordered `list arguments` entries:
 config nginx_server 'web'
   option path 'nginx.conf'
   option root_prefix '.'
+  list bearer_token_file 'api.example.com=/run/secrets/api.token'
+  list upstream_tls '192.0.2.44:8443=origin.example.com,ca=/etc/oxiroute/origin-ca.pem'
 
 config haproxy_server 'edge'
   list path 'frontend.cfg'
@@ -198,7 +209,15 @@ config varnish_server 'cache'
 ```
 
 nginx reference options are exactly `path`, `root_prefix`, `host_timezone`,
-`default_access_log_file`, `recording_root`, and `default_error_server`. Apache reference options are
+`default_access_log_file` (migrates omitted and formatted nginx access logs), `recording_root`,
+`default_error_server`, `x_accel_controls_absent`, and the repeatable `bearer_token_file` and
+`upstream_tls`. `bearer_token_file` binds a literal-bearer `if ($http_authorization != ...)` gate to an
+operator-provisioned token file (regular file, mode 0400 or 0600, one printable-ASCII line; the importer never
+reads or stores the nginx literal) and is identified by the case-insensitive `server_name`. `upstream_tls`
+hardens one https `proxy_pass` authority with a verified SNI and optional CA bundle; without it https upstreams
+keep nginx's unverified default. Both lists reject empty values and duplicate identities, and an entry that
+matches no lowered rule fails the import. UCI cannot express the CLI-only `activate` flag, and the Lua format has
+no native references. Relative token and CA paths resolve from the source document directory. Apache reference options are
 exactly `path`. HAProxy reference options are
 exactly ordered `paths`, optional `node_ip`, and `gpu1_defined`; true `gpu1_defined` requires
 `node_ip`. Squid accepts `path` and `externalize_cache`; the latter is required when parsed refresh

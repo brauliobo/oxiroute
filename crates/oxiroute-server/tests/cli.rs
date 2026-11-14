@@ -439,6 +439,164 @@ fn generation_reload_cli_keeps_the_old_generation_and_surfaces_native_failure() 
     );
 }
 
+const NGINX_OVERLAY_ROOT: &str = "events {} http { access_log off; proxy_http_version 1.1; proxy_buffering off; \
+proxy_request_buffering off; \
+proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; \
+server { listen 127.0.0.1:18080 default_server; server_name api.example.org; \
+location / { if ($http_authorization != \"Bearer <redacted>\") { return 401; } proxy_pass https://192.0.2.44; } } }";
+
+fn import_nginx_overlays(directory: &TempDir, flags: &[&str]) -> Output {
+    let root = directory.path().join("nginx.conf");
+    fs::write(&root, NGINX_OVERLAY_ROOT).expect("nginx root");
+    cli()
+        .args([
+            "import",
+            "nginx",
+            root.to_str().unwrap(),
+            "--root-prefix",
+            directory.path().to_str().unwrap(),
+        ])
+        .args(flags)
+        .output()
+        .expect("import nginx")
+}
+
+#[test]
+fn import_nginx_preview_applies_bearer_token_files_and_upstream_tls() {
+    let directory = TempDir::new().expect("directory");
+    for tls in [
+        "192.0.2.44=origin.example.test",
+        "192.0.2.44=origin.example.test,ca=/path/to/ca.pem,activate",
+    ] {
+        let output = import_nginx_overlays(
+            &directory,
+            &[
+                "--bearer-token-file",
+                "api.example.org=/run/secrets/api.token",
+                "--upstream-tls",
+                tls,
+                "--output",
+                "preview",
+            ],
+        );
+        assert!(output.status.success(), "{}", output_text(&output));
+        let preview = String::from_utf8(output.stdout).unwrap();
+        assert!(preview.contains("/run/secrets/api.token"), "{preview}");
+        assert!(preview.contains("origin.example.test"), "{preview}");
+        assert_eq!(
+            preview.contains("/path/to/ca.pem"),
+            tls.contains(",ca="),
+            "{preview}"
+        );
+    }
+}
+
+#[test]
+fn import_nginx_preview_without_the_overlays_is_not_finalized() {
+    let directory = TempDir::new().expect("directory");
+    let output = import_nginx_overlays(&directory, &["--output", "preview"]);
+    assert!(!output.status.success(), "{}", output_text(&output));
+}
+
+#[test]
+fn import_nginx_overlays_matching_nothing_are_reported_and_block_the_preview() {
+    let directory = TempDir::new().expect("directory");
+    let flags = [
+        "--bearer-token-file",
+        "api.example.org=/run/secrets/api.token",
+        "--upstream-tls",
+        "192.0.2.44=origin.example.test",
+        "--bearer-token-file",
+        "other.example.org=/run/secrets/other.token",
+    ];
+    let report = import_nginx_overlays(&directory, &flags);
+    assert!(report.status.success(), "{}", output_text(&report));
+    assert!(
+        String::from_utf8_lossy(&report.stdout).contains("matches no lowered authorization rule")
+    );
+    let preview =
+        import_nginx_overlays(&directory, &[&flags[..], &["--output", "preview"]].concat());
+    assert!(!preview.status.success(), "{}", output_text(&preview));
+}
+
+#[test]
+fn import_nginx_overlay_flags_name_what_is_malformed() {
+    let directory = TempDir::new().expect("directory");
+    let cases = [
+        (
+            "--bearer-token-file",
+            "api.example.org",
+            "expected <SERVER_NAME>=<ABS_PATH>",
+        ),
+        (
+            "--bearer-token-file",
+            "=/run/secrets/api.token",
+            "server name must not be empty",
+        ),
+        (
+            "--bearer-token-file",
+            "api.example.org=",
+            "token file must not be empty",
+        ),
+        (
+            "--bearer-token-file",
+            "api.example.org=secrets/api.token",
+            "token file must be an absolute path",
+        ),
+        ("--upstream-tls", "192.0.2.44", "expected <AUTHORITY>=<SNI>"),
+        (
+            "--upstream-tls",
+            "=origin.example.test",
+            "authority must not be empty",
+        ),
+        ("--upstream-tls", "192.0.2.44=", "SNI must not be empty"),
+        (
+            "--upstream-tls",
+            "192.0.2.44=s,ca=relative.pem",
+            "CA certificate must be an absolute path",
+        ),
+        (
+            "--upstream-tls",
+            "192.0.2.44=s,ca=/a,ca=/b",
+            "unknown or repeated option `ca=/b`",
+        ),
+        (
+            "--upstream-tls",
+            "192.0.2.44=s,activate,activate",
+            "unknown or repeated option `activate`",
+        ),
+        (
+            "--upstream-tls",
+            "192.0.2.44=s,verify",
+            "unknown or repeated option `verify`",
+        ),
+    ];
+    for (flag, value, message) in cases {
+        let output = import_nginx_overlays(&directory, &[flag, value]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains(message),
+            "{flag} {value}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn import_nginx_help_describes_the_access_log_migration_and_overlays() {
+    let output = cli()
+        .args(["import", "nginx", "--help"])
+        .output()
+        .expect("help");
+    let help = String::from_utf8(output.stdout).unwrap();
+    for text in [
+        "omitted AND formatted nginx access logs",
+        "--bearer-token-file <SERVER_NAME=ABS_PATH>",
+        "--upstream-tls <AUTHORITY=SNI[,ca=PATH][,activate]>",
+    ] {
+        assert!(help.contains(text), "{text}: {help}");
+    }
+}
+
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,

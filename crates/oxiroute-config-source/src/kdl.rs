@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
@@ -96,7 +96,7 @@ fn decode_squid_node(
             "squid_server requires exactly one string path argument",
         ));
     }
-    let mut object = decode_option_children(node, count)?;
+    let mut object = decode_option_children(node, count, &[])?;
     if object.contains_key("path") {
         return Err(ConfigSourceError::parse(
             "KDL 2",
@@ -119,7 +119,7 @@ fn decode_apache_node(
             "apache_server requires exactly one string path argument",
         ));
     }
-    let mut object = decode_option_children(node, count)?;
+    let mut object = decode_option_children(node, count, &[])?;
     if object.contains_key("path") {
         return Err(ConfigSourceError::parse(
             "KDL 2",
@@ -167,7 +167,7 @@ fn decode_nginx_node(
             "nginx_server requires exactly one string path argument",
         ));
     }
-    let mut object = decode_option_children(node, count)?;
+    let mut object = decode_option_children(node, count, NGINX_REPEATED_OPTIONS)?;
     if object.contains_key("path") {
         return Err(ConfigSourceError::parse(
             "KDL 2",
@@ -190,7 +190,7 @@ fn decode_haproxy_node(
             "haproxy_server requires at least one string path argument",
         ));
     }
-    let mut object = decode_option_children(node, count)?;
+    let mut object = decode_option_children(node, count, &[])?;
     if object.contains_key("paths") {
         return Err(ConfigSourceError::parse(
             "KDL 2",
@@ -249,11 +249,33 @@ fn directive_paths(node: &KdlNode) -> Result<Vec<String>, ConfigSourceError> {
     Ok(paths)
 }
 
+/// A native option that may repeat; each occurrence maps its positional strings onto `fields`.
+struct RepeatedOption {
+    name: &'static str,
+    fields: &'static [&'static str],
+    required: usize,
+}
+
+const NGINX_REPEATED_OPTIONS: &[RepeatedOption] = &[
+    RepeatedOption {
+        name: "bearer_token_file",
+        fields: &["server_name", "path"],
+        required: 2,
+    },
+    RepeatedOption {
+        name: "upstream_tls",
+        fields: &["authority", "server_name", "ca_certificate_path"],
+        required: 2,
+    },
+];
+
 fn decode_option_children(
     node: &KdlNode,
     count: &mut usize,
+    repeated: &[RepeatedOption],
 ) -> Result<Map<String, Value>, ConfigSourceError> {
     let mut options = Map::new();
+    let mut occurrences = BTreeMap::<&str, Vec<Value>>::new();
     for child in node.children().map_or(&[][..], |children| children.nodes()) {
         increment_node_count(count)?;
         let name = child.name().value();
@@ -270,6 +292,13 @@ fn decode_option_children(
                 format!("properties are not allowed on native option `{name}`"),
             ));
         }
+        if let Some(option) = repeated.iter().find(|option| option.name == name) {
+            occurrences
+                .entry(option.name)
+                .or_default()
+                .push(decode_positional_fields(child, option)?);
+            continue;
+        }
         if options.contains_key(name) {
             return Err(ConfigSourceError::parse(
                 "KDL 2",
@@ -278,7 +307,42 @@ fn decode_option_children(
         }
         options.insert(name.to_owned(), decode_scalar(child)?);
     }
+    for (name, values) in occurrences {
+        options.insert(name.to_owned(), Value::Array(values));
+    }
     Ok(options)
+}
+
+fn decode_positional_fields(
+    node: &KdlNode,
+    option: &RepeatedOption,
+) -> Result<Value, ConfigSourceError> {
+    let name = option.name;
+    let arguments = directive_paths(node)?;
+    if node.children().is_some()
+        || !(option.required..=option.fields.len()).contains(&arguments.len())
+    {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            format!(
+                "native option `{name}` takes {} string arguments ({}) and no children",
+                if option.required == option.fields.len() {
+                    option.required.to_string()
+                } else {
+                    format!("{} to {}", option.required, option.fields.len())
+                },
+                option.fields.join(", ")
+            ),
+        ));
+    }
+    Ok(Value::Object(
+        option
+            .fields
+            .iter()
+            .zip(arguments)
+            .map(|(field, argument)| ((*field).to_owned(), Value::String(argument)))
+            .collect(),
+    ))
 }
 
 fn increment_node_count(count: &mut usize) -> Result<(), ConfigSourceError> {

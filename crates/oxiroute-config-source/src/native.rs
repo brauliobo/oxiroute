@@ -1,4 +1,4 @@
-use std::{net::IpAddr, path::PathBuf};
+use std::{collections::HashSet, ffi::OsStr, net::IpAddr, path::PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,6 +21,26 @@ pub(crate) struct NginxSource {
     pub default_error_server: Option<String>,
     #[serde(default)]
     pub x_accel_controls_absent: bool,
+    #[serde(default)]
+    pub bearer_token_file: Vec<BearerTokenFile>,
+    #[serde(default)]
+    pub upstream_tls: Vec<UpstreamTlsOverlay>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BearerTokenFile {
+    pub server_name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UpstreamTlsOverlay {
+    pub authority: String,
+    pub server_name: String,
+    #[serde(default)]
+    pub ca_certificate_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -177,7 +197,47 @@ pub(crate) fn decode_nginx(
             "nginx_server root_prefix must not be empty",
         ));
     }
+    check_overlay_list(
+        "bearer_token_file",
+        source
+            .bearer_token_file
+            .iter()
+            .map(|entry| (entry.server_name.as_str(), entry.path.as_os_str())),
+        format,
+    )?;
+    check_overlay_list(
+        "upstream_tls",
+        source
+            .upstream_tls
+            .iter()
+            .map(|entry| (entry.authority.as_str(), OsStr::new(&entry.server_name))),
+        format,
+    )?;
     Ok(source)
+}
+
+/// Overlay identities are matched case-insensitively by the importer, so duplicates are ambiguous.
+fn check_overlay_list<'a>(
+    option: &str,
+    entries: impl Iterator<Item = (&'a str, &'a OsStr)>,
+    format: &'static str,
+) -> Result<(), ConfigSourceError> {
+    let mut seen = HashSet::new();
+    for (identity, value) in entries {
+        if identity.is_empty() || value.is_empty() {
+            return Err(ConfigSourceError::parse(
+                format,
+                format!("nginx_server {option} values must not be empty"),
+            ));
+        }
+        if !seen.insert(identity.to_ascii_lowercase()) {
+            return Err(ConfigSourceError::parse(
+                format,
+                format!("nginx_server {option} `{identity}` is declared more than once"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn decode_haproxy(
