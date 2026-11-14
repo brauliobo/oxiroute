@@ -9,8 +9,8 @@ use oxiroute_config::canonical_ip;
 use crate::canonical::{dns_name, ip_address, unix_socket_path};
 use crate::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_CYCLE,
-    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
-    E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Report, Severity, Span,
+    E_INVALID_VALUE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT, E_UNRESOLVED_REFERENCE,
+    E_UNSUPPORTED_FEATURE, Report, Severity, Span,
 };
 
 use super::{

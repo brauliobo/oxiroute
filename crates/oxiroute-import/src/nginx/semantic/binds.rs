@@ -119,9 +119,9 @@ impl Resolver<'_> {
         binds
     }
 
-    /// nginx binds `listen P` (IPv4) and `listen [::]:P` (IPv6 only) as two sockets; the canonical
-    /// listener model has one dual-stack `[::]:P` socket, so only a pair serving identical virtual
-    /// servers is representable.
+    /// nginx binds `listen P` (IPv4) and `listen [::]:P` (IPv6 only) as two sockets, each routing to the virtual
+    /// servers that listen on it. A pair that serves identical virtual servers the same way is one dual-stack `[::]`
+    /// canonical listener; any other pair stays two listeners, the IPv6 one `ipv6_only`.
     fn pair_dual_stack(&mut self, servers: &[EffectiveServer], binds: &mut Vec<EffectiveBind>) {
         let ipv6_endpoints = binds
             .iter()
@@ -133,18 +133,9 @@ impl Resolver<'_> {
             let ipv6_index = Self::bind_index(binds, &ipv6_endpoint);
             let Some(ipv4_index) = binds.iter().position(|bind| bind.endpoint == ipv4_endpoint)
             else {
-                self.block_bind_listens(
-                    servers,
-                    &binds[ipv6_index],
-                    "IPv6-only nginx listen [::] has no canonical representation; pair it with listen on the same port for one dual-stack listener",
-                );
                 continue;
             };
-            if let Some(reason) =
-                Self::dual_stack_mismatch(servers, &binds[ipv6_index], &binds[ipv4_index])
-            {
-                self.block_bind_listens(servers, &binds[ipv6_index], reason);
-                self.block_bind_listens(servers, &binds[ipv4_index], reason);
+            if !Self::dual_stack_equivalent(servers, &binds[ipv6_index], &binds[ipv4_index]) {
                 continue;
             }
             let first = binds[ipv6_index].servers[0];
@@ -190,42 +181,17 @@ impl Resolver<'_> {
             .expect("bind retains each contributing listen")
     }
 
-    fn dual_stack_mismatch(
+    fn dual_stack_equivalent(
         servers: &[EffectiveServer],
         ipv6: &EffectiveBind,
         ipv4: &EffectiveBind,
-    ) -> Option<&'static str> {
-        let same_servers = ipv6.servers.iter().collect::<HashSet<_>>()
-            == ipv4.servers.iter().collect::<HashSet<_>>();
-        if !same_servers {
-            return Some(
-                "listen and listen [::] on one port are declared by different virtual servers; one dual-stack listener cannot serve them differently",
-            );
-        }
-        if ipv6.default_server != ipv4.default_server {
-            return Some("listen and listen [::] on one port select different default servers");
-        }
-        let disagree = ipv6.servers.iter().any(|server| {
-            listen_ssl(Self::server_listen(servers, *server, &ipv6.endpoint))
-                != listen_ssl(Self::server_listen(servers, *server, &ipv4.endpoint))
-        });
-        disagree.then_some("listen and listen [::] on one port disagree about ssl")
-    }
-
-    fn block_bind_listens(
-        &mut self,
-        servers: &[EffectiveServer],
-        bind: &EffectiveBind,
-        reason: &'static str,
-    ) {
-        for server in &bind.servers {
-            let listen = Self::server_listen(servers, *server, &bind.endpoint);
-            self.block(
-                listen.origin.occurrence,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                reason,
-            );
-        }
+    ) -> bool {
+        ipv6.servers.iter().collect::<HashSet<_>>() == ipv4.servers.iter().collect::<HashSet<_>>()
+            && ipv6.default_server == ipv4.default_server
+            && ipv6.servers.iter().all(|server| {
+                listen_ssl(Self::server_listen(servers, *server, &ipv6.endpoint))
+                    == listen_ssl(Self::server_listen(servers, *server, &ipv4.endpoint))
+            })
     }
 
     fn resolve_bind_names(&mut self, servers: &[EffectiveServer], binds: &mut [EffectiveBind]) {
