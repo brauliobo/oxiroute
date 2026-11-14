@@ -1,252 +1,114 @@
 # OxiRoute
 
-OxiRoute is a pre-alpha Rust proxy runtime and control plane for publishing HTTP, TCP, and RTMP
-services from one typed configuration. It is built on [Cloudflare Pingora](https://github.com/cloudflare/pingora)
-and is designed around explicit behavior, bounded inputs, observable runtime state, and safe
-configuration changes.
+A Rust proxy and control plane for routing HTTP, TCP, UDP, and RTMP services from one typed configuration.
+Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora), with a CLI and browser dashboard for
+inspecting traffic, managing backends, and applying configuration changes.
 
-**Current release line:** `6.5.2` (pre-alpha; `v6.5.2` is the current repository release)<br>
-**Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
-for production traffic.<br>
-**Toolchain status:** the checked-in workspace and CI use Rust `1.97.1` as the active MSRV.<br>
-**Website:** [brauliobo.github.io/oxiroute](https://brauliobo.github.io/oxiroute/)
-**License:** Apache-2.0
+**Version 6.5.2 · Apache-2.0**
 
-## Start With Your Job
+Start with a local evaluation. Protocol support and migration coverage vary by feature; the
+[compatibility matrix](docs/COMPATIBILITY.md) defines the current boundaries. Broad production readiness
+and complete compatibility with other proxies have not been established.
 
-| If you want to... | Start here |
+## Start here
+
+| Your task | Guide |
 | --- | --- |
-| Run a local reverse proxy | [User quickstart](docs/user/GETTING_STARTED.md) |
-| Operate a running daemon | [Operations guide](docs/user/OPERATING.md) and [management CLI](docs/MANAGEMENT_CLI.md) |
-| Understand the browser dashboard | [Dashboard guide](docs/user/DASHBOARD.md) |
-| Migrate nginx, HAProxy, Apache, Squid, or Varnish | [Migration guide](docs/user/MIGRATION.md) and [import specification](docs/IMPORT_SPEC.md) |
-| Publish or record RTMP | [RTMP guide](docs/user/RTMP.md) and [RTMP specification](docs/RTMP_SPEC.md) |
-| Integrate with the control plane | [API reference](docs/reference/API.md) and [API/UI specification](docs/API_UI_SPEC.md) |
-| Change the code | [Developer guide](docs/developer/README.md) |
-| Find a feature's exact boundary | [Compatibility matrix](docs/COMPATIBILITY.md) |
+| Run your first reverse proxy | [Getting started](docs/user/GETTING_STARTED.md) |
+| Operate listeners, backends, and reloads | [Operations](docs/user/OPERATING.md) · [Runbook](docs/user/RUNBOOK.md) |
+| Inspect the dashboard | [Dashboard](docs/user/DASHBOARD.md) |
+| Migrate an existing proxy configuration | [Migration](docs/user/MIGRATION.md) |
+| Publish or record live streams | [RTMP](docs/user/RTMP.md) |
+| Build an integration | [CLI](docs/reference/CLI.md) · [API](docs/reference/API.md) · [Configuration](docs/reference/CONFIGURATION.md) |
+| Contribute code | [Developer guide](docs/developer/README.md) |
+| Evaluate performance | [Benchmarks and evidence](docs/BENCHMARKS.md) |
 
-The [documentation hub](docs/README.md) explains the full hierarchy. The website is the quickest
-visual overview; the repository documents are the detailed, versioned contracts.
+## What you can do
 
-## What Exists Today
-
-OxiRoute is deliberately honest about the difference between a useful narrow slice and a product
-goal. These are the current building blocks:
-
-- **HTTP reverse proxy:** deterministic host/path/method routing, health-aware pools, round-robin,
-  weighted round-robin, and least-connections selection, active TCP/HTTP checks, bounded configurable
-  retries/passive health, request and connection limits, WebSocket upgrades, downstream TLS, verified
-  upstream TLS/SNI, and a tested HTTP/2/gRPC slice.
-- **Explicit forward proxy:** narrow HTTP/1 and HTTP/3 absolute-form paths, CONNECT, and opt-in HTTP/1
-  RFC 9298 CONNECT-UDP with authentication, resolved-address destination policy, header privacy,
-  bounded tunnels, and opt-in bounded memory/persistent caching for eligible GET/HEAD requests.
-  HTTP/2 remains limited to tested classic CONNECT tunnels, and broader request-form conformance is
-  partial. It is not a general Squid replacement.
-- **Opaque TCP relay:** socket, DNS, and Unix upstreams, half-close handling, health-aware pools,
-  backpressure, and connect/idle/lifetime limits.
-- **Configuration control plane:** KDL 2.0 by default, plus restricted Lua, HOCON, and UCI source
-  adapters; typed validation; deterministic previews; templates and strict native references; and
-  revision-checked configuration writes. KDL is the canonical current format; restricted Lua is a
-  supported compatibility adapter, not the canonical format.
-- **Runtime observability:** loopback management API, topology graph, monitoring snapshots, Prometheus
-  metrics, readiness, bounded event polling, separate durable redacted audit history, redacted HTTP
-  JSONL access logs, HAProxy-oriented statistics, and a responsive Vue 3/Pug dashboard.
-- **RTMP live path:** publish/play, simple and complex handshakes, bounded fanout, keyframe gating,
-  stream inventory, legacy AVC/AAC FLV recording, named continuous/manual recorder policies, bounded
-  HLS/DASH output, bounded VOD, same-daemon auto-push, isolated exec profiles, a service-configured
-  inbound assembled-message ceiling up to 8 MiB, static push relay, and exact-ID bearer-protected
-  local controls.
-- **Native migration:** bounded nginx, HAProxy, Apache, Squid, and Varnish import/report/preview
-  paths, with source provenance and blocking diagnostics rather than silent lossy conversion.
-  Complete nginx roots can compose the strict nginx-RTMP subset into the canonical runtime through
-  native references.
-- **Supervision:** platform-neutral replacement state machines and a tested Linux master, worker, and
-  launcher slice for typed listener adoption. On Linux, `oxiroute serve` uses supervision when the
-  fixed launcher is installed and the listener topology is eligible. The Arch package installs that
-  launcher; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
-  A configuration reload adds, removes and moves listeners in either runtime without a restart or
-  dropped connections; see the operations guide.
-
-## Five-Minute Local Run
-
-This path uses the checked-in example. It starts one local HTTP origin, builds the dashboard, and runs
-the daemon with loopback-only management enabled.
-
-### 1. Start an origin
-
-In terminal A, start a server that answers the example's health check:
-
-```sh
-python3 - <<'PY'
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/healthz":
-            body = b"ok\n"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_error(404)
-
-    def log_message(self, format, *args):
-        pass
-
-HTTPServer(("127.0.0.1", 3000), Handler).serve_forever()
-PY
-```
-
-### 2. Build the dashboard and start OxiRoute
-
-In terminal B:
-
-```sh
-pnpm --dir ui install
-pnpm --dir ui build
-umask 077
-openssl rand -hex 32 > /tmp/oxiroute-management.token
-OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token \
-  cargo run -p oxiroute -- serve oxiroute.example.kdl
-```
-
-The example exposes:
-
-| Surface | Address | Purpose |
+| Area | Available behavior | Current boundary |
 | --- | --- | --- |
-| HTTP proxy | `127.0.0.1:8080` | Proxies requests to the healthy origin on port `3000` |
-| TCP relay | `127.0.0.1:15432` | Relays opaque traffic to `127.0.0.1:5432` when a target exists |
-| RTMP listener | `127.0.0.1:1935` | Accepts configured live publish/play sessions |
-| Management and UI | `127.0.0.1:9080` | Serves the dashboard and loopback API |
+| HTTP routing | Host/path/method routes; proxy, redirect, fixed and static responses; WebSocket upgrades; header rules, gzip, access logs | HTTP/1, HTTP/2, HTTP/3 and gRPC have different conformance limits |
+| Backend pools | Round robin, weighted round robin, least connections, health checks, capacity admission, safe retries, passive health, lease-based server registration | Registration requires an opted-in existing pool; retry safety depends on request policy |
+| Transport | Opaque TCP with half-close and timeouts; bounded UDP sessions; TLS termination and verified upstream TLS | UDP and supervised active-traffic drain have remaining gates |
+| Forward proxy | Authenticated HTTP/1 forwarding and CONNECT, classic H2 CONNECT, bounded H3 forwarding, opt-in H1 CONNECT-UDP | Request forms and MASQUE support are limited; destination policy is explicit |
+| Caching | Bounded memory/persistent GET/HEAD caches, revalidation, collapsed fills, authenticated purge | Eligibility and protocol limits apply; broader cache conformance remains |
+| Configuration | KDL 2.0, restricted Lua, HOCON and UCI; typed validation, templates, native references, revision-checked saves | KDL is recommended; each adapter has explicit restrictions |
+| Operations | CLI, dashboard, topology, Prometheus metrics, events, redacted audit/access logs, reload and rollback | Management is loopback-only with bearer authentication; active-traffic evidence varies by protocol |
+| Media | RTMP publish/play, fanout, recording, HLS/DASH, VOD, relays and local controls | Recording supports legacy AVC/AAC; broader media compatibility remains partial |
+| Migration | nginx, HAProxy, Apache, Squid and Varnish reports and previews; strict nginx-RTMP composition | Importers accept audited subsets and report blocking semantics |
 
-The checked-in example intentionally exercises HTTP/1, TCP, RTMP, and loopback management only.
-Reverse H2 uses an `http` listener with TLS ALPN `h2`; forward H2 uses a TLS `forward_http2`
-listener; reverse H3 uses a UDP `http3` listener; and forward H3 uses a UDP `forward_http3`
-listener. See the [configuration specification](docs/CONFIG_SPEC.md) for those boundaries.
+Feature availability does not imply complete protocol support. Read the
+[compatibility matrix](docs/COMPATIBILITY.md) before choosing a listener or replacing an existing service.
+Managed ACME also remains partial: CA-staging and production active-traffic evidence are release gates.
 
-### 3. Verify the request path
+## First local request
+
+Follow [Getting started](docs/user/GETTING_STARTED.md) for a complete, copyable source-build tutorial.
+It starts a local origin, validates the checked-in configuration, runs OxiRoute, and checks:
 
 ```sh
 curl -i http://127.0.0.1:8080/healthz
-TOKEN=$(tr -d '\r\n' < /tmp/oxiroute-management.token)
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:9080/api/v1/monitoring | jq .
 ```
 
-Open `http://127.0.0.1:9080/` to view the Runtime Observatory. Recognized management/API routes
-require the bearer token except exact `GET /ready` and `GET /metrics`; the browser retains that
-token in page memory only.
+Expected result: `200 OK` from the origin through OxiRoute. The full example also configures TCP, RTMP,
+and the management dashboard; the guide explains the ports, token, verification, and cleanup.
 
-## The Configuration Model
+Source builds use **Rust 1.97.1**, **Node.js 22**, **pnpm 11.3.0**, a C toolchain, and the platform build
+prerequisites described in the guide. Linux provides the fullest monitoring and supervision support.
+For packaged operation, see the [Arch packaging guide](packaging/arch/README.md).
 
-Every supported source becomes the same strict Rust-owned model before validation and runtime
-preparation:
+## How configuration changes work
 
 ```text
-source file -> bounded adapter -> typed config -> validation -> runtime plan -> generation -> listeners
+source → typed configuration → validation → prepared generation → active listeners
 ```
 
-KDL 2.0 is the recommended authoring format. File extensions select compatibility adapters:
+OxiRoute prepares a complete candidate before publishing it. A rejected candidate leaves the active
+generation serving. Revision checks prevent a stale configuration editor from silently overwriting a
+newer file. Existing traffic retains its generation while it drains; protocol-specific replacement
+and drain limits are documented in the [operations contract](docs/OPERATIONS.md).
 
-| Source | Use it when |
-| --- | --- |
-| `.kdl`, `.kdl2`, or no extension | Writing a new configuration, using templates, or referencing native sources |
-| `.lua` | Keeping a legacy restricted-Lua configuration |
-| `.hocon` or `.conf` | Integrating a declarative HOCON source |
-| `.uci` | Integrating an OpenWrt-style source |
+Start with [configuration examples](docs/reference/CONFIGURATION.md), then consult the
+[full specification](docs/CONFIG_SPEC.md) for defaults, bounds, precedence and validation rules.
 
-The canonical example is [`oxiroute.example.kdl`](oxiroute.example.kdl). The [configuration
-reference](docs/reference/CONFIGURATION.md) explains the smallest useful shapes; the full
-[configuration specification](docs/CONFIG_SPEC.md) defines bounds, defaults, routing precedence,
-TLS, health checks, recording, and security rules.
+## Measured performance
 
-A configuration change is not an in-place mutation. OxiRoute loads, validates, prepares, and then
-publishes a complete generation. A failed candidate leaves the active generation serving traffic.
-Management saves use a disk revision precondition, so a stale editor cannot silently overwrite a
-newer file.
+A **maintainer-recorded historical integrated 6.5 evaluation**, rather than a measurement of the current
+6.5.2 release, reported these medians for an HTTP/1.1 reverse proxy with a 1 KiB response:
 
-## Feature Boundaries
+| Measure | OxiRoute 6.5 integrated | nginx | HAProxy |
+| --- | ---: | ---: | ---: |
+| Requests/second | 159,762 | 180,958 | 156,066 |
+| p99 latency, µs | 296 | 252 | 348 |
+| Proxy CPU time/request, µs | 4.5 | 3.9 | 4.8 |
 
-Use these labels consistently in issues, docs, and deployment decisions:
+One worker per proxy, 32 keep-alive connections, loopback, CPU pinning, interleaved runs on a shared
+host; three 8-second measured runs after 3-second warm-ups. This workload put OxiRoute below nginx
+in throughput and near HAProxy. Other workloads differ.
 
-| Label | Meaning |
-| --- | --- |
-| `stable` | The behavior is part of the current narrow release contract with implementation and required evidence. |
-| `partial` | A narrow path is present, but the compatibility or production gate is incomplete. |
-| `foundation` | Tested component code exists, but it is not an active daemon capability. |
-| `planned` | A product goal or roadmap item; do not configure it in the current daemon. |
-| `research` | An evaluated possibility requiring a product or design decision. |
-| `not-planned` | Deliberately excluded from the current product plan. |
-| `out-of-scope` | It belongs to the kernel, a separate privileged helper, or another product boundary. |
-
-The important current exclusions are:
-
-- UDP relay remains partial. Forward HTTP/2 is limited to authority-only classic CONNECT; forward H3
-  has tested classic CONNECT and bounded absolute-form forwarding through its separate Quinn/H3
-  service. Broader forward request-form and MASQUE conformance remains incomplete.
-- HTTP caching is partial: bounded memory and persistent GET/HEAD caching, revalidation, collapsed
-  fills, authenticated purge, and listener cache metrics are active for reverse HTTP and eligible
-  HTTP/1 and HTTP/3 forward requests; trailer-bearing and unsafe-framing responses are served but not
-  admitted, and broader conformance remains.
-- Managed ACME is partial: HTTP-01, DNS-01, and TLS-ALPN-01 orchestration, certificate status,
-  renewal controls, and configuration UI are implemented; CA-staging and production active-traffic
-  evidence remain release gates. External Certbot lineage reconciliation is also implemented.
-- No complete nginx, HAProxy, Apache, Squid, Varnish, or nginx-RTMP compatibility. Importers finalize only
-  audited, representable subsets and fail closed for blocking semantics; strict nginx-RTMP results
-  are integrated through complete-root import and native references where documented.
-- No remote multi-user management mode. Recognized management/API routes require bearer
-  authentication except exact `GET /ready` and `GET /metrics`; management binds are loopback-only.
-- No firewall, NAT, transparent interception, source spoofing, or arbitrary packet forwarding.
-
-See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability matrix and
-the `planned` entries there are not current support.
-
-## Repository Map
-
-| Path | Responsibility |
-| --- | --- |
-| `crates/oxiroute-server` | CLI, daemon, listeners, generations, API, monitoring, topology, TLS, and runtime wiring |
-| `crates/oxiroute-config` | Typed canonical model, defaults, validation, and restricted Lua |
-| `crates/oxiroute-config-source` | KDL, HOCON, UCI, templates, native-reference resolution, and rendering |
-| `crates/oxiroute-import` | nginx, HAProxy, Apache, Squid, Varnish, provenance, diagnostics, and lowering |
-| `crates/oxiroute-forward-proxy` | Protocol-neutral target parsing, authentication, destination policy, and bounded tunnels |
-| `crates/oxiroute-rtmp` | RTMP sessions, fanout, recorder store/workers, FLV, directives, and relays |
-| `crates/oxiroute-cache` | Bounded RFC-aware memory and persistent cache core used by reverse HTTP and eligible forward HTTP/1 requests |
-| `crates/oxiroute-supervision*` | Replacement protocol, Unix transport, master, worker, and launcher foundations |
-| `ui` | Vue 3 dashboard with build-time Pug templates and contract/component tests |
-| `website` | Static public documentation site deployed by GitHub Pages |
-| `remotion` | Deterministic dashboard walkthrough compositions and rendered documentation GIFs |
-| `docs` | User journeys, developer notes, and normative product/reference specifications |
+These are historical summary records: the raw runs, exact binary identity and complete reproducibility
+bundle are not published here. They cannot serve as an independently validated release baseline or
+production sizing guarantee. [Benchmark evidence](docs/BENCHMARKS.md) includes ranges, additional
+workloads, memory measurements, caveats and the requirements for a publishable comparison.
 
 ## Develop
 
-Prerequisites for this checked-in release line are Rust `1.97.1`, Node.js with pnpm `11.3.0`, and a
-Linux environment for the Linux-specific supervision and `/proc` paths. The normal local gates are:
+Begin with the [developer guide](docs/developer/README.md) for setup, the crate map, architecture and
+focused verification. Runtime changes need failure-path and interoperability evidence, along with updates
+to the relevant user guide and capability status.
+
+Typical Rust checks, from the repository root:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-pnpm --dir ui test
-pnpm --dir ui build
+nice cargo +1.97.1 fmt --all --check
+nice cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
+nice cargo +1.97.1 test --workspace --locked --jobs 4
 ```
 
-Read [docs/developer/README.md](docs/developer/README.md) before changing runtime behavior. Read
-[docs/developer/TESTING.md](docs/developer/TESTING.md) before adding a feature; the project treats
-failure-path, observable-state, and interoperability coverage as part of support claims.
-
-## Documentation Map
-
-- [Documentation hub](docs/README.md)
-- [User guides](docs/user/README.md)
-- [Developer guides](docs/developer/README.md)
-- [Reference index](docs/reference/README.md)
-- [Compatibility matrix](docs/COMPATIBILITY.md)
-- [Release notes](docs/RELEASE_NOTES_6.5.2.md)
+The [testing guide](docs/developer/TESTING.md) covers UI, browser, contract, fuzz and protocol checks.
+The [documentation hub](docs/README.md) connects tutorials, operational guides and exact references.
 
 ## License
 
-Apache License 2.0. Upstream projects retain their own licenses. The vendored Pingora and RTMP
-sources document provenance and local deltas in their `vendor/*/README.oxiroute.md` files.
+[Apache License 2.0](LICENSE). Vendored dependencies retain their upstream licenses and document
+provenance and local changes in their own directories.
