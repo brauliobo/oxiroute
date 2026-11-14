@@ -60,14 +60,14 @@ fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${legacy_cpu}=v
   'partial_fold=vpxor %xmm0, %xmm0, %xmm0' \
   'ring_core_0_17_8__gcm_ghash_vpclmulqdq_avx2_1=vpxor %ymm0, %ymm0, %ymm0' \
   'OPENSSL_cleanse_avx=vpxor %xmm0, %xmm0, %xmm0' 'x25519_fe51_mul=mulx %rax, %rbx, %rcx' \
-  'adler32_fold_copy_avx2=vpxor %ymm0, %ymm0, %ymm0' 'ZSTD_decompress_bmi2=shlx %rax, %rbx, %rcx' \
+  'adler32_fold_copy_avx2=vpxor %ymm0, %ymm0, %ymm0' 'chunkcopy_safe=vmovdqu (%rax), %ymm0' 'ZSTD_decompress_bmi2=shlx %rax, %rbx, %rcx' \
   'je_malloc_x=andn %rax, %rbx, %rcx' '__strchr_avx2=vpcmpeqb (%rdi), %ymm0, %ymm1' \
   'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2' 'Lcurve25519_x25519_midloop.cold.0=mulx %rax, %rbx, %rcx'
 accepts "${root}/dispatched"
-for family in 'aws-lc 9' 'isa-named 2' 'jemalloc-glibc 1' 'openssl 2' 'oxiroute-cpu 2' 'ring 1' 'rust-dispatch 1' 'zlib-ng 1' 'zstd 1'; do
+for family in 'aws-lc 9' 'isa-named 2' 'jemalloc-glibc 1' 'openssl 2' 'oxiroute-cpu 2' 'ring 1' 'rust-dispatch 1' 'zlib-ng 2' 'zstd 1'; do
   grep -q "${family% *} ${family#* }" "${root}/out" || { cat "${root}/out" >&2; die "dispatched count of ${family% *}"; }
 done
-grep -q 'baseline ISA ok (20 dispatched functions: ' "${root}/out" || die 'dispatched function count'
+grep -q 'baseline ISA ok (21 dispatched functions: ' "${root}/out" || die 'dispatched function count'
 ok 'every allowed family passes and is counted by origin'
 
 for leak in 'vpxor %xmm0, %xmm0, %xmm0' 'mulx %rax, %rbx, %rcx' 'lzcnt %rax, %rbx' 'movbe (%rax), %rbx' \

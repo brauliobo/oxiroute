@@ -57,7 +57,10 @@ family ring '^_*ring_core'
 # OpenSSL (vendored by openssl-sys) and its perlasm: capability vector OPENSSL_ia32cap_P, tested by the C callers
 family openssl '^_*(OPENSSL|ossl|CRYPTO|aesni|aes_hw|aes_gcm|vpaes|bn_|ecp_nistz256|x25519|gcm_|sha[0-9]+_)' \
   '^_*(chacha20|ChaCha20|poly1305|rsaz|md5_|keccak|Keccak|mulx|sqrx)'
-family zlib-ng '^(adler32|crc32|chunkset|compare256|slide_hash|longest_match|inflate_fast)'
+# zlib-ng (libz-ng-sys): its per-ISA files (arch/x86/*_avx2.c, *_avx512.c) are chosen by init_functable() only when the
+# CPU has the feature (functable.c: has_avx2 && has_bmi2 ...); chunkcopy_safe is the static inline of inflate_p.h that
+# the AVX2 and AVX-512 builds of inflate_fast inline
+family zlib-ng '^(adler32|crc32|chunkset|compare256|slide_hash|longest_match|inflate_fast|chunkcopy_safe$)'
 family zstd '^(ZSTD_|HUF_|FSE_)'
 family jemalloc-glibc '^(je_|_rjem|__libc_|_dl_)'
 family isa-named '(^|[^[:alpha:]])(avx|evex|bmi|movbe|fma|vaes|vpclmul|vpclmulqdq|mulx|adx|rorx)([^[:alpha:]]|$)'
