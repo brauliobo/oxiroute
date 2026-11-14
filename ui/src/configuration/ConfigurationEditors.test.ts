@@ -78,7 +78,7 @@ describe('configuration editor fields', () => {
     const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services } })
 
     await wrapper.get('[data-field="upstream_pools[].tls"] input').setValue(true)
-    expect(pool.tls).toEqual({ server_name: '', ca_certificate_path: null })
+    expect(pool.tls).toEqual({ server_name: '', verify: 'full', ca_certificate_path: null })
     expect(l4Services[0]?.upstream_pool).toBe('')
 
     await wrapper.get('[data-field="upstream_pools[].servers[].endpoint.type"] select').setValue('unix')
