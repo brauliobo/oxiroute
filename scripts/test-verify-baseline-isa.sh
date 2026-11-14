@@ -52,10 +52,11 @@ ok 'a binary without AVX passes'
 
 fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${legacy_cpu}=vzeroupper; shlx %rax, %rbx, %rcx" \
   '__strchr_avx2=vpcmpeqb (%rdi), %ymm0, %ymm1' 'ZSTD_decompress_bmi2=shlx %rax, %rbx, %rcx' \
-  'aws_lc_0_1_0_sha256_block_data_order_avx2=vpaddd %ymm0, %ymm1, %ymm2' 'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2'
+  'aws_lc_0_1_0_sha256_block_data_order_avx2=vpaddd %ymm0, %ymm1, %ymm2' 'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2' \
+  'Lcurve25519_x25519_scalarloop=mulx %rax, %rbx, %rcx' 'GFMUL=vpclmulqdq $0, %xmm0, %xmm1, %xmm2'
 accepts "${root}/dispatched"
-grep -q 'baseline ISA ok (6 dispatched functions)' "${root}/out" || die 'dispatched function count'
-ok 'AVX, BMI and FMA in dispatched or ISA-named functions pass'
+grep -q 'baseline ISA ok (8 dispatched functions)' "${root}/out" || die 'dispatched function count'
+ok 'AVX, BMI and FMA in dispatched, ISA-named or aws-lc assembly label functions pass'
 
 for leak in 'vpxor %xmm0, %xmm0, %xmm0' 'mulx %rax, %rbx, %rcx' 'lzcnt %rax, %rbx' 'movbe (%rax), %rbx' \
   'vmovdqu8 (%rax), %zmm0' 'kmovq %k1, %rax'; do
