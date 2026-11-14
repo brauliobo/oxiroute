@@ -133,7 +133,10 @@ pub(super) fn append_supplied_overlays(
         }
         let mut values = vec![
             format!("authority={}", overlay.authority),
-            format!("server_name={}", overlay.tls.server_name),
+            format!(
+                "server_name={}",
+                overlay.tls.server_name.as_deref().unwrap_or_default()
+            ),
         ];
         if let Some(path) = &overlay.tls.ca_certificate_path {
             values.push(format!("ca_certificate_path={}", path.display()));

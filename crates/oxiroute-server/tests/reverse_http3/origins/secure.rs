@@ -127,7 +127,7 @@ pub(super) async fn h3_to_a_tls_origin_whose_certificate_the_pool_does_not_trust
         HttpVersion::Http11,
         HttpVersion::Http11,
     );
-    untrusting.tls.as_mut().expect("pool TLS").server_name = "other.example.test".into();
+    untrusting.tls.as_mut().expect("pool TLS").server_name = Some("other.example.test".into());
     let config = config(
         listener,
         service(vec![route("/", "origin", HttpProxyPolicy::default())]),

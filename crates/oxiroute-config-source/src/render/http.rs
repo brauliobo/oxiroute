@@ -826,6 +826,13 @@ impl Renderer {
     fn http_cookie_path_rewrite(&mut self, rewrite: &HttpCookiePathRewrite) {
         self.string_field("from", &rewrite.from);
         self.string_field("to", &rewrite.to);
+        self.string_field(
+            "mode",
+            match rewrite.mode {
+                CookiePathMatch::Exact => "exact",
+                CookiePathMatch::NginxPrefix => "nginx_prefix",
+            },
+        );
     }
 
     fn http_retry_policy(&mut self, retry: &HttpRetryPolicy) {

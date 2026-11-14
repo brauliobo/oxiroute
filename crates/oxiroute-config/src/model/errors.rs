@@ -254,6 +254,8 @@ pub enum ConfigError {
     InvalidHealthCheck { pool: String, detail: &'static str },
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamTlsServerName { pool: String, server_name: String },
+    #[error("upstream pool `{pool}` has invalid TLS settings: {detail}")]
+    InvalidUpstreamTls { pool: String, detail: &'static str },
     #[error(
         "upstream pool `{pool}` has invalid HTTP version range {min}/{max}; expected 1.1/1.1, 1.1/2, 2/2, or 3/3"
     )]
@@ -537,6 +539,7 @@ impl ConfigError {
             Self::InvalidUpstreamTlsServerName { pool, .. } => {
                 format!("/upstream_pools/{pool}/tls/server_name")
             }
+            Self::InvalidUpstreamTls { pool, .. } => format!("/upstream_pools/{pool}/tls"),
             Self::InvalidHttpVersionRange { pool, .. }
             | Self::H2RequiresUpstreamTls { pool }
             | Self::H3RequiresUpstreamTls { pool } => {

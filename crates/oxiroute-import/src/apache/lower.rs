@@ -451,7 +451,8 @@ impl Lowerer {
                         return None;
                     }
                     ProxyScheme::Https => Some(UpstreamTls {
-                        server_name: host.clone(),
+                        server_name: Some(host.clone()),
+                        verify: oxiroute_config::UpstreamTlsVerify::Full,
                         ca_certificate_path: None,
                     }),
                 };
@@ -538,7 +539,8 @@ impl Lowerer {
                 }
                 let pool_name = format!("apache-balancer-{balancer_name}");
                 let tls = (first_scheme == ProxyScheme::Https).then(|| UpstreamTls {
-                    server_name: first_host.clone(),
+                    server_name: Some(first_host.clone()),
+                    verify: oxiroute_config::UpstreamTlsVerify::Full,
                     ca_certificate_path: None,
                 });
                 let mut pool_origins = vec![

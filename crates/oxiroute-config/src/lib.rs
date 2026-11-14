@@ -21,4 +21,6 @@ pub use validated::ValidatedConfig;
 pub use validation::{
     validate_health_check_config, validate_upstream_pool_definitions, validate_upstream_pools,
 };
-pub use warnings::{ConfigWarning, W_PASSIVE_HEALTH_MISSING, W_RETRY_NEVER_REPLAYS};
+pub use warnings::{
+    ConfigWarning, W_PASSIVE_HEALTH_MISSING, W_RETRY_NEVER_REPLAYS, W_UPSTREAM_TLS_UNVERIFIED,
+};

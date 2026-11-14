@@ -406,6 +406,8 @@ Current constraints:
   listener directory MUST be owned by the effective service user or have the sticky bit, and no
   path ancestor may be group/world writable unless it has the sticky bit. The runtime retains a
   mode-`0600` `<socket>.oxiroute.lock` ownership marker beside each Unix listener.
+- A TCP socket bound to `[::]` is dual-stack: the runtime clears `IPV6_V6ONLY` itself, so it accepts IPv4
+  and IPv6 clients whatever the host's `bindv6only` setting is. Other IPv6 addresses are unchanged.
 - HTTP, HTTP/3, forward-HTTP/1, forward-HTTP/2, forward-HTTP/3, RTMP, and TCP listeners MUST
   reference an existing same-kind service. An RTMP service MUST contain between 1 and 256 unique
   applications, and one configuration accepts at most 64 RTMP services.
@@ -674,7 +676,8 @@ Current constraints:
   `junk_response` triggers) or has a `rescue`, `config check` and the import report
   `W_RETRY_NEVER_REPLAYS`. A pool that serves a route with `response_statuses` and has no
   `passive_health` reports `W_PASSIVE_HEALTH_MISSING`, because a server that only returns those
-  statuses is never ejected. Both are warnings: the configuration stays valid and the effective
+  statuses is never ejected. A pool whose `tls` sets `verify = "none"` reports
+  `W_UPSTREAM_TLS_UNVERIFIED`. These are warnings: the configuration stays valid and the effective
   policy does not change. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. A replay never returns to a server that
@@ -798,6 +801,18 @@ HAProxy directives:
   and an optional Host authority. Omitted HTTP status and version retain 200 and HTTP/1.1 behavior.
 - `nginx_leading_wildcard` stores a suffix matched by one or more leading labels;
   `nginx_leading_dot` additionally matches the suffix itself. Regex names remain unsupported.
+- `response_cookie_path_rewrites` entries take `mode = "exact" | "nginx_prefix"` (default `exact`,
+  omitted from the canonical form). `exact` replaces a `Set-Cookie` `Path` attribute that equals
+  `from` with the absolute path `to`. `nginx_prefix` follows nginx `proxy_cookie_path`: a `Path`
+  value that starts with `from` has that prefix replaced by `to`, inserted verbatim and followed by
+  the rest of the value, so `to` may carry further attributes. With `from = "/"` and
+  `to = "/; SameSite=none; Secure"`, `Path=/` becomes `Path=/; SameSite=none; Secure` and `Path=/x`
+  becomes `Path=/; SameSite=none; Securex`. `to` must be 1 through 1024 bytes of header-safe text;
+  cookies without `Path` are untouched, and the first matching entry wins.
+- `nginx_host` (upstream `Host` policy and request-header value) sends the request host as nginx
+  `$host` does, and `fallback` is nginx's primary server name when the request has none: a
+  normalized exact name or address, `_`, a leading `*.` or `.` wildcard name, or the empty string,
+  in which case the header is omitted.
 - Dynamic request-header values are closed to appended X-Forwarded-For, downstream scheme, and one
   named incoming header. Values derived from request headers carry an explicit 1 through 8192 byte
   output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
@@ -1067,7 +1082,7 @@ opaque H2 bodies.
 
 ### Upstream TLS and HTTP versions
 
-An HTTP upstream pool enables verified TLS by adding `tls`. `ca_certificate_path` is optional; when
+An HTTP upstream pool enables TLS by adding `tls`, verified unless `verify = "none"`. `ca_certificate_path` is optional; when
 omitted, Pingora uses its default trust roots.
 
 ```lua
@@ -1089,10 +1104,17 @@ upstream_pools = {
 }
 ```
 
-- `server_name` is required, lowercased, sent as SNI, and used for strict certificate hostname
-  verification. It MUST be an ASCII DNS name of at most 253 bytes; IP literals, wildcards,
-  trailing dots, empty labels, overlong labels, and labels with invalid edge characters are
-  rejected.
+- `server_name` is required with `verify = "full"` (the default), lowercased, sent as SNI, and used
+  for strict certificate hostname verification. It MUST be an ASCII DNS name of at most 253 bytes;
+  IP literals, wildcards, trailing dots, empty labels, overlong labels, and labels with invalid edge
+  characters are rejected.
+- `verify = "none"` encrypts without authenticating the origin, as nginx does without
+  `proxy_ssl_verify`: no chain or hostname check, so self-signed, expired, and mismatched
+  certificates are accepted. `server_name` is then optional; when absent no SNI extension is sent,
+  when present it is sent as SNI but never matched against the certificate. `ca_certificate_path`
+  and exact `3/3` HTTP/3 are rejected with `verify = "none"`. The verify mode is part of upstream
+  connection-reuse isolation, and `config check` reports `W_UPSTREAM_TLS_UNVERIFIED` for every such
+  pool. `verify = "full"` stays out of the canonical form.
 - The custom CA path follows the same 4096-byte lexical and stable regular-file rules as other TLS
   paths. Its PEM is limited to 1 MiB and 128 unique `CERTIFICATE` blocks. Every anchor MUST be
   currently valid and CA-capable; malformed, duplicate, expired, future, and non-CA entries fail

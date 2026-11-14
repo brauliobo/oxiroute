@@ -154,6 +154,7 @@ pub(super) async fn h3_responses_from_an_h1_origin_get_the_response_policy_of_th
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
             from: "/app".into(),
             to: "/".into(),
+            mode: oxiroute_config::CookiePathMatch::Exact,
         }],
         ..HttpProxyPolicy::default()
     };

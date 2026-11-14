@@ -71,7 +71,7 @@ use crate::{
         RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService,
         RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats, StatsPage,
         TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
-        cidr_contains,
+        UpstreamTls, UpstreamTlsVerify, cidr_contains,
     },
 };
 

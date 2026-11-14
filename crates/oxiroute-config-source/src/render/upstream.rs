@@ -291,10 +291,18 @@ impl Renderer {
     fn upstream_tls(&mut self, pool_name: &str, tls: &UpstreamTls) -> Result<(), ConfigError> {
         let UpstreamTls {
             server_name,
+            verify,
             ca_certificate_path,
         } = tls;
 
-        self.string_field("server_name", server_name);
+        self.optional_string_field("server_name", server_name.as_deref());
+        self.string_field(
+            "verify",
+            match verify {
+                UpstreamTlsVerify::Full => "full",
+                UpstreamTlsVerify::None => "none",
+            },
+        );
         match ca_certificate_path {
             Some(path) => self.string_field(
                 "ca_certificate_path",

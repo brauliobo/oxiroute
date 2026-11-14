@@ -121,7 +121,8 @@ pub(super) fn h3_pool(address: SocketAddr) -> UpstreamPool {
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: support::ORIGIN_SERVER_NAME.into(),
+            server_name: Some(support::ORIGIN_SERVER_NAME.into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
         }),
         http_versions: HttpVersionPolicy {

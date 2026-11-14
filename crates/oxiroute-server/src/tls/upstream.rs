@@ -14,7 +14,9 @@ use openssl::{
     ssl::SslVersion,
     x509::{X509, X509PurposeId, store::X509StoreBuilder, verify::X509VerifyFlags},
 };
-use oxiroute_config::{HttpVersion, HttpVersionPolicy, UpstreamPool, UpstreamTls};
+use oxiroute_config::{
+    HttpVersion, HttpVersionPolicy, UpstreamPool, UpstreamTls, UpstreamTlsVerify,
+};
 use pingora::{
     protocols::tls::{CaType, TlsConfigureHook, TlsRef},
     upstreams::peer::{HttpPeer, Scheme},
@@ -51,7 +53,9 @@ struct CustomCaBundle {
 /// A compiled, immutable upstream TLS and HTTP negotiation policy.
 pub struct UpstreamTlsPlan {
     pool: String,
+    /// Empty sends no SNI.
     server_name: String,
+    verify: UpstreamTlsVerify,
     ca: Option<Arc<CaType>>,
     ca_revision: Option<String>,
     min_http_version: HttpVersion,
@@ -62,7 +66,8 @@ pub struct UpstreamTlsPlan {
 #[derive(Clone, Debug)]
 pub(crate) struct UpstreamTlsBlueprint {
     pub(crate) pool: String,
-    pub(crate) server_name: String,
+    pub(crate) server_name: Option<String>,
+    pub(crate) verify: UpstreamTlsVerify,
     pub(crate) ca_certificate_path: Option<std::path::PathBuf>,
     pub(crate) min_http_version: HttpVersion,
     pub(crate) max_http_version: HttpVersion,
@@ -78,12 +83,14 @@ impl UpstreamTlsBlueprint {
         let Some(tls) = tls else {
             return Ok(None);
         };
-        let mut server_name = tls.server_name.clone();
-        server_name.make_ascii_lowercase();
-        if !valid_server_name(&server_name) {
+        let server_name = tls
+            .server_name
+            .as_ref()
+            .map(|name| name.to_ascii_lowercase());
+        if let Some(server_name) = server_name.as_ref().filter(|name| !valid_server_name(name)) {
             return Err(TlsBuildError::InvalidUpstreamServerName {
                 pool: pool.to_owned(),
-                server_name,
+                server_name: server_name.clone(),
             });
         }
         if matches!(
@@ -97,6 +104,7 @@ impl UpstreamTlsBlueprint {
         Ok(Some(Self {
             pool: pool.to_owned(),
             server_name,
+            verify: tls.verify,
             ca_certificate_path: tls.ca_certificate_path.clone(),
             min_http_version: http_versions.min,
             max_http_version: http_versions.max,
@@ -137,15 +145,18 @@ impl UpstreamTlsPlan {
             |bundle| (Some(bundle.ca), Some(bundle.revision), bundle.policy),
         );
 
+        let server_name = blueprint.server_name.clone().unwrap_or_default();
         let group_key = group_key(
-            &blueprint.server_name,
+            &server_name,
+            blueprint.verify,
             blueprint.min_http_version,
             blueprint.max_http_version,
             &ca_policy,
         );
         Ok(Self {
             pool: blueprint.pool.clone(),
-            server_name: blueprint.server_name.clone(),
+            server_name,
+            verify: blueprint.verify,
             ca,
             ca_revision,
             min_http_version: blueprint.min_http_version,
@@ -179,13 +190,14 @@ impl UpstreamTlsPlan {
         self.ca.is_some()
     }
 
-    /// Applies TLS, strict verification, CA, ALPN, and reuse-isolation fields to a peer.
+    /// Applies TLS, verification, CA, ALPN, and reuse-isolation fields to a peer.
     pub fn apply_to_peer(&self, peer: &mut HttpPeer) {
+        let verify = self.verify == UpstreamTlsVerify::Full;
         peer.scheme = Scheme::HTTPS;
         peer.sni.clone_from(&self.server_name);
         peer.group_key = self.group_key;
-        peer.options.verify_cert = true;
-        peer.options.verify_hostname = true;
+        peer.options.verify_cert = verify;
+        peer.options.verify_hostname = verify;
         peer.options.alternative_cn = None;
         peer.options.ca.clone_from(&self.ca);
         peer.options.upstream_tls_configure_hook = Some(Arc::clone(if self.ca.is_some() {
@@ -353,6 +365,7 @@ impl fmt::Debug for UpstreamTlsPlan {
             .debug_struct("UpstreamTlsPlan")
             .field("pool", &self.pool)
             .field("server_name", &self.server_name)
+            .field("verify", &self.verify)
             .field("ca_revision", &self.ca_revision)
             .field("min_http_version", &self.min_http_version)
             .field("max_http_version", &self.max_http_version)
@@ -404,13 +417,15 @@ const fn http_version_number(version: HttpVersion) -> u8 {
 
 fn group_key(
     server_name: &str,
+    verify: UpstreamTlsVerify,
     min_http_version: HttpVersion,
     max_http_version: HttpVersion,
     ca_policy: &[u8],
 ) -> u64 {
-    let mut policy = b"oxiroute-upstream-tls-v2\0".to_vec();
+    let mut policy = b"oxiroute-upstream-tls-v3\0".to_vec();
     policy.extend_from_slice(server_name.as_bytes());
     policy.push(0);
+    policy.push(u8::from(verify == UpstreamTlsVerify::Full));
     policy.push(http_version_number(min_http_version));
     policy.push(http_version_number(max_http_version));
     policy.extend_from_slice(ca_policy);

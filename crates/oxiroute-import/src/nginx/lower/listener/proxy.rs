@@ -543,7 +543,11 @@ impl Lowerer {
                 }
                 let (from, to) = pair.expect("checked cookie paths");
                 let to = to.split(';').next().unwrap_or(to).trim_end();
-                Some(HttpCookiePathRewrite { from: from.into(), to: to.into() })
+                Some(HttpCookiePathRewrite {
+                    from: from.into(),
+                    to:   to.into(),
+                    mode: oxiroute_config::CookiePathMatch::Exact,
+                })
             })
             .collect()
     }

@@ -539,7 +539,8 @@ enum HealthCheckDto {
 #[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpstreamTlsDto {
-    server_name: String,
+    server_name: Option<String>,
+    verify: UpstreamTlsVerifyDto,
     ca_certificate_path: Option<PathBuf>,
 }
 
@@ -643,6 +644,7 @@ string_enum!(TlsClientAuthModeDto {
     Required,
 });
 string_enum!(KeyTypeDto { EcdsaP256, Rsa2048 });
+string_enum!(UpstreamTlsVerifyDto { Full, None });
 string_enum!(UpstreamAlgorithmDto {
     RoundRobin,
     WeightedRoundRobin,

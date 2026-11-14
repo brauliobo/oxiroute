@@ -458,9 +458,29 @@ impl fmt::Display for UpstreamEndpoint {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamTls {
-    pub server_name: String,
+    /// SNI and certificate hostname; required with `verify = full`, absent sends no SNI.
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default_verify")]
+    pub verify: UpstreamTlsVerify,
     #[serde(default)]
     pub ca_certificate_path: Option<PathBuf>,
+}
+
+/// How the origin certificate is judged.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamTlsVerify {
+    /// Chain and hostname are verified against the system roots or `ca_certificate_path`.
+    #[default]
+    Full,
+    /// Encrypts only: any certificate is accepted, as nginx does without `proxy_ssl_verify`.
+    None,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_verify(verify: &UpstreamTlsVerify) -> bool {
+    *verify == UpstreamTlsVerify::Full
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

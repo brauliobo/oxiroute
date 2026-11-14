@@ -87,7 +87,8 @@ pub(super) async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool()
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: support::ORIGIN_SERVER_NAME.into(),
+            server_name: Some(support::ORIGIN_SERVER_NAME.into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
         }),
         http_versions: HttpVersionPolicy {
@@ -284,7 +285,8 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: support::ORIGIN_SERVER_NAME.into(),
+            server_name: Some(support::ORIGIN_SERVER_NAME.into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
         }),
         http_versions: HttpVersionPolicy {
@@ -532,6 +534,7 @@ pub(super) async fn reverse_h3_characterizes_http_policy_parity_and_early_origin
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
             from: "/internal".into(),
             to: "/".into(),
+            mode: oxiroute_config::CookiePathMatch::Exact,
         }],
         response_cookie_attributes: vec![HttpCookieAttributePolicy {
             name: "sid".into(),

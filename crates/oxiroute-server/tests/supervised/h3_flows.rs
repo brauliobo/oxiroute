@@ -547,7 +547,8 @@ pub(super) fn h3_proxy_config(
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: "origin.example.test".into(),
+            server_name: Some("origin.example.test".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
         }),
         http_versions: HttpVersionPolicy {

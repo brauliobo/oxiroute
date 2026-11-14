@@ -1,5 +1,7 @@
 use std::path::Path;
 
+mod lua_support;
+
 use oxiroute_config_source::{
     ConfigFormat, ConfigSourceError, MAX_SOURCE_BYTES, decode_value, load_lua, render_config,
 };
@@ -145,4 +147,61 @@ fn h3_cache_round_trips_through_validated_lua() {
     let loaded = load_lua(&lua).expect("validated H3 Lua loading");
 
     assert_eq!(loaded, validated);
+}
+
+#[test]
+fn nginx_compatibility_policies_round_trip_through_every_format() {
+    let draft = lua_support::load_lua(
+        r#"return {
+          version = 1,
+          listeners = {},
+          upstream_pools = {
+            { name = "plain", endpoints = { { type = "dns", host = "origin.example.test", port = 443 } },
+              tls = { verify = "none" } },
+            { name = "named", endpoints = { { type = "dns", host = "origin.example.org", port = 443 } },
+              tls = { verify = "none", server_name = "origin.example.org" } },
+            { name = "strict", endpoints = { { type = "dns", host = "origin.example.net", port = 443 } },
+              tls = { server_name = "origin.example.net", ca_certificate_path = "/path/to/ca.pem" } },
+          },
+          http_services = { {
+            name = "web",
+            routes = { {
+              path = { kind = "segment_prefix", value = "/" },
+              action = {
+                type = "proxy",
+                upstream_pool = "plain",
+                policy = {
+                  upstream_host = { type = "nginx_host", fallback = "" },
+                  request_headers = {
+                    { operation = "set", name = "x-host", value = { type = "nginx_host", fallback = ".example.org" } },
+                  },
+                  response_cookie_path_rewrites = {
+                    { from = "/", to = "/; SameSite=none; Secure", mode = "nginx_prefix" },
+                    { from = "/old", to = "/new" },
+                  },
+                },
+              },
+            } },
+          } },
+        }"#,
+    )
+    .expect("authored configuration")
+    .validate()
+    .expect("valid configuration");
+
+    for format in [
+        ConfigFormat::Kdl,
+        ConfigFormat::Lua,
+        ConfigFormat::Uci,
+        ConfigFormat::Hocon,
+    ] {
+        let rendered = render_config(format, &draft).expect("typed render");
+        let resolved = oxiroute_config_source::resolve_source_with_format(
+            Path::new("config"),
+            rendered.as_bytes(),
+            format,
+        )
+        .expect("rendered source resolves");
+        assert_eq!(resolved.config, draft, "{format:?}");
+    }
 }

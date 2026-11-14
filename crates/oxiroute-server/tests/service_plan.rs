@@ -1366,7 +1366,8 @@ fn rejects_tls_profiles_on_programmatic_tcp_and_rtmp_listeners() {
 fn rejects_a_tls_upstream_pool_for_a_programmatic_l4_service() {
     let mut config = canonical_config();
     config.upstream_pools[1].tls = Some(UpstreamTls {
-        server_name: "database.example.test".into(),
+        server_name: Some("database.example.test".into()),
+        verify: oxiroute_config::UpstreamTlsVerify::Full,
         ca_certificate_path: None,
     });
 

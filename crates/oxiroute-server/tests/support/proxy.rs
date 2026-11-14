@@ -159,7 +159,8 @@ pub fn proxy_config(
 
 pub fn verified_upstream(server_name: &str, ca_fixture: &str) -> UpstreamTls {
     UpstreamTls {
-        server_name: server_name.into(),
+        server_name: Some(server_name.into()),
+    verify: oxiroute_config::UpstreamTlsVerify::Full,
         ca_certificate_path: Some(fixture(ca_fixture)),
     }
 }
