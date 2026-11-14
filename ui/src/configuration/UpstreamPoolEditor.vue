@@ -134,11 +134,16 @@ fieldset.object-block(data-field="upstream_pools[].tls")
       :title="tlsDisabledReason"
       @change="toggleTls"
     )
-    span Enable verified origin TLS and SNI
+    span Enable origin TLS
   .field-grid(v-if="pool.tls")
+    label.field(data-field="upstream_pools[].tls.verify")
+      span Certificate verification
+      select(:value="pool.tls.verify ?? 'full'" @change="setTlsVerify")
+        option(value="full") Verify chain and server name
+        option(value="none") None (accept any certificate)
     label.field(data-field="upstream_pools[].tls.server_name")
-      span Verification server name
-      input(type="text" v-model="pool.tls.server_name")
+      span SNI and verification server name
+      input(type="text" :value="pool.tls.server_name ?? ''" @input="pool.tls.server_name = nullableInput($event)")
     label.field(data-field="upstream_pools[].tls.ca_certificate_path")
       span Custom CA certificate path
       input(type="text" :value="pool.tls.ca_certificate_path ?? ''" @input="pool.tls.ca_certificate_path = nullableInput($event)")
@@ -360,13 +365,20 @@ function toggleTls(event: Event): void {
   const enabled = (event.target as HTMLInputElement).checked
   if (enabled && hasUnixEndpoint.value) return
   if (enabled) props.pool.health_check = null
-  props.pool.tls = enabled ? { server_name: '', ca_certificate_path: null } : null
+  props.pool.tls = enabled ? { server_name: '', verify: 'full', ca_certificate_path: null } : null
   if (!enabled) props.pool.http_versions = { min: '1.1', max: '1.1' }
   if (enabled) {
     for (const service of props.l4Services) {
       if (service.upstream_pool === props.pool.name) service.upstream_pool = ''
     }
   }
+}
+
+function setTlsVerify(event: Event): void {
+  const tls = props.pool.tls
+  if (!tls) return
+  tls.verify = (event.target as HTMLSelectElement).value === 'none' ? 'none' : 'full'
+  if (tls.verify === 'none') tls.ca_certificate_path = null
 }
 
 function normalizeHttpVersions(changed: 'min' | 'max'): void {

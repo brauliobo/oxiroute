@@ -167,3 +167,52 @@ fn rejects_empty_duplicate_expired_and_non_ca_custom_anchors() {
         TlsBuildError::NonCaCertificate { index: 0, .. }
     ));
 }
+
+#[test]
+fn verify_none_disables_peer_verification_and_isolates_reuse() {
+    let verified = prepare_upstream_tls(&upstream_pool(
+        None,
+        HttpVersion::Http11,
+        HttpVersion::Http11,
+    ))
+    .unwrap()
+    .unwrap();
+    let unverified_pool = |server_name: Option<&str>| {
+        let mut pool = upstream_pool(None, HttpVersion::Http11, HttpVersion::Http11);
+        let tls = pool.tls.as_mut().unwrap();
+        tls.server_name = server_name.map(Into::into);
+        tls.verify = oxiroute_config::UpstreamTlsVerify::None;
+        pool
+    };
+    let anonymous = prepare_upstream_tls(&unverified_pool(None))
+        .unwrap()
+        .unwrap();
+    let named = prepare_upstream_tls(&unverified_pool(Some("Origin.Example.Test")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(anonymous.server_name(), "");
+    assert_eq!(named.server_name(), "origin.example.test");
+    assert_ne!(verified.group_key(), named.group_key());
+    assert_ne!(anonymous.group_key(), named.group_key());
+
+    let peer_for = |plan: &UpstreamTlsPlan| {
+        let mut peer = HttpPeer::new(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
+            false,
+            String::new(),
+        );
+        plan.apply_to_peer(&mut peer);
+        peer
+    };
+    let peer = peer_for(&anonymous);
+    assert!(peer.is_tls());
+    assert!(peer.sni.is_empty());
+    assert!(!peer.options.verify_cert);
+    assert!(!peer.options.verify_hostname);
+    let peer = peer_for(&named);
+    assert_eq!(peer.sni, "origin.example.test");
+    assert!(!peer.options.verify_cert);
+    assert!(!peer.options.verify_hostname);
+    let peer = peer_for(&verified);
+    assert!(peer.options.verify_cert && peer.options.verify_hostname);
+}

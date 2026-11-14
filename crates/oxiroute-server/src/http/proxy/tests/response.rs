@@ -83,6 +83,7 @@ fn response_characterization_policy() -> ProxyPolicyPlan {
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
             from: "/internal".into(),
             to: "/".into(),
+            mode: oxiroute_config::CookiePathMatch::Exact,
         }],
         response_cookie_attributes: vec![HttpCookieAttributePolicy {
             name: "sid".into(),

@@ -249,6 +249,9 @@ output, which remains evidence rather than a configuration source.
 - A friendly named `config oxiroute 'main'` section may provide only scalar `version` and
   `max_connections`; other canonical fields use generic records. Native sections use the exact
   `option`/`list` mapping above.
+- Upstream `tls.verify` (`"full"` or `"none"`, with an optional `tls.server_name`) and the cookie
+  rewrite `mode` (`"exact"` or `"nginx_prefix"`) are plain canonical fields in every format. The
+  Lua renderer always writes both; the KDL, UCI, and HOCON renderers omit the default value.
 - No format infers process environment values. HAProxy preprocessing inputs are explicit source
   fields and participate in the effective candidate revision.
 

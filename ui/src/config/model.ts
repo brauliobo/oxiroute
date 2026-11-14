@@ -260,8 +260,11 @@ export interface PoolResilienceConfig {
   unavailable_body: string | null
 }
 
+export type UpstreamTlsVerify = 'full' | 'none'
+
 export interface UpstreamTlsConfig {
-  server_name: string
+  server_name: string | null
+  verify?: UpstreamTlsVerify
   ca_certificate_path: string | null
 }
 
@@ -425,9 +428,12 @@ export type HttpResponseHeaderMutationConfig =
   | { operation: 'add'; name: string; value: string; always: boolean }
   | { operation: 'remove'; name: string }
 
+export type CookiePathMatch = 'exact' | 'nginx_prefix'
+
 export interface HttpCookiePathRewriteConfig {
   from: string
   to: string
+  mode?: CookiePathMatch
 }
 
 export interface HttpProxyPathRewriteConfig {

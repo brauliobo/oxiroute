@@ -225,7 +225,8 @@ async fn responses_with_header_rules_are_identical_on_both_paths() {
 /// A pool whose servers speak HTTP/1.1 over TLS, verified against the fixture CA.
 fn tls_origin(config: &mut ConfigDraft) {
     config.upstream_pools[0].tls = Some(UpstreamTls {
-        server_name: "origin.example.test".into(),
+        server_name: Some("origin.example.test".into()),
+        verify: oxiroute_config::UpstreamTlsVerify::Full,
         ca_certificate_path: Some(fixture("ca-a.pem")),
     });
 }
@@ -274,7 +275,8 @@ async fn replies_from_a_tls_origin_are_identical_on_both_paths() {
 async fn a_tls_origin_with_an_untrusted_certificate_is_a_bad_gateway_on_both_paths() {
     let pair = Pair::configured(OK, false, true, |config| {
         config.upstream_pools[0].tls = Some(UpstreamTls {
-            server_name: "other.example.test".into(),
+            server_name: Some("other.example.test".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(fixture("ca-a.pem")),
         });
     })

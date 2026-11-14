@@ -735,6 +735,24 @@ impl HttpResponseHeaderMutation {
 pub struct HttpCookiePathRewrite {
     pub from: String,
     pub to: String,
+    #[serde(default, skip_serializing_if = "is_default_cookie_mode")]
+    pub mode: CookiePathMatch,
+}
+
+/// How a `Set-Cookie` `Path` attribute is matched against `from`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CookiePathMatch {
+    /// The whole attribute value equals `from`.
+    #[default]
+    Exact,
+    /// The value starts with `from`; that prefix is replaced by `to` verbatim, as `proxy_cookie_path` does.
+    NginxPrefix,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_cookie_mode(mode: &CookiePathMatch) -> bool {
+    *mode == CookiePathMatch::Exact
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -223,7 +223,8 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 }),
             }),
             tls: Some(UpstreamTls {
-                server_name: "ORIGIN.EXAMPLE.TEST".into(),
+                server_name: Some("ORIGIN.EXAMPLE.TEST".into()),
+                verify: oxiroute_config::UpstreamTlsVerify::Full,
                 ca_certificate_path: Some(PathBuf::from("/etc/oxiroute/origin-\"ca\".pem")),
             }),
             http_versions: HttpVersionPolicy {
@@ -438,6 +439,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
             from: "/".into(),
             to: "/application".into(),
+            mode: oxiroute_config::CookiePathMatch::Exact,
         }],
         response_cookie_attributes: Vec::new(),
         retry: test_retry_policy(),
@@ -1702,7 +1704,7 @@ fn upstream_mutations() -> Vec<Mutation> {
                 .tls
                 .as_mut()
                 .expect("upstream TLS")
-                .server_name = "CHANGED.EXAMPLE.TEST".into();
+                .server_name = Some("CHANGED.EXAMPLE.TEST".into());
         }),
         ("upstream CA path", |config| {
             config.upstream_pools[0]

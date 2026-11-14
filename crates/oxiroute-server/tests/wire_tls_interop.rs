@@ -1285,7 +1285,8 @@ async fn upstream_tls_without_a_custom_ca_uses_system_roots_and_rejects_private_
             origin.address,
             vec![AlpnProtocol::Http11],
             Some(UpstreamTls {
-                server_name: ORIGIN_SERVER_NAME.into(),
+                server_name: Some(ORIGIN_SERVER_NAME.into()),
+                verify: oxiroute_config::UpstreamTlsVerify::Full,
                 ca_certificate_path: None,
             }),
             HttpVersionPolicy::default(),
@@ -1312,6 +1313,88 @@ async fn upstream_tls_without_a_custom_ca_uses_system_roots_and_rejects_private_
     .expect("upstream system-root verification wire test timed out");
 }
 
+async fn proxy_through_unverified_pool(
+    server_name: Option<&str>,
+    verify: oxiroute_config::UpstreamTlsVerify,
+    path: &str,
+) -> (u16, Vec<u8>, Vec<String>, usize) {
+    let origin = TlsOrigin::start_h1(b"unverified-origin").await;
+    let reserved = ReservedListener::new();
+    let config = proxy_config(
+        reserved.address,
+        origin.address,
+        vec![AlpnProtocol::Http11],
+        Some(UpstreamTls {
+            server_name: server_name.map(Into::into),
+            verify,
+            ca_certificate_path: None,
+        }),
+        HttpVersionPolicy::default(),
+    );
+    let proxy = ProxyHarness::start(&config.validate(), reserved);
+    let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+        .await
+        .expect("downstream connection");
+    let response = h1_request(&mut client, path, true)
+        .await
+        .expect("proxy response");
+    origin.observations.wait_for_completed_handshakes(1).await;
+    let observed = (
+        response.status,
+        response.body.clone(),
+        origin.observations.server_names(),
+        origin.observations.http_requests(),
+    );
+    drop(client);
+    proxy.finish().await;
+    origin.finish().await;
+    observed
+}
+
+#[tokio::test]
+async fn upstream_tls_verify_none_reaches_an_untrusted_origin_without_sni() {
+    use oxiroute_config::UpstreamTlsVerify;
+
+    timeout(TEST_TIMEOUT, async {
+        let (status, body, server_names, requests) =
+            proxy_through_unverified_pool(None, UpstreamTlsVerify::None, "/unverified").await;
+        assert_eq!(status, 200);
+        assert_eq!(body, b"unverified-origin");
+        assert!(
+            server_names.is_empty(),
+            "no SNI on the wire: {server_names:?}"
+        );
+        assert_eq!(requests, 1);
+
+        let (status, _, server_names, requests) = proxy_through_unverified_pool(
+            Some("wrong.example.test"),
+            UpstreamTlsVerify::None,
+            "/unverified-sni",
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "the name is sent but not matched against the certificate"
+        );
+        assert_eq!(server_names, vec!["wrong.example.test".to_owned()]);
+        assert_eq!(requests, 1);
+
+        let (status, _, _, requests) = proxy_through_unverified_pool(
+            Some(ORIGIN_SERVER_NAME),
+            UpstreamTlsVerify::Full,
+            "/verified",
+        )
+        .await;
+        assert_eq!(
+            status, 502,
+            "the same origin is refused when the pool verifies"
+        );
+        assert_eq!(requests, 0);
+    })
+    .await
+    .expect("unverified upstream TLS wire test timed out");
+}
+
 #[tokio::test]
 async fn upstream_custom_intermediate_ca_is_a_runtime_trust_anchor() {
     timeout(TEST_TIMEOUT, async {
@@ -1328,7 +1411,8 @@ async fn upstream_custom_intermediate_ca_is_a_runtime_trust_anchor() {
             origin.address,
             vec![AlpnProtocol::Http11],
             Some(UpstreamTls {
-                server_name: ORIGIN_SERVER_NAME.into(),
+                server_name: Some(ORIGIN_SERVER_NAME.into()),
+                verify: oxiroute_config::UpstreamTlsVerify::Full,
                 ca_certificate_path: Some(chain.intermediate_certificate_path.clone()),
             }),
             HttpVersionPolicy::default(),

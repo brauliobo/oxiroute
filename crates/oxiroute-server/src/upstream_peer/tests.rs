@@ -269,7 +269,8 @@ fn upstream_tls_plan(
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: server_name.into(),
+            server_name: Some(server_name.into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: None,
         }),
         http_versions: HttpVersionPolicy { min, max },

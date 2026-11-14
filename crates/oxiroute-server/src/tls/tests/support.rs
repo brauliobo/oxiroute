@@ -200,7 +200,8 @@ pub(super) fn upstream_pool(
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: "Origin.Example.Test".into(),
+            server_name: Some("Origin.Example.Test".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path,
         }),
         http_versions: HttpVersionPolicy { min, max },

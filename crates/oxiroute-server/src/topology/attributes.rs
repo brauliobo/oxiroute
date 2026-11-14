@@ -347,6 +347,10 @@ pub(super) fn health_check(check: &HealthCheck) -> Value {
 pub(super) fn upstream_tls(tls: &UpstreamTls) -> Value {
     json!({
         "serverName": tls.server_name,
+        "verify": match tls.verify {
+            UpstreamTlsVerify::Full => "full",
+            UpstreamTlsVerify::None => "none",
+        },
         "caCertificatePath": tls.ca_certificate_path,
     })
 }

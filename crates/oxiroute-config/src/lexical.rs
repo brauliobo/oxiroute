@@ -454,11 +454,11 @@ pub(crate) fn validate_recording_suffix_template(
 }
 
 pub(crate) fn normalize_upstream_server_names(upstream_pools: &mut [UpstreamPool]) {
-    for tls in upstream_pools
+    for server_name in upstream_pools
         .iter_mut()
-        .filter_map(|pool| pool.tls.as_mut())
+        .filter_map(|pool| pool.tls.as_mut()?.server_name.as_mut())
     {
-        tls.server_name.make_ascii_lowercase();
+        server_name.make_ascii_lowercase();
     }
 }
 

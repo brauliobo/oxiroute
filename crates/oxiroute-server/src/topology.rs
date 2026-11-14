@@ -8,7 +8,7 @@ use oxiroute_config::{
     AlpnProtocol, CertificateSource, ConfigDraft, HealthCheck, HealthCheckType, HttpAccessPolicy,
     HttpHostSelector, HttpPathSelector, HttpRoute, HttpRouteAction, HttpUpstreamHost, HttpVersion,
     ListenerBind, Protocol, RtmpRecorderStart, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamTls,
+    UpstreamTls, UpstreamTlsVerify,
 };
 use serde::Serialize;
 use serde_json::{Value, json};

@@ -89,20 +89,7 @@ fn validate_upstream_pool_definition(
         });
     }
     if let Some(tls) = &pool.tls {
-        if !is_valid_dns_name(&tls.server_name) {
-            return Err(ConfigError::InvalidUpstreamTlsServerName {
-                pool: pool.name.clone(),
-                server_name: tls.server_name.clone(),
-            });
-        }
-        if let Some(ca_certificate_path) = &tls.ca_certificate_path {
-            validate_file_path(
-                "upstream pool",
-                &pool.name,
-                "tls.ca_certificate_path",
-                ca_certificate_path,
-            )?;
-        }
+        validate_upstream_tls(pool, tls)?;
     }
 
     if matches!(
@@ -142,6 +129,42 @@ fn validate_upstream_pool_definition(
     validate_pool_queue(pool)?;
     validate_pool_canary(pool, has_unix_endpoint)?;
     validate_pool_registration(pool)
+}
+
+fn validate_upstream_tls(pool: &UpstreamPool, tls: &UpstreamTls) -> Result<(), ConfigError> {
+    let invalid = |detail| ConfigError::InvalidUpstreamTls {
+        pool: pool.name.clone(),
+        detail,
+    };
+    match (&tls.server_name, tls.verify) {
+        (Some(server_name), _) if !is_valid_dns_name(server_name) => {
+            return Err(ConfigError::InvalidUpstreamTlsServerName {
+                pool: pool.name.clone(),
+                server_name: server_name.clone(),
+            });
+        }
+        (None, UpstreamTlsVerify::Full) => {
+            return Err(invalid("server_name is required when verify is full"));
+        }
+        _ => {}
+    }
+    if tls.verify == UpstreamTlsVerify::None {
+        if tls.ca_certificate_path.is_some() {
+            return Err(invalid("ca_certificate_path requires verify full"));
+        }
+        if pool.http_versions.min == HttpVersion::Http3 {
+            return Err(invalid("verify none does not support HTTP/3"));
+        }
+    }
+    if let Some(ca_certificate_path) = &tls.ca_certificate_path {
+        validate_file_path(
+            "upstream pool",
+            &pool.name,
+            "tls.ca_certificate_path",
+            ca_certificate_path,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_pool_canary(pool: &UpstreamPool, has_unix_endpoint: bool) -> Result<(), ConfigError> {

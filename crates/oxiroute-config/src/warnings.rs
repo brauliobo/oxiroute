@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use crate::{
     HttpProxyPolicy, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTrigger, HttpRoute,
-    HttpRouteAction, ValidatedConfig,
+    HttpRouteAction, UpstreamTlsVerify, ValidatedConfig,
 };
 
 /// Response-phase retries are configured on a route that accepts no method replay safety allows.
@@ -10,6 +10,9 @@ pub const W_RETRY_NEVER_REPLAYS: &str = "W_RETRY_NEVER_REPLAYS";
 
 /// A pool serves status-based retries but never ejects a server that keeps returning those statuses.
 pub const W_PASSIVE_HEALTH_MISSING: &str = "W_PASSIVE_HEALTH_MISSING";
+
+/// A pool encrypts to its origin but accepts any certificate, so it does not authenticate the origin.
+pub const W_UPSTREAM_TLS_UNVERIFIED: &str = "W_UPSTREAM_TLS_UNVERIFIED";
 
 /// A valid setting that cannot behave the way it reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +68,19 @@ impl ValidatedConfig {
                     code: W_PASSIVE_HEALTH_MISSING,
                     message: format!(
                         "upstream pool `{}` serves routes that retry on response statuses but has no `passive_health`, so a server that keeps returning them is never ejected",
+                        pool.name
+                    ),
+                }),
+        );
+        warnings.extend(
+            config
+                .upstream_pools
+                .iter()
+                .filter(|pool| pool.tls.as_ref().is_some_and(|tls| tls.verify == UpstreamTlsVerify::None))
+                .map(|pool| ConfigWarning {
+                    code: W_UPSTREAM_TLS_UNVERIFIED,
+                    message: format!(
+                        "upstream pool `{}` uses tls with verify none, so any certificate is accepted and the origin is not authenticated",
                         pool.name
                     ),
                 }),

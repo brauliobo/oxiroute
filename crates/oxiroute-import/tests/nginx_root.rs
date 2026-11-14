@@ -257,7 +257,8 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
             .upstream_pools[0]
             .tls,
         Some(UpstreamTls {
-            server_name: "origin.example.test".into(),
+            server_name: Some("origin.example.test".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: None,
         })
     );
@@ -294,7 +295,8 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
             upstream_tls: vec![NginxUpstreamTlsOverlay {
                 authority: "192.0.2.44".into(),
                 tls: UpstreamTls {
-                    server_name: "verified-origin.example.test".into(),
+                    server_name: Some("verified-origin.example.test".into()),
+                    verify: oxiroute_config::UpstreamTlsVerify::Full,
                     ca_certificate_path: None,
                 },
                 require_connectivity_activation: true,
@@ -312,7 +314,8 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
             .upstream_pools[0]
             .tls,
         Some(UpstreamTls {
-            server_name: "verified-origin.example.test".into(),
+            server_name: Some("verified-origin.example.test".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: None,
         })
     );
@@ -457,7 +460,8 @@ fn bounded_downstream_scheme_specializes_static_authority_per_listener() {
             upstream_tls: vec![NginxUpstreamTlsOverlay {
                 authority: "192.0.2.45".into(),
                 tls: UpstreamTls {
-                    server_name: "scheme-origin.example.test".into(),
+                    server_name: Some("scheme-origin.example.test".into()),
+                    verify: oxiroute_config::UpstreamTlsVerify::Full,
                     ca_certificate_path: None,
                 },
                 require_connectivity_activation: false,
@@ -592,7 +596,8 @@ fn tls_overlay(
     NginxUpstreamTlsOverlay {
         authority: authority.into(),
         tls: UpstreamTls {
-            server_name: server_name.into(),
+            server_name: Some(server_name.into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: None,
         },
         require_connectivity_activation,

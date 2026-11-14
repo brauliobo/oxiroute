@@ -134,6 +134,11 @@
           label.field(data-field="http_services[].routes[].action.policy.response_cookie_path_rewrites[].to")
             span Replacement path
             input(type="text" v-model="rewrite.to" placeholder="/app")
+          label.field(data-field="http_services[].routes[].action.policy.response_cookie_path_rewrites[].mode")
+            span Match
+            select(:value="rewrite.mode ?? 'exact'" @change="setCookieRewriteMode(rewrite, $event)")
+              option(value="exact") Exact path
+              option(value="nginx_prefix") nginx prefix (verbatim replacement)
 
     fieldset.object-block(data-field="http_services[].routes[].action.policy.retry")
       legend Retry policy
@@ -276,6 +281,7 @@
 import { computed } from 'vue'
 
 import type {
+  HttpCookiePathRewriteConfig,
   HttpProxyActionConfig,
   HttpRequestHeaderValueConfig,
   HttpRoutePolicyConfig,
@@ -477,6 +483,10 @@ function addCookieRewrite(): void {
   if (props.action.policy.response_cookie_path_rewrites.length >= 16) return
   props.action.policy.response_cookie_path_rewrites.push({ from: '/', to: '/' })
   emit('changed')
+}
+
+function setCookieRewriteMode(rewrite: HttpCookiePathRewriteConfig, event: Event): void {
+  rewrite.mode = (event.target as HTMLSelectElement).value === 'nginx_prefix' ? 'nginx_prefix' : 'exact'
 }
 
 function removeCookieRewrite(index: number): void {

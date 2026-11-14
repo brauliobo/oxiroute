@@ -144,7 +144,7 @@ impl H3UpstreamPlan {
         Self::new(
             blueprint.pool.clone(),
             roots,
-            Some(blueprint.server_name.clone()),
+            blueprint.server_name.clone(),
             H3_UPSTREAM_MAX_CONNECTIONS,
         )
         .map(Some)

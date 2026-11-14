@@ -267,7 +267,8 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     isUpstreamAlgorithm(value.algorithm, value.servers.length) &&
     (value.health_check === null || isHealthCheck(value.health_check)) &&
     (value.passive_health === null || isPassiveHealth(value.passive_health)) &&
-    (value.tls === null || (isRecord(value.tls) && typeof value.tls.server_name === 'string' &&
+    (value.tls === null || (isRecord(value.tls) && nullableString(value.tls.server_name) &&
+      (value.tls.verify === undefined || ['full', 'none'].includes(String(value.tls.verify))) &&
       nullableString(value.tls.ca_certificate_path))) && isRecord(value.http_versions) &&
     ['1.1', '2'].includes(String(value.http_versions.min)) &&
     ['1.1', '2'].includes(String(value.http_versions.max)) &&
@@ -461,7 +462,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     arrayOf(value.request_headers, isRequestHeaderMutation) &&
     arrayOf(value.response_headers, isResponseHeaderMutation) &&
     arrayOf(value.response_cookie_path_rewrites, (rewrite) => isRecord(rewrite) &&
-      typeof rewrite.from === 'string' && typeof rewrite.to === 'string') &&
+      typeof rewrite.from === 'string' && typeof rewrite.to === 'string' &&
+      (rewrite.mode === undefined || ['exact', 'nginx_prefix'].includes(String(rewrite.mode)))) &&
     arrayOf(value.response_cookie_attributes, (policy) => isRecord(policy) &&
       typeof policy.name === 'string' && (policy.secure === null || typeof policy.secure === 'boolean') &&
       (policy.http_only === null || typeof policy.http_only === 'boolean') &&

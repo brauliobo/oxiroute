@@ -79,7 +79,8 @@ impl Lowerer {
         }
         if let Some(StaticEndpoint::Dns { host, .. }) = &proxy.direct_endpoint {
             return Ok(Some(UpstreamTls {
-                server_name: host.clone(),
+                server_name: Some(host.clone()),
+                verify: oxiroute_config::UpstreamTlsVerify::Full,
                 ca_certificate_path: None,
             }));
         }

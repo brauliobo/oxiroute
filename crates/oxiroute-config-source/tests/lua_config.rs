@@ -4,7 +4,7 @@ use lua_support::{load_lua, load_lua_error, render_lua};
 use oxiroute_config::{
     AcmeChallengeType, AcmeKeyType, AlpnProtocol, CertificateSource, ConfigError, HealthCheckType,
     HttpVersion, ListenerBind, Protocol, SelfSignedKeyType, StatsPageAdminPolicy, TlsVersion,
-    UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamTlsVerify,
 };
 
 #[test]
@@ -2115,7 +2115,7 @@ fn loads_upstream_tls_and_all_supported_http_version_ranges() {
         let pool = &config.upstream_pools[0];
         let tls = pool.tls.as_ref().expect("upstream TLS");
 
-        assert_eq!(tls.server_name, "backend.example.com");
+        assert_eq!(tls.server_name, Some("backend.example.com".into()));
         assert_eq!(
             tls.ca_certificate_path.as_deref(),
             Some(std::path::Path::new("/etc/oxiroute/upstream-ca.pem"))
@@ -2223,7 +2223,8 @@ fn rejects_non_utf8_file_paths() {
         health_check: None,
         passive_health: None,
         tls: Some(UpstreamTls {
-            server_name: "backend.example.com".into(),
+            server_name: Some("backend.example.com".into()),
+            verify: oxiroute_config::UpstreamTlsVerify::Full,
             ca_certificate_path: Some(PathBuf::from(OsString::from_vec(
                 b"/etc/oxiroute/ca-\xff.pem".to_vec(),
             ))),
@@ -2267,7 +2268,7 @@ fn validates_upstream_tls_server_names() {
             .as_ref()
             .expect("upstream TLS")
             .server_name,
-        boundary_name
+        Some(boundary_name)
     );
 
     let too_long = format!(
@@ -3374,4 +3375,88 @@ return { version = 1, listeners = {} }"#,
             oxiroute_config_source::LuaConfigError::Lua(_)
         ));
     }
+}
+
+#[test]
+fn verify_none_upstream_tls_needs_no_server_name_and_warns() {
+    let config = load_lua(&with_web_pool_fields(r#"      tls = { verify = "none" },"#))
+        .expect("unverified upstream TLS");
+    let tls = config.upstream_pools[0].tls.as_ref().expect("upstream TLS");
+    assert_eq!(tls.verify, UpstreamTlsVerify::None);
+    assert_eq!(tls.server_name, None);
+    let validated = config.clone().validate().expect("validated");
+    assert_eq!(
+        validated
+            .warnings()
+            .iter()
+            .map(|warning| warning.code)
+            .collect::<Vec<_>>(),
+        [oxiroute_config::W_UPSTREAM_TLS_UNVERIFIED]
+    );
+    let rendered = render_lua(&config).expect("render unverified upstream TLS");
+    assert_eq!(load_lua(&rendered).expect("roundtrip"), config);
+
+    let sni = load_lua(&with_web_pool_fields(
+        r#"      tls = { verify = "none", server_name = "Origin.Example.Test" },"#,
+    ))
+    .expect("unverified upstream TLS with SNI");
+    let tls = sni.upstream_pools[0].tls.as_ref().expect("upstream TLS");
+    assert_eq!(tls.server_name.as_deref(), Some("origin.example.test"));
+
+    let verified = load_lua(&with_web_pool_fields(&upstream_tls("backend.example.com")))
+        .expect("verified upstream TLS");
+    assert_eq!(
+        verified.upstream_pools[0].tls.as_ref().expect("TLS").verify,
+        UpstreamTlsVerify::Full
+    );
+    assert!(
+        verified
+            .validate()
+            .expect("validated")
+            .warnings()
+            .is_empty()
+    );
+}
+
+#[test]
+fn rejects_inconsistent_upstream_tls_verify_settings() {
+    for (fields, detail) in [
+        ("      tls = {},", "server_name is required"),
+        (
+            r#"      tls = { verify = "full" },"#,
+            "server_name is required",
+        ),
+        (
+            r#"      tls = { verify = "none", ca_certificate_path = "/etc/oxiroute/upstream-ca.pem" },"#,
+            "ca_certificate_path requires verify full",
+        ),
+        (
+            "      tls = { verify = \"none\" },\n      http_versions = { min = \"3\", max = \"3\" },",
+            "does not support HTTP/3",
+        ),
+    ] {
+        match error_from(&with_web_pool_fields(fields)) {
+            ConfigError::InvalidUpstreamTls {
+                pool,
+                detail: actual,
+            } => {
+                assert_eq!(pool, "web-backends");
+                assert!(actual.contains(detail), "{fields}: {actual}");
+            }
+            other => panic!("{fields}: {other}"),
+        }
+    }
+    assert!(matches!(
+        error_from(&with_web_pool_fields(
+            r#"      tls = { verify = "none", server_name = "192.0.2.1" },"#
+        )),
+        ConfigError::InvalidUpstreamTlsServerName { .. }
+    ));
+    let unknown = load_lua_error(&with_web_pool_fields(
+        r#"      tls = { verify = "peer", server_name = "origin.example.test" },"#,
+    ));
+    assert!(
+        unknown.to_string().contains("unknown variant `peer`"),
+        "{unknown}"
+    );
 }
