@@ -208,8 +208,8 @@ for a complete process/events/http/rtmp root. Target support beyond the current 
 
 Blockers:
 
-- Variables in destinations, `if`, `rewrite`, `map`, scripting, and dynamic resolution.
-- Regex and named locations.
+- Variables in destinations, `if` outside the two bounded forms below, `rewrite`, `map`, scripting, and dynamic resolution.
+- Regex, named, and variable locations.
 - Module-specific auth, caching, rate, WAF, or embedded-language behavior.
 - Build-dependent directives when the capability profile is unavailable.
 
@@ -236,6 +236,36 @@ source order alone is incorrect.
   the same default server and the same `ssl` flag on both sockets, lowers to one dual-stack `[::]:P` listener and emits
   `W_DUAL_STACK_LISTENER`; the runtime binds it with `IPV6_V6ONLY` off. Pairs whose server sets differ are blocked. `listen [::]:P`
   without the IPv4 counterpart stays blocked until the listener schema can express an IPv6-only socket.
+
+### nginx HTTP routes, proxy and operator overlays
+
+- `location ^~ <prefix>` lowers as the plain prefix. nginx uses the modifier only to skip regex locations, so it is exact
+  while the server has no regex, named, or variable location; a server that has one keeps the `^~` location blocked.
+- `if ($host = <exact host>) { return ...; }` plus a server-level `return` (the Certbot pair) lowers in rewrite-phase
+  order: the first route for one host wins and a later duplicate (`return 404` after the redirect) is dropped.
+- `if ($http_authorization != "Bearer <literal>") { return 401; }` inside a location lowers to a bearer-token-file access
+  policy. Any literal (or the `<redacted>` marker) is accepted and is never stored, printed, or compared: the operator
+  supplies the token file per server name (`NginxImportOptions.bearer_tokens`) and every supplied token must be consumed.
+  The runtime also sends `WWW-Authenticate: Bearer` and accepts the scheme case-insensitively, unlike nginx.
+- `proxy_pass https://...` without `proxy_ssl_*` is lowered as nginx behaves by default: a pool with `verify none` and no
+  SNI, plus a `W_UPSTREAM_TLS_UNVERIFIED` warning per origin (DNS, IP and named-upstream authorities alike, and `$scheme://`
+  authorities only on a TLS bind). No overlay is required. An `upstream_tls` overlay for the authority replaces the pool
+  TLS with its strict policy (verification, SNI, optional CA) and is rejected when no lowered origin uses it.
+- `proxy_set_header Host $host` lowers with the nginx `$host` fallback set to the first `server_name` token, lowercased and
+  verbatim: an exact name, `_`, `*.name`, `.name`, or empty when the server has no `server_name`.
+- `proxy_buffering` omitted or `on` lowers to a streaming route (`response_buffering` false) and emits
+  `W_PROXY_BUFFERING_STREAMED` per location: clients see the same response, but the upstream is no longer decoupled from
+  slow clients. `proxy_request_buffering` omitted or `on` lowers to request-body buffering in memory up to the route body
+  limit, where nginx spools to disk after a small buffer; large uploads need `proxy_request_buffering off`.
+- `proxy_cookie_path <from> <to>` lowers with nginx prefix matching and the replacement text verbatim, attributes included
+  (`"/; SameSite=none; Secure"`); regex and variable forms are blocked. `proxy_cookie_flags` lowers as before.
+- `access_log <file> [format ...]` with `combined` or an http-level `log_format`, and an omitted `access_log`, migrate through
+  the explicit structured access-log overlay (`default_access_log_file`) with a `W_ACCESS_LOG_MIGRATED` warning listing the
+  format variables the structured log does not carry and noting a dropped `if=` condition. Without the overlay they stay
+  blocked. `access_log off` stays disabled, and mixing disabled and migrated servers on one bind stays blocked.
+- Accepted directives that change nothing at runtime each emit a `W_DIRECTIVE_NO_EFFECT` warning: `send_timeout`,
+  `large_client_header_buffers`, `sendfile`, `types_hash_max_size`, `limit_conn_zone`, `limit_req_zone`, an http-level
+  `error_log`, and a `log_format` no migrated `access_log` uses.
 
 ### nginx-RTMP strict subset
 
