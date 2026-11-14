@@ -41,7 +41,10 @@ DISPATCHED_SYMBOL_PATTERNS=(
   '^_*(aws_lc|ring_core|OPENSSL|ossl|CRYPTO|aesni|aes_hw|aes_gcm|vpaes|bn_|ecp_nistz256|x25519|gcm_|sha[0-9]+_)'
   '^_*(chacha20|ChaCha20|poly1305|rsaz|md5_|keccak|Keccak|mulx|sqrx)'
   # aws-lc keeps the labels of its assembly routines as symbols (local labels start with a dot)
-  '^([.]|partial_fold|iv_len_12_init_IV|skip_iv_len_12_init_IV|hw_x86_64_)'
+  '^([.]|partial_fold|iv_len_12_init_IV|skip_iv_len_12_init_IV|hw_x86_64_|GFMUL$)'
+  # aws-lc runs s2n-bignum (curve25519, ed25519, P-256/384/521, SHA-3, ML-KEM) behind its BMI2/ADX/AVX2 checks; the
+  # loop and helper labels of those routines are symbols of their own
+  '^L(curve25519|edwards25519|p256|p384|p521|bignum|sha3|mlk)_'
   '^(adler32|crc32|chunkset|compare256|slide_hash|longest_match|inflate_fast|ZSTD_|HUF_|FSE_|je_|_rjem|__libc_|_dl_)'
   '(^|[^[:alpha:]])(avx|evex|bmi|movbe|fma|vaes|vpclmul|vpclmulqdq|mulx|adx|rorx)([^[:alpha:]]|$)'
 )
