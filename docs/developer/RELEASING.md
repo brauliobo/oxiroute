@@ -79,9 +79,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 6.5.0
-./scripts/create-release-archive.sh /tmp/oxiroute-6.5.0.tar.gz 6.5.0
-./scripts/verify-release-archive.sh /tmp/oxiroute-6.5.0.tar.gz 6.5.0 --compare-worktree
+./scripts/verify-release-version.sh 6.5.1
+./scripts/create-release-archive.sh /tmp/oxiroute-6.5.1.tar.gz 6.5.1
+./scripts/verify-release-archive.sh /tmp/oxiroute-6.5.1.tar.gz 6.5.1 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -171,10 +171,10 @@ To regenerate locally with the same compiler:
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
 BOLT_BIN_DIR=$(scripts/install-bolt.sh /var/tmp/oxiroute-bolt-tools) \
-  ./scripts/build-release-binaries.sh 6.5.0 /path/to/oxiroute-release
-BOLT=0 ./scripts/build-release-binaries.sh 6.5.0 /path/to/oxiroute-pgo          # PGO only
-PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 6.5.0 /path/to/oxiroute-plain  # plain build of the same command
-FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.5.0 /path/to/oxiroute-abort
+  ./scripts/build-release-binaries.sh 6.5.1 /path/to/oxiroute-release
+BOLT=0 ./scripts/build-release-binaries.sh 6.5.1 /path/to/oxiroute-pgo          # PGO only
+PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 6.5.1 /path/to/oxiroute-plain  # plain build of the same command
+FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.5.1 /path/to/oxiroute-abort
 ```
 
 `PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
