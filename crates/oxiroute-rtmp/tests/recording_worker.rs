@@ -266,7 +266,7 @@ fn two_recorders_rotate_through_the_shared_root_finalizer() {
 }
 
 #[test]
-fn hourly_zoneb_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names() {
+fn hourly_zone_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names() {
     let temporary = tempdir().expect("temporary directory");
     let store = RecordingStore::open(
         temporary.path(),

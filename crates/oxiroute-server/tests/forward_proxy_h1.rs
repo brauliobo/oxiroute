@@ -1391,10 +1391,9 @@ async fn imported_squid_candidate_serves_authenticated_http_over_daemon() {
     let source = fs::read_to_string(fixture)
         .expect("read audited Squid fixture")
         .replace("http_port 31280", &format!("http_port {proxy_address}"))
-        .replace(
-            "/tmp/squid-synthetic-users",
-            &htpasswd.display().to_string(),
-        );
+        // the test origin listens on loopback, which the stock `to_localhost` guard would deny
+        .replace("http_access deny to_localhost\n", "")
+        .replace("/path/to/htpasswd", &htpasswd.display().to_string());
     fs::write(&squid, source).expect("write Squid source");
     let report = import(&squid);
     let config = report

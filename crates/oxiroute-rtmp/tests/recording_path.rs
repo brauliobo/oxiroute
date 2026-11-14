@@ -264,30 +264,26 @@ fn unix_conversion_is_exhaustive_at_every_gregorian_day_boundary() {
 }
 
 #[test]
-fn america_zoneb_policy_is_deterministic_across_historical_dst_and_standard_time() {
+fn america_new_york_policy_is_deterministic_across_historical_dst_and_standard_time() {
     let policy = RecordingPathPolicy::new("-%Y-%m-%d_%H-%M-%S.mp4", false)
         .expect("path policy")
         .with_segment_policy(
-            RecordingTimezone::Iana(
-                "America/Argentina/Buenos_Aires"
-                    .parse()
-                    .expect("IANA timezone"),
-            ),
+            RecordingTimezone::Iana("America/New_York".parse().expect("IANA timezone")),
             RecordingTimeBasis::SegmentStart,
             RecordingSegmentNaming::NginxCompatible,
         );
 
     assert_eq!(
         policy
-            .relative_filename_at(b"camera", 1_325_386_800)
-            .expect("zoneb daylight time"),
-        "camera-2012-01-01_01-00-00.mp4"
+            .relative_filename_at(b"camera", 1_325_419_200)
+            .expect("standard time"),
+        "camera-2012-01-01_07-00-00.mp4"
     );
     assert_eq!(
         policy
-            .relative_filename_at(b"camera", 1_341_111_600)
-            .expect("zoneb standard time"),
-        "camera-2012-07-01_00-00-00.mp4"
+            .relative_filename_at(b"camera", 1_341_144_000)
+            .expect("daylight time"),
+        "camera-2012-07-01_08-00-00.mp4"
     );
 }
 
