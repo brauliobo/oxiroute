@@ -114,6 +114,7 @@ pub(super) fn recorder_runtime_config(
             name: "live".into(),
             bind: ListenerBind::Socket {
                 address: listener_address,
+                ipv6_only: false,
             },
             protocol: Protocol::Rtmp,
             service: Some("live".into()),

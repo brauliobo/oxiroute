@@ -46,6 +46,9 @@ fieldset.object-block(data-field="listeners[].bind")
     label.field(v-else data-field="listeners[].bind.path")
       span Unix socket path
       input(type="text" v-model="listener.bind.path" placeholder="/run/oxiroute/listener.sock")
+    label.enable-row(v-if="listener.bind.type === 'socket'" data-field="listeners[].bind.ipv6_only")
+      input(type="checkbox" :checked="listener.bind.ipv6_only === true" @change="toggleIpv6Only")
+      span IPv6 only (a [::] bind then leaves IPv4 on its port to another listener)
     label.field(v-if="listener.bind.type === 'unix'" data-field="listeners[].bind.mode")
       span Unix socket mode
       input(
@@ -168,6 +171,12 @@ function updateUnixMode(event: Event): void {
   const mode = input.value.trim()
   props.listener.bind.mode = /^0?[0-7]{3}$/.test(mode) ? Number.parseInt(mode, 8) : null
   input.value = formatUnixMode(props.listener.bind.mode)
+}
+
+function toggleIpv6Only(event: Event): void {
+  if (props.listener.bind.type !== 'socket') return
+  if ((event.target as HTMLInputElement).checked) props.listener.bind.ipv6_only = true
+  else delete props.listener.bind.ipv6_only
 }
 
 function toggleProxyProtocol(event: Event): void {

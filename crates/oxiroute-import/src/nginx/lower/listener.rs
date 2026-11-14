@@ -96,7 +96,10 @@ fn listener_bind(bind: &EffectiveBind, _servers: &[&EffectiveServer]) -> Option<
             .or_else(|| {
                 (address == b"*").then(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), *port))
             })
-            .map(|address| ListenerBind::Socket { address }),
+            .map(|address| ListenerBind::Socket {
+                address,
+                ipv6_only: false,
+            }),
     }
 }
 

@@ -161,6 +161,7 @@ export interface TlsSessionCacheConfig {
 export interface SocketListenerBind {
   type: 'socket'
   address: string
+  ipv6_only?: boolean
 }
 
 export interface UnixListenerBind {

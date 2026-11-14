@@ -43,6 +43,8 @@ pub(crate) enum ListenerMetricPolicy {
 pub(crate) enum ListenerRestartReason {
     /// A Unix socket keeps its path and changes its mode, which a running socket cannot do.
     UnixModeChange,
+    /// A TCP socket keeps its address and changes `ipv6_only`, which a running socket cannot do.
+    Ipv6OnlyChange,
 }
 
 /// What a reload does to the listener sockets, as operator-facing labels.
@@ -132,6 +134,7 @@ impl ListenerInventory {
                 protocol: Protocol::Http,
                 bind: ListenerBind::Socket {
                     address: management.bind,
+                    ipv6_only: false,
                 },
                 plane: ListenerPlane::Control,
                 descriptor_role: ListenerDescriptorRole::Management,
@@ -150,7 +153,10 @@ impl ListenerInventory {
                         id: ListenerId::Stats(index),
                         name: format!("@stats-{index}"),
                         protocol: Protocol::Http,
-                        bind: ListenerBind::Socket { address: *address },
+                        bind: ListenerBind::Socket {
+                            address: *address,
+                            ipv6_only: false,
+                        },
                         plane: ListenerPlane::Control,
                         descriptor_role: ListenerDescriptorRole::Stats(index),
                         descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -167,7 +173,10 @@ impl ListenerInventory {
                         id: ListenerId::StatsPage(index),
                         name: format!("@stats-page-{index}"),
                         protocol: Protocol::Http,
-                        bind: ListenerBind::Socket { address: page.bind },
+                        bind: ListenerBind::Socket {
+                            address: page.bind,
+                            ipv6_only: false,
+                        },
                         plane: ListenerPlane::Control,
                         descriptor_role: ListenerDescriptorRole::StatsPage(index),
                         descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -224,29 +233,14 @@ impl ListenerInventory {
     /// Listeners that are added, removed, renamed, reordered or given another protocol or TLS
     /// profile never need a restart: a reload binds the new sockets, carries over the sockets whose
     /// bind address is unchanged and closes the removed ones after draining. Only a Unix socket
-    /// that keeps its path and changes its mode is refused, because the new socket would need the
-    /// path the running one owns.
+    /// that keeps its path and changes its mode, or a TCP socket that keeps its address and changes
+    /// `ipv6_only`, is refused, because the new socket would need the path or port the running one owns.
     pub(crate) fn restart_reason(&self, candidate: &Self) -> Option<ListenerRestartReason> {
-        candidate
-            .entries
-            .iter()
-            .any(|candidate| {
-                let ListenerBind::Unix {
-                    path: candidate_path,
-                    mode: candidate_mode,
-                } = &candidate.bind
-                else {
-                    return false;
-                };
-                self.entries.iter().any(|active| {
-                    matches!(
-                        &active.bind,
-                        ListenerBind::Unix { path, mode }
-                            if path == candidate_path && mode != candidate_mode
-                    )
-                })
-            })
-            .then_some(ListenerRestartReason::UnixModeChange)
+        candidate.entries.iter().find_map(|candidate| {
+            self.entries
+                .iter()
+                .find_map(|active| restart_reason(&active.bind, &candidate.bind))
+        })
     }
 
     pub(crate) fn restart_required(&self, candidate: &Self) -> bool {
@@ -255,6 +249,33 @@ impl ListenerInventory {
 
     pub(crate) fn complete_listener_count(&self) -> usize {
         self.entries.len()
+    }
+}
+
+fn restart_reason(
+    active: &ListenerBind,
+    candidate: &ListenerBind,
+) -> Option<ListenerRestartReason> {
+    match (active, candidate) {
+        (
+            ListenerBind::Unix { path, mode },
+            ListenerBind::Unix {
+                path: candidate_path,
+                mode: candidate_mode,
+            },
+        ) if path == candidate_path && mode != candidate_mode => {
+            Some(ListenerRestartReason::UnixModeChange)
+        }
+        (
+            ListenerBind::Socket { address, ipv6_only },
+            ListenerBind::Socket {
+                address: candidate_address,
+                ipv6_only: candidate_ipv6_only,
+            },
+        ) if address == candidate_address && ipv6_only != candidate_ipv6_only => {
+            Some(ListenerRestartReason::Ipv6OnlyChange)
+        }
+        _ => None,
     }
 }
 

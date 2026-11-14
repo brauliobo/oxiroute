@@ -733,6 +733,7 @@ impl Lowerer<'_> {
                 };
                 Some(ListenerBind::Socket {
                     address: SocketAddr::new(ip, *port),
+                    ipv6_only: false,
                 })
             }
             BindAddress::Unix { path } => {

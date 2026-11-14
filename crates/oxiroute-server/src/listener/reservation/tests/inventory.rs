@@ -53,6 +53,7 @@ fn expected_traffic(
         protocol,
         bind: ListenerBind::Socket {
             address: SocketAddr::from(([127, 0, 0, 1], port)),
+            ipv6_only: false,
         },
         descriptor_role: ListenerDescriptorRole::Traffic(name.into()),
         descriptor_kind,
@@ -94,6 +95,7 @@ fn expected_stats(index: usize, port: u16) -> ExpectedInventoryEntry {
         protocol: Protocol::Http,
         bind: ListenerBind::Socket {
             address: SocketAddr::from(([127, 0, 0, 1], port)),
+            ipv6_only: false,
         },
         descriptor_role: ListenerDescriptorRole::Stats(index),
         descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -164,6 +166,7 @@ fn historical_descriptor_plan(
             None,
             ListenerBind::Socket {
                 address: management.bind,
+                ipv6_only: false,
             },
         ));
     }
@@ -173,7 +176,10 @@ fn historical_descriptor_plan(
                 ListenerId::Stats(index),
                 DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
                 None,
-                ListenerBind::Socket { address: *address },
+                ListenerBind::Socket {
+                    address: *address,
+                    ipv6_only: false,
+                },
             ));
         }
         for (index, page) in stats.pages.iter().enumerate() {
@@ -181,7 +187,10 @@ fn historical_descriptor_plan(
                 ListenerId::StatsPage(index),
                 DescriptorRole::StatsPage(u16::try_from(index).expect("descriptor limit checked")),
                 None,
-                ListenerBind::Socket { address: page.bind },
+                ListenerBind::Socket {
+                    address: page.bind,
+                    ipv6_only: false,
+                },
             ));
         }
     }
@@ -211,7 +220,7 @@ fn historical_descriptor_slot(
     bind: &ListenerBind,
 ) -> io::Result<DescriptorSlot> {
     let (kind, bind, mode) = match bind {
-        ListenerBind::Socket { address } => (
+        ListenerBind::Socket { address, .. } => (
             DescriptorKind::TcpListener,
             Some(BindIdentity::Tcp(*address)),
             None,
@@ -334,6 +343,7 @@ fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
             protocol: Protocol::Http,
             bind: ListenerBind::Socket {
                 address: "127.0.0.1:9900".parse().expect("management bind"),
+                ipv6_only: false,
             },
             descriptor_role: ListenerDescriptorRole::Management,
             descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -352,6 +362,7 @@ fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
             protocol: Protocol::Http,
             bind: ListenerBind::Socket {
                 address: "127.0.0.1:8406".parse().expect("stats page bind"),
+                ipv6_only: false,
             },
             descriptor_role: ListenerDescriptorRole::StatsPage(0),
             descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -461,6 +472,7 @@ fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
             protocol: Protocol::Http,
             bind: ListenerBind::Socket {
                 address: "127.0.0.1:9900".parse().expect("management bind"),
+                ipv6_only: false,
             },
             descriptor_role: ListenerDescriptorRole::Management,
             descriptor_kind: ListenerDescriptorKind::Tcp,
@@ -479,6 +491,7 @@ fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
             protocol: Protocol::Http,
             bind: ListenerBind::Socket {
                 address: "127.0.0.1:8406".parse().expect("stats page bind"),
+                ipv6_only: false,
             },
             descriptor_role: ListenerDescriptorRole::StatsPage(0),
             descriptor_kind: ListenerDescriptorKind::Tcp,

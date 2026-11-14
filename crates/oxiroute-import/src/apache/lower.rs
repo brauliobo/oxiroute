@@ -270,6 +270,7 @@ impl Lowerer {
                 name: format!("apache-listener-{}", listener_index + 1),
                 bind: ListenerBind::Socket {
                     address: listen.address,
+                    ipv6_only: false,
                 },
                 protocol: Protocol::Http,
                 service: Some(service_name.clone()),
@@ -292,6 +293,7 @@ impl Lowerer {
                 name: format!("apache-listener-{}", listener_index + 1),
                 bind: ListenerBind::Socket {
                     address: listen.address,
+                    ipv6_only: false,
                 },
                 protocol: Protocol::Http,
                 service: Some(service_name.clone()),

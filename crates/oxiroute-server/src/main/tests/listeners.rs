@@ -31,6 +31,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
             name: "database".into(),
             bind: ListenerBind::Socket {
                 address: ingress_address,
+                ipv6_only: false,
             },
             protocol: Protocol::Tcp,
             service: Some("database".into()),
@@ -242,11 +243,13 @@ async fn listener_build_error_never_notifies_ready_and_marks_metrics_failed() {
         "reserved",
         &ListenerBind::Socket {
             address: "127.0.0.1:0".parse().expect("reservation address"),
+            ipv6_only: false,
         },
     )
     .expect("listener reservation");
     let bind = ListenerBind::Socket {
         address: "127.0.0.1:0".parse().expect("metrics address"),
+        ipv6_only: false,
     };
     let runtime = RuntimeMetrics::new();
     let metrics = runtime
@@ -277,6 +280,7 @@ async fn listener_build_error_never_notifies_ready_and_marks_metrics_failed() {
 async fn listener_startup_panic_is_caught_without_notifying_ready() {
     let bind = ListenerBind::Socket {
         address: "127.0.0.1:0".parse().expect("reservation address"),
+        ipv6_only: false,
     };
     let reservation = ListenerReservation::bind("panic", &bind).expect("listener reservation");
     let runtime = RuntimeMetrics::new();

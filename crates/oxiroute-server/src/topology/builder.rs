@@ -130,7 +130,7 @@ impl TopologyBuilder {
                 name: name.clone(),
                 config_path,
                 attributes: json!({
-                    "bind": listener_bind(&ListenerBind::Socket { address: page.bind }),
+                    "bind": listener_bind(&ListenerBind::Socket { address: page.bind, ipv6_only: false }),
                     "protocol": "http",
                     "maxConnections": page.max_connections,
                     "downstreamTimeouts": {

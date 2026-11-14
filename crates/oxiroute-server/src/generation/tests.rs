@@ -139,6 +139,7 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
             name: "@management".into(),
             bind: ListenerBind::Socket {
                 address: traffic_management,
+                ipv6_only: false,
             },
             protocol: Protocol::Tcp,
             service: Some("relay".into()),
@@ -153,6 +154,7 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
             name: "@stats-0".into(),
             bind: ListenerBind::Socket {
                 address: traffic_stats,
+                ipv6_only: false,
             },
             protocol: Protocol::Tcp,
             service: Some("relay".into()),

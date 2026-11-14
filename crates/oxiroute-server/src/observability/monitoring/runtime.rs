@@ -320,7 +320,7 @@ impl RuntimeMetrics {
     ) -> Result<ListenerMetrics, MetricsError> {
         let name = name.into();
         let bind = match bind {
-            ListenerBind::Socket { address } => format!("socket:{address}"),
+            ListenerBind::Socket { address, .. } => format!("socket:{address}"),
             ListenerBind::Udp { address } => format!("udp:{address}"),
             ListenerBind::Unix { path, .. } => {
                 let path = path
@@ -676,7 +676,7 @@ impl Drop for ListenerRegistrationTransaction {
 
 fn configured_bind_identity(name: &str, bind: &ListenerBind) -> Result<String, MetricsError> {
     match bind {
-        ListenerBind::Socket { address } => Ok(format!("socket:{address}")),
+        ListenerBind::Socket { address, .. } => Ok(format!("socket:{address}")),
         ListenerBind::Udp { address } => Ok(format!("udp:{address}")),
         ListenerBind::Unix { path, .. } => path
             .to_str()

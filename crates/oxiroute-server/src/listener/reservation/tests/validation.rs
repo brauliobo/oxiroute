@@ -6,7 +6,10 @@ use crate::test_ports::unused_tcp_address;
 fn validation_tcp_probe_holds_then_releases_the_ephemeral_address() {
     let address = unused_tcp_address();
     let mut config = many_listener_config(1).to_draft();
-    config.listeners[0].bind = ListenerBind::Socket { address };
+    config.listeners[0].bind = ListenerBind::Socket {
+        address,
+        ipv6_only: false,
+    };
     let config = config.validate().expect("valid TCP probe config");
 
     let reservations = ListenerReservations::prepare_for_validation(&config, None)

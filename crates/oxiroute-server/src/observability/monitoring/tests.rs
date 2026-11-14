@@ -40,6 +40,7 @@ fn inventory_batch_failure_leaves_generation_and_process_registries_empty() {
             "valid",
             ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().expect("valid address"),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -68,6 +69,7 @@ fn typed_listener_counters_are_reused_across_generations_without_sharing_lifecyc
         "edge",
         ListenerBind::Socket {
             address: "127.0.0.1:8080".parse().expect("edge address"),
+            ipv6_only: false,
         },
     );
     let first = RuntimeMetrics::for_process(process.clone());
@@ -108,6 +110,7 @@ fn failed_registration_cannot_remove_reused_or_concurrently_committed_process_en
         "edge",
         ListenerBind::Socket {
             address: "127.0.0.1:8080".parse().expect("edge address"),
+            ipv6_only: false,
         },
     );
     let first = RuntimeMetrics::for_process(process.clone());
@@ -143,6 +146,7 @@ fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory
             "zulu",
             ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -150,6 +154,7 @@ fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory
             "alpha",
             ListenerBind::Socket {
                 address: "127.0.0.1:8081".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -157,6 +162,7 @@ fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory
             "@management",
             ListenerBind::Socket {
                 address: "127.0.0.1:9900".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -164,6 +170,7 @@ fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory
             "@stats-0",
             ListenerBind::Socket {
                 address: "127.0.0.1:9901".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
     ];
@@ -228,6 +235,7 @@ fn the_worker_report_matches_the_full_snapshot_without_sampling_the_host() {
             "web",
             ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -235,6 +243,7 @@ fn the_worker_report_matches_the_full_snapshot_without_sampling_the_host() {
             "@management",
             ListenerBind::Socket {
                 address: "127.0.0.1:9900".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
     ];
@@ -269,6 +278,7 @@ fn administration_targets_public_traffic_when_hidden_control_name_collides() {
             "@management",
             ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
         inventory_entry(
@@ -276,6 +286,7 @@ fn administration_targets_public_traffic_when_hidden_control_name_collides() {
             "@management",
             ListenerBind::Socket {
                 address: "127.0.0.1:9900".parse().unwrap(),
+                ipv6_only: false,
             },
         ),
     ];
@@ -543,6 +554,7 @@ fn serving_matches_the_full_snapshot_without_sampling_the_host() {
         "edge",
         ListenerBind::Socket {
             address: "127.0.0.1:8080".parse().expect("edge address"),
+            ipv6_only: false,
         },
     );
     metrics
@@ -578,6 +590,7 @@ fn public_listener_snapshots_are_the_listeners_of_the_full_snapshot() {
         "edge",
         ListenerBind::Socket {
             address: "127.0.0.1:8080".parse().expect("edge address"),
+            ipv6_only: false,
         },
     );
     metrics

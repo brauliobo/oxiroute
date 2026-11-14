@@ -33,7 +33,10 @@ pub(super) fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
         .iter()
         .map(|(name, address)| Listener {
             name: (*name).into(),
-            bind: ListenerBind::Socket { address: *address },
+            bind: ListenerBind::Socket {
+                address: *address,
+                ipv6_only: false,
+            },
             protocol: Protocol::Http,
             service: Some("fixed".into()),
             tls_profile: None,
@@ -52,7 +55,10 @@ pub(super) fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
     if let Some((name, address, upstream)) = shape.relay {
         config.listeners.push(Listener {
             name: name.into(),
-            bind: ListenerBind::Socket { address },
+            bind: ListenerBind::Socket {
+                address,
+                ipv6_only: false,
+            },
             protocol: Protocol::Tcp,
             service: Some("relay".into()),
             tls_profile: None,

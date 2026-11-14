@@ -46,6 +46,7 @@ fn inventory_core_is_platform_independent_and_unbounded() {
             Protocol::Http,
             &ListenerBind::Socket {
                 address: "127.0.0.1:8080".parse().expect("socket address"),
+                ipv6_only: false,
             },
         ),
         ListenerDescriptorKind::Tcp
@@ -144,6 +145,7 @@ fn only_a_unix_socket_that_keeps_its_path_and_changes_its_mode_needs_a_restart()
     let mut bind = active.to_draft();
     bind.listeners[0].bind = ListenerBind::Socket {
         address: "127.0.0.1:8090".parse().unwrap(),
+        ipv6_only: false,
     };
     assert_restart(validated(bind), false);
 
@@ -218,6 +220,7 @@ fn public_stats_page_display_name_rejects_traffic_collision_but_hidden_names_coe
         name: "@management".into(),
         bind: ListenerBind::Socket {
             address: ([127, 0, 0, 1], 8_081).into(),
+            ipv6_only: false,
         },
         protocol: Protocol::Tcp,
         service: Some("relay".into()),
@@ -329,6 +332,7 @@ fn inventory_config(
         name: name.into(),
         bind: ListenerBind::Socket {
             address: ([127, 0, 0, 1], port).into(),
+            ipv6_only: false,
         },
         protocol: Protocol::Tcp,
         service: Some("relay".into()),
@@ -343,6 +347,24 @@ fn inventory_config(
 }
 
 #[allow(clippy::too_many_lines)]
+#[test]
+fn a_socket_that_keeps_its_address_and_changes_ipv6_only_needs_a_restart() {
+    let with = |ipv6_only| {
+        let mut draft = matrix_config().to_draft();
+        draft.listeners[0].bind = ListenerBind::Socket {
+            address: "[::]:8090".parse().unwrap(),
+            ipv6_only,
+        };
+        ListenerInventory::compile(&draft.validate().expect("valid candidate"))
+    };
+    let (dual, only) = (with(false), with(true));
+    assert_eq!(
+        dual.restart_reason(&only),
+        Some(ListenerRestartReason::Ipv6OnlyChange)
+    );
+    assert_eq!(dual.restart_reason(&with(false)), None);
+}
+
 fn matrix_config() -> oxiroute_config::ValidatedConfig {
     serde_json::from_value::<ConfigDraft>(serde_json::json!({
             "version": 1,

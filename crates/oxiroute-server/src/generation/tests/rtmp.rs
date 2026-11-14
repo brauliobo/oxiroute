@@ -401,6 +401,7 @@ fn generation_checks_and_listener_reservation_precede_recording_store_acquisitio
         .to_draft();
     listener_failure.listeners[0].bind = ListenerBind::Socket {
         address: occupied.local_addr().expect("occupied address"),
+        ipv6_only: false,
     };
     reset_rtmp_stage_counts();
     assert!(manager.prepare(document_for(&listener_failure)).is_err());

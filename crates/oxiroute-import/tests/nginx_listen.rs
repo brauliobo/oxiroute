@@ -32,7 +32,7 @@ fn binds(report: &ImportReport) -> Vec<String> {
         .listeners
         .iter()
         .map(|listener| match &listener.bind {
-            ListenerBind::Socket { address } => address.to_string(),
+            ListenerBind::Socket { address, .. } => address.to_string(),
             other => panic!("unexpected bind {other:?}"),
         })
         .collect()

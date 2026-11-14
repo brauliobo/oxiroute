@@ -160,7 +160,7 @@ pub fn proxy_config(
 pub fn verified_upstream(server_name: &str, ca_fixture: &str) -> UpstreamTls {
     UpstreamTls {
         server_name: Some(server_name.into()),
-    verify: oxiroute_config::UpstreamTlsVerify::Full,
+        verify: oxiroute_config::UpstreamTlsVerify::Full,
         ca_certificate_path: Some(fixture(ca_fixture)),
     }
 }
@@ -199,7 +199,13 @@ impl ProxyHarness {
                 .expect("downstream certificate generation"),
         );
         let spec = generation.services().first().expect("wire runtime service");
-        assert_eq!(spec.bind, ListenerBind::Socket { address });
+        assert_eq!(
+            spec.bind,
+            ListenerBind::Socket {
+                address,
+                ipv6_only: false,
+            }
+        );
         let bind = spec.bind.to_string();
         let metrics = RuntimeMetrics::new();
         metrics

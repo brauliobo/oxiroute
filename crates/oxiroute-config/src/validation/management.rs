@@ -162,12 +162,16 @@ pub(super) fn validate_bind_conflicts(
             "management".to_owned(),
             ListenerBind::Socket {
                 address: management.bind,
+                ipv6_only: false,
             },
         ));
     }
     if let Some(stats) = stats {
         for (index, address) in stats.binds.iter().enumerate() {
-            let bind = ListenerBind::Socket { address: *address };
+            let bind = ListenerBind::Socket {
+                address: *address,
+                ipv6_only: false,
+            };
             for (first_name, first_bind) in &binds {
                 if binds_overlap(first_bind, &bind) {
                     return Err(ConfigError::OverlappingBind {
@@ -181,7 +185,10 @@ pub(super) fn validate_bind_conflicts(
             binds.push((format!("stats-{index}"), bind));
         }
         for (index, page) in stats.pages.iter().enumerate() {
-            let bind = ListenerBind::Socket { address: page.bind };
+            let bind = ListenerBind::Socket {
+                address: page.bind,
+                ipv6_only: false,
+            };
             for (first_name, first_bind) in &binds {
                 if binds_overlap(first_bind, &bind) {
                     return Err(ConfigError::OverlappingBind {
@@ -215,36 +222,37 @@ pub(super) fn validate_bind_conflicts(
 
 fn binds_overlap(first: &ListenerBind, second: &ListenerBind) -> bool {
     match (first, second) {
-        (
-            ListenerBind::Socket {
-                address: first_address,
-            }
-            | ListenerBind::Udp {
-                address: first_address,
-            },
-            ListenerBind::Socket {
-                address: second_address,
-            }
-            | ListenerBind::Udp {
-                address: second_address,
-            },
-        ) if matches!(
-            (first, second),
-            (ListenerBind::Socket { .. }, ListenerBind::Socket { .. })
-                | (ListenerBind::Udp { .. }, ListenerBind::Udp { .. })
-        ) =>
-        {
-            let first_ip = canonical_ip(first_address.ip());
-            let second_ip = canonical_ip(second_address.ip());
-            first_address.port() == second_address.port()
-                && (first_ip == second_ip
-                    || first_ip.is_unspecified()
-                    || second_ip.is_unspecified())
-        }
+        (ListenerBind::Socket { .. }, ListenerBind::Socket { .. })
+        | (ListenerBind::Udp { .. }, ListenerBind::Udp { .. }) => addresses_overlap(first, second),
         (ListenerBind::Unix { path: first, .. }, ListenerBind::Unix { path: second, .. }) => {
             first == second
         }
         _ => false,
+    }
+}
+
+/// Same-transport sockets overlap on one port when they share an address or either is a wildcard, except that an
+/// `ipv6_only` wildcard never receives IPv4 traffic and so leaves IPv4 addresses on the port to other listeners.
+fn addresses_overlap(first: &ListenerBind, second: &ListenerBind) -> bool {
+    let (Some((first_address, first_v6_only)), Some((second_address, second_v6_only))) =
+        (socket_parts(first), socket_parts(second))
+    else {
+        return false;
+    };
+    let first_ip = canonical_ip(first_address.ip());
+    let second_ip = canonical_ip(second_address.ip());
+    if (first_v6_only && second_ip.is_ipv4()) || (second_v6_only && first_ip.is_ipv4()) {
+        return false;
+    }
+    first_address.port() == second_address.port()
+        && (first_ip == second_ip || first_ip.is_unspecified() || second_ip.is_unspecified())
+}
+
+fn socket_parts(bind: &ListenerBind) -> Option<(SocketAddr, bool)> {
+    match bind {
+        ListenerBind::Socket { address, ipv6_only } => Some((*address, *ipv6_only)),
+        ListenerBind::Udp { address } => Some((*address, false)),
+        ListenerBind::Unix { .. } => None,
     }
 }
 
@@ -344,7 +352,7 @@ fn validate_listener_basics(
 ) -> Result<(), ConfigError> {
     if matches!(
         &listener.bind,
-        ListenerBind::Socket { address } | ListenerBind::Udp { address }
+        ListenerBind::Socket { address, .. } | ListenerBind::Udp { address }
             if address.port() == 0
     ) {
         return Err(ConfigError::ZeroPort {
@@ -420,6 +428,18 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
             "max_connections",
             max_connections,
         )?;
+    }
+    if let ListenerBind::Socket {
+        address,
+        ipv6_only: true,
+    } = listener.bind
+        && address.ip() != std::net::Ipv6Addr::UNSPECIFIED
+    {
+        return Err(ConfigError::InvalidListenerTransport {
+            listener: listener.name.clone(),
+            protocol: listener.protocol,
+            detail: "ipv6_only is only valid on a `[::]` socket bind",
+        });
     }
     if let ListenerBind::Unix {
         mode: Some(mode), ..
