@@ -127,6 +127,15 @@ pub struct EffectiveBind {
     pub default_server: OccurrenceId,
     pub default_selection: DefaultServerSelection,
     pub names: Vec<BoundServerName>,
+    /// The IPv4 wildcard endpoint folded into this `[::]` bind, which then serves both families.
+    pub paired_endpoint: Option<ListenEndpoint>,
+}
+
+impl EffectiveBind {
+    #[must_use]
+    pub fn carries(&self, endpoint: &ListenEndpoint) -> bool {
+        *endpoint == self.endpoint || self.paired_endpoint.as_ref() == Some(endpoint)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

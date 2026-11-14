@@ -55,9 +55,13 @@ fn load_bind_tls(
             "HAProxy crt path must be absolute when no representable crt-base is available".into(),
         );
     }
-    let items = read_pem_items(&path, "crt PEM")?;
-    let (dns_names, leaf_certificate, embedded_private_keys) = certificate_metadata(&path, &items)?;
-    if embedded_private_keys != 0 {
+    let kind = "HAProxy crt PEM";
+    let PemMetadata {
+        identities: dns_names,
+        leaf: leaf_certificate,
+        private_keys,
+    } = certificate_metadata(&path, kind, &read_pem_items(&path, kind)?)?;
+    if private_keys != 0 {
         return Err(format!(
             "HAProxy combined certificate/private-key bundle `{}` cannot be preserved by separate canonical file references",
             path.display()
@@ -78,163 +82,8 @@ fn load_bind_tls(
     })
 }
 
-fn read_pem_items(
-    path: &std::path::Path,
-    kind: &str,
-) -> Result<Vec<(PemSectionKind, Vec<u8>)>, String> {
-    let bytes = read_stable_pem(path, kind)?;
-    let mut reader = BufReader::new(bytes.as_slice());
-    let mut items = Vec::new();
-    while let Some((kind, data)) = pem::from_buf(&mut reader)
-        .map_err(|error| format!("cannot parse HAProxy {kind} `{}`: {error}", path.display()))?
-    {
-        if matches!(
-            kind,
-            PemSectionKind::Certificate
-                | PemSectionKind::PublicKey
-                | PemSectionKind::RsaPrivateKey
-                | PemSectionKind::PrivateKey
-                | PemSectionKind::EcPrivateKey
-                | PemSectionKind::Crl
-                | PemSectionKind::Csr
-        ) {
-            items.push((kind, data));
-        }
-    }
-    Ok(items)
-}
-
-fn certificate_metadata(
-    path: &std::path::Path,
-    items: &[(PemSectionKind, Vec<u8>)],
-) -> Result<(Vec<String>, Vec<u8>, usize), String> {
-    let mut dns_names = Vec::new();
-    let mut leaf_certificate = None;
-    let mut certificate_count = 0usize;
-    let mut private_key_count = 0usize;
-    for (kind, data) in items {
-        match kind {
-            PemSectionKind::Certificate => {
-                if certificate_count == 0 {
-                    leaf_certificate = Some(data.clone());
-                }
-                collect_certificate_metadata(path, data, certificate_count, &mut dns_names)?;
-                certificate_count += 1;
-            }
-            PemSectionKind::RsaPrivateKey
-            | PemSectionKind::PrivateKey
-            | PemSectionKind::EcPrivateKey => private_key_count += 1,
-            _ => {
-                return Err(format!(
-                    "HAProxy crt PEM `{}` contains an unsupported PEM item",
-                    path.display()
-                ));
-            }
-        }
-    }
-    if certificate_count == 0 {
-        return Err(format!(
-            "HAProxy crt PEM `{}` contains no certificates",
-            path.display()
-        ));
-    }
-    if certificate_count > MAX_CERTIFICATES_IN_CHAIN {
-        return Err(format!(
-            "HAProxy crt PEM `{}` exceeds {MAX_CERTIFICATES_IN_CHAIN} certificates",
-            path.display()
-        ));
-    }
-    validate_dns_identities(path, &dns_names)?;
-    Ok((
-        dns_names,
-        leaf_certificate.expect("nonempty chain has a leaf certificate"),
-        private_key_count,
-    ))
-}
-
-fn collect_certificate_metadata(
-    path: &std::path::Path,
-    certificate: &[u8],
-    index: usize,
-    dns_names: &mut Vec<String>,
-) -> Result<(), String> {
-    let (remainder, parsed) = parse_x509_certificate(certificate).map_err(|_| {
-        format!(
-            "HAProxy crt PEM `{}` contains an invalid X.509 certificate",
-            path.display()
-        )
-    })?;
-    if !remainder.is_empty() {
-        return Err(format!(
-            "HAProxy crt PEM `{}` contains trailing certificate DER data",
-            path.display()
-        ));
-    }
-    let is_ca = parsed
-        .basic_constraints()
-        .map_err(|_| {
-            format!(
-                "HAProxy crt PEM `{}` has invalid basic constraints",
-                path.display()
-            )
-        })?
-        .is_some_and(|constraints| constraints.value.ca);
-    if index != 0 && !is_ca {
-        return Err(format!(
-            "HAProxy crt PEM `{}` contains multiple end-entity certificates; multi-cert selection is unsupported",
-            path.display()
-        ));
-    }
-    if index == 0
-        && let Some(names) = parsed.subject_alternative_name().map_err(|_| {
-            format!(
-                "HAProxy crt PEM `{}` has an invalid subject alternative name extension",
-                path.display()
-            )
-        })?
-    {
-        for name in &names.value.general_names {
-            let GeneralName::DNSName(name) = name else {
-                continue;
-            };
-            let canonical = canonical_certificate_dns_name(name).map_err(|_| {
-                format!(
-                    "HAProxy crt PEM `{}` contains an unsupported DNS subject alternative name",
-                    path.display()
-                )
-            })?;
-            dns_names.push(canonical);
-        }
-    }
-    Ok(())
-}
-
-fn validate_dns_identities(path: &std::path::Path, dns_names: &[String]) -> Result<(), String> {
-    if dns_names.is_empty() {
-        return Err(format!(
-            "HAProxy crt PEM `{}` has no DNS subject alternative names",
-            path.display()
-        ));
-    }
-    if dns_names.len() > MAX_CERTIFICATE_DNS_NAMES {
-        return Err(format!(
-            "HAProxy crt PEM `{}` exceeds {MAX_CERTIFICATE_DNS_NAMES} DNS subject alternative names",
-            path.display()
-        ));
-    }
-    let mut unique = std::collections::HashSet::with_capacity(dns_names.len());
-    if dns_names.iter().all(|name| unique.insert(name)) {
-        Ok(())
-    } else {
-        Err(format!(
-            "HAProxy crt PEM `{}` repeats a DNS subject alternative name",
-            path.display()
-        ))
-    }
-}
-
 fn validate_sidecar_key(path: &std::path::Path, leaf_certificate: &[u8]) -> Result<(), String> {
-    let bytes = Zeroizing::new(read_stable_pem(path, "crt sidecar key")?);
+    let bytes = Zeroizing::new(read_stable_pem(path, "HAProxy crt sidecar key")?);
     let mut reader = BufReader::new(bytes.as_slice());
     let mut items = Vec::new();
     while let Some((kind, data)) = pem::from_buf(&mut reader).map_err(|error| {
@@ -320,87 +169,4 @@ fn validate_sidecar_key(path: &std::path::Path, leaf_certificate: &[u8]) -> Resu
         ));
     }
     Ok(())
-}
-
-fn read_stable_pem(path: &std::path::Path, kind: &str) -> Result<Vec<u8>, String> {
-    let mut file = File::open(path)
-        .map_err(|error| format!("cannot open HAProxy {kind} `{}`: {error}", path.display()))?;
-    let before = file.metadata().map_err(|error| {
-        format!(
-            "cannot inspect HAProxy {kind} `{}`: {error}",
-            path.display()
-        )
-    })?;
-    if !before.is_file() {
-        return Err(format!(
-            "HAProxy {kind} `{}` is not a regular file",
-            path.display()
-        ));
-    }
-    if before.len() > u64::try_from(MAX_CERTIFICATE_CHAIN_BYTES).unwrap_or(u64::MAX) {
-        return Err(pem_size_error(path, kind));
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(
-            u64::try_from(MAX_CERTIFICATE_CHAIN_BYTES)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1),
-        )
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read HAProxy {kind} `{}`: {error}", path.display()))?;
-    let after = file.metadata().map_err(|error| {
-        format!(
-            "cannot re-inspect HAProxy {kind} `{}`: {error}",
-            path.display()
-        )
-    })?;
-    if PemFingerprint::new(&before) != PemFingerprint::new(&after) {
-        return Err(format!(
-            "HAProxy {kind} `{}` changed while metadata was read",
-            path.display()
-        ));
-    }
-    if bytes.len() > MAX_CERTIFICATE_CHAIN_BYTES {
-        return Err(pem_size_error(path, kind));
-    }
-    Ok(bytes)
-}
-
-fn pem_size_error(path: &std::path::Path, kind: &str) -> String {
-    format!(
-        "HAProxy {kind} `{}` exceeds {MAX_CERTIFICATE_CHAIN_BYTES} bytes",
-        path.display()
-    )
-}
-
-#[derive(Eq, PartialEq)]
-struct PemFingerprint {
-    length: u64,
-    modified: Option<SystemTime>,
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(unix)]
-    changed_seconds: i64,
-    #[cfg(unix)]
-    changed_nanoseconds: i64,
-}
-
-impl PemFingerprint {
-    fn new(metadata: &Metadata) -> Self {
-        Self {
-            length: metadata.len(),
-            modified: metadata.modified().ok(),
-            #[cfg(unix)]
-            device: metadata.dev(),
-            #[cfg(unix)]
-            inode: metadata.ino(),
-            #[cfg(unix)]
-            changed_seconds: metadata.ctime(),
-            #[cfg(unix)]
-            changed_nanoseconds: metadata.ctime_nsec(),
-        }
-    }
 }

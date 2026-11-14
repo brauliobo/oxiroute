@@ -1,6 +1,6 @@
 use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
+    collections::{HashMap, HashSet},
+    path::PathBuf,
 };
 
 use oxiroute_config::{
@@ -8,27 +8,36 @@ use oxiroute_config::{
     TlsVersion,
 };
 
-use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, canonical::absolute_file_path};
+use crate::{
+    Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,
+    E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_IO, Severity, canonical::absolute_file_path,
+};
 
 use crate::nginx::{
     DirectiveOrigin, EffectiveBind, EffectiveHttp, EffectiveServer, ListenEndpoint, OccurrenceId,
-    ServerNameKind,
 };
 
 use super::{
     LowerIssue, Lowerer,
-    listener::{
-        canonical_exact_host, canonical_wildcard_host, matching_listen, parse_duration_ms,
-        parse_size,
-    },
+    listener::{bind_listens, parse_duration_ms, parse_size},
     provenance::{issue, utf8},
 };
+
+mod identity;
+
+use identity::{certificate_source, declared_identities, lineage_identities, uncovered_identities};
+
+/// A listen-flag `http2` on one server enables HTTP/2 for every server on the socket.
+const W_HTTP2_SOCKET_WIDE: DiagnosticCode = DiagnosticCode::new("W_HTTP2_SOCKET_WIDE");
+/// A `server_name` is not among the subject alternative names of the certificate its server uses.
+const W_CERTIFICATE_NAME_UNCOVERED: DiagnosticCode =
+    DiagnosticCode::new("W_CERTIFICATE_NAME_UNCOVERED");
 
 struct CertificateCandidate {
     name: String,
     dns_names: Vec<String>,
-    chain: PathBuf,
-    key: PathBuf,
+    uncovered: Vec<String>,
+    source: CertificateSource,
     origin: DirectiveOrigin,
 }
 
@@ -47,43 +56,93 @@ pub(super) struct CertificateIdentity {
 #[derive(Clone)]
 pub(super) struct CertificateMetadata {
     name: String,
+    /// Leaf SANs of a Certbot lineage, read once per lineage; `None` for sources named by `server_name`.
+    lineage: Option<Result<Vec<String>, String>>,
 }
 
 struct TlsListenPolicy<'a> {
     server: &'a EffectiveServer,
     tls: bool,
-    h2: bool,
+    listen_h2: bool,
+    directive_h2: bool,
 }
 
-fn certificate_source(chain: PathBuf, key: PathBuf) -> CertificateSource {
-    let live_directory = chain.parent();
-    let certbot_root = live_directory.and_then(Path::parent);
-    let certbot_domain = live_directory.and_then(Path::file_name);
-    if chain
-        .file_name()
-        .is_some_and(|name| name == "fullchain.pem")
-        && key.file_name().is_some_and(|name| name == "privkey.pem")
-        && key.parent() == live_directory
-        && certbot_root
-            .and_then(Path::file_name)
-            .is_some_and(|name| name == "live")
-    {
-        let root = certbot_root
-            .and_then(Path::parent)
-            .expect("live directory has a parent");
-        return CertificateSource::Certbot {
-            live_directory_path: live_directory
-                .expect("certbot live directory")
-                .to_path_buf(),
-            archive_directory_path: root
-                .join("archive")
-                .join(certbot_domain.expect("certbot domain directory")),
-        };
+impl TlsListenPolicy<'_> {
+    const fn h2(&self) -> bool {
+        self.listen_h2 || self.directive_h2
     }
-    CertificateSource::Files {
-        certificate_chain_path: chain,
-        private_key_path: key,
+}
+
+fn warning(
+    origin: &DirectiveOrigin,
+    code: DiagnosticCode,
+    message: impl Into<String>,
+) -> Diagnostic {
+    Diagnostic::new(code, Severity::Warning, DiagnosticStage::Lower, message)
+        .with_primary_span(origin.span)
+        .with_include_stack(
+            origin
+                .provenance
+                .include_stack
+                .iter()
+                .map(|frame| frame.directive_span),
+        )
+}
+
+/// nginx negotiates ALPN per socket before it selects a server, so a `listen ... http2` flag on any server
+/// enables HTTP/2 for all of them. Without a flag only the `http2` directive applies, per selected server, which
+/// one canonical TLS profile can honor only when every server agrees.
+fn bind_h2(
+    policies: &[TlsListenPolicy<'_>],
+    warnings: &mut Vec<Diagnostic>,
+    issues: &mut Vec<LowerIssue>,
+) -> bool {
+    if policies.iter().any(|policy| policy.listen_h2) {
+        warnings.extend(policies.iter().filter(|policy| !policy.h2()).map(|policy| {
+            warning(
+                &policy.server.origin,
+                W_HTTP2_SOCKET_WIDE,
+                "nginx negotiates HTTP/2 for every server on this socket because another server enables it in listen",
+            )
+        }));
+        return true;
     }
+    let enabled = policies[0].directive_h2;
+    issues.extend(
+        policies
+            .iter()
+            .filter(|policy| policy.directive_h2 != enabled)
+            .map(|policy| {
+                issue(
+                    &policy.server.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "virtual servers on one bind have mismatched HTTP/2 policies and no listen flag; nginx would decide per server name, a TLS profile cannot",
+                )
+            }),
+    );
+    enabled
+}
+
+fn shared_identity_issues(candidates: &[CertificateCandidate]) -> Vec<LowerIssue> {
+    let mut claims = HashMap::new();
+    let mut issues = Vec::new();
+    for candidate in candidates {
+        for name in &candidate.dns_names {
+            if claims
+                .insert(name, &candidate.name)
+                .is_some_and(|first| *first != candidate.name)
+            {
+                issues.push(issue(
+                    &candidate.origin,
+                    E_DUPLICATE_IDENTITY,
+                    format!(
+                        "two certificates in one TLS profile claim the subject alternative name `{name}`"
+                    ),
+                ));
+            }
+        }
+    }
+    issues
 }
 
 impl Lowerer {
@@ -103,7 +162,7 @@ impl Lowerer {
         let any_tls = policies.iter().any(|policy| policy.tls);
         if !any_tls {
             for policy in policies {
-                if policy.h2 {
+                if policy.h2() {
                     issues.push(issue(
                         &policy.server.origin,
                         E_SEMANTICS_NOT_REPRESENTABLE,
@@ -135,10 +194,11 @@ impl Lowerer {
         let mut certificates = Vec::new();
         let mut protocol_policy = None;
         let mut tls_policy = None;
-        let mut h2_policy = None;
         let mut default_certificate = None;
         let mut origins = Vec::new();
-        for policy in policies {
+        let mut warnings = Vec::new();
+        let h2 = bind_h2(&policies, &mut warnings, &mut issues);
+        for policy in &policies {
             let server = policy.server;
             match self.tls_policy(server.origin.occurrence, &server.origin) {
                 Ok((policy, policy_origins)) => {
@@ -173,28 +233,30 @@ impl Lowerer {
                 }
                 Err(protocol_issues) => issues.extend(protocol_issues),
             }
-            if h2_policy.is_some_and(|current| current != policy.h2) {
-                issues.push(issue(
-                    &server.origin,
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "virtual servers on one bind have mismatched HTTP/2 policies",
-                ));
-            } else {
-                h2_policy = Some(policy.h2);
-            }
             match self.certificate_for_server(http, bind, server) {
                 Ok(certificate) => {
                     if server.origin.occurrence == bind.default_server {
                         default_certificate = Some(certificate.name.clone());
                     }
+                    warnings.extend(certificate.uncovered.iter().map(|name| {
+                        warning(
+                            &server.origin,
+                            W_CERTIFICATE_NAME_UNCOVERED,
+                            format!(
+                                "server_name `{name}` is not among the subject alternative names of its certificate; nginx would still serve that certificate, oxiroute serves the profile default for this name"
+                            ),
+                        )
+                    }));
                     certificates.push(certificate);
                 }
                 Err(certificate_issues) => issues.extend(certificate_issues),
             }
         }
+        issues.extend(shared_identity_issues(&certificates));
         if !issues.is_empty() {
             return Err(issues);
         }
+        self.diagnostics.extend(warnings);
         let default_certificate = default_certificate.expect("default server certificate");
         let mut canonical_certificates = Vec::new();
         let mut certificate_names = Vec::new();
@@ -215,7 +277,7 @@ impl Lowerer {
             canonical_certificates.push(Certificate {
                 name: certificate.name,
                 dns_names: certificate.dns_names,
-                source: certificate_source(certificate.chain, certificate.key),
+                source: certificate.source,
             });
         }
         Ok(Some(LoweredTls {
@@ -225,7 +287,7 @@ impl Lowerer {
                 certificates: certificate_names,
                 default_certificate,
                 min_version: protocol_policy.expect("validated TLS protocol policy"),
-                alpn: if h2_policy == Some(true) {
+                alpn: if h2 {
                     vec![AlpnProtocol::H2, AlpnProtocol::Http11]
                 } else {
                     vec![AlpnProtocol::Http11]
@@ -345,15 +407,19 @@ impl Lowerer {
         servers
             .iter()
             .map(|server| {
-                let listen = matching_listen(server, &bind.endpoint);
-                let tls = listen.options.iter().any(|option| option.value == b"ssl");
-                let legacy_h2 = listen.options.iter().any(|option| option.value == b"http2");
-                let modern_h2 =
-                    self.http2_enabled(server.origin.occurrence, &server.origin, issues);
+                let has_option = |name: &[u8]| {
+                    bind_listens(server, bind)
+                        .any(|listen| listen.options.iter().any(|option| option.value == name))
+                };
                 TlsListenPolicy {
                     server,
-                    tls,
-                    h2: legacy_h2 || modern_h2,
+                    tls: has_option(b"ssl"),
+                    listen_h2: has_option(b"http2"),
+                    directive_h2: self.http2_enabled(
+                        server.origin.occurrence,
+                        &server.origin,
+                        issues,
+                    ),
                 }
             })
             .collect()
@@ -417,10 +483,6 @@ impl Lowerer {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "certificate inheritance, identity, and source validation are one atomic decision"
-    )]
     fn certificate_for_server(
         &mut self,
         http: &EffectiveHttp,
@@ -480,66 +542,44 @@ impl Lowerer {
                 .chain(&keys)
                 .flat_map(|policy| policy.origins.iter().map(|origin| origin.occurrence)),
         );
-        let identity = CertificateIdentity {
-            chain: chain.clone(),
-            key: key.clone(),
-        };
-        let metadata = if let Some(metadata) = self.certificate_identities.get(&identity) {
-            metadata.clone()
-        } else {
-            let metadata = CertificateMetadata {
-                name: format!("nginx-certificate-{}", self.certificate_identities.len()),
-            };
-            self.certificate_identities
-                .insert(identity.clone(), metadata.clone());
-            metadata
-        };
-        let mut dns_names = Vec::new();
-        for name in bind
-            .names
-            .iter()
-            .filter(|name| name.server == server.origin.occurrence)
-            .map(|name| &name.name)
-        {
-            match name.kind {
-                ServerNameKind::Exact => {
-                    if let Some(name) = utf8(&name.normalized).and_then(canonical_exact_host) {
-                        dns_names.push(name);
-                    }
-                }
-                ServerNameKind::LeadingWildcard => {
-                    if let Some(name) = utf8(&name.normalized).and_then(|name| {
-                        canonical_wildcard_host(name).then(|| name.to_ascii_lowercase())
-                    }) {
-                        dns_names.push(name);
-                    }
-                }
-                ServerNameKind::LeadingWildcardAndExact => {
-                    if let Some(suffix) = utf8(&name.normalized)
-                        .and_then(|name| name.strip_prefix('.'))
-                        .filter(|suffix| super::listener::canonical_dns_name(suffix))
-                    {
-                        dns_names.push(suffix.to_ascii_lowercase());
-                        dns_names.push(format!("*.{}", suffix.to_ascii_lowercase()));
-                    }
-                }
-                _ => {}
+        let source = certificate_source(chain.clone(), key.clone());
+        let next = self.certificate_identities.len();
+        let metadata = self
+            .certificate_identities
+            .entry(CertificateIdentity { chain, key })
+            .or_insert_with(|| CertificateMetadata {
+                name: format!("nginx-certificate-{next}"),
+                lineage: lineage_identities(&source),
+            })
+            .clone();
+        let mut dns_names = declared_identities(bind, server);
+        let mut uncovered = Vec::new();
+        match metadata.lineage {
+            None if dns_names.is_empty() => {
+                return Err(vec![issue(
+                    &server.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "TLS virtual server needs a canonical DNS or IP server_name for certificate activation",
+                )]);
             }
-        }
-        dns_names.sort();
-        dns_names.dedup();
-        if dns_names.is_empty() {
-            return Err(vec![issue(
-                &server.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "TLS virtual server needs a canonical DNS or IP server_name for certificate activation",
-            )]);
+            None => {}
+            Some(Err(reason)) => {
+                return Err(vec![issue(
+                    chains[0].origins.last().unwrap_or(&server.origin),
+                    E_SOURCE_IO,
+                    format!("certificate identity evidence unavailable: {reason}"),
+                )]);
+            }
+            Some(Ok(identities)) => {
+                uncovered = uncovered_identities(&dns_names, &identities);
+                dns_names = identities;
+            }
         }
         Ok(CertificateCandidate {
             name: metadata.name,
             dns_names,
-            chain,
-            key,
+            uncovered,
+            source,
             origin: server.origin.clone(),
         })
     }

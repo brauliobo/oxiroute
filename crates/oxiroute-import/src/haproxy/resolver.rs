@@ -1,23 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::{File, Metadata},
-    io::{BufReader, Read},
+    io::BufReader,
     path::PathBuf,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
-
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 
 use openssl::{
     pkey::{Id, PKey},
     x509::X509,
 };
-use oxiroute_config::{PassiveObserve, PassiveOnError, canonical_certificate_dns_name};
+use oxiroute_config::{PassiveObserve, PassiveOnError};
 use rustls_pki_types::pem::{self, SectionKind as PemSectionKind};
-use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 use zeroize::Zeroizing;
 
+use crate::certificate::{PemMetadata, certificate_metadata, read_pem_items, read_stable_pem};
 use crate::{
     ActivationRequirement, ActivationRequirementKind, DeploymentRequirement,
     DeploymentRequirementKind, Diagnostic, DiagnosticCode, DiagnosticStage, ProvenanceRole,

@@ -29,11 +29,7 @@ pub(super) fn parse_listen_endpoint(value: &[u8]) -> Option<ListenEndpoint> {
             _ => return None,
         };
         return Some(ListenEndpoint::Socket {
-            address: if &value[..=closing] == b"[::]" {
-                b"*".to_vec()
-            } else {
-                ascii_lowercase(&value[..=closing])
-            },
+            address: ascii_lowercase(&value[..=closing]),
             port,
         });
     }
@@ -60,11 +56,22 @@ pub(super) fn parse_listen_endpoint(value: &[u8]) -> Option<ListenEndpoint> {
     })
 }
 
-pub(super) fn listen_protocols(listen: &EffectiveListen) -> (bool, bool) {
-    (
-        listen.options.iter().any(|option| option.value == b"ssl"),
-        listen.options.iter().any(|option| option.value == b"http2"),
-    )
+/// The IPv4 wildcard endpoint that nginx pairs with an IPv6 `[::]` wildcard on the same port.
+pub(super) fn ipv4_wildcard_pair(endpoint: &ListenEndpoint) -> Option<ListenEndpoint> {
+    match endpoint {
+        ListenEndpoint::Socket { address, port } if address == b"[::]" => {
+            Some(ListenEndpoint::Socket {
+                address: b"*".to_vec(),
+                port: *port,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// `http2` is deliberately excluded: nginx applies it socket-wide, so mixed values are reconciled by lowering.
+pub(super) fn listen_ssl(listen: &EffectiveListen) -> bool {
+    listen.options.iter().any(|option| option.value == b"ssl")
 }
 
 pub(super) fn listen_endpoints_overlap(first: &ListenEndpoint, second: &ListenEndpoint) -> bool {
@@ -92,7 +99,9 @@ pub(super) fn listen_endpoints_overlap(first: &ListenEndpoint, second: &ListenEn
     };
     let first_ip = canonical_ip(first_ip);
     let second_ip = canonical_ip(second_ip);
-    first_ip == second_ip || first_ip.is_unspecified() || second_ip.is_unspecified()
+    first_ip == second_ip
+        || first_ip.is_ipv4() == second_ip.is_ipv4()
+            && (first_ip.is_unspecified() || second_ip.is_unspecified())
 }
 
 fn listen_endpoint_ip(address: &[u8]) -> Option<IpAddr> {
