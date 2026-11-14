@@ -789,10 +789,10 @@ Current constraints:
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through
   uses an ordinary plaintext-configured TCP pool and does not terminate or originate TLS.
 - Unknown fields and unknown protocol values are errors.
-- Every authored source and deterministic rendered output is limited to 1 MiB. Generic source trees
+- Every authored source and deterministic rendered output is limited to 4 MiB. Generic source trees
   are additionally limited to 128 structural levels, 100,000 nodes, 256 KiB per string, 64 template
   inheritance levels, and 4,096 recorded native dependency paths.
-- Restricted Lua has the same 1 MiB source limit, 4 MiB of additional memory, and one million
+- Restricted Lua has the same 4 MiB source limit, 4 MiB of additional memory, and one million
   instructions. No Lua standard libraries are loaded and binary chunks are rejected. Lua does not
   support generic templates or native-server references.
 

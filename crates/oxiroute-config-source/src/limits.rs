@@ -5,9 +5,9 @@ use serde_json::{Map, Value};
 use crate::ConfigSourceError;
 
 /// Maximum accepted source size.
-pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+pub const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum rendered source or expanded JSON size.
-pub const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum nesting depth in a decoded or rendered value.
 pub const MAX_STRUCTURAL_DEPTH: usize = 128;
 /// Maximum number of values and object keys in a value tree.

@@ -12,7 +12,7 @@ fn oversized_lua_config() -> ValidatedConfig {
         "listeners": [],
         "cache_stores": [{
             "type": "memory",
-            "name": "x".repeat(1024 * 1024)
+            "name": "x".repeat(oxiroute_config_source::MAX_SOURCE_BYTES)
         }]
     }))
     .expect("oversized output draft")
