@@ -9,15 +9,14 @@ impl Resolver<'_> {
         upstreams: &HashMap<Vec<u8>, OccurrenceId>,
     ) -> EffectiveLocation {
         let (modifier, path, kind) = self.location_header(directive);
-        let static_path_invalid = path.as_ref().is_some_and(|path| {
-            matches!(kind, LocationKind::Exact | LocationKind::Prefix)
-                && !path.value.starts_with(b"/")
-        });
+        let static_path_invalid = path
+            .as_ref()
+            .is_some_and(|path| is_supported_location(kind) && !path.value.starts_with(b"/"));
         let outcome = if directive.children.is_none() || path.is_none() || static_path_invalid {
             Some((E_INVALID_VALUE, "location requires a matcher and a block"))
         } else {
             match kind {
-                LocationKind::Exact | LocationKind::Prefix => None,
+                LocationKind::Exact | LocationKind::Prefix | LocationKind::PrefixNoRegex => None,
                 LocationKind::Variable => Some((
                     E_UNSUPPORTED_FEATURE,
                     "variables in location matchers are unsupported",
@@ -28,10 +27,6 @@ impl Resolver<'_> {
                 LocationKind::Named => {
                     Some((E_UNSUPPORTED_FEATURE, "named locations are unsupported"))
                 }
-                LocationKind::PrefixNoRegex => Some((
-                    E_UNSUPPORTED_FEATURE,
-                    "the nginx ^~ location modifier is unsupported",
-                )),
                 LocationKind::Invalid => Some((E_INVALID_VALUE, "invalid nginx location matcher")),
             }
         };
@@ -72,7 +67,7 @@ impl Resolver<'_> {
                     if is_supported_location(location.kind)
                         && let Some(path) = &location.path
                     {
-                        let identity = (location.kind, path.value.clone());
+                        let identity = (location.kind.route_identity(), path.value.clone());
                         if let Some(first) = location_identities.get(&identity).copied() {
                             self.block_related(
                                 location.origin.occurrence,
@@ -88,7 +83,7 @@ impl Resolver<'_> {
                 }
                 b"types" => self.resolve_types(child),
                 b"if" => {
-                    self.resolve_supported_if(child);
+                    self.resolve_supported_if(child, true);
                 }
                 name if is_location_policy(name) => {
                     self.resolve_policy(child);
@@ -296,27 +291,27 @@ impl Resolver<'_> {
         }
     }
 
-    pub(super) fn resolve_supported_if(&mut self, directive: &ExpandedDirective) -> bool {
-        let condition = directive
-            .directive
-            .arguments
-            .iter()
-            .flat_map(|argument| argument.value.iter().copied())
-            .collect::<Vec<_>>();
+    /// `bearer_gate` admits the bearer-token `if`, which only a location can lower into an access policy.
+    pub(super) fn resolve_supported_if(
+        &mut self,
+        directive: &ExpandedDirective,
+        bearer_gate: bool,
+    ) -> bool {
         let certbot_host_redirect = certbot_host_condition(&directive.directive).is_some();
-        let redacted_authorization = condition
-            .windows(b"$http_authorization".len())
-            .any(|window| window == b"$http_authorization")
-            && condition
-                .windows(b"<redacted>".len())
-                .any(|window| window == b"<redacted>");
         let children = directive.children.as_deref().unwrap_or_default();
+        let bearer_gate = bearer_gate && bearer_gate_condition(&directive.directive);
         let supported = directive.children.is_some()
-            && !directive.directive.arguments.is_empty()
-            && (certbot_host_redirect || redacted_authorization)
-            && children
-                .iter()
-                .all(|child| child.directive.name.value == b"return");
+            && (certbot_host_redirect || bearer_gate)
+            && children.iter().all(|child| {
+                child.directive.name.value == b"return"
+                    && (!bearer_gate
+                        || child
+                            .directive
+                            .arguments
+                            .iter()
+                            .map(|word| word.value.as_slice())
+                            .eq([b"401".as_slice()]))
+            });
         if supported {
             self.resolved(directive.occurrence);
             for child in children {
@@ -325,10 +320,35 @@ impl Resolver<'_> {
         } else {
             self.block_subtree(
                 directive,
-                "nginx if condition is outside the bounded host-redirect or redacted-authorization subset",
+                "nginx if condition is outside the bounded host-redirect or bearer-authorization subset",
             );
         }
         supported && certbot_host_redirect
+    }
+
+    /// `^~` equals a plain prefix only while no regex, named, or variable location can take precedence.
+    pub(super) fn reject_prefix_no_regex_with_special_locations(
+        &mut self,
+        locations: &[EffectiveLocation],
+    ) {
+        if !locations.iter().any(Self::has_special_location) {
+            return;
+        }
+        for location in locations
+            .iter()
+            .filter(|location| location.kind == LocationKind::PrefixNoRegex)
+        {
+            self.block(
+                location.origin.occurrence,
+                E_UNSUPPORTED_FEATURE,
+                "the nginx ^~ location modifier is only a plain prefix in a server without regex, named, or variable locations",
+            );
+        }
+    }
+
+    fn has_special_location(location: &EffectiveLocation) -> bool {
+        is_special_location(location.kind)
+            || location.children.iter().any(Self::has_special_location)
     }
 
     pub(super) fn synthetic_if_location(directive: &ExpandedDirective) -> EffectiveLocation {

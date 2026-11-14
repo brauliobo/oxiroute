@@ -11,6 +11,20 @@ pub(in super::super) fn certbot_host_condition(directive: &Directive) -> Option<
         .then_some(host)
 }
 
+/// `if ($http_authorization != "Bearer <secret>")`: the literal is a credential the importer never keeps.
+pub(in super::super) fn bearer_gate_condition(directive: &Directive) -> bool {
+    let [variable, operator, literal] = directive.arguments.as_slice() else {
+        return false;
+    };
+    let variable = variable.value.strip_prefix(b"(").unwrap_or(&variable.value);
+    let literal = literal.value.strip_suffix(b")").unwrap_or(&literal.value);
+    variable == b"$http_authorization"
+        && operator.value == b"!="
+        && literal
+            .strip_prefix(b"Bearer ")
+            .is_some_and(|token| !token.is_empty())
+}
+
 pub(super) fn parse_listen_endpoint(value: &[u8]) -> Option<ListenEndpoint> {
     if let Some(path) = value.strip_prefix(b"unix:") {
         return unix_socket_path(path).map(|path| ListenEndpoint::Unix { path });
@@ -218,7 +232,20 @@ pub(super) const fn is_supported_server_name(kind: ServerNameKind) -> bool {
 }
 
 pub(super) const fn is_supported_location(kind: LocationKind) -> bool {
-    matches!(kind, LocationKind::Exact | LocationKind::Prefix)
+    matches!(
+        kind,
+        LocationKind::Exact | LocationKind::Prefix | LocationKind::PrefixNoRegex
+    )
+}
+
+pub(super) const fn is_special_location(kind: LocationKind) -> bool {
+    matches!(
+        kind,
+        LocationKind::Regex
+            | LocationKind::RegexInsensitive
+            | LocationKind::Named
+            | LocationKind::Variable
+    )
 }
 
 pub(super) fn is_http_policy(name: &[u8]) -> bool {
