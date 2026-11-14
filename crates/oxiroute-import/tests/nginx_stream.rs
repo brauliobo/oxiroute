@@ -84,7 +84,8 @@ fn lowers_stream_tcp_service_with_inherited_and_local_timeouts() {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Socket {
-            address: "127.0.0.1:15432".parse::<SocketAddr>().unwrap()
+            address: "127.0.0.1:15432".parse::<SocketAddr>().unwrap(),
+            ipv6_only: false
         }
     );
     assert_eq!(config.upstream_pools.len(), 1);

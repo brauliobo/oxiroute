@@ -389,6 +389,9 @@ pub struct DownstreamTimeoutPolicy {
 pub enum ListenerBind {
     Socket {
         address: SocketAddr,
+        /// `[::]` only: serve IPv6 clients alone (`IPV6_V6ONLY`), so an IPv4 listener can share the port.
+        #[serde(default, skip_serializing_if = "is_false")]
+        ipv6_only: bool,
     },
     Udp {
         address: SocketAddr,
@@ -401,10 +404,15 @@ pub enum ListenerBind {
     },
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl fmt::Display for ListenerBind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Socket { address } => address.fmt(formatter),
+            Self::Socket { address, .. } => address.fmt(formatter),
             Self::Udp { address } => write!(formatter, "udp://{address}"),
             Self::Unix { path, .. } => path.display().fmt(formatter),
         }

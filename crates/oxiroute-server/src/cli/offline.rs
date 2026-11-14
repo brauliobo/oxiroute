@@ -350,7 +350,7 @@ fn preview_with_shadow_listener_offset(
         .ok_or("native configuration did not produce an activatable candidate")?
         .to_draft();
     for listener in &mut config.listeners {
-        let oxiroute_config::ListenerBind::Socket { address } = &mut listener.bind else {
+        let oxiroute_config::ListenerBind::Socket { address, .. } = &mut listener.bind else {
             continue;
         };
         address.set_port(

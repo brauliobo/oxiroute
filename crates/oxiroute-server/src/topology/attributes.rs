@@ -282,7 +282,7 @@ pub(super) const fn upstream_algorithm(algorithm: &UpstreamAlgorithm) -> &'stati
 
 pub(super) fn listener_bind(bind: &ListenerBind) -> Value {
     match bind {
-        ListenerBind::Socket { address } => json!({
+        ListenerBind::Socket { address, .. } => json!({
             "type": "socket",
             "address": address,
         }),

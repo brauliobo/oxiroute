@@ -133,6 +133,7 @@ fn routes<'a>(config: &'a ConfigDraft, listener: &str) -> &'a [HttpRoute] {
             candidate.bind
                 == ListenerBind::Socket {
                     address: listener.parse().unwrap(),
+                    ipv6_only: false,
                 }
         })
         .and_then(|candidate| candidate.service.as_deref())

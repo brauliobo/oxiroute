@@ -202,6 +202,7 @@ fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
         name: "http".into(),
         bind: oxiroute_config::ListenerBind::Socket {
             address: "127.0.0.1:8080".parse().expect("address"),
+            ipv6_only: false,
         },
         protocol: Protocol::Http,
         service: Some("http".into()),

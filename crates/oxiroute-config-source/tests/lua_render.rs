@@ -109,6 +109,7 @@ fn test_listeners() -> Vec<Listener> {
             name: "secure-web".into(),
             bind: ListenerBind::Socket {
                 address: socket("127.0.0.1:8443"),
+                ipv6_only: false,
             },
             protocol: Protocol::Http,
             service: Some("web".into()),
@@ -123,6 +124,7 @@ fn test_listeners() -> Vec<Listener> {
             name: "plain-web".into(),
             bind: ListenerBind::Socket {
                 address: socket("127.0.0.1:8080"),
+                ipv6_only: false,
             },
             protocol: Protocol::Http,
             service: Some("fallback".into()),
@@ -137,6 +139,7 @@ fn test_listeners() -> Vec<Listener> {
             name: "database".into(),
             bind: ListenerBind::Socket {
                 address: socket("127.0.0.1:15432"),
+                ipv6_only: false,
             },
             protocol: Protocol::Tcp,
             service: Some("database".into()),
@@ -1634,6 +1637,7 @@ fn identity_mutations() -> Vec<Mutation> {
         ("listener.bind", |config| {
             config.listeners[0].bind = ListenerBind::Socket {
                 address: socket("127.0.0.1:9443"),
+                ipv6_only: false,
             };
         }),
         ("Unix listener path", |config| {
@@ -1928,6 +1932,7 @@ fn rejects_rendered_sources_beyond_the_loader_limit() {
         name: "x".repeat(1024 * 1024),
         bind: ListenerBind::Socket {
             address: socket("127.0.0.1:1935"),
+            ipv6_only: false,
         },
         protocol: Protocol::Rtmp,
         service: Some("live".into()),

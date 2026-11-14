@@ -133,7 +133,10 @@ fn traffic_name_cannot_collide_with_management_reservation() {
             .get("@management")
             .expect("traffic reservation")
             .bind_config(),
-        &ListenerBind::Socket { address: traffic }
+        &ListenerBind::Socket {
+            address: traffic,
+            ipv6_only: false
+        }
     );
     assert_eq!(
         reservations
@@ -141,7 +144,8 @@ fn traffic_name_cannot_collide_with_management_reservation() {
             .expect("management reservation")
             .bind_config(),
         &ListenerBind::Socket {
-            address: management
+            address: management,
+            ipv6_only: false
         }
     );
 }
@@ -158,8 +162,14 @@ fn wildcard_ipv6_listener_reservation_is_dual_stack() {
     };
     let address = probe.local_addr().expect("probe address");
     drop(probe);
-    let reservation = ListenerReservation::bind("dual", &ListenerBind::Socket { address })
-        .expect("wildcard IPv6 reservation");
+    let reservation = ListenerReservation::bind(
+        "dual",
+        &ListenerBind::Socket {
+            address,
+            ipv6_only: false,
+        },
+    )
+    .expect("wildcard IPv6 reservation");
     let listener =
         std::net::TcpListener::from(reservation.duplicate_owned_fd().expect("duplicate"));
     assert!(!ipv6_v6only(&listener).expect("IPV6_V6ONLY"));
@@ -171,5 +181,50 @@ fn wildcard_ipv6_listener_reservation_is_dual_stack() {
     ] {
         std::net::TcpStream::connect(client).unwrap_or_else(|error| panic!("{client}: {error}"));
         listener.accept().expect("accepted client");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn ipv6_only_wildcard_shares_its_port_with_an_ipv4_wildcard() {
+    use rustix::net::sockopt::ipv6_v6only;
+
+    let probe = std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, 0));
+    let Ok(probe) = probe else {
+        eprintln!("IPv6 is unavailable in this environment: IPv6-only bind not exercised");
+        return;
+    };
+    let port = probe.local_addr().expect("probe address").port();
+    drop(probe);
+    let v4 = ListenerReservation::bind(
+        "v4",
+        &ListenerBind::Socket {
+            address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+            ipv6_only: false,
+        },
+    )
+    .expect("IPv4 wildcard reservation");
+    let v6 = ListenerReservation::bind(
+        "v6",
+        &ListenerBind::Socket {
+            address: SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)),
+            ipv6_only: true,
+        },
+    )
+    .expect("IPv6-only wildcard reservation beside the IPv4 one");
+    let listen = |reservation: &ListenerReservation| {
+        std::net::TcpListener::from(reservation.duplicate_owned_fd().expect("duplicate"))
+    };
+    let (v4, v6) = (listen(&v4), listen(&v6));
+    assert!(ipv6_v6only(&v6).expect("IPV6_V6ONLY"));
+
+    for (client, listener) in [
+        (SocketAddr::from((Ipv4Addr::LOCALHOST, port)), &v4),
+        (SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)), &v6),
+    ] {
+        std::net::TcpStream::connect(client).unwrap_or_else(|error| panic!("{client}: {error}"));
+        listener
+            .accept()
+            .expect("accepted by the socket of its family");
     }
 }

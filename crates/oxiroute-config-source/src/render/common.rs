@@ -102,11 +102,18 @@ impl Renderer {
 
     fn retirement(&mut self, retirement: &Retirement) {
         self.optional_integer_field("drain_deadline_ms", retirement.drain_deadline_ms);
-        self.integer_field("max_retired_generations", retirement.max_retired_generations);
+        self.integer_field(
+            "max_retired_generations",
+            retirement.max_retired_generations,
+        );
     }
 
     fn management(&mut self, management: &Management) -> Result<(), ConfigError> {
-        let Management { bind, ui_dir, token_file } = management;
+        let Management {
+            bind,
+            ui_dir,
+            token_file,
+        } = management;
 
         self.string_field("bind", &bind.to_string());
         match ui_dir {
@@ -119,7 +126,10 @@ impl Renderer {
             None => self.nil_field("ui_dir"),
         }
         if let Some(path) = token_file {
-            self.string_field("token_file", utf8_path(path, "management", "management", "token_file")?);
+            self.string_field(
+                "token_file",
+                utf8_path(path, "management", "management", "token_file")?,
+            );
         }
         Ok(())
     }
@@ -152,12 +162,22 @@ impl Renderer {
     }
 
     fn registry(&mut self, registry: &Registry) -> Result<(), ConfigError> {
-        let Registry { state_dir, tokens_file, endpoints } = registry;
+        let Registry {
+            state_dir,
+            tokens_file,
+            endpoints,
+        } = registry;
 
-        self.string_field("state_dir", utf8_path(state_dir, "registry", "registry", "state_dir")?);
+        self.string_field(
+            "state_dir",
+            utf8_path(state_dir, "registry", "registry", "state_dir")?,
+        );
         match tokens_file {
             Some(path) => {
-                self.string_field("tokens_file", utf8_path(path, "registry", "registry", "tokens_file")?);
+                self.string_field(
+                    "tokens_file",
+                    utf8_path(path, "registry", "registry", "tokens_file")?,
+                );
             }
             None => self.nil_field("tokens_file"),
         }
@@ -166,9 +186,17 @@ impl Renderer {
 
     fn registry_endpoint(&mut self, endpoint: &RegistryEndpoint) -> Result<(), ConfigError> {
         match endpoint {
-            RegistryEndpoint::Unix { path, mode, role, pools } => {
+            RegistryEndpoint::Unix {
+                path,
+                mode,
+                role,
+                pools,
+            } => {
                 self.string_field("type", "unix");
-                self.string_field("path", utf8_path(path, "registry", "registry", "endpoints")?);
+                self.string_field(
+                    "path",
+                    utf8_path(path, "registry", "registry", "endpoints")?,
+                );
                 self.integer_field("mode", mode);
                 self.string_field(
                     "role",
@@ -485,9 +513,12 @@ impl Renderer {
         self.string_field("name", name);
         self.begin_table_field("bind");
         match bind {
-            ListenerBind::Socket { address } => {
+            ListenerBind::Socket { address, ipv6_only } => {
                 self.string_field("type", "socket");
                 self.string_field("address", &address.to_string());
+                if *ipv6_only {
+                    self.boolean_field("ipv6_only", true);
+                }
             }
             ListenerBind::Udp { address } => {
                 self.string_field("type", "udp");

@@ -29,6 +29,7 @@ mod save;
 fn socket_bind(value: &str) -> ListenerBind {
     ListenerBind::Socket {
         address: value.parse().expect("valid test socket"),
+        ipv6_only: false,
     }
 }
 

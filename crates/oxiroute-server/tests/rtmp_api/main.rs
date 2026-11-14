@@ -148,7 +148,7 @@ impl ManagementHarness {
         let context = RtmpPrepareContext::new(
             RtmpPrepareMode::Activation,
             services.iter().filter_map(|service| match service.bind {
-                oxiroute_config::ListenerBind::Socket { address }
+                oxiroute_config::ListenerBind::Socket { address, .. }
                 | oxiroute_config::ListenerBind::Udp { address } => Some(address),
                 oxiroute_config::ListenerBind::Unix { .. } => None,
             }),

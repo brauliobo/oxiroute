@@ -56,9 +56,10 @@ fn shares_udp(config: &ValidatedConfig) -> bool {
         .is_some_and(|workers| workers > 1)
 }
 
-/// A non-blocking listening TCP socket on `address`. `[::]` is dual-stack whatever the host's `bindv6only` says.
+/// A non-blocking listening TCP socket on `address`. `[::]` is dual-stack, or IPv6-only with `ipv6_only`, whatever the
+/// host's `bindv6only` says.
 #[cfg(unix)]
-fn bind_tcp(address: std::net::SocketAddr) -> io::Result<std::net::TcpListener> {
+fn bind_tcp(address: std::net::SocketAddr, ipv6_only: bool) -> io::Result<std::net::TcpListener> {
     use rustix::net::{AddressFamily, SocketFlags, SocketType, bind, listen, socket_with, sockopt};
 
     let family = if address.is_ipv4() {
@@ -74,7 +75,7 @@ fn bind_tcp(address: std::net::SocketAddr) -> io::Result<std::net::TcpListener> 
     )?;
     sockopt::set_socket_reuseaddr(&socket, true)?;
     if address.ip() == std::net::Ipv6Addr::UNSPECIFIED {
-        sockopt::set_ipv6_v6only(&socket, false)?;
+        sockopt::set_ipv6_v6only(&socket, ipv6_only)?;
     }
     bind(&socket, &address)?;
     listen(&socket, -1)?;
@@ -141,8 +142,8 @@ impl ListenerReservation {
             use std::os::unix::fs::MetadataExt as _;
 
             let (socket, unix_socket, bind_text) = match bind {
-                ListenerBind::Socket { address } => {
-                    let listener = bind_tcp(*address).map_err(|source| {
+                ListenerBind::Socket { address, ipv6_only } => {
+                    let listener = bind_tcp(*address, *ipv6_only).map_err(|source| {
                         io::Error::new(
                             source.kind(),
                             format!(
@@ -228,7 +229,7 @@ impl ListenerReservation {
         #[cfg(not(unix))]
         {
             match bind {
-                ListenerBind::Socket { address } => Ok(Self {
+                ListenerBind::Socket { address, .. } => Ok(Self {
                     inner: Arc::new(ReservationInner {
                         bind: bind.clone(),
                         bind_text: address.to_string(),
@@ -376,7 +377,7 @@ impl ListenerReservation {
     #[cfg(target_os = "linux")]
     fn adopt(bind: ListenerBind, descriptor: std::os::fd::OwnedFd) -> Self {
         let bind_text = match &bind {
-            ListenerBind::Socket { address } => address.to_string(),
+            ListenerBind::Socket { address, .. } => address.to_string(),
             ListenerBind::Udp { address } => format!("udp://{address}"),
             ListenerBind::Unix { path, .. } => path.to_string_lossy().into_owned(),
         };
@@ -525,15 +526,14 @@ impl ListenerReservations {
             ));
         }
         let mut ordered = Vec::with_capacity(inventory.len());
-        for (entry, slot) in inventory.entries().iter().zip(&slots) {
+        for entry in inventory.entries() {
             let reservation = self.by_key.get(&entry.id).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("reservation set is missing {:?}", entry.id),
                 )
             })?;
-            let expected_bind = listener_bind_from_slot(slot)?;
-            if !same_bind_identity(reservation.bind_config(), &expected_bind) {
+            if !same_bind_identity(reservation.bind_config(), &entry.bind) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -597,10 +597,9 @@ impl ListenerReservations {
         let mut by_key = HashMap::with_capacity(inventory.len());
         for (entry, slot) in inventory.entries().iter().zip(slots) {
             let descriptor = descriptors.take(slot.id).map_err(io::Error::other)?;
-            let bind = listener_bind_from_slot(&slot)?;
             by_key.insert(
                 entry.id.clone(),
-                ListenerReservation::adopt(bind, descriptor),
+                ListenerReservation::adopt(entry.bind.clone(), descriptor),
             );
         }
         if descriptors.remaining() != 0 {
@@ -816,7 +815,7 @@ fn descriptor_slot(
         ListenerDescriptorKind::Quic => DescriptorKind::QuicListener,
     };
     let (bind, mode) = match bind {
-        ListenerBind::Socket { address } | ListenerBind::Udp { address } => {
+        ListenerBind::Socket { address, .. } | ListenerBind::Udp { address } => {
             (Some(BindIdentity::Tcp(*address)), None)
         }
         ListenerBind::Unix { path, mode } => (Some(BindIdentity::UnixPath(path.clone())), *mode),
@@ -830,36 +829,19 @@ fn descriptor_slot(
     }
 }
 
-#[cfg(target_os = "linux")]
-fn listener_bind_from_slot(slot: &DescriptorSlot) -> io::Result<ListenerBind> {
-    match (&slot.kind, &slot.bind) {
-        (DescriptorKind::TcpListener, Some(BindIdentity::Tcp(address))) => {
-            Ok(ListenerBind::Socket { address: *address })
-        }
-        (DescriptorKind::UnixListener, Some(BindIdentity::UnixPath(path))) => {
-            Ok(ListenerBind::Unix {
-                path: path.clone(),
-                mode: slot.mode,
-            })
-        }
-        (
-            DescriptorKind::DatagramListener | DescriptorKind::QuicListener,
-            Some(BindIdentity::Tcp(address)),
-        ) => Ok(ListenerBind::Udp { address: *address }),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "listener descriptor slot {:?} has no supported bind",
-                slot.id
-            ),
-        )),
-    }
-}
-
 fn same_bind_identity(left: &ListenerBind, right: &ListenerBind) -> bool {
     match (left, right) {
-        (ListenerBind::Socket { address: left }, ListenerBind::Socket { address: right })
-        | (ListenerBind::Udp { address: left }, ListenerBind::Udp { address: right }) => {
+        (
+            ListenerBind::Socket {
+                address: left,
+                ipv6_only: left_v6_only,
+            },
+            ListenerBind::Socket {
+                address: right,
+                ipv6_only: right_v6_only,
+            },
+        ) => left == right && left_v6_only == right_v6_only,
+        (ListenerBind::Udp { address: left }, ListenerBind::Udp { address: right }) => {
             left == right
         }
         (

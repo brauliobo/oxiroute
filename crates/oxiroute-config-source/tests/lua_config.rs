@@ -534,7 +534,8 @@ fn loads_the_canonical_configuration() {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Socket {
-            address: "127.0.0.1:8080".parse().expect("socket address")
+            address: "127.0.0.1:8080".parse().expect("socket address"),
+            ipv6_only: false
         }
     );
     assert_eq!(config.listeners[0].protocol, Protocol::Http);

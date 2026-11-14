@@ -79,6 +79,7 @@ fn listener(name: &str, protocol: Protocol, tls_profile: Option<&str>) -> Listen
     } else {
         ListenerBind::Socket {
             address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            ipv6_only: false,
         }
     };
     Listener {
@@ -140,6 +141,7 @@ fn eligibility_uses_the_worker_descriptor_limit() {
                     [127, 0, 0, 1],
                     10_000 + u16::try_from(index).expect("bounded listener index"),
                 )),
+                ipv6_only: false,
             };
             listener
         })
@@ -578,6 +580,7 @@ fn replacement_requires_the_same_listener_manifest() {
     candidate = active.clone();
     candidate.listeners[0].bind = ListenerBind::Socket {
         address: SocketAddr::from(([127, 0, 0, 1], 8081)),
+        ipv6_only: false,
     };
     assert!(!ListenerReservations::same_supervised_listener_topology(
         &validated(&active),

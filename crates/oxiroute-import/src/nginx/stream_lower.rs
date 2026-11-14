@@ -543,6 +543,7 @@ fn listener_bind(endpoint: &super::ListenEndpoint) -> Option<ListenerBind> {
             };
             Some(ListenerBind::Socket {
                 address: SocketAddr::new(address, *port),
+                ipv6_only: false,
             })
         }
     }

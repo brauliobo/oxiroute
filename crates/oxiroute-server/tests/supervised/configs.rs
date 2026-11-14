@@ -78,6 +78,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
             "tcp",
             ListenerBind::Socket {
                 address: tcp_address,
+                ipv6_only: false,
             },
         ),
         (

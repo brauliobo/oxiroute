@@ -713,7 +713,8 @@ fn minimal_static_tcp_fixture_finalizes_and_validates() {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Socket {
-            address: "127.0.0.1:15432".parse::<SocketAddr>().unwrap()
+            address: "127.0.0.1:15432".parse::<SocketAddr>().unwrap(),
+            ipv6_only: false
         }
     );
     assert_eq!(config.upstream_pools[0].name, "postgres_pool");
@@ -1529,7 +1530,8 @@ fn explicit_preprocessing_records_environment_and_inactive_gpu_provenance() {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Socket {
-            address: "192.0.2.10:10440".parse().unwrap()
+            address: "192.0.2.10:10440".parse().unwrap(),
+            ipv6_only: false
         }
     );
     assert_eq!(config.upstream_pools[0].servers.len(), 1);

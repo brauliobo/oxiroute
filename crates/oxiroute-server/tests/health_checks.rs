@@ -35,7 +35,7 @@ fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {
     let config = imported.value().validated().expect("imported config");
     let mut draft = config.to_draft();
     for listener in &mut draft.listeners {
-        if let oxiroute_config::ListenerBind::Socket { address } = &mut listener.bind {
+        if let oxiroute_config::ListenerBind::Socket { address, .. } = &mut listener.bind {
             let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             *address = reservation.local_addr().unwrap();
         }
