@@ -45,6 +45,69 @@ regex locations, rewrites, module-specific policy, and non-equivalent TLS or cac
 affected services instead of disappearing. Supported named RTMP recorder blocks retain their names;
 unsupported recorder fields remain blocking.
 
+### Operator decisions for a complete HTTP tree
+
+Some nginx behavior cannot be inferred from the config and stays an explicit choice. Overlays that do not
+match exactly one lowered rule fail the import, so a typo never silently disables a gate.
+
+- Access logs: `--default-access-log-file` migrates omitted and formatted nginx access logs to the
+  redacted structured JSONL file (client address, request line, referer, and user agent are not written).
+  `access_log off` stays disabled.
+- Bearer gates: an `if ($http_authorization != "Bearer ...") { return 401; }` gate is served from a token
+  file you provision, one per server name:
+
+  ```sh
+  oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / \
+    --bearer-token-file api.example.com=/run/secrets/api.token \
+    --output preview
+  ```
+
+  The file must be a regular file with mode 0400 or 0600 holding one printable-ASCII token line. The
+  importer never reads, copies, or prints the literal from the nginx config, so create the file yourself and
+  rotate the old nginx literal afterwards. Unlike nginx, a failed check also sends `WWW-Authenticate: Bearer`.
+- Upstream TLS: a bare `proxy_pass https://...` keeps nginx's default of encrypting without verifying the
+  origin or sending SNI, and the preview carries the warning `W_UPSTREAM_TLS_UNVERIFIED`. Harden it per
+  authority (repeatable):
+
+  ```sh
+  --upstream-tls 192.0.2.44:8443=origin.example.com,ca=/etc/oxiroute/origin-ca.pem,activate
+  ```
+
+  `AUTHORITY=SNI` verifies the chain and hostname against the system roots, `,ca=PATH` trusts that CA bundle
+  instead, and `,activate` records a connectivity check as an activation requirement. Paths must be absolute
+  and must not contain commas.
+- Other defaults that change on import, each reported as a warning: HTTP/2 is socket-wide as in nginx (any
+  `listen ... http2` flag enables `h2` for every server on that TLS socket), `listen N` plus `listen [::]:N`
+  becomes one dual-stack `[::]:N` listener, and a default `proxy_buffering on` streams the response instead of
+  spooling it, which removes the decoupling between a slow client and the upstream.
+
+The same options can live in a reference node so the daemon re-imports on nginx file changes:
+
+```kdl
+nginx_server "/etc/nginx/nginx.conf" {
+  bearer_token_file "api.example.com" "/run/secrets/api.token"
+  upstream_tls "192.0.2.44:8443" "origin.example.com" "/etc/oxiroute/origin-ca.pem"
+}
+```
+
+### Shadow-port rehearsal
+
+Before moving ports 80 and 443, preview the candidate on shifted listener ports while nginx keeps serving:
+
+```sh
+oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / \
+  --bearer-token-file api.example.com=/run/secrets/api.token \
+  --shadow-port-offset 20000 \
+  --output preview > shadow.kdl
+oxiroute config check shadow.kdl
+```
+
+`--shadow-port-offset` adds the offset to every imported IP socket listener (`80` becomes `20080`) and
+requires `--output preview`. Replay your probe requests against the offset ports, compare status codes,
+redirects, certificates, and headers with nginx, then remove the offset for cutover. Reference nodes in a live
+configuration cannot use the offset; rehearse with the preview and `oxiroute config compose` the result with the
+live file.
+
 ## HAProxy
 
 Ordered `-f` inputs and explicit preprocessing values matter. OxiRoute never discovers native

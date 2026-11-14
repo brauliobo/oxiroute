@@ -232,32 +232,68 @@ fn decode_nginx_section(
         "x_accel_controls_absent",
     ];
     let mut object = Map::new();
+    let mut bearer_token_files = Vec::new();
+    let mut upstream_tls = Vec::new();
     for entry in &section.entries {
-        let UciEntry::Option { name, value } = entry else {
-            return Err(ConfigSourceError::parse(
-                "UCI",
-                format!(
-                    "nginx_server `{}` accepts only option entries",
-                    section.name
-                ),
-            ));
-        };
-        if !allowed.contains(&name.as_str()) {
-            return Err(ConfigSourceError::parse(
-                "UCI",
-                format!("unknown nginx_server option `{name}`"),
-            ));
+        match entry {
+            UciEntry::List { name, value } if name == "bearer_token_file" => {
+                bearer_token_files.push(decode_bearer_token_file(value)?);
+            }
+            UciEntry::List { name, value } if name == "upstream_tls" => {
+                upstream_tls.push(decode_upstream_tls(value)?);
+            }
+            UciEntry::Option { name, value } if allowed.contains(&name.as_str()) => {
+                object.insert(
+                    name.clone(),
+                    if name == "x_accel_controls_absent" {
+                        Value::Bool(parse_uci_bool(section, name, value)?)
+                    } else {
+                        Value::String(value.clone())
+                    },
+                );
+            }
+            UciEntry::Option { name, .. } | UciEntry::List { name, .. } => {
+                return Err(ConfigSourceError::parse(
+                    "UCI",
+                    format!("unknown nginx_server entry `{name}`"),
+                ));
+            }
         }
-        object.insert(
-            name.clone(),
-            if name == "x_accel_controls_absent" {
-                Value::Bool(parse_uci_bool(section, name, value)?)
-            } else {
-                Value::String(value.clone())
-            },
-        );
     }
+    object.insert("bearer_token_file".to_owned(), Value::Array(bearer_token_files));
+    object.insert("upstream_tls".to_owned(), Value::Array(upstream_tls));
     decode_nginx(Value::Object(object), "UCI")
+}
+
+/// `list bearer_token_file '<server_name>=<path>'`
+fn decode_bearer_token_file(value: &str) -> Result<Value, ConfigSourceError> {
+    let (server_name, path) = value.split_once('=').ok_or_else(|| {
+        ConfigSourceError::parse(
+            "UCI",
+            "nginx_server bearer_token_file must be `<server_name>=<path>`",
+        )
+    })?;
+    Ok(serde_json::json!({ "server_name": server_name, "path": path }))
+}
+
+/// `list upstream_tls '<authority>=<sni>[,ca=<path>]'`
+fn decode_upstream_tls(value: &str) -> Result<Value, ConfigSourceError> {
+    let invalid = || {
+        ConfigSourceError::parse(
+            "UCI",
+            "nginx_server upstream_tls must be `<authority>=<sni>[,ca=<path>]`",
+        )
+    };
+    let (authority, rest) = value.split_once('=').ok_or_else(invalid)?;
+    let (server_name, ca) = match rest.split_once(',') {
+        Some((server_name, ca)) => (server_name, Some(ca.strip_prefix("ca=").ok_or_else(invalid)?)),
+        None => (rest, None),
+    };
+    Ok(serde_json::json!({
+        "authority": authority,
+        "server_name": server_name,
+        "ca_certificate_path": ca,
+    }))
 }
 
 fn decode_haproxy_section(

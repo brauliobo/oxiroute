@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub use check::CheckArgs;
 use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_import::nginx::{NginxBearerTokenOverlay, NginxUpstreamTlsOverlay};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -159,9 +160,23 @@ pub enum ImportCommand {
         /// Preserve native local-time recording suffixes with this IANA timezone.
         #[arg(long, value_name = "IANA_TIMEZONE")]
         host_timezone: Option<String>,
-        /// Explicitly migrate omitted nginx combined logs to `OxiRoute` structured JSONL.
+        /// Explicitly migrate omitted AND formatted nginx access logs to `OxiRoute` structured JSONL.
         #[arg(long, value_name = "FILE")]
         default_access_log_file: Option<PathBuf>,
+        /// Serve a literal-bearer `if` gate from this 0400/0600 token file (repeatable).
+        #[arg(
+            long,
+            value_name = "SERVER_NAME=ABS_PATH",
+            value_parser = nginx_overlay::parse_bearer_token_file
+        )]
+        bearer_token_file: Vec<NginxBearerTokenOverlay>,
+        /// Verify one https upstream authority with this SNI, optional CA, and optional activation (repeatable).
+        #[arg(
+            long,
+            value_name = "AUTHORITY=SNI[,ca=PATH][,activate]",
+            value_parser = nginx_overlay::parse_upstream_tls
+        )]
+        upstream_tls: Vec<NginxUpstreamTlsOverlay>,
         /// Replace one unique native recording root with this no-symlink canonical path.
         #[arg(long, value_name = "DIRECTORY")]
         recording_root: Option<PathBuf>,
@@ -777,6 +792,7 @@ impl Error for CliError {}
 mod check;
 mod client;
 mod commands;
+mod nginx_overlay;
 mod offline;
 mod output;
 mod registry;
