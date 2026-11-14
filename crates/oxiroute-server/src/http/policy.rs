@@ -1,7 +1,7 @@
 use std::{borrow::Cow, net::IpAddr};
 
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header::SET_COOKIE, uri::Authority};
-use oxiroute_config::HttpSameSite;
+use oxiroute_config::{CookiePathMatch, HttpCookiePathRewrite, HttpSameSite};
 
 use crate::http::action::{
     MAX_REDIRECT_LOCATION_BYTES, ProxyPolicyPlan, RedirectLocationPlan, RedirectTemplateSegment,
@@ -224,6 +224,13 @@ pub(crate) fn decide_request_header<H: IncomingHeaders + ?Sized>(
             let value =
                 || HeaderValue::from_bytes(&bytes).map_err(|_| RequestPolicyError::InvalidHeader);
             match rendered {
+                // nginx does not send a header whose value is empty, which `$host` is for an empty primary name.
+                Rendered::Value
+                    if bytes.is_empty()
+                        && matches!(plan, RequestHeaderValuePlan::NginxHost { .. }) =>
+                {
+                    return Ok(RequestHeaderDecision::Remove(name.clone()));
+                }
                 Rendered::Value => RequestHeaderValueDecision::Value(value()?),
                 Rendered::ClientIp => RequestHeaderValueDecision::ClientIp(Some(value()?)),
                 Rendered::ClientIpMissing => RequestHeaderValueDecision::ClientIp(None),
@@ -519,20 +526,12 @@ fn rewrite_cookie(
             }
         }
         if let Some(value) = value {
-            let replacement = (name.eq_ignore_ascii_case("path"))
-                .then(|| {
-                    policy
-                        .cookie_path_rewrites
-                        .iter()
-                        .find(|rewrite| rewrite.from == value)
-                })
-                .flatten();
-            append_cookie_attribute(
-                &mut rewritten,
-                whitespace,
-                name,
-                Some(replacement.map_or(value, |replacement| replacement.to.as_str())),
-            );
+            let value = if name.eq_ignore_ascii_case("path") {
+                rewrite_cookie_path(&policy.cookie_path_rewrites, value)
+            } else {
+                Cow::Borrowed(value)
+            };
+            append_cookie_attribute(&mut rewritten, whitespace, name, Some(&value));
         } else {
             append_cookie_attribute(&mut rewritten, whitespace, trimmed, None);
         }
@@ -554,6 +553,21 @@ fn rewrite_cookie(
         }
     }
     HeaderValue::from_str(&rewritten).map_err(|_| ResponsePolicyError::InvalidCookie)
+}
+
+/// The first rewrite that matches replaces the value; `nginx_prefix` splices `to` in front of what follows `from`.
+fn rewrite_cookie_path<'a>(rewrites: &'a [HttpCookiePathRewrite], value: &'a str) -> Cow<'a, str> {
+    rewrites
+        .iter()
+        .find_map(|rewrite| match rewrite.mode {
+            CookiePathMatch::Exact => {
+                (rewrite.from == value).then_some(Cow::Borrowed(rewrite.to.as_str()))
+            }
+            CookiePathMatch::NginxPrefix => value
+                .strip_prefix(rewrite.from.as_str())
+                .map(|rest| Cow::Owned(format!("{}{rest}", rewrite.to))),
+        })
+        .unwrap_or(Cow::Borrowed(value))
 }
 
 fn append_cookie_attribute(output: &mut String, whitespace: &str, name: &str, value: Option<&str>) {

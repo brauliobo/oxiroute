@@ -333,25 +333,21 @@ pub(super) fn validate_cookie_rewrites(
             "must contain at most 16 rewrites",
         ));
     }
-    let mut from_paths = HashSet::with_capacity(rewrites.len());
+    let mut sources = HashSet::with_capacity(rewrites.len());
     for rewrite in rewrites {
-        validate_cookie_path(&rewrite.from).map_err(|detail| {
-            invalid_route(
+        let detail = validate_cookie_path(&rewrite.from).and_then(|()| match rewrite.mode {
+            CookiePathMatch::Exact => validate_cookie_path(&rewrite.to),
+            CookiePathMatch::NginxPrefix => validate_cookie_replacement(&rewrite.to),
+        });
+        if let Err(detail) = detail {
+            return Err(invalid_route(
                 service,
                 route_index,
                 "action.policy.response_cookie_path_rewrites",
                 detail,
-            )
-        })?;
-        validate_cookie_path(&rewrite.to).map_err(|detail| {
-            invalid_route(
-                service,
-                route_index,
-                "action.policy.response_cookie_path_rewrites",
-                detail,
-            )
-        })?;
-        if !from_paths.insert(rewrite.from.as_str()) {
+            ));
+        }
+        if !sources.insert((rewrite.from.as_str(), rewrite.mode)) {
             return Err(invalid_route(
                 service,
                 route_index,
@@ -409,6 +405,15 @@ pub(super) fn validate_cookie_attributes(
             ));
         }
     }
+    Ok(())
+}
+
+/// Text spliced verbatim into a `Set-Cookie` value, so `;` is allowed but nothing a header cannot carry.
+fn validate_cookie_replacement(text: &str) -> Result<(), &'static str> {
+    if text.is_empty() || text.len() > MAX_HTTP_COOKIE_PATH_BYTES {
+        return Err("cookie path replacement must be 1..=1024 bytes");
+    }
+    HeaderValue::from_str(text).map_err(|_| "cookie path replacement contains an invalid byte")?;
     Ok(())
 }
 

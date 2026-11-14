@@ -28,6 +28,30 @@ fn nginx_host_preserves_ipv6_authority_brackets() {
     );
 }
 
+#[test]
+fn nginx_upstream_host_is_omitted_for_an_empty_primary_server_name() {
+    let endpoint = RuntimeEndpoint::Socket {
+        address: "127.0.0.1:1".parse().unwrap(),
+    };
+    let host = |fallback: &str, authority: Option<&Authority>| {
+        let policy = HttpUpstreamHost::NginxHost {
+            fallback: fallback.into(),
+        };
+        selected_upstream_host(&endpoint, &policy, authority).unwrap()
+    };
+    assert_eq!(host("", None), None);
+    assert_eq!(host("_", None), Some(HeaderValue::from_static("_")));
+    assert_eq!(
+        host(".example.org", None),
+        Some(HeaderValue::from_static(".example.org"))
+    );
+    let authority = "Client.Example:8443".parse::<Authority>().unwrap();
+    assert_eq!(
+        host("", Some(&authority)),
+        Some(HeaderValue::from_static("client.example"))
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer() {

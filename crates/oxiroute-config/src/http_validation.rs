@@ -24,13 +24,13 @@ use crate::{
         validate_relative_path,
     },
     model::{
-        AccessLogPolicy, ConfigError, HttpAccessPolicy, HttpAffinity, HttpAffinityKey,
-        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader,
-        HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts,
-        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescueTarget,
-        HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-        HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticTryFile,
-        HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
+        AccessLogPolicy, ConfigError, CookiePathMatch, HttpAccessPolicy, HttpAffinity,
+        HttpAffinityKey, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpHostSelector,
+        HttpLiteralHeader, HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy,
+        HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpRescueTarget, HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute,
+        HttpRouteAction, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+        HttpStaticTryFile, HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
     },
 };
 
