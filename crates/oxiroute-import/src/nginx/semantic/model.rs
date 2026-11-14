@@ -192,6 +192,16 @@ pub enum LocationKind {
     Invalid,
 }
 
+impl LocationKind {
+    /// `^~` only suppresses regex locations, which a lowerable server never has, so it routes as a plain prefix.
+    pub const fn route_identity(self) -> Self {
+        match self {
+            Self::PrefixNoRegex => Self::Prefix,
+            kind => kind,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveProxyPass {
     pub origin: DirectiveOrigin,

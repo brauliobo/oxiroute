@@ -38,6 +38,22 @@ pub(super) fn issue(
     }
 }
 
+pub(super) fn warning(
+    origin: &DirectiveOrigin,
+    code: DiagnosticCode,
+    message: impl Into<String>,
+) -> Diagnostic {
+    Diagnostic::new(code, Severity::Warning, DiagnosticStage::Lower, message)
+        .with_primary_span(origin.span)
+        .with_include_stack(
+            origin
+                .provenance
+                .include_stack
+                .iter()
+                .map(|frame| frame.directive_span),
+        )
+}
+
 pub(super) fn lower_diagnostic(issue: &LowerIssue) -> Diagnostic {
     Diagnostic::new(
         issue.code,

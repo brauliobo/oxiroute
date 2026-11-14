@@ -208,20 +208,8 @@ fn scan_overlays(
             values,
         });
     }
-    let authorization_check = name == b"if"
-        && directive.directive.arguments.iter().any(|argument| {
-            argument
-                .value
-                .windows(b"authorization".len())
-                .any(|part| part.eq_ignore_ascii_case(b"authorization"))
-        });
-    let redacted = directive.directive.arguments.iter().any(|argument| {
-        argument
-            .value
-            .windows(b"<redacted>".len())
-            .any(|part| part == b"<redacted>")
-    });
-    let matched_bearer = (authorization_check && redacted)
+    let bearer_gate = name == b"if" && bearer_gate_condition(&directive.directive);
+    let matched_bearer = bearer_gate
         .then(|| {
             server_names
                 .iter()
@@ -234,7 +222,7 @@ fn scan_overlays(
             .entry(name.clone())
             .or_insert_with(|| origin(directive));
     }
-    if authorization_check && redacted && matched_bearer.is_none() {
+    if bearer_gate && matched_bearer.is_none() {
         overlays.push(OperationalOverlayRequirement {
             id: format!("nginx-bearer-token-{}", directive.occurrence.get()),
             kind: OperationalOverlayKind::BearerTokenFile,
@@ -274,19 +262,6 @@ fn scan_overlays(
             .position(|byte| matches!(*byte, b'/' | b'?' | b'#'))
             .unwrap_or(value.len());
         let authority = &value[..authority_end];
-        let host = authority
-            .strip_prefix(b"[")
-            .and_then(|value| value.split(|byte| *byte == b']').next())
-            .unwrap_or_else(|| {
-                authority
-                    .split(|byte| *byte == b':')
-                    .next()
-                    .unwrap_or(authority)
-            });
-        let ip_only = std::str::from_utf8(host)
-            .ok()
-            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
-            .is_some();
         let normalized_authority = authority.to_ascii_lowercase();
         let supplied = used_upstream_tls.contains(&normalized_authority);
         if supplied {
@@ -305,16 +280,6 @@ fn scan_overlays(
                 directive: format!("proxy_pass {}", overlay.authority),
                 origin: origin(directive),
                 equivalent_runtime_endpoint: false,
-            });
-        }
-        if ip_only && !supplied {
-            overlays.push(OperationalOverlayRequirement {
-                id: format!("nginx-upstream-tls-{}", directive.occurrence.get()),
-                kind: OperationalOverlayKind::UpstreamTlsPolicy,
-                origin: Some(origin(directive)),
-                redacted_evidence: false,
-                values: vec![display_bytes(authority)],
-                satisfied: false,
             });
         }
     }
