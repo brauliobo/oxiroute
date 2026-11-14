@@ -187,9 +187,8 @@ mod tests {
     fn low_level_renderers_enforce_the_shared_output_bound() {
         let oversized = "x".repeat(MAX_STRING_BYTES);
         let value = Value::Object(
-            ["a", "b", "c", "d", "e"]
-                .into_iter()
-                .map(|key| (key.to_owned(), Value::String(oversized.clone())))
+            (0..=MAX_OUTPUT_BYTES / MAX_STRING_BYTES)
+                .map(|key| (format!("key-{key}"), Value::String(oversized.clone())))
                 .collect(),
         );
         for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {

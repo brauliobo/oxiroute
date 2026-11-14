@@ -3335,7 +3335,7 @@ return { version = 1, listeners = {} }
 
 #[test]
 fn enforces_the_source_size_limit() {
-    let source = " ".repeat(1024 * 1024 + 1);
+    let source = " ".repeat(oxiroute_config_source::MAX_SOURCE_BYTES + 1);
     let error = lua_error_from(&source);
 
     assert!(matches!(

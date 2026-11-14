@@ -162,7 +162,7 @@ fn lua_render_and_parse_failures_keep_their_diagnostic_stages() {
         "listeners": [],
         "cache_stores": [{
             "type": "memory",
-            "name": "x".repeat(1024 * 1024)
+            "name": "x".repeat(MAX_CANONICAL_CONFIG_BYTES + 1)
         }]
     }))
     .expect("oversized output draft");

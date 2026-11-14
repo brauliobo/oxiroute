@@ -1929,7 +1929,7 @@ fn rejects_u64_values_that_json_and_lua_cannot_round_trip_exactly() {
 fn rejects_rendered_sources_beyond_the_loader_limit() {
     let mut config = minimal_config();
     config.listeners.push(Listener {
-        name: "x".repeat(1024 * 1024),
+        name: "x".repeat(oxiroute_config_source::MAX_SOURCE_BYTES),
         bind: ListenerBind::Socket {
             address: socket("127.0.0.1:1935"),
             ipv6_only: false,
