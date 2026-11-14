@@ -184,12 +184,13 @@ fn proxy_policy(route: &HttpRoute) -> &HttpProxyPolicy {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one golden end-to-end assertion set")]
 fn router_shape_skeleton_finalizes_end_to_end() {
     let (directory, files) = router_shape();
     assert_eq!(files, 21);
     let report = import(&directory);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    assert!(report.blocked_http_services.is_empty());
+    assert_eq!(report.blocked_http_services, []);
     assert_eq!(report.source_graph.sources.len(), 21);
     let config = report.candidate.validated().expect("finalized").as_draft();
 
@@ -215,7 +216,9 @@ fn router_shape_skeleton_finalizes_end_to_end() {
         let mut expected = sans.iter().map(ToString::to_string).collect::<Vec<_>>();
         expected.sort();
         let mut actual = certificate.map(|certificate| certificate.dns_names.clone());
-        actual.iter_mut().for_each(|names| names.sort());
+        if let Some(names) = &mut actual {
+            names.sort();
+        }
         assert_eq!(actual, Some(expected), "{name}");
     }
     assert!(config.http_services.iter().all(|service| {

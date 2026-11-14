@@ -173,19 +173,18 @@ impl Lowerer {
                 .iter()
                 .any(|prefix| value.starts_with(prefix))
         });
-        let (name, format) = match named {
-            None => ("combined".to_owned(), COMBINED_FORMAT.to_owned()),
-            Some(name) => match self.log_format(http, name) {
-                Some(format) => (String::from_utf8_lossy(name).into_owned(), format),
-                None => {
-                    issues.push(issue(
-                        origin,
-                        E_INVALID_VALUE,
-                        "nginx access_log references a log_format that is not defined in the http context",
-                    ));
-                    return AccessLog::Rejected;
-                }
-            },
+        let (name, format) = if let Some(name) = named {
+            let Some(format) = self.log_format(http, name) else {
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "nginx access_log references a log_format that is not defined in the http context",
+                ));
+                return AccessLog::Rejected;
+            };
+            (String::from_utf8_lossy(name).into_owned(), format)
+        } else {
+            ("combined".to_owned(), COMBINED_FORMAT.to_owned())
         };
         let mut message = format!(
             "nginx access_log format `{name}` migrates to the structured JSON access log; fields not reproduced: {}",
