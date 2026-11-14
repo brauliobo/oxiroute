@@ -50,13 +50,25 @@ fixture clean 'f=popcnt %rax, %rax; tzcnt %rax, %rax; pcmpistri $0, %xmm1, %xmm0
 accepts "${root}/clean"
 ok 'a binary without AVX passes'
 
+# One function per allowed family (scripts/verify-baseline-isa.sh), each with an instruction of its class.
 fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${legacy_cpu}=vzeroupper; shlx %rax, %rbx, %rcx" \
-  '__strchr_avx2=vpcmpeqb (%rdi), %ymm0, %ymm1' 'ZSTD_decompress_bmi2=shlx %rax, %rbx, %rcx' \
-  'aws_lc_0_1_0_sha256_block_data_order_avx2=vpaddd %ymm0, %ymm1, %ymm2' 'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2' \
-  'Lcurve25519_x25519_scalarloop=mulx %rax, %rbx, %rcx' 'GFMUL=vpclmulqdq $0, %xmm0, %xmm1, %xmm2'
+  '_ZN12oxiroute_cpu8dispatch5sse4217h0123456789abcdefE=vpxor %xmm0, %xmm0, %xmm0' \
+  'aws_lc_0_1_0_sha256_block_data_order_avx2=vpaddd %ymm0, %ymm1, %ymm2' \
+  'Lcurve25519_x25519_scalarloop=mulx %rax, %rbx, %rcx' 'Lp256_montjscalarmul_p256_montjadd=mulx %rax, %rbx, %rcx' \
+  'Lbignum_mod_n25519_writeback=adcx %rax, %rbx' 'Lsha3_keccak4_f1600_alt=vmovdqu (%rax), %ymm0' \
+  'Lmlk_rej_uniform_asm_loop_start=pext %rax, %rbx, %rcx' 'GFMUL=vpclmulqdq $0, %xmm0, %xmm1, %xmm2' \
+  'partial_fold=vpxor %xmm0, %xmm0, %xmm0' \
+  'ring_core_0_17_8__gcm_ghash_vpclmulqdq_avx2_1=vpxor %ymm0, %ymm0, %ymm0' \
+  'OPENSSL_cleanse_avx=vpxor %xmm0, %xmm0, %xmm0' 'x25519_fe51_mul=mulx %rax, %rbx, %rcx' \
+  'adler32_fold_copy_avx2=vpxor %ymm0, %ymm0, %ymm0' 'ZSTD_decompress_bmi2=shlx %rax, %rbx, %rcx' \
+  'je_malloc_x=andn %rax, %rbx, %rcx' '__strchr_avx2=vpcmpeqb (%rdi), %ymm0, %ymm1' \
+  'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2' 'Lcurve25519_x25519_midloop.cold.0=mulx %rax, %rbx, %rcx'
 accepts "${root}/dispatched"
-grep -q 'baseline ISA ok (8 dispatched functions)' "${root}/out" || die 'dispatched function count'
-ok 'AVX, BMI and FMA in dispatched, ISA-named or aws-lc assembly label functions pass'
+for family in 'aws-lc 9' 'isa-named 2' 'jemalloc-glibc 1' 'openssl 2' 'oxiroute-cpu 2' 'ring 1' 'rust-dispatch 1' 'zlib-ng 1' 'zstd 1'; do
+  grep -q "${family% *} ${family#* }" "${root}/out" || { cat "${root}/out" >&2; die "dispatched count of ${family% *}"; }
+done
+grep -q 'baseline ISA ok (20 dispatched functions: ' "${root}/out" || die 'dispatched function count'
+ok 'every allowed family passes and is counted by origin'
 
 for leak in 'vpxor %xmm0, %xmm0, %xmm0' 'mulx %rax, %rbx, %rcx' 'lzcnt %rax, %rbx' 'movbe (%rax), %rbx' \
   'vmovdqu8 (%rax), %zmm0' 'kmovq %k1, %rax'; do
@@ -70,8 +82,20 @@ body=()
 for i in $(seq 25); do body+=("leak${i}=vpxor %xmm0, %xmm0, %xmm0"); done
 fixture crowd "${body[@]}"
 rejects '25 function' "${root}/crowd"
-rejects '\.\.\. and 5 more' "${root}/crowd"
-ok 'long offender lists are truncated'
+[[ $(grep -c '^  leak' "${root}/out") == 25 ]] || die 'every offender is listed'
+ok 'every offender is listed'
+
+# Names that look like an allowed family but are our own or compiler-generated code are still leaks, grouped by kind.
+fixture lookalike 'Lfoo_scalarloop=mulx %rax, %rbx, %rcx' \
+  '_ZN6memchrX3foo17h0123456789abcdefE=vpxor %xmm0, %xmm0, %xmm0' \
+  "${legacy_app}=vpxor %xmm0, %xmm0, %xmm0" 'oxiroute_cpu_helper=lzcnt %rax, %rbx' 'GFMUL2=vpxor %xmm0, %xmm0, %xmm0'
+rejects '5 function' "${root}/lookalike"
+for leak in Lfoo_scalarloop 'oxiroute::server::pump' oxiroute_cpu_helper GFMUL2 _ZN6memchrX3foo17h0123456789abcdefE; do
+  grep -qF "  ${leak}: " "${root}/out" || { cat "${root}/out" >&2; die "${leak} is not listed"; }
+done
+grep -q '^Rust code:$' "${root}/out" || die 'no Rust code group'
+grep -q '^C or assembly symbols:$' "${root}/out" || die 'no C or assembly group'
+ok 'lookalike names and own code fail, grouped by kind'
 
 fixture stripped -s "${legacy_app}=vpxor %xmm0, %xmm0, %xmm0"
 rejects 'stripped binary.*--symbols' "${root}/stripped"

@@ -28,27 +28,39 @@
 set -euo pipefail
 export LC_ALL=C # objdump and readelf translate the headers that are parsed below
 
-# Extend here. EREs matched against the demangled symbol (unanchored unless they start with ^). Each entry names code
-# that runs only after a CPU feature check; a symbol that names its own ISA (avx, evex, bmi, ...) is always accepted.
+# Extend here. Every entry is a family of symbols of known third-party or run-time dispatched code: an ORIGIN and EREs
+# matched against the demangled symbol (unanchored unless they start with ^). A family belongs here only when its code
+# runs after a CPU feature check; the evidence is the comment of the family. A symbol that names its own ISA (avx, evex,
+# bmi, ...) is also accepted. Anything else is our own or compiler-generated code and fails, whatever it executes.
+DISPATCHED_SYMBOL_PATTERNS=()
+family() {
+  local origin=$1 re
+  shift
+  for re in "$@"; do DISPATCHED_SYMBOL_PATTERNS+=("${origin}"$'\t'"${re}"); done
+}
 b='(^|[^[:alnum:]_])'
-DISPATCHED_SYMBOL_PATTERNS=(
-  # oxiroute-cpu variants and the consumers' #[target_feature] kernels
-  "${b}oxiroute_cpu::"
-  "${b}oxiroute_h1_head::.*(sse42|avx)"
-  # Rust dependencies that detect the CPU at run time
-  "${b}(memchr|aho_corasick|crc32fast|sha1|sha2|simdutf8|bytecount|compiler_builtins)::"
-  # C and assembly: aws-lc, ring, OpenSSL, zlib-ng, zstd, jemalloc, glibc
-  '^_*(aws_lc|ring_core|OPENSSL|ossl|CRYPTO|aesni|aes_hw|aes_gcm|vpaes|bn_|ecp_nistz256|x25519|gcm_|sha[0-9]+_)'
+# oxiroute-cpu variants and the consumers' #[target_feature] kernels, chosen by oxiroute_cpu at run time
+family oxiroute-cpu "${b}oxiroute_cpu::" "${b}oxiroute_h1_head::.*(sse42|avx)"
+# Rust dependencies that detect the CPU at run time
+family rust-dispatch "${b}(memchr|aho_corasick|crc32fast|sha1|sha2|simdutf8|bytecount|compiler_builtins)::"
+# aws-lc (aws-lc-sys): exported symbols carry the aws_lc_<version>_ prefix. Its assembly keeps the local labels of its
+# routines as symbols without it, and every label belongs to a routine that its C callers reach only after a check:
+#  - s2n-bignum (curve25519, edwards25519, p256, p384, p521, secp256k1, sm2, sha3, bignum_*) labels are L<routine>_<label>;
+#    use_s2n_bignum_alt() in s2n-bignum_aws-lc.h selects the BMI2/ADX routines only when CRYPTO_is_BMI2_capable() and
+#    CRYPTO_is_ADX_capable(); the SHA-3 x4 routine needs CRYPTO_is_AVX2_capable() (crypto/fipsmodule/sha/keccak1600.c)
+#  - ML-KEM (mlkem-native) labels Lmlk_*: mlk_sys_check_capability() requires AVX2 and BMI2 (mlkem_native_config.h)
+#  - AES-GCM-SIV (GFMUL and the perlasm labels): used only when CRYPTO_is_AVX_capable() and CRYPTO_is_AESNI_capable()
+#    (crypto/cipher_extra/e_aesgcmsiv.c); the other perlasm labels are local labels (.L*) or named like the routines
+family aws-lc '^_*aws_lc' '^L(bignum|curve25519|edwards25519|p256|p384|p521|secp256k1|sm2|sha3|mlk)_' \
+  '^(GFMUL$|partial_fold|iv_len_12_init_IV|skip_iv_len_12_init_IV|hw_x86_64_)' '^[.]'
+family ring '^_*ring_core'
+# OpenSSL (vendored by openssl-sys) and its perlasm: capability vector OPENSSL_ia32cap_P, tested by the C callers
+family openssl '^_*(OPENSSL|ossl|CRYPTO|aesni|aes_hw|aes_gcm|vpaes|bn_|ecp_nistz256|x25519|gcm_|sha[0-9]+_)' \
   '^_*(chacha20|ChaCha20|poly1305|rsaz|md5_|keccak|Keccak|mulx|sqrx)'
-  # aws-lc keeps the labels of its assembly routines as symbols (local labels start with a dot)
-  '^([.]|partial_fold|iv_len_12_init_IV|skip_iv_len_12_init_IV|hw_x86_64_|GFMUL$)'
-  # aws-lc runs s2n-bignum (curve25519, ed25519, P-256/384/521, SHA-3, ML-KEM) behind its BMI2/ADX/AVX2 checks; the
-  # loop and helper labels of those routines are symbols of their own
-  '^L(curve25519|edwards25519|p256|p384|p521|bignum|sha3|mlk)_'
-  '^(adler32|crc32|chunkset|compare256|slide_hash|longest_match|inflate_fast|ZSTD_|HUF_|FSE_|je_|_rjem|__libc_|_dl_)'
-  '(^|[^[:alpha:]])(avx|evex|bmi|movbe|fma|vaes|vpclmul|vpclmulqdq|mulx|adx|rorx)([^[:alpha:]]|$)'
-)
-list_limit=20
+family zlib-ng '^(adler32|crc32|chunkset|compare256|slide_hash|longest_match|inflate_fast)'
+family zstd '^(ZSTD_|HUF_|FSE_)'
+family jemalloc-glibc '^(je_|_rjem|__libc_|_dl_)'
+family isa-named '(^|[^[:alpha:]])(avx|evex|bmi|movbe|fma|vaes|vpclmul|vpclmulqdq|mulx|adx|rorx)([^[:alpha:]]|$)'
 
 usage() { echo "usage: $0 [--run] [--require] [--symbols UNSTRIPPED] BIN" >&2; exit 2; }
 fail() { printf '%s: %s\n' "${bin}" "$*" >&2; exit 1; }
@@ -72,33 +84,48 @@ bin=${1:-}
 
 build_id() { readelf -n "$1" | sed -n 's/.*Build ID: //p'; }
 
-# Reads objdump text; prints SUMMARY then one BAD line per offending function.
+# Reads objdump text and the ORIGIN<TAB>ERE families in ALLOW; prints SUMMARY, one OK line per origin that holds
+# dispatched code and one BAD line per offending function (all of them, grouped by the caller).
+# BOLT and the compiler split or clone functions into name.cold.N, name.part.N, name.constprop.N: they belong to name.
 # shellcheck disable=SC2016
 awk_program='
 function isa(m) {
   if (m ~ /^v/) return m !~ /^(verr|verw|vm(call|clear|func|launch|load|mcall|ptrld|ptrst|read|resume|run|save|write|xo(ff|n)))$/
   return m ~ /^(k(mov|and|andn|or|xor|xnor|not|add|shiftl|shiftr|test|ortest)[bwdq]|kunpck[bwd][wdq]|andn|bextr|blsi|blsmsk|blsr|bzhi|mulx|pdep|pext|rorx|sarx|shlx|shrx|lzcnt|movbe|adcx|adox)$/
 }
-BEGIN { allow = ENVIRON["ALLOW"]; name = "[no section]" }
+function origin_of(sym,   i) {
+  for (i = 1; i <= nfam; i++) if (sym ~ fam_re[i]) return fam_origin[i]
+  return ""
+}
+BEGIN {
+  nfam = split(ENVIRON["ALLOW"], lines, "\n")
+  for (i = 1; i <= nfam; i++) { split(lines[i], kv, "\t"); fam_origin[i] = kv[1]; fam_re[i] = kv[2] }
+  name = "[no section]"
+}
 /^Disassembly of section/ { name = "[section " $4; sub(/:$/, "", name); name = name "]"; flagged = 0; next }
-/^[0-9a-f]+ <.*>:$/ { name = $0; sub(/^[0-9a-f]+ </, "", name); sub(/>:$/, "", name); flagged = 0; next }
+/^[0-9a-f]+ <.*>:$/ {
+  name = $0; sub(/^[0-9a-f]+ </, "", name); sub(/>:$/, "", name)
+  gsub(/\.(cold|part|constprop|isra|lto_priv)(\.[0-9]+)*/, "", name)
+  flagged = 0; next
+}
 /^ +[0-9a-f]+:\t/ {
   split($0, f, "\t"); k = split(f[2], w, / +/); i = 1
   while (i < k && w[i] ~ /^(lock|rep|repz|repnz|repe|repne|bnd|notrack|data16|addr32|cs|ds|es|fs|gs|ss|xacquire|xrelease|rex[.A-Za-z]*)$/) i++
   if (!isa(w[i])) next
   if (!flagged) {
-    flagged = 1; leak = name !~ allow
-    if (leak) { bad[++nbad] = name; first[nbad] = w[i]; at[nbad] = f[1]; gsub(/[ :]/, "", at[nbad]) } else dispatched++
+    flagged = 1; org = origin_of(name); leak = org == ""
+    if (leak) { bad[++nbad] = name; first[nbad] = w[i]; at[nbad] = f[1]; gsub(/[ :]/, "", at[nbad]) } else { dispatched++; ok[org]++ }
   }
   if (leak) count[nbad]++
 }
 END {
   printf "SUMMARY %d %d\n", dispatched, nbad
-  for (i = 1; i <= nbad && i <= limit; i++) printf "BAD %s: %s x%d at 0x%s\n", bad[i], first[i], count[i], at[i]
+  for (o in ok) printf "OK %s %d\n", o, ok[o]
+  for (i = 1; i <= nbad; i++) printf "BAD %s\t%s: %s x%d at 0x%s\n", (bad[i] ~ /::/ ? "Rust code" : "C or assembly symbols"), bad[i], first[i], count[i], at[i]
 }'
 
 static_check() {
-  local disasm=${symbols:-${bin}} allow report summary
+  local disasm=${symbols:-${bin}} allow report dispatched leaks by_origin
   objdump -f "${disasm}" | grep -q 'i386:x86-64' || fail 'not an x86-64 ELF binary'
   readelf -S -W "${disasm}" | grep -q ' \.symtab ' ||
     fail 'stripped binary: no function symbols to tell dispatched code from a leak; pass --symbols UNSTRIPPED (same' \
@@ -107,18 +134,18 @@ static_check() {
     [[ -n $(build_id "${symbols}") && $(build_id "${symbols}") == "$(build_id "${bin}")" ]] ||
       fail "--symbols ${symbols} does not carry the build-id of the binary"
   fi
-  allow=$(printf '(%s)|' "${DISPATCHED_SYMBOL_PATTERNS[@]}")
-  report=$(objdump -d -C --no-show-raw-insn "${disasm}" | ALLOW=${allow%|} awk -v limit="${list_limit}" "${awk_program}")
-  summary=${report%%$'\n'*}
-  read -r _ dispatched leaks <<<"${summary}"
+  allow=$(printf '%s\n' "${DISPATCHED_SYMBOL_PATTERNS[@]}")
+  report=$(objdump -d -C --no-show-raw-insn "${disasm}" | ALLOW=${allow} awk "${awk_program}")
+  read -r _ dispatched leaks <<<"$(sed -n 1p <<<"${report}")"
   if ((leaks > 0)); then
     printf '%s: %d function(s) use AVX/BMI/FMA-class instructions outside run-time dispatch (extend\n' "${bin}" "${leaks}" >&2
     printf 'DISPATCHED_SYMBOL_PATTERNS in %s only for code that runs behind a CPU check):\n' "$0" >&2
-    sed -n '2,$p' <<<"${report}" | sed 's/^BAD /  /' >&2
-    ((leaks <= list_limit)) || printf '  ... and %d more\n' $((leaks - list_limit)) >&2
+    sed -n 's/^BAD //p' <<<"${report}" | LC_ALL=C sort -s -t$'\t' -k1,1 |
+      awk -F'\t' '$1 != kind { kind = $1; printf "%s:\n", kind } { printf "  %s\n", $2 }' >&2
     exit 1
   fi
-  printf '%s: baseline ISA ok (%d dispatched functions)\n' "${bin}" "${dispatched}"
+  by_origin=$(sed -n 's/^OK \(.*\) \(.*\)$/\1 \2/p' <<<"${report}" | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g')
+  printf '%s: baseline ISA ok (%d dispatched functions%s)\n' "${bin}" "${dispatched}" "${by_origin:+: ${by_origin}}"
 }
 
 run_check() {
