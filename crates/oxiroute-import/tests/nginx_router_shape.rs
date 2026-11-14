@@ -133,6 +133,7 @@ fn routes<'a>(config: &'a ConfigDraft, listener: &str) -> &'a [HttpRoute] {
             candidate.bind
                 == ListenerBind::Socket {
                     address: listener.parse().unwrap(),
+                    ipv6_only: false,
                 }
         })
         .and_then(|candidate| candidate.service.as_deref())
@@ -347,4 +348,66 @@ fn router_shape_requires_exactly_the_operator_overlays_and_the_audit_assertion()
         );
     }
     assert!(!import(&options()).has_errors());
+}
+
+#[test]
+fn an_ipv4_only_tls_server_splits_its_socket_into_ipv4_and_ipv6_only_listeners() {
+    let (directory, _) = router_shape();
+    let live = directory.path().join("letsencrypt/live");
+    fs::write(
+        directory.path().join("etc/sites-enabled/40-v4only.conf"),
+        format!(
+            "server {{\n  listen 443 ssl;\n  server_name v4only.example.com;\n  ssl_certificate {live}/example.com/fullchain.pem;\n  \
+             ssl_certificate_key {live}/example.com/privkey.pem;\n  include snippets/ssl-options.conf;\n  \
+             location / {{ return 204; }}\n}}\n",
+            live = live.display()
+        ),
+    )
+    .unwrap();
+    let report = import(&directory);
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.candidate.validated().expect("finalized").as_draft();
+
+    let mut binds = config
+        .listeners
+        .iter()
+        .map(|listener| match &listener.bind {
+            ListenerBind::Socket { address, ipv6_only } => (address.to_string(), *ipv6_only),
+            other => panic!("unexpected bind {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    binds.sort();
+    assert_eq!(
+        binds,
+        [
+            ("0.0.0.0:443".to_owned(), false),
+            ("[::]:443".to_owned(), true),
+            ("[::]:80".to_owned(), false),
+        ]
+    );
+    let routes_of = |address: &str| {
+        let service = config
+            .listeners
+            .iter()
+            .find(|listener| listener.bind.to_string() == address)
+            .and_then(|listener| listener.service.as_deref())
+            .unwrap();
+        config
+            .http_services
+            .iter()
+            .find(|candidate| candidate.name == service)
+            .unwrap()
+            .routes
+            .iter()
+            .any(|route| {
+                route.host
+                    == Some(HttpHostSelector::NormalizedHost {
+                        value: "v4only.example.com".into(),
+                    })
+            })
+    };
+    assert_eq!(
+        (routes_of("0.0.0.0:443"), routes_of("[::]:443")),
+        (true, false)
+    );
 }

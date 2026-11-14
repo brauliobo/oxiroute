@@ -395,7 +395,8 @@ Current constraints:
   forward-proxy-service, RTMP-service, or L4-service namespace.
 - Listener binds MUST be unique after normalization.
 - Names MUST contain non-whitespace text without surrounding whitespace or control characters.
-- A listener `bind` is exactly one tagged object: `{ type = "socket", address = "IP:port" }` or
+- A listener `bind` is exactly one tagged object: `{ type = "socket", address = "IP:port" }` (with an optional
+  `ipv6_only = true`, below) or
   `{ type = "unix", path = "/absolute/socket/path", mode = 432 }`. The optional Unix mode contains
   permission bits `001` through `777`, represented as an integer. Socket ports MUST be nonzero. Exact socket
   duplicates, wildcard socket binds that overlap another listener, management, or stats bind, and duplicate
@@ -406,8 +407,13 @@ Current constraints:
   listener directory MUST be owned by the effective service user or have the sticky bit, and no
   path ancestor may be group/world writable unless it has the sticky bit. The runtime retains a
   mode-`0600` `<socket>.oxiroute.lock` ownership marker beside each Unix listener.
-- A TCP socket bound to `[::]` is dual-stack: the runtime clears `IPV6_V6ONLY` itself, so it accepts IPv4
-  and IPv6 clients whatever the host's `bindv6only` setting is. Other IPv6 addresses are unchanged.
+- A TCP socket bound to `[::]` is dual-stack by default: the runtime clears `IPV6_V6ONLY` itself, so it accepts IPv4
+  and IPv6 clients whatever the host's `bindv6only` setting is. With `ipv6_only = true` (valid only on a `[::]` socket
+  bind; default `false`, never rendered when false) the runtime sets `IPV6_V6ONLY` and the listener accepts IPv6
+  clients alone, so it can share its port with a separate IPv4 listener (for example `0.0.0.0:80` next to
+  `[::]:80` with `ipv6_only = true`, each serving its own service). An `ipv6_only` wildcard does not overlap IPv4
+  binds on its port; it still overlaps any other IPv6 bind on that port. Other IPv6 addresses are unchanged.
+  Changing `ipv6_only` on a socket that keeps its address needs a process restart.
 - HTTP, HTTP/3, forward-HTTP/1, forward-HTTP/2, forward-HTTP/3, RTMP, and TCP listeners MUST
   reference an existing same-kind service. An RTMP service MUST contain between 1 and 256 unique
   applications, and one configuration accepts at most 64 RTMP services.
@@ -783,10 +789,10 @@ Current constraints:
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through
   uses an ordinary plaintext-configured TCP pool and does not terminate or originate TLS.
 - Unknown fields and unknown protocol values are errors.
-- Every authored source and deterministic rendered output is limited to 1 MiB. Generic source trees
+- Every authored source and deterministic rendered output is limited to 4 MiB. Generic source trees
   are additionally limited to 128 structural levels, 100,000 nodes, 256 KiB per string, 64 template
   inheritance levels, and 4,096 recorded native dependency paths.
-- Restricted Lua has the same 1 MiB source limit, 4 MiB of additional memory, and one million
+- Restricted Lua has the same 4 MiB source limit, 4 MiB of additional memory, and one million
   instructions. No Lua standard libraries are loaded and binary chunks are rejected. Lua does not
   support generic templates or native-server references.
 

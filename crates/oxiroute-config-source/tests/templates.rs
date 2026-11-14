@@ -1,5 +1,5 @@
 use oxiroute_config_source::{
-    ConfigSourceError, MAX_EXPANSION_DEPTH, MAX_STRING_BYTES, expand_templates,
+    ConfigSourceError, MAX_EXPANSION_DEPTH, MAX_OUTPUT_BYTES, MAX_STRING_BYTES, expand_templates,
 };
 use serde_json::{Map, Value, json};
 
@@ -113,7 +113,7 @@ fn bounds_expanded_output_independently_of_input() {
     let chunk = "x".repeat(MAX_STRING_BYTES);
     let mut root = Map::new();
     root.insert("templates".to_owned(), json!({"large": {"chunk": chunk}}));
-    for index in 0..5 {
+    for index in 0..=MAX_OUTPUT_BYTES / MAX_STRING_BYTES {
         root.insert(format!("copy-{index}"), json!({"use": "large"}));
     }
     assert!(matches!(

@@ -696,6 +696,9 @@ fn restart_required_diagnostic(reason: ListenerRestartReason) -> Value {
         ListenerRestartReason::UnixModeChange => {
             "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
         }
+        ListenerRestartReason::Ipv6OnlyChange => {
+            "an active listener changed ipv6_only; the saved configuration takes effect after a process restart"
+        }
     };
     json!({
         "code": "I_RESTART_REQUIRED",

@@ -101,7 +101,7 @@ impl StorageFailure {
             Self::TooLarge => diagnostic(
                 "E_CONFIG_TOO_LARGE",
                 ConfigDiagnosticStage::Read,
-                "canonical configuration exceeds the one-MiB limit",
+                "canonical configuration exceeds the four-MiB limit",
             ),
             Self::DirectoryChanged | Self::Unstable => diagnostic(
                 "E_CONFIG_UNSTABLE",

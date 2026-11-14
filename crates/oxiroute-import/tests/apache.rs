@@ -46,7 +46,7 @@ fn imports_an_included_static_virtual_host_with_provenance() {
     assert_eq!(config.http_services.len(), 1);
     assert!(matches!(
         config.listeners[0].bind,
-        ListenerBind::Socket { address } if address == "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+        ListenerBind::Socket { address, .. } if address == "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     ));
     assert!(config.http_services[0].routes.iter().any(|route| {
         route.path == HttpPathSelector::RawPrefix { value: "/".into() }
@@ -249,7 +249,7 @@ fn inherited_defaults_and_multi_address_vhosts_lower_with_include_provenance() {
     assert_eq!(config.listeners.len(), 1);
     assert!(matches!(
         config.listeners[0].bind,
-        ListenerBind::Socket { address } if address == "0.0.0.0:8080".parse::<SocketAddr>().unwrap()
+        ListenerBind::Socket { address, .. } if address == "0.0.0.0:8080".parse::<SocketAddr>().unwrap()
     ));
     let route = &config.http_services[0].routes[0];
     assert!(matches!(

@@ -63,6 +63,9 @@ version 1
 }
 ```
 
+A `[::]` socket bind may add `ipv6_only #true` beside `address` to serve IPv6 clients alone. The default is
+dual-stack; `ipv6_only` is then omitted from every rendered format and accepted in all of them.
+
 Canonical KDL uses two-space indentation, LF endings, sorted object keys, preserved array order, and
 no statement-ending commas or semicolons. Properties, typed scalar arguments, untyped child blocks,
 non-finite numbers, duplicate nodes, and KDL 1 booleans such as `true` are rejected. KDL 2 booleans
@@ -276,7 +279,7 @@ output, which remains evidence rather than a configuration source.
 
 ## Security and Save Limits
 
-- Source bytes and rendered output are capped at 1 MiB. Generic trees are capped at 128 structural
+- Source bytes and rendered output are capped at 4 MiB. Generic trees are capped at 128 structural
   levels, 100,000 nodes, 256 KiB per string, 64 template inheritance levels, and 4,096 recorded
   dependency paths.
 - Declarative parsing itself performs no implicit I/O. Native references are the explicit exception:

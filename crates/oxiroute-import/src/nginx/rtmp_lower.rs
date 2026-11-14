@@ -378,7 +378,10 @@ impl Lowerer {
             let listener_index = self.draft.listeners.len();
             self.draft.listeners.push(Listener {
                 name: format!("nginx-rtmp-listener-{rtmp_index}-{server_index}-{listener_index}"),
-                bind: ListenerBind::Socket { address },
+                bind: ListenerBind::Socket {
+                    address,
+                    ipv6_only: false,
+                },
                 protocol: Protocol::Rtmp,
                 service: Some(service_name.clone()),
                 tls_profile: None,

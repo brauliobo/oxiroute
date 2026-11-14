@@ -159,7 +159,7 @@ fn distributed_example_compiles_into_an_active_runtime_plan() {
     draft.management = None;
     draft.stats = None;
     for listener in &mut draft.listeners {
-        if let ListenerBind::Socket { address } = &mut listener.bind {
+        if let ListenerBind::Socket { address, .. } = &mut listener.bind {
             let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             *address = reservation.local_addr().unwrap();
         }

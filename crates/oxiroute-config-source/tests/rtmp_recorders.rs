@@ -664,7 +664,7 @@ fn shared_normalized_roots_require_identical_storage_limits_only() {
 
 #[test]
 fn retains_the_existing_source_and_render_size_bounds() {
-    let oversized_name = "x".repeat(1024 * 1024);
+    let oversized_name = "x".repeat(oxiroute_config_source::MAX_SOURCE_BYTES);
     let source = config(&service(
         "live",
         &application(

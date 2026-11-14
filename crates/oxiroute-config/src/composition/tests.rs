@@ -172,6 +172,7 @@ fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         name: name.into(),
         bind: ListenerBind::Socket {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            ipv6_only: false,
         },
         protocol: Protocol::Tcp,
         service: Some(service),

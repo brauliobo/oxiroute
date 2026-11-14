@@ -456,6 +456,7 @@ fn candidate_cleanup_visits_later_services_after_the_first_shutdown_times_out() 
     second_listener.name = "second".into();
     second_listener.bind = ListenerBind::Socket {
         address: second_address,
+        ipv6_only: false,
     };
     second_listener.service = Some("second".into());
     config.listeners.push(second_listener);
@@ -500,9 +501,11 @@ fn candidate_cleanup_visits_later_services_after_the_first_shutdown_times_out() 
     let mut retry_config = config.clone();
     retry_config.listeners[0].bind = ListenerBind::Socket {
         address: unused_tcp_address(),
+        ipv6_only: false,
     };
     retry_config.listeners[1].bind = ListenerBind::Socket {
         address: unused_tcp_address(),
+        ipv6_only: false,
     };
     fs::write(
         &retry_path,

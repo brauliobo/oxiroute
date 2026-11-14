@@ -556,6 +556,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].drain_deadline_ms', kind: 'integer' },
   { path: 'l4_services[].drain_deadline_ms', kind: 'integer' },
   { path: 'listeners[].bind.mode', kind: 'integer' },
+  { path: 'listeners[].bind.ipv6_only', kind: 'boolean' },
   { path: 'listeners[].downstream_timeouts', kind: 'object' },
   { path: 'listeners[].downstream_timeouts.client_timeout_ms', kind: 'integer' },
   { path: 'listeners[].downstream_timeouts.request_timeout_ms', kind: 'integer' },

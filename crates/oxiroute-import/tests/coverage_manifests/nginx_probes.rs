@@ -128,6 +128,14 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
         ),
         (
             "directive.nginx.listen.static",
+            "IPv6-only socket",
+            render_nginx_fixture(NginxFixtureSpec {
+                listen: "[::]:8443 ssl default_server",
+                ..standard_nginx_fixture()
+            }),
+        ),
+        (
+            "directive.nginx.listen.static",
             "dual-stack pair",
             render_nginx_fixture(NginxFixtureSpec {
                 listen: "8443 ssl default_server;\n    listen [::]:8443 ssl default_server",
@@ -695,7 +703,6 @@ fn nginx_listen_probe(id: &str) -> String {
         "directive.nginx.listen.static" => standard_nginx_fixture().listen,
         "directive.nginx.listen.variable" => "127.0.0.1:$port",
         "directive.nginx.listen.unsupported-option" => "127.0.0.1:8443 reuseport",
-        "directive.nginx.listen.ipv6-only" => "[::]:8443 ssl default_server",
         id => panic!("nginx listen form has no executable probe: {id}"),
     };
     render_nginx_fixture(NginxFixtureSpec {

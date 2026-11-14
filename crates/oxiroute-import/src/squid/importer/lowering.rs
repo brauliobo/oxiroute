@@ -96,7 +96,10 @@ pub(super) fn lower(
             };
             Ok(Listener {
                 name: format!("squid-forward-{index}"),
-                bind: ListenerBind::Socket { address },
+                bind: ListenerBind::Socket {
+                    address,
+                    ipv6_only: false,
+                },
                 protocol: Protocol::ForwardHttp1,
                 service: Some(service_name.clone()),
                 tls_profile: None,

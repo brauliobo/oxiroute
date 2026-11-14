@@ -139,7 +139,7 @@ pub(super) fn prepare_rtmp_service_specs(
         }
     }
     let listener_addresses = services.iter().filter_map(|service| match service.bind {
-        ListenerBind::Socket { address } | ListenerBind::Udp { address } => Some(address),
+        ListenerBind::Socket { address, .. } | ListenerBind::Udp { address } => Some(address),
         ListenerBind::Unix { .. } => None,
     });
     let context = RtmpPrepareContext::new(mode, listener_addresses);

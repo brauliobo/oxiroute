@@ -32,7 +32,7 @@ fn binds(report: &ImportReport) -> Vec<String> {
         .listeners
         .iter()
         .map(|listener| match &listener.bind {
-            ListenerBind::Socket { address } => address.to_string(),
+            ListenerBind::Socket { address, .. } => address.to_string(),
             other => panic!("unexpected bind {other:?}"),
         })
         .collect()
@@ -68,33 +68,89 @@ fn wildcard_and_ipv6_listen_pair_is_one_dual_stack_listener() {
     assert_eq!(warnings, ["W_DUAL_STACK_LISTENER"]);
 }
 
-#[test]
-fn pair_declared_by_different_server_sets_is_blocked() {
-    let directory = fixture_directory("ipv4-only-server.conf");
-    let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
-
-    assert!(report.validated().is_none());
-    assert!(
-        errors(&report)
-            .iter()
-            .any(|message| message.contains("different virtual servers"))
-    );
-    assert!(report.has_errors());
+fn socket_binds(report: &ImportReport) -> Vec<(String, bool)> {
+    report
+        .validated()
+        .map_or_else(
+            || panic!("not finalized: {:?}", report.diagnostics),
+            oxiroute_config::ValidatedConfig::as_draft,
+        )
+        .listeners
+        .iter()
+        .map(|listener| match &listener.bind {
+            ListenerBind::Socket { address, ipv6_only } => (address.to_string(), *ipv6_only),
+            other => panic!("unexpected bind {other:?}"),
+        })
+        .collect()
 }
 
 #[test]
-fn ipv6_only_listen_is_blocked_with_a_clear_reason() {
+fn pair_declared_by_different_server_sets_is_two_listeners() {
+    let directory = fixture_directory("ipv4-only-server.conf");
+    let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
+
+    assert!(!report.has_errors(), "{:?}", report.diagnostics);
+    let binds = socket_binds(&report);
+    assert_eq!(binds.len(), 2, "{binds:?}");
+    assert!(
+        binds.contains(&("0.0.0.0:80".to_owned(), false)),
+        "{binds:?}"
+    );
+    assert!(binds.contains(&("[::]:80".to_owned(), true)), "{binds:?}");
+    let draft = report.validated().unwrap().as_draft();
+    let services = |address: &str| {
+        let listener = draft
+            .listeners
+            .iter()
+            .find(|listener| listener.bind.to_string() == address)
+            .unwrap();
+        let service = listener.service.as_deref().unwrap();
+        draft
+            .http_services
+            .iter()
+            .find(|candidate| candidate.name == service)
+            .unwrap()
+            .routes
+            .len()
+    };
+    assert_eq!(services("0.0.0.0:80"), services("[::]:80") + 1);
+}
+
+#[test]
+fn ipv6_only_listen_is_an_ipv6_only_listener() {
     let report = import_source(
         "http { access_log off; server { listen [::]:80; server_name a.example.com; location / { return 204; } } }",
     );
 
-    assert!(report.validated().is_none());
-    assert_eq!(report.blocked_services.len(), 1);
-    assert!(
-        errors(&report)
-            .iter()
-            .any(|message| message.contains("IPv6-only nginx listen [::]"))
-    );
+    assert!(!report.has_errors(), "{:?}", report.diagnostics);
+    assert_eq!(socket_binds(&report), [("[::]:80".to_owned(), true)]);
+}
+
+#[test]
+fn pairs_that_differ_in_ssl_or_default_server_stay_two_listeners() {
+    for (ipv4, ipv6) in [
+        ("80", "[::]:80 default_server"),
+        ("80 default_server", "[::]:80"),
+    ] {
+        let report = import_source(&format!(
+            "http {{ access_log off; \
+             server {{ listen 80; listen [::]:80; server_name a.example.com; location / {{ return 204; }} }} \
+             server {{ listen {ipv4}; listen {ipv6}; server_name b.example.com; location / {{ return 204; }} }} }}"
+        ));
+        assert!(
+            !report.has_errors(),
+            "{ipv4} {ipv6}: {:?}",
+            report.diagnostics
+        );
+        assert_eq!(
+            socket_binds(&report),
+            [
+                ("0.0.0.0:80".to_owned(), false),
+                ("[::]:80".to_owned(), true)
+            ],
+            "{ipv4} {ipv6}"
+        );
+    }
 }
 
 #[test]
