@@ -599,11 +599,10 @@ fn explicit_proxy_root(origin: &str) -> String {
 }
 
 fn finalized(report: &NginxImportReport) -> &ConfigDraft {
-    report
-        .candidate
-        .validated()
-        .map(oxiroute_config::ValidatedConfig::as_draft)
-        .unwrap_or_else(|| panic!("not finalized: {:#?}", report.diagnostics))
+    let Some(config) = report.candidate.validated() else {
+        panic!("not finalized: {:#?}", report.diagnostics);
+    };
+    config.as_draft()
 }
 
 fn warning_codes(report: &NginxImportReport) -> Vec<&str> {
@@ -786,7 +785,7 @@ fn cookie_path_rewrites_keep_the_full_nginx_replacement_text() {
         }]
     );
     let flags = proxy_policy(route_at(routes, "/flags/"));
-    assert!(flags.response_cookie_path_rewrites.is_empty());
+    assert_eq!(flags.response_cookie_path_rewrites, []);
     assert_eq!(flags.response_cookie_attributes.len(), 1);
 }
 
@@ -812,7 +811,7 @@ fn https_origins_lower_per_bind_scheme_without_scan_overlays() {
         "$scheme on a plain bind stays http"
     );
     assert_eq!(warning_codes(&report), ["W_UPSTREAM_TLS_UNVERIFIED"; 3]);
-    assert!(report.candidate.operational_overlays.is_empty());
+    assert_eq!(report.candidate.operational_overlays.len(), 0);
 
     let tls_bind = fixture_root("proxy/https-origins");
     let source = fs::read_to_string(tls_bind.path().join("nginx.conf")).unwrap().replace(

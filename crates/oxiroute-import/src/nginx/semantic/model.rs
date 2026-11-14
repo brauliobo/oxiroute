@@ -194,6 +194,7 @@ pub enum LocationKind {
 
 impl LocationKind {
     /// `^~` only suppresses regex locations, which a lowerable server never has, so it routes as a plain prefix.
+    #[must_use]
     pub const fn route_identity(self) -> Self {
         match self {
             Self::PrefixNoRegex => Self::Prefix,
