@@ -131,9 +131,10 @@ require specific evidence; dependency selection alone establishes none of them.
 
 ## Benchmark Publication Standards
 
-The [benchmark guide](../BENCHMARKS.md) is the evaluation entry point. Developer reports and raw
-artifacts retain the detail needed to inspect historical measurements. A short summary links back
-to its source and states the measured version and workload alongside its numbers. These standards
+The [benchmark guide](../BENCHMARKS.md) is the evaluation entry point. Where retained and published,
+developer reports and raw artifacts provide detail for inspecting historical measurements. A short
+summary identifies its source and availability, and states the measured version and workload beside
+its numbers. These standards
 apply to new summaries and benchmark publications; historical reports may have gaps that must be
 identified rather than silently filled with assumptions.
 
