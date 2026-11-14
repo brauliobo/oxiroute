@@ -216,6 +216,27 @@ Blockers:
 nginx location precedence and `proxy_pass` URI replacement MUST be translated explicitly;
 source order alone is incorrect.
 
+### nginx HTTP TLS and listen sockets
+
+- Certificate identity: a `ssl_certificate` path of the form `<root>/live/<lineage>/fullchain.pem` (with the sibling
+  `privkey.pem`) lowers to a Certbot certificate whose `dns_names` are the DNS and IP subject alternative names of the
+  public leaf `<root>/live/<lineage>/cert.pem`, not the nginx `server_name` values. Private keys are never read. nginx
+  selects the certificate by server block, the runtime by SNI against those names, so the importer emits a Warning
+  `W_CERTIFICATE_NAME_UNCOVERED` for every exact, wildcard or leading-dot `server_name` of a TLS server that its lineage does not
+  cover (an exact name is covered by an equal SAN or a one-label wildcard SAN; the runtime then presents the profile default for
+  it). Two lineages claiming one SAN inside one TLS profile are an `E_DUPLICATE_IDENTITY` error. An unreadable or invalid
+  `cert.pem` is an `E_SOURCE_IO` error, "certificate identity evidence unavailable". Other certificate paths keep
+  `server_name`-derived names.
+- HTTP/2: nginx negotiates ALPN per socket before it picks a server, so one canonical TLS profile per listener maps to
+  `bind_h2 = OR(listen http2 flags over every server on the socket)`. Without any flag, every server's `http2 on|off` must
+  agree and that value applies; mixed directive-only values stay blocked because per-server ALPN is not representable.
+  `W_HTTP2_SOCKET_WIDE` names each server that gets HTTP/2 although its own configuration did not enable it. A plaintext bind
+  whose effective `http2` is on stays blocked.
+- IPv6: `*` (`0.0.0.0`) and `[::]` are distinct endpoints. `listen P` plus `listen [::]:P`, with the same virtual servers,
+  the same default server and the same `ssl` flag on both sockets, lowers to one dual-stack `[::]:P` listener and emits
+  `W_DUAL_STACK_LISTENER`; the runtime binds it with `IPV6_V6ONLY` off. Pairs whose server sets differ are blocked. `listen [::]:P`
+  without the IPv4 counterpart stays blocked until the listener schema can express an IPv6-only socket.
+
 ### nginx-RTMP strict subset
 
 The separate `import_rtmp` entry point can finalize only an error-free graph containing one `rtmp`
