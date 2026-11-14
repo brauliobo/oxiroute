@@ -97,6 +97,19 @@ grep -q '^Rust code:$' "${root}/out" || die 'no Rust code group'
 grep -q '^C or assembly symbols:$' "${root}/out" || die 'no C or assembly group'
 ok 'lookalike names and own code fail, grouped by kind'
 
+# BOLT keeps the pre-rewrite code as the dead section .bolt.org.text (a jmp at each function start, stale bytes after it):
+# it is not checked, the live rewritten .text is.
+bolt_fixture() { # NAME TEXT-BODY ORG-BODY
+  printf '.text\n.globl _start\n_start:\nmov $60, %%eax\nxor %%edi, %%edi\nsyscall\n%s\nret\n' "$2" >"${root}/$1.s"
+  printf '.section .bolt.org.text,"ax"\nold_func:\njmp old_func\n%s\nret\n' "$3" >>"${root}/$1.s"
+  cc -nostdlib -static -Wl,--build-id -o "${root}/$1" "${root}/$1.s"
+}
+bolt_fixture bolt_ok 'live: mov %rax, %rbx' 'vpxor %xmm0, %xmm0, %xmm0; mulx %rax, %rbx, %rcx'
+accepts "${root}/bolt_ok"
+bolt_fixture bolt_leak 'live_leak: vpxor %xmm0, %xmm0, %xmm0' 'mov %rax, %rbx'
+rejects 'live_leak: vpxor' "${root}/bolt_leak"
+ok 'the dead .bolt.org.text is skipped and the live .text is checked'
+
 fixture stripped -s "${legacy_app}=vpxor %xmm0, %xmm0, %xmm0"
 rejects 'stripped binary.*--symbols' "${root}/stripped"
 ok 'a stripped binary fails closed'

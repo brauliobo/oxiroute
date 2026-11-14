@@ -204,7 +204,8 @@ Three gates keep a CPU target out of the shipped bytes:
   assembly, zlib-ng, zstd, glibc, ... or a symbol that names its ISA); the allow-list is `DISPATCHED_SYMBOL_PATTERNS` in the
   script, one `family ORIGIN REGEX` entry per body of third-party code with the CPU check that gates it (for aws-lc: the
   `L<routine>_<label>` symbols of its s2n-bignum and ML-KEM assembly, and AES-GCM-SIV). It lists every offender, grouped
-  into Rust code and C or assembly symbols, and counts the accepted functions per origin. A stripped binary fails closed: pass `--symbols UNSTRIPPED` (same build-id). It runs on the release binaries
+  into Rust code and C or assembly symbols, and counts the accepted functions per origin. It skips the dead pre-rewrite section `.bolt.org.text` of a BOLT output (the
+  build checks the binary BOLT reads before BOLT runs). A stripped binary fails closed: pass `--symbols UNSTRIPPED` (same build-id). It runs on the release binaries
   in `build-release-binaries.sh`, not for the `v3` flavour.
 - `scripts/verify-baseline-isa.sh --run BIN` also runs `BIN version` under `qemu-x86_64 -cpu Nehalem` and
   `-cpu Denverton` (a Goldmont-class Atom: SSE4.2, no AVX; qemu has no Goldmont Plus, the J4125 core) and fails on a

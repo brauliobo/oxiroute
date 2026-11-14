@@ -90,6 +90,10 @@ build_id() { readelf -n "$1" | sed -n 's/.*Build ID: //p'; }
 # Reads objdump text and the ORIGIN<TAB>ERE families in ALLOW; prints SUMMARY, one OK line per origin that holds
 # dispatched code and one BAD line per offending function (all of them, grouped by the caller).
 # BOLT and the compiler split or clone functions into name.cold.N, name.part.N, name.constprop.N: they belong to name.
+# BOLT keeps the pre-rewrite text as the section .bolt.org.text: every rewritten function starts with a jmp to its new
+# place and the rest of the old bytes is dead (it disassembles as garbage under the function that precedes it), and a
+# function BOLT leaves alone keeps its bytes. Those sections are skipped: the binary BOLT reads is checked with this
+# script before BOLT runs (scripts/build-release-binaries.sh), and the live rewritten code is checked in .text.
 # shellcheck disable=SC2016
 awk_program='
 function isa(m) {
@@ -105,7 +109,7 @@ BEGIN {
   for (i = 1; i <= nfam; i++) { split(lines[i], kv, "\t"); fam_origin[i] = kv[1]; fam_re[i] = kv[2] }
   name = "[no section]"
 }
-/^Disassembly of section/ { name = "[section " $4; sub(/:$/, "", name); name = name "]"; flagged = 0; next }
+/^Disassembly of section/ { name = "[section " $4; sub(/:$/, "", name); skip = name ~ /^\[section \.bolt\.org\./; name = name "]"; flagged = 0; next }
 /^[0-9a-f]+ <.*>:$/ {
   name = $0; sub(/^[0-9a-f]+ </, "", name); sub(/>:$/, "", name)
   gsub(/\.(cold|part|constprop|isra|lto_priv)(\.[0-9]+)*/, "", name)
@@ -114,7 +118,7 @@ BEGIN {
 /^ +[0-9a-f]+:\t/ {
   split($0, f, "\t"); k = split(f[2], w, / +/); i = 1
   while (i < k && w[i] ~ /^(lock|rep|repz|repnz|repe|repne|bnd|notrack|data16|addr32|cs|ds|es|fs|gs|ss|xacquire|xrelease|rex[.A-Za-z]*)$/) i++
-  if (!isa(w[i])) next
+  if (skip || !isa(w[i])) next
   if (!flagged) {
     flagged = 1; org = origin_of(name); leak = org == ""
     if (leak) { bad[++nbad] = name; first[nbad] = w[i]; at[nbad] = f[1]; gsub(/[ :]/, "", at[nbad]) } else { dispatched++; ok[org]++ }
@@ -129,8 +133,8 @@ END {
 
 static_check() {
   local disasm=${symbols:-${bin}} allow report dispatched leaks by_origin
-  objdump -f "${disasm}" | grep -q 'i386:x86-64' || fail 'not an x86-64 ELF binary'
-  readelf -S -W "${disasm}" | grep -q ' \.symtab ' ||
+  [[ $(objdump -f "${disasm}") == *i386:x86-64* ]] || fail 'not an x86-64 ELF binary'
+  [[ $(readelf -S -W "${disasm}") == *' .symtab '* ]] ||
     fail 'stripped binary: no function symbols to tell dispatched code from a leak; pass --symbols UNSTRIPPED (same' \
       'build-id) or verify the unstripped binary (--run still checks that it starts)'
   if [[ -n ${symbols} ]]; then
