@@ -176,7 +176,7 @@ fn accepts_exact_iana_timezones_and_rejects_local_or_invalid_names() {
     let rendered = render_lua(&loaded).expect("render explicit IANA recorder timezone");
     assert!(rendered.contains("timezone = \"America/Argentina/Buenos_Aires\","));
 
-    for timezone in ["local", "america/zoneb", "Not/A_Zone"] {
+    for timezone in ["local", "america/argentina/buenos_aires", "Not/A_Zone"] {
         let source = one_recorder_source(
             true,
             "/var/lib/oxiroute/recordings",
