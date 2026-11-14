@@ -9,14 +9,17 @@ use oxiroute_config::canonical_ip;
 use crate::canonical::{dns_name, ip_address, unix_socket_path};
 use crate::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_CYCLE,
-    E_INVALID_VALUE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT, E_UNRESOLVED_REFERENCE,
-    E_UNSUPPORTED_FEATURE, Report, Severity, Span,
+    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
+    E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Report, Severity, Span,
 };
 
 use super::{
     Directive, ExpandedDirective, ExpandedOccurrence, IncludeCandidateStatus, OccurrenceId,
     Provenance, SourceGraph, Word,
 };
+
+/// An IPv4 and an IPv6 wildcard `listen` pair was folded into one dual-stack listener.
+const W_DUAL_STACK_LISTENER: DiagnosticCode = DiagnosticCode::new("W_DUAL_STACK_LISTENER");
 
 mod binds;
 mod driver;
@@ -27,10 +30,10 @@ mod servers;
 
 pub(super) use helpers::certbot_host_condition;
 use helpers::{
-    ascii_lowercase, has_variable, include_failure, is_http_policy, is_location_policy,
-    is_scalar_policy, is_server_policy, is_supported_location, is_supported_server_name,
-    listen_endpoints_overlap, listen_protocols, parse_listen_endpoint, parse_proxy_pass,
-    parse_static_endpoint, policy_allows_variables, policy_argument_count_valid,
+    ascii_lowercase, has_variable, include_failure, ipv4_wildcard_pair, is_http_policy,
+    is_location_policy, is_scalar_policy, is_server_policy, is_supported_location,
+    is_supported_server_name, listen_endpoints_overlap, listen_ssl, parse_listen_endpoint,
+    parse_proxy_pass, parse_static_endpoint, policy_allows_variables, policy_argument_count_valid,
     server_name_claims, server_name_kind,
 };
 pub use model::*;

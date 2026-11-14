@@ -110,6 +110,18 @@ pub(super) fn matching_listen<'a>(
         .expect("effective bind retains each contributing listen")
 }
 
+pub(super) fn bind_listens<'a>(
+    server: &'a EffectiveServer,
+    bind: &'a EffectiveBind,
+) -> impl Iterator<Item = &'a crate::nginx::EffectiveListen> {
+    server.listens.iter().filter(|listen| {
+        listen
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| bind.carries(endpoint))
+    })
+}
+
 pub(super) fn canonical_exact_host(host: &str) -> Option<String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip.to_string());

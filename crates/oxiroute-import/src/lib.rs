@@ -3,6 +3,7 @@
 pub mod apache;
 mod candidate;
 mod canonical;
+mod certificate;
 mod diagnostic;
 pub mod evidence;
 pub mod haproxy;

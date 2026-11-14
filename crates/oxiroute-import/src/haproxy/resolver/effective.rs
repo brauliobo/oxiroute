@@ -15,10 +15,6 @@ pub const E_PROCESS_OWNED: DiagnosticCode = DiagnosticCode::new("E_PROCESS_OWNED
 /// Two direct settings in one section request different effective values.
 pub const E_CONFLICTING_DIRECTIVE: DiagnosticCode = DiagnosticCode::new("E_CONFLICTING_DIRECTIVE");
 
-const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
-const MAX_CERTIFICATES_IN_CHAIN: usize = 16;
-const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
-
 /// Stable identity of one section occurrence in the ordered parsed sources.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SectionId {
