@@ -280,7 +280,7 @@ output, which remains evidence rather than a configuration source.
 ## Security and Save Limits
 
 - Source bytes and rendered output are capped at 4 MiB. Generic trees are capped at 128 structural
-  levels, 100,000 nodes, 256 KiB per string, 64 template inheritance levels, and 4,096 recorded
+  levels, 400,000 nodes, 256 KiB per string, 64 template inheritance levels, and 4,096 recorded
   dependency paths.
 - Declarative parsing itself performs no implicit I/O. Native references are the explicit exception:
   they read the named roots and importer-defined include graph using the daemon account's filesystem

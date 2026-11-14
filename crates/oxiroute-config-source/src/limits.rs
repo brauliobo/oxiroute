@@ -11,7 +11,7 @@ pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum nesting depth in a decoded or rendered value.
 pub const MAX_STRUCTURAL_DEPTH: usize = 128;
 /// Maximum number of values and object keys in a value tree.
-pub const MAX_NODES: usize = 100_000;
+pub const MAX_NODES: usize = 400_000;
 /// Maximum UTF-8 byte length of a string value, object key, or source identifier.
 pub const MAX_STRING_BYTES: usize = 256 * 1024;
 /// Maximum recursive template inheritance depth.
