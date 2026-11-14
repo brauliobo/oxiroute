@@ -13,8 +13,9 @@ impl Lowerer {
         http_index: usize,
         route_ordinal: usize,
         downstream_tls: bool,
-        nginx_host_fallback: Option<&str>,
+        nginx_host_fallback: &str,
         issues: &mut Vec<LowerIssue>,
+        warnings: &mut Vec<Diagnostic>,
     ) -> Option<LoweredProxy> {
         if let Some(error_page) = self
             .effective_list_policy_chain(location.origin.occurrence, b"error_page")
@@ -66,7 +67,7 @@ impl Lowerer {
         } else {
             None
         };
-        let upstream_tls = match self.validate_proxy_origin(http, proxy, downstream_tls) {
+        let upstream_tls = match self.validate_proxy_origin(http, proxy, downstream_tls, warnings) {
             Ok(tls) => tls,
             Err(origin_issues) => {
                 issues.extend(origin_issues);
@@ -78,6 +79,7 @@ impl Lowerer {
         {
             issues.extend(policy_issues);
         }
+        warnings.extend(self.proxy_buffering_warning(location));
         let pool = Self::proxy_pool(
             http,
             proxy,
@@ -331,7 +333,7 @@ impl Lowerer {
         &self,
         location: &EffectiveLocation,
         proxy: &crate::nginx::EffectiveProxyPass,
-        nginx_host_fallback: Option<&str>,
+        nginx_host_fallback: &str,
         issues: &mut Vec<LowerIssue>,
     ) -> (HttpUpstreamHost, Vec<HttpRequestHeaderMutation>) {
         let policies =
@@ -400,13 +402,11 @@ impl Lowerer {
     fn proxy_value(
         value: &[u8],
         proxy: &crate::nginx::EffectiveProxyPass,
-        nginx_host_fallback: Option<&str>,
+        nginx_host_fallback: &str,
     ) -> Option<NginxProxyValue> {
         match value {
             b"$http_host" => Some(NginxProxyValue::IncomingAuthority),
-            b"$host" => nginx_host_fallback
-                .map(str::to_owned)
-                .map(NginxProxyValue::NginxHost),
+            b"$host" => Some(NginxProxyValue::NginxHost(nginx_host_fallback.to_owned())),
             b"$remote_addr" => Some(NginxProxyValue::ClientIp),
             b"$proxy_add_x_forwarded_for" => Some(NginxProxyValue::AppendedXForwardedFor),
             b"$scheme" => Some(NginxProxyValue::DownstreamScheme),
@@ -533,23 +533,39 @@ impl Lowerer {
     ) -> Vec<HttpCookiePathRewrite> {
         self.effective_list_policy_chain(location.origin.occurrence, b"proxy_cookie_path")
             .into_iter()
+            .filter(|policy| policy.arguments.as_slice() != [b"off".to_vec()])
             .filter_map(|policy| {
-                let [from, to] = policy.arguments.as_slice() else { return None };
-                let literal = !from.contains(&b'$') && !to.contains(&b'$');
-                let pair = utf8(from).zip(utf8(to));
-                if !literal || pair.is_none() {
-                    issues.push(issue(policy.origins.last().unwrap_or(&location.origin), E_SEMANTICS_NOT_REPRESENTABLE, "proxy_cookie_path regex, variables, and non-UTF-8 values are not canonical rewrites"));
+                let origin = policy.origins.last().unwrap_or(&location.origin);
+                let [from, to] = policy.arguments.as_slice() else {
+                    issues.push(issue(origin, E_SEMANTICS_NOT_REPRESENTABLE, "proxy_cookie_path regex rewrites are not canonical rewrites"));
                     return None;
-                }
-                let (from, to) = pair.expect("checked cookie paths");
-                let to = to.split(';').next().unwrap_or(to).trim_end();
+                };
+                let (Some(from), Some(to), false) =
+                    (utf8(from), utf8(to), [from, to].iter().any(|value| value.contains(&b'$')))
+                else {
+                    issues.push(issue(origin, E_SEMANTICS_NOT_REPRESENTABLE, "proxy_cookie_path variables and non-UTF-8 values are not canonical rewrites"));
+                    return None;
+                };
                 Some(HttpCookiePathRewrite {
                     from: from.into(),
                     to:   to.into(),
-                    mode: oxiroute_config::CookiePathMatch::Exact,
+                    mode: oxiroute_config::CookiePathMatch::NginxPrefix,
                 })
             })
             .collect()
+    }
+
+    fn proxy_buffering_warning(&self, location: &EffectiveLocation) -> Option<Diagnostic> {
+        let policy = self.effective_policy(location.origin.occurrence, b"proxy_buffering");
+        if policy.as_ref().is_some_and(|value| value.arguments.as_slice() == [b"off".to_vec()]) {
+            return None;
+        }
+        let origin = policy.as_ref().and_then(|value| value.origins.last()).unwrap_or(&location.origin);
+        Some(warning(
+            origin,
+            W_PROXY_BUFFERING_STREAMED,
+            "nginx buffers proxied responses by default; the runtime streams them, so clients see the same response but a slow client now holds the upstream connection",
+        ))
     }
 
     fn lower_cookie_attributes(

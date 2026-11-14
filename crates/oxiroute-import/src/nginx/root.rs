@@ -16,7 +16,7 @@ use crate::{
 use super::{
     BlockedRtmpService, BlockedService, BlockedStreamService, DirectiveOrigin, ExpandedDirective,
     NginxValue, OccurrenceDecision, OccurrenceDisposition, OccurrenceId, Provenance, SourceGraph,
-    Word, load,
+    Word, load, semantic::bearer_gate_condition,
 };
 
 mod import;

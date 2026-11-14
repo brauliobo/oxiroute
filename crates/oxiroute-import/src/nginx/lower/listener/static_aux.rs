@@ -402,6 +402,7 @@ struct LoweredRoute {
 }
 
 struct LoweredLocation {
+    warnings: Vec<Diagnostic>,
     routes: Vec<LoweredRoute>,
 }
 

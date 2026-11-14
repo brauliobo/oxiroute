@@ -9,8 +9,8 @@ use oxiroute_config::{
 };
 
 use crate::{
-    Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,
-    E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_IO, Severity, canonical::absolute_file_path,
+    Diagnostic, DiagnosticCode, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,
+    E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_IO, canonical::absolute_file_path,
 };
 
 use crate::nginx::{
@@ -20,7 +20,7 @@ use crate::nginx::{
 use super::{
     LowerIssue, Lowerer,
     listener::{bind_listens, parse_duration_ms, parse_size},
-    provenance::{issue, utf8},
+    provenance::{issue, utf8, warning},
 };
 
 mod identity;
@@ -71,22 +71,6 @@ impl TlsListenPolicy<'_> {
     const fn h2(&self) -> bool {
         self.listen_h2 || self.directive_h2
     }
-}
-
-fn warning(
-    origin: &DirectiveOrigin,
-    code: DiagnosticCode,
-    message: impl Into<String>,
-) -> Diagnostic {
-    Diagnostic::new(code, Severity::Warning, DiagnosticStage::Lower, message)
-        .with_primary_span(origin.span)
-        .with_include_stack(
-            origin
-                .provenance
-                .include_stack
-                .iter()
-                .map(|frame| frame.directive_span),
-        )
 }
 
 /// nginx negotiates ALPN per socket before it selects a server, so a `listen ... http2` flag on any server

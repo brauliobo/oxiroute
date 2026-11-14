@@ -211,7 +211,7 @@ impl Resolver<'_> {
                     if is_supported_location(location.kind)
                         && let Some(path) = &location.path
                     {
-                        let identity = (location.kind, path.value.clone());
+                        let identity = (location.kind.route_identity(), path.value.clone());
                         if let Some(first) = location_identities.get(&identity).copied() {
                             self.block_related(
                                 location.origin.occurrence,
@@ -227,7 +227,7 @@ impl Resolver<'_> {
                 }
                 b"types" => self.resolve_types(child),
                 b"if" => {
-                    if self.resolve_supported_if(child) {
+                    if self.resolve_supported_if(child, false) {
                         declaration_order.push(ServerDeclaration::Location(child.occurrence));
                         locations.push(Self::synthetic_if_location(child));
                     }
@@ -246,6 +246,7 @@ impl Resolver<'_> {
             }
         }
 
+        self.reject_prefix_no_regex_with_special_locations(&locations);
         if !saw_listen {
             listens.push(EffectiveListen {
                 origin: Self::origin(directive),

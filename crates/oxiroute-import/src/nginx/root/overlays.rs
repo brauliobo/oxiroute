@@ -23,7 +23,7 @@ pub(super) fn append_default_access_log_overlay(
             E_INVALID_VALUE,
             Severity::Error,
             DiagnosticStage::Lower,
-            "nginx default access-log migration overlay matches no uniquely lowerable omitted access_log policy",
+            "nginx default access-log migration overlay matches no lowerable omitted or formatted access_log",
         ));
     }
 }

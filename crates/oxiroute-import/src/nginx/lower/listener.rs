@@ -19,18 +19,19 @@ use oxiroute_config::{
 };
 
 use crate::canonical::absolute_file_path;
-use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
+use crate::{Diagnostic, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
 
 use crate::nginx::{
     DirectiveOrigin, EffectiveBind, EffectiveHttp, EffectiveLocation, EffectiveServer,
     ListenEndpoint, LocationKind, OccurrenceId, ProxyPassScheme, ServerNameKind, StaticEndpoint,
-    semantic::certbot_host_condition,
+    semantic::{bearer_gate_condition, certbot_host_condition},
 };
 
 use super::{
     BindBlock, BindCandidate, GzipOrigins, LowerIssue, Lowerer, PoolCandidate,
-    provenance::{PolicyValue, collect_result, issue, utf8},
+    provenance::{PolicyValue, collect_result, issue, utf8, warning},
     upstream::canonical_endpoint,
+    warnings::{AccessLog, W_PROXY_BUFFERING_STREAMED},
 };
 
 const NGINX_DEFAULT_BODY_BYTES: u64 = 1024 * 1024;
@@ -120,6 +121,19 @@ pub(super) fn bind_listens<'a>(
             .as_ref()
             .is_some_and(|endpoint| bind.carries(endpoint))
     })
+}
+
+/// What nginx uses for `$host` when a request names no host: the first `server_name` token, lowercased.
+fn nginx_primary_name(server: &EffectiveServer) -> String {
+    let name = server
+        .server_names
+        .first()
+        .and_then(|name| utf8(&name.normalized))
+        .unwrap_or_default();
+    match name.parse::<IpAddr>() {
+        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
+        _ => name.to_owned(),
+    }
 }
 
 pub(super) fn canonical_exact_host(host: &str) -> Option<String> {

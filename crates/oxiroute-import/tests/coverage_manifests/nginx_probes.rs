@@ -1,10 +1,11 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
 use oxiroute_import::{
-    DiagnosticStage,
+    DiagnosticStage, OperationalOverlayKind,
     nginx::{
-        ImportReport as NginxImportReport, OccurrenceDisposition, StreamImportReport,
-        import_http_fragment, import_stream_fragment,
+        ImportReport as NginxImportReport, NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay,
+        NginxImportOptions, OccurrenceDisposition, StreamImportReport, import_http_fragment,
+        import_root_with_options, import_stream_fragment,
     },
 };
 use tempfile::TempDir;
@@ -17,6 +18,13 @@ use crate::{
     },
     support::{assert_set_equality, read_manifest, read_source, workspace_path},
 };
+
+/// Forms that lower only with an explicit operator overlay, which the fragment API cannot carry.
+const OVERLAY_GATED: [&str; 3] = [
+    "directive.nginx.access-log.formatted",
+    "directive.nginx.access-log.omitted",
+    "directive.nginx.if.bearer-gate",
+];
 
 #[test]
 fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
@@ -67,7 +75,11 @@ fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
         &stream_manifested,
     );
 
-    for entry in &manifest.entries {
+    for entry in manifest
+        .entries
+        .iter()
+        .filter(|entry| !OVERLAY_GATED.contains(&entry.id.as_str()))
+    {
         if entry
             .contexts
             .iter()
@@ -89,7 +101,11 @@ fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
 )]
 fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
     let manifest: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
-    for entry in &manifest.entries {
+    for entry in manifest
+        .entries
+        .iter()
+        .filter(|entry| !OVERLAY_GATED.contains(&entry.id.as_str()))
+    {
         for context in &entry.contexts {
             if context.starts_with("stream") {
                 let report = import_nginx_stream_context_probe(entry, context);
@@ -225,6 +241,87 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
 }
 
 #[test]
+fn nginx_overlay_gated_manifest_forms_lower_through_the_root_overlays() {
+    let manifest: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
+    let http = "events {}\nhttp {\n  %LOG%\n  upstream app { server 127.0.0.1:3000; }\n  server {\n    listen 127.0.0.1:8443 default_server;\n    server_name proxy.example.test;\n    location / { %GATE% proxy_pass http://app; }\n  }\n}\n";
+    let gate = "if ($http_authorization != \"Bearer test-token-0000\") { return 401; }";
+    let log = "log_format custom '$remote_addr $host'; access_log /var/log/nginx/x.log custom;";
+    for (id, key, source) in [
+        (
+            "directive.nginx.access-log.formatted",
+            "access_log",
+            http.replace("%LOG%", log).replace("%GATE%", ""),
+        ),
+        (
+            "directive.nginx.access-log.omitted",
+            "access_log",
+            http.replace("%LOG%", "").replace("%GATE%", ""),
+        ),
+        (
+            "directive.nginx.if.bearer-gate",
+            "if",
+            http.replace("%LOG%", "access_log off;")
+                .replace("%GATE%", gate),
+        ),
+    ] {
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .expect("overlay-gated manifest entry");
+        assert!(matches!(entry.disposition, Disposition::Lowered), "{id}");
+        let directory = TempDir::new().expect("overlay-gated probe directory");
+        fs::write(directory.path().join("nginx.conf"), source).expect("write overlay-gated probe");
+        let options = NginxImportOptions {
+            x_accel_controls_absent: true,
+            default_access_log: id
+                .contains("access-log")
+                .then(|| NginxDefaultAccessLogOverlay {
+                    path: "/var/log/oxiroute/access.jsonl".into(),
+                }),
+            bearer_tokens: vec![NginxBearerTokenOverlay {
+                server_name: "proxy.example.test".into(),
+                token_file_path: "/run/secrets/token".into(),
+            }]
+            .into_iter()
+            .filter(|_| id.contains("bearer"))
+            .collect(),
+            ..NginxImportOptions::default()
+        };
+        let report = import_root_with_options(Path::new("nginx.conf"), directory.path(), &options);
+        assert!(!report.has_errors(), "{id}: {:?}", report.diagnostics);
+        assert!(report.candidate.validated().is_some(), "{id}");
+        assert!(
+            report.http_occurrence_ledger.iter().any(|decision| {
+                decision.name.value == key.as_bytes()
+                    && matches!(decision.disposition, OccurrenceDisposition::Resolved)
+            }) || id.ends_with("omitted"),
+            "{id} has no resolved lowering decision"
+        );
+        assert!(
+            id.contains("bearer")
+                || report.candidate.operational_overlays.iter().any(|overlay| {
+                    overlay.kind == OperationalOverlayKind::StructuredAccessLogMigration
+                        && overlay.satisfied
+                }),
+            "{id} did not consume the access-log overlay"
+        );
+        let blocked = import_root_with_options(
+            Path::new("nginx.conf"),
+            directory.path(),
+            &NginxImportOptions {
+                x_accel_controls_absent: true,
+                ..NginxImportOptions::default()
+            },
+        );
+        assert!(
+            blocked.has_errors(),
+            "{id} must stay blocked without its overlay"
+        );
+    }
+}
+
+#[test]
 fn nginx_exposes_only_the_report_preserving_canonical_import_entry_point() {
     let module = read_source("crates/oxiroute-import/src/nginx/mod.rs");
     let lower = read_source("crates/oxiroute-import/src/nginx/lower.rs");
@@ -301,7 +398,7 @@ fn import_nginx_registration_fixture() -> NginxImportReport {
         directory.path().join("registered.conf"),
         render_nginx_fixture(NginxFixtureSpec {
             extra_http: "http2 on;\n  add_header X-Manifest manifest;",
-            extra_server: "location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; error_page 404 /404.html; }\n    location /static-alias { alias /srv/static; expires off; }\n    location = /404.html { root /srv/static; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
+            extra_server: "if ($host = other.example.test) { return 301 https://$host$request_uri; }\n    location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; error_page 404 /404.html; }\n    location /static-alias { alias /srv/static; expires off; }\n    location = /404.html { root /srv/static; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
             ..standard_nginx_fixture()
         }),
     )
@@ -481,7 +578,7 @@ fn nginx_nested_location_probe(id: &str) -> String {
         "directive.nginx.location.prefix" => "location /outer/inner { proxy_pass http://app; }",
         "directive.nginx.location.exact" => "location = /outer/health { proxy_pass http://app; }",
         "directive.nginx.location.special" => {
-            "location ^~ /outer/assets { proxy_pass http://app; }"
+            "location ~ ^/outer/assets { proxy_pass http://app; }"
         }
         value => panic!("nginx location form has no nested probe: {value}"),
     };
@@ -533,6 +630,9 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         }
         id if id.starts_with("directive.nginx.return.") => nginx_return_probe(id),
         "directive.nginx.add-header.literal" => render_nginx_fixture(standard_nginx_fixture()),
+        "directive.nginx.proxy-buffering.default" => render_nginx_fixture(standard_nginx_fixture())
+            .replace("proxy_buffering off;", "proxy_buffering on;"),
+        "directive.nginx.if.certbot-host-redirect" => "http { access_log off; server { listen 127.0.0.1:8443 default_server; server_name proxy.example.test; if ($host = proxy.example.test) { return 301 https://$host$request_uri; } return 404; } }".to_owned(),
         "directive.nginx.error-page.literal-static" => nginx_error_page_probe(),
         id if id.starts_with("directive.nginx.auth-basic.") => nginx_auth_basic_probe(id),
         "directive.nginx.auth-basic-user-file" => nginx_auth_basic_probe(id),
@@ -637,7 +737,12 @@ fn nginx_location_probe(id: &str) -> String {
             ..standard_nginx_fixture()
         }),
         "directive.nginx.location.special" => render_nginx_fixture(NginxFixtureSpec {
+            location: "location ~ ^/api",
+            ..standard_nginx_fixture()
+        }),
+        "directive.nginx.location.prefix-no-regex" => render_nginx_fixture(NginxFixtureSpec {
             location: "location ^~ /api",
+            extra_server: "location / { proxy_pass http://app; }",
             ..standard_nginx_fixture()
         }),
         id => panic!("nginx location form has no executable probe: {id}"),

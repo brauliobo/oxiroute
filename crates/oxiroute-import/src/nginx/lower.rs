@@ -3,6 +3,7 @@ mod provenance;
 mod report;
 mod tls;
 mod upstream;
+mod warnings;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -41,6 +42,7 @@ struct Lowerer {
     used_htpasswd_overlays: RefCell<HashSet<super::OccurrenceId>>,
     used_default_access_log_overlay: bool,
     used_default_error_overlay: Cell<bool>,
+    used_log_formats: RefCell<HashSet<super::OccurrenceId>>,
 }
 
 impl Lowerer {
@@ -74,6 +76,7 @@ impl Lowerer {
             used_htpasswd_overlays: RefCell::new(HashSet::new()),
             used_default_access_log_overlay: false,
             used_default_error_overlay: Cell::new(false),
+            used_log_formats: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -93,6 +96,7 @@ struct BindCandidate {
     origins: Vec<DirectiveOrigin>,
     gzip_origins: GzipOrigins,
     route_origins: Vec<Vec<DirectiveOrigin>>,
+    warnings: Vec<Diagnostic>,
 }
 
 #[derive(Default)]
