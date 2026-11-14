@@ -13,13 +13,21 @@ pub(in super::super) fn certbot_host_condition(directive: &Directive) -> Option<
 
 /// `if ($http_authorization != "Bearer <secret>")`: the literal is a credential the importer never keeps.
 pub(in super::super) fn bearer_gate_condition(directive: &Directive) -> bool {
-    let [variable, operator, literal] = directive.arguments.as_slice() else {
+    let mut words = directive
+        .arguments
+        .iter()
+        .map(|word| word.value.as_slice())
+        .collect::<Vec<_>>();
+    if words.last() == Some(&b")".as_slice()) {
+        words.pop();
+    }
+    let [variable, operator, literal] = words[..] else {
         return false;
     };
-    let variable = variable.value.strip_prefix(b"(").unwrap_or(&variable.value);
-    let literal = literal.value.strip_suffix(b")").unwrap_or(&literal.value);
+    let variable = variable.strip_prefix(b"(").unwrap_or(variable);
+    let literal = literal.strip_suffix(b")").unwrap_or(literal);
     variable == b"$http_authorization"
-        && operator.value == b"!="
+        && operator == b"!="
         && literal
             .strip_prefix(b"Bearer ")
             .is_some_and(|token| !token.is_empty())

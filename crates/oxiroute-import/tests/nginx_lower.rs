@@ -2140,7 +2140,7 @@ fn blocks_error_page_semantics_on_actions_without_error_rerouting() {
 
 #[test]
 fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy() {
-    for omitted in ["proxy_buffering", "proxy_ignore_headers"] {
+    for omitted in ["proxy_ignore_headers"] {
         let mut policies = vec![
             ("proxy_http_version", "proxy_http_version 1.1;"),
             ("proxy_buffering", "proxy_buffering off;"),
@@ -2198,6 +2198,110 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
             "accepted {directive}"
         );
     }
+}
+
+#[test]
+fn omitted_proxy_buffering_lowers_to_streaming_with_a_warning_per_location() {
+    let report = import_source(
+        "http { proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream backend { server 127.0.0.1:8080; } server { listen 127.0.0.1:8080 default_server; server_name test.example; location /a { proxy_pass http://backend; } location / { proxy_pass http://backend; } } }",
+    );
+    assert!(!report.has_errors(), "{:?}", report.diagnostics);
+    let config = report
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("default proxy_buffering finalizes");
+    assert!(
+        config.http_services[0]
+            .routes
+            .iter()
+            .all(|route| !route.policy.response_buffering)
+    );
+    let warnings = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code().as_str() == "W_PROXY_BUFFERING_STREAMED")
+        .count();
+    assert_eq!(warnings, 2);
+}
+
+#[test]
+fn caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations() {
+    let server = |locations: &str| {
+        format!(
+            "http {{ server {{ listen 127.0.0.1:8080 default_server; server_name test.example; {locations} location / {{ return 204; }} }} }}"
+        )
+    };
+    let report = import_source(&server("location ^~ /assets/ { return 200 ok; }"));
+    let config = report
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("^~ lowers as a prefix");
+    assert!(config.http_services[0].routes.iter().any(|route| {
+        route.path
+            == HttpPathSelector::RawPrefix {
+                value: "/assets/".into(),
+            }
+    }));
+
+    for special in [
+        "location ~ ^/x { return 204; }",
+        "location @named { return 204; }",
+        "location /$v { return 204; }",
+    ] {
+        let report = import_source(&server(&format!(
+            "location ^~ /assets/ {{ return 200 ok; }} {special}"
+        )));
+        assert!(report.validated().is_none(), "{special}");
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .message()
+                    .contains("only a plain prefix in a server without regex")
+            }),
+            "{special}"
+        );
+    }
+
+    let duplicate = import_source(&server(
+        "location ^~ /assets/ { return 200 ok; } location /assets/ { return 200 ok; }",
+    ));
+    assert!(duplicate.has_errors());
+}
+
+#[test]
+fn bearer_authorization_gate_is_limited_to_a_location_and_a_401_return() {
+    for (label, source) in [
+        (
+            "server level",
+            "http { upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; if ($http_authorization != \"Bearer test-token-0000\") { return 401; } location / { proxy_pass http://app; } } }",
+        ),
+        (
+            "other status",
+            "http { upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; location / { if ($http_authorization != \"Bearer test-token-0000\") { return 403; } proxy_pass http://app; } } }",
+        ),
+        (
+            "not bearer",
+            "http { upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; location / { if ($http_authorization != \"Basic dGVzdA==\") { return 401; } proxy_pass http://app; } } }",
+        ),
+    ] {
+        let report = import_source(source);
+        assert!(report.has_errors(), "{label}");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().contains("bearer-authorization subset")),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn regex_proxy_cookie_path_is_blocked_instead_of_ignored() {
+    let report = import_source(
+        "http { proxy_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; location / { proxy_pass http://app; proxy_cookie_path ~*^/a(.*) /b$1; } } }",
+    );
+    assert!(report.has_errors());
 }
 
 #[test]
