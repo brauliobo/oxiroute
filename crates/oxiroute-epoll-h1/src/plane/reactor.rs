@@ -21,6 +21,7 @@ use rustix::{
 
 use super::{
     client::{Buffers, Shared},
+    clock::{Clock, Moment},
     config::{Config, Timeouts},
     service::Service,
     slab::{Body, Slab, Token},
@@ -61,7 +62,9 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) services: Vec<(Shared<S>, Timeouts)>,
     pub(crate) response: Box<ResponseHead>,
     pub(crate) expired: Vec<u32>,
+    pub(crate) clock: Clock,
     pub(crate) now: Instant,
+    pub(crate) moment: Moment,
     pub(crate) live: usize,
     pub(crate) control: Arc<Control>,
     pub(crate) drain_deadline: Option<Instant>,
@@ -77,18 +80,21 @@ impl<S: Service> Reactor<S> {
     ) -> io::Result<Self> {
         let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
         let capacity = config.slab_capacity(listeners.len());
+        let clock = Clock::start();
         let now = Instant::now();
         let mut reactor = Self {
             config: config.clone(),
             epoll,
             slab: Slab::new(capacity),
-            wheel: Wheel::new(now, config.tick, capacity),
+            wheel: Wheel::new(config.tick, capacity),
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             spare: Vec::new(),
             services: Vec::with_capacity(listeners.len()),
             response: Box::new(ResponseHead::new()),
             expired: Vec::with_capacity(capacity),
+            clock,
             now,
+            moment: clock.moment(now),
             live: 0,
             control,
             drain_deadline: None,
@@ -141,6 +147,7 @@ impl<S: Service> Reactor<S> {
                 Err(error) => return Err(error.into()),
             }
             self.now = Instant::now();
+            self.moment = self.clock.moment(self.now);
             for event in &events {
                 self.dispatch(Token::from_u64(event.data.u64()), event.flags);
             }
@@ -152,7 +159,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn timeout(&self) -> Option<Timespec> {
-        let wheel = self.wheel.next_wake(self.now);
+        let wheel = self.wheel.next_wake(self.moment);
         let drain = self
             .drain_deadline
             .map(|at| at.saturating_duration_since(self.now));
@@ -185,7 +192,7 @@ impl<S: Service> Reactor<S> {
 
     fn fire_timers(&mut self) {
         let mut expired = std::mem::take(&mut self.expired);
-        self.wheel.advance(self.now, &mut expired);
+        self.wheel.advance(self.moment, &mut expired);
         for index in expired.drain(..) {
             if let Some(token) = self.slab.live(index) {
                 self.expire(token);

@@ -152,7 +152,7 @@ impl<S: Service> Reactor<S> {
             {
                 Read::Data(count) => {
                     client.resp_len += count;
-                    client.flow().first_byte_at.get_or_insert(self.now);
+                    client.flow().first_byte_at.get_or_insert(self.moment);
                     progressed = true;
                 }
                 Read::Block => return Ok(progressed),

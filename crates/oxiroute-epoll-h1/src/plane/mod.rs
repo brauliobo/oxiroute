@@ -1,6 +1,7 @@
 mod attempt;
 mod chunked;
 mod client;
+mod clock;
 mod config;
 mod engine;
 mod events;

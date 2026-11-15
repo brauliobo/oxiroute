@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 const DAYS: [&[u8; 3]; 7] = [b"Thu", b"Fri", b"Sat", b"Sun", b"Mon", b"Tue", b"Wed"];
 const MONTHS: [&[u8; 3]; 12] = [
     b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec",
@@ -30,6 +32,22 @@ fn digits(out: &mut [u8], value: i64) {
         *slot = b'0' + (rest % 10) as u8;
         rest /= 10;
     }
+}
+
+thread_local! {
+    static LAST: Cell<(u64, [u8; 29])> = const { Cell::new((u64::MAX, [0; 29])) };
+}
+
+pub fn cached_http_date(seconds: u64) -> [u8; 29] {
+    LAST.with(|last| {
+        let (at, text) = last.get();
+        if at == seconds {
+            return text;
+        }
+        let text = http_date(seconds);
+        last.set((seconds, text));
+        text
+    })
 }
 
 pub fn http_date(seconds: u64) -> [u8; 29] {

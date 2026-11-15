@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use super::clock::Moment;
 
 const BUCKETS: usize = 4096;
 const MASK: u64 = BUCKETS as u64 - 1;
@@ -21,7 +23,6 @@ const UNARMED: Node = Node {
 };
 
 pub(crate) struct Wheel {
-    base: Instant,
     tick_ns: u64,
     cursor: u64,
     heads: Box<[u32; BUCKETS]>,
@@ -30,9 +31,8 @@ pub(crate) struct Wheel {
 }
 
 impl Wheel {
-    pub(crate) fn new(base: Instant, tick: Duration, capacity: usize) -> Self {
+    pub(crate) fn new(tick: Duration, capacity: usize) -> Self {
         Self {
-            base,
             tick_ns: u64::try_from(tick.as_nanos()).unwrap_or(u64::MAX).max(1),
             cursor: 0,
             heads: Box::new([NONE; BUCKETS]),
@@ -41,16 +41,16 @@ impl Wheel {
         }
     }
 
-    fn elapsed_ns(&self, at: Instant) -> u64 {
-        u64::try_from(at.saturating_duration_since(self.base).as_nanos()).unwrap_or(u64::MAX)
+    fn tick_of(&self, at: Moment) -> u64 {
+        at.nanos() / self.tick_ns
     }
 
-    pub(crate) fn tick_of(&self, at: Instant) -> u64 {
-        self.elapsed_ns(at) / self.tick_ns
+    fn ceil_tick_of(&self, at: Moment) -> u64 {
+        at.nanos().div_ceil(self.tick_ns)
     }
 
-    fn ceil_tick_of(&self, at: Instant) -> u64 {
-        self.elapsed_ns(at).div_ceil(self.tick_ns)
+    fn fires_after(&self, due: u64, deadline: Moment) -> bool {
+        due > 0 && (due - 1).saturating_mul(self.tick_ns) >= deadline.nanos()
     }
 
     pub(crate) fn armed_due(&self, id: u32) -> Option<u64> {
@@ -58,16 +58,16 @@ impl Wheel {
         node.armed.then_some(node.due)
     }
 
-    pub(crate) fn ensure(&mut self, id: u32, deadline: Instant) {
+    pub(crate) fn ensure(&mut self, id: u32, deadline: Moment) {
         if self
             .armed_due(id)
-            .is_none_or(|due| due > self.ceil_tick_of(deadline))
+            .is_none_or(|due| self.fires_after(due, deadline))
         {
             self.schedule(id, deadline);
         }
     }
 
-    pub(crate) fn schedule(&mut self, id: u32, deadline: Instant) {
+    pub(crate) fn schedule(&mut self, id: u32, deadline: Moment) {
         self.cancel(id);
         let due = self
             .ceil_tick_of(deadline)
@@ -107,7 +107,7 @@ impl Wheel {
         self.nodes[id as usize] = UNARMED;
     }
 
-    pub(crate) fn advance(&mut self, now: Instant, expired: &mut Vec<u32>) {
+    pub(crate) fn advance(&mut self, now: Moment, expired: &mut Vec<u32>) {
         let now_tick = self.tick_of(now);
         if now_tick < self.cursor {
             return;
@@ -131,12 +131,12 @@ impl Wheel {
         }
     }
 
-    pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
+    pub(crate) fn next_wake(&self, now: Moment) -> Option<Duration> {
         let start = (self.cursor & MASK) as usize;
         let distance = self.first_occupied_from(start)?;
         let due = self.cursor + distance as u64;
-        let wake = self.base + Duration::from_nanos(due.saturating_mul(self.tick_ns));
-        Some(wake.saturating_duration_since(now))
+        let wake = Moment::from_nanos(due.saturating_mul(self.tick_ns));
+        Some(wake.since(now))
     }
 
     fn first_occupied_from(&self, start: usize) -> Option<usize> {
@@ -159,15 +159,19 @@ impl Wheel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plane::clock::Moment;
 
     const TICK: Duration = Duration::from_millis(10);
 
-    fn wheel() -> (Wheel, Instant) {
-        let base = Instant::now();
-        (Wheel::new(base, TICK, 8), base)
+    fn at(ticks: u32) -> Moment {
+        Moment::from_nanos(u64::try_from((TICK * ticks).as_nanos()).expect("nanoseconds"))
     }
 
-    fn fired(wheel: &mut Wheel, at: Instant) -> Vec<u32> {
+    fn wheel() -> Wheel {
+        Wheel::new(TICK, 8)
+    }
+
+    fn fired(wheel: &mut Wheel, at: Moment) -> Vec<u32> {
         let mut expired = Vec::new();
         wheel.advance(at, &mut expired);
         expired.sort_unstable();
@@ -176,67 +180,94 @@ mod tests {
 
     #[test]
     fn a_timer_fires_once_its_deadline_passed_and_not_before() {
-        let (mut wheel, base) = wheel();
-        wheel.schedule(1, base + TICK * 5);
-        assert_eq!(fired(&mut wheel, base + TICK * 4), Vec::<u32>::new());
-        assert_eq!(fired(&mut wheel, base + TICK * 5), [1]);
-        assert_eq!(fired(&mut wheel, base + TICK * 50), Vec::<u32>::new());
+        let mut wheel = wheel();
+        wheel.schedule(1, at(5));
+        assert_eq!(fired(&mut wheel, at(4)), Vec::<u32>::new());
+        assert_eq!(fired(&mut wheel, at(5)), [1]);
+        assert_eq!(fired(&mut wheel, at(50)), Vec::<u32>::new());
     }
 
     #[test]
     fn a_cancelled_timer_never_fires_and_a_moved_one_fires_at_its_new_deadline() {
-        let (mut wheel, base) = wheel();
-        wheel.schedule(1, base + TICK * 3);
-        wheel.schedule(2, base + TICK * 3);
+        let mut wheel = wheel();
+        wheel.schedule(1, at(3));
+        wheel.schedule(2, at(3));
         wheel.cancel(1);
-        wheel.schedule(2, base + TICK * 9);
-        assert_eq!(fired(&mut wheel, base + TICK * 8), Vec::<u32>::new());
-        assert_eq!(fired(&mut wheel, base + TICK * 9), [2]);
+        wheel.schedule(2, at(9));
+        assert_eq!(fired(&mut wheel, at(8)), Vec::<u32>::new());
+        assert_eq!(fired(&mut wheel, at(9)), [2]);
     }
 
     #[test]
     fn timers_of_one_bucket_fire_together_and_a_long_jump_fires_everything_due() {
-        let (mut wheel, base) = wheel();
+        let mut wheel = wheel();
         for id in 0..5 {
-            wheel.schedule(id, base + TICK * 7);
+            wheel.schedule(id, at(7));
         }
-        wheel.schedule(5, base + TICK * 20);
-        wheel.schedule(6, base + TICK * 10_000);
-        assert_eq!(fired(&mut wheel, base + TICK * 30), [0, 1, 2, 3, 4, 5]);
+        wheel.schedule(5, at(20));
+        wheel.schedule(6, at(10_000));
+        assert_eq!(fired(&mut wheel, at(30)), [0, 1, 2, 3, 4, 5]);
         assert!(wheel.armed_due(6).is_some());
     }
 
     #[test]
     fn a_deadline_beyond_the_span_waits_in_the_wheel_until_it_is_rescheduled() {
-        let (mut wheel, base) = wheel();
-        wheel.schedule(3, base + TICK * 9_000);
+        let mut wheel = wheel();
+        wheel.schedule(3, at(9_000));
         let due = wheel.armed_due(3).expect("armed");
         assert!(due < BUCKETS as u64);
-        assert!(wheel.next_wake(base).is_some());
+        assert!(wheel.next_wake(at(0)).is_some());
     }
 
     #[test]
     fn the_wake_is_the_earliest_deadline_and_none_when_the_wheel_is_empty() {
-        let (mut wheel, base) = wheel();
-        assert_eq!(wheel.next_wake(base), None);
-        wheel.schedule(1, base + TICK * 40);
-        wheel.schedule(2, base + TICK * 12);
-        assert_eq!(wheel.next_wake(base), Some(TICK * 12));
+        let mut wheel = wheel();
+        assert_eq!(wheel.next_wake(at(0)), None);
+        wheel.schedule(1, at(40));
+        wheel.schedule(2, at(12));
+        assert_eq!(wheel.next_wake(at(0)), Some(TICK * 12));
         wheel.cancel(2);
-        assert_eq!(wheel.next_wake(base), Some(TICK * 40));
+        assert_eq!(wheel.next_wake(at(0)), Some(TICK * 40));
         wheel.cancel(1);
-        assert_eq!(wheel.next_wake(base), None);
+        assert_eq!(wheel.next_wake(at(0)), None);
     }
 
     #[test]
     fn the_wake_wraps_around_the_end_of_the_wheel() {
-        let (mut wheel, base) = wheel();
-        assert_eq!(fired(&mut wheel, base + TICK * 4_090), Vec::<u32>::new());
-        wheel.schedule(1, base + TICK * 4_100);
-        wheel.schedule(2, base + TICK * 4_093);
-        assert_eq!(wheel.next_wake(base + TICK * 4_090), Some(TICK * 3));
-        assert_eq!(fired(&mut wheel, base + TICK * 4_093), [2]);
-        assert_eq!(wheel.next_wake(base + TICK * 4_093), Some(TICK * 7));
-        assert_eq!(fired(&mut wheel, base + TICK * 4_100), [1]);
+        let mut wheel = wheel();
+        assert_eq!(fired(&mut wheel, at(4_090)), Vec::<u32>::new());
+        wheel.schedule(1, at(4_100));
+        wheel.schedule(2, at(4_093));
+        assert_eq!(wheel.next_wake(at(4_090)), Some(TICK * 3));
+        assert_eq!(fired(&mut wheel, at(4_093)), [2]);
+        assert_eq!(wheel.next_wake(at(4_093)), Some(TICK * 7));
+        assert_eq!(fired(&mut wheel, at(4_100)), [1]);
+    }
+
+    #[test]
+    fn ensure_keeps_a_timer_due_before_the_deadline_and_moves_a_later_one() {
+        let mut wheel = wheel();
+        wheel.ensure(1, at(5));
+        assert_eq!(wheel.armed_due(1), Some(5));
+        wheel.ensure(1, at(9));
+        assert_eq!(wheel.armed_due(1), Some(5));
+        wheel.ensure(1, at(2));
+        assert_eq!(wheel.armed_due(1), Some(2));
+    }
+
+    #[test]
+    fn a_timer_fires_after_a_deadline_exactly_when_its_tick_is_past_the_deadline_tick() {
+        let wheel = wheel();
+        let tick = wheel.tick_ns;
+        for due in 0..40 {
+            for nanos in (0..40 * tick).step_by((tick / 3) as usize) {
+                let deadline = Moment::from_nanos(nanos);
+                assert_eq!(
+                    wheel.fires_after(due, deadline),
+                    due > wheel.ceil_tick_of(deadline),
+                    "due {due} deadline {nanos}"
+                );
+            }
+        }
     }
 }

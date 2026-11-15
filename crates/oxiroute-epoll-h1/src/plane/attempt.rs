@@ -2,6 +2,7 @@ use std::{rc::Rc, time::Duration};
 
 use super::{
     client::{Client, Down, Flow, Stage, Wait, Window},
+    clock::Moment,
     link::Link,
     reactor::{Reactor, Step},
     service::{Failure, Recovery, Request, Reuse, Selected, Service, Target},
@@ -52,7 +53,8 @@ impl<S: Service> Reactor<S> {
         } = target;
         client.resp_len = 0;
         let flow = client.flow.as_mut().expect("a serving client has a flow");
-        flow.begin_attempt(self.now, key, reuse, timeouts);
+        let total = timeouts.deadline.map(|at| self.clock.moment(at));
+        flow.begin_attempt(self.moment, total, key, reuse, timeouts);
         let pooled = matches!(reuse, Reuse::Pooled { .. }) && !std::mem::take(&mut flow.fresh);
         if let Some(upstream) = pooled.then(|| self.checkout(key)).flatten() {
             drop(lease);
@@ -84,7 +86,7 @@ impl<S: Service> Reactor<S> {
         let flow = client.flow.as_mut().expect("a serving client has a flow");
         flow.upstream = Some(upstream);
         flow.reused = true;
-        flow.connected_at = Some(self.now);
+        flow.connected_at = Some(self.moment);
         self.start_request(token, client);
     }
 
@@ -134,7 +136,7 @@ impl<S: Service> Reactor<S> {
             return self.fail(token, client, Failure::Connect);
         }
         if connecting.established {
-            flow.connected_at = Some(self.now);
+            flow.connected_at = Some(self.moment);
             self.start_request(token, client);
         } else {
             let limit = flow.timeouts.map(|timeouts| timeouts.connect);
@@ -160,7 +162,7 @@ impl<S: Service> Reactor<S> {
             return Some(self.fail(token, client, Failure::Connect));
         }
         connecting.phase = Phase::Busy;
-        client.flow().connected_at = Some(self.now);
+        client.flow().connected_at = Some(self.moment);
         self.start_request(token, client);
         None
     }
@@ -192,9 +194,8 @@ impl<S: Service> Reactor<S> {
     ) {
         let flow = client.flow.as_mut().expect("a serving client has a flow");
         flow.wait = wait;
-        let total = flow.timeouts.and_then(|timeouts| timeouts.deadline);
-        let step = limit.map(|limit| self.now + limit);
-        let deadline = match (step, total) {
+        let step = limit.map(|limit| self.moment.after(limit));
+        let deadline = match (step, flow.total) {
             (Some(step), Some(total)) => Some(step.min(total)),
             (step, total) => step.or(total),
         };
@@ -264,7 +265,7 @@ impl<S: Service> Reactor<S> {
         let limit = client.timeouts.write;
         self.set_deadline(
             token,
-            limit.map(|limit| self.now + limit),
+            limit.map(|limit| self.moment.after(limit)),
             &mut client.deadline,
         );
         Step::Again
@@ -274,12 +275,14 @@ impl<S: Service> Reactor<S> {
 impl<S: Service> Flow<S> {
     fn begin_attempt(
         &mut self,
-        now: std::time::Instant,
+        now: Moment,
+        total: Option<Moment>,
         key: u64,
         reuse: Reuse,
         timeouts: super::service::AttemptTimeouts,
     ) {
         self.contacted = true;
+        self.total = total;
         self.key = key;
         self.reuse = reuse;
         self.timeouts = Some(timeouts);
