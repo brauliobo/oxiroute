@@ -44,7 +44,7 @@ use super::{
     upload::Upload,
 };
 use crate::{
-    HealthFailure,
+    HealthFailure, RuntimeEndpoint,
     http::{
         action::{HttpActionPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan},
         evacuation::LeftRunning,
@@ -74,7 +74,7 @@ const DIRECT_BODY: usize = 16 * 1024;
 
 /// How the body of the response goes to the client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Framing {
+pub(in crate::http::proxy) enum Framing {
     Length,
     Chunked,
     Empty,
@@ -108,20 +108,20 @@ pub(in crate::http::proxy) struct Progress {
     pub(in crate::http::proxy) status: Option<u16>,
 }
 
-pub(super) struct Forward<'a> {
+pub(in crate::http::proxy) struct Forward<'a> {
     /// The clock reading at which the request arrived.
-    pub(super) started: Instant,
-    pub(super) buffer: &'a [u8],
-    pub(super) method: &'a Method,
-    pub(super) client_ip: Option<std::net::IpAddr>,
-    pub(super) head: &'a RequestHead,
-    pub(super) request: &'a Request,
-    pub(super) route: &'a Arc<HttpRoutePlan>,
-    pub(super) id: &'a HeaderValue,
+    pub(in crate::http::proxy) started: Instant,
+    pub(in crate::http::proxy) buffer: &'a [u8],
+    pub(in crate::http::proxy) method: &'a Method,
+    pub(in crate::http::proxy) client_ip: Option<std::net::IpAddr>,
+    pub(in crate::http::proxy) head: &'a RequestHead,
+    pub(in crate::http::proxy) request: &'a Request,
+    pub(in crate::http::proxy) route: &'a Arc<HttpRoutePlan>,
+    pub(in crate::http::proxy) id: &'a HeaderValue,
     /// What the route's request header rules do to this request.
-    pub(super) values: &'a rules::Evaluated,
+    pub(in crate::http::proxy) values: &'a rules::Evaluated,
     /// Whether the connection serves another request after this one, as far as the request knows.
-    pub(super) keepalive: bool,
+    pub(in crate::http::proxy) keepalive: bool,
 }
 
 pub(super) fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
@@ -169,6 +169,18 @@ pub(in crate::http::proxy) fn proxy_route(route: &HttpRoutePlan) -> &ProxyAction
         unreachable!("only proxied routes reach the proxied lane");
     };
     proxy
+}
+
+/// The `Host` an origin gets for the selected endpoint, when the route does not preserve the client's.
+pub(in crate::http::proxy) fn upstream_host(
+    endpoint: &RuntimeEndpoint,
+    policy: &HttpUpstreamHost,
+    authority: Option<&Authority>,
+) -> pingora::Result<Option<HeaderValue>> {
+    match policy {
+        HttpUpstreamHost::PreserveIncoming => Ok(None),
+        policy => selected_upstream_host(endpoint, policy, authority),
+    }
 }
 
 /// What a request context needs of the request that arrived, whatever protocol it arrived by.
@@ -221,13 +233,6 @@ impl super::LaneFront {
             .await;
         let error = outcome.err();
         if let Some(error) = &error {
-            if !ctx.left_unsent(error) {
-                warn!(
-                    "HTTP request failed with {:?} from {:?}",
-                    error.etype(),
-                    error.esource()
-                );
-            }
             progress.status = self
                 .fail(stream, &mut ctx, error, &forward, &mut progress)
                 .await;
@@ -242,7 +247,11 @@ impl super::LaneFront {
     }
 
     /// The request context of a request the lane serves, with the facts the classic request filter establishes.
-    fn begin(&self, forward: &Forward<'_>, authority: Authority) -> Box<HttpRequestContext> {
+    pub(in crate::http::proxy) fn begin(
+        &self,
+        forward: &Forward<'_>,
+        authority: Authority,
+    ) -> Box<HttpRequestContext> {
         let (buffer, request, route) = (forward.buffer, forward.request, forward.route);
         let replay_safe = proxy_route(route).policy.request_is_replay_safe_with(
             forward.method,
@@ -396,13 +405,7 @@ impl super::LaneFront {
     ) -> Result<Opened, Box<Error>> {
         // The client may leave while the request waits for a server or a connection: nothing has gone out yet.
         let timeouts = unless_gone(
-            ctx.next_attempt(
-                |_| None,
-                |endpoint, policy, authority| match policy {
-                    HttpUpstreamHost::PreserveIncoming => Ok(None),
-                    policy => selected_upstream_host(endpoint, policy, authority),
-                },
-            ),
+            ctx.next_attempt(|_| None, upstream_host),
             || client_left(stream),
         )
         .await?;
@@ -779,43 +782,28 @@ impl super::LaneFront {
         forward: &Forward<'_>,
         progress: &mut Progress,
     ) -> Option<u16> {
-        let (code, reason) = match error_answer(ctx, error, progress.status) {
-            Ok(answer) => answer,
+        let (code, response, body) = match failure_response(
+            ctx,
+            error,
+            forward.id,
+            forward.request.is_head,
+            progress.status,
+        ) {
+            Ok(rendered) => rendered,
             Err(sent) => return sent,
         };
-        let rendered = error_response(
-            code,
-            error,
-            reason,
-            ctx.pool.as_deref(),
-            Some(forward.id),
-            forward.request.is_head,
-        )
-        .and_then(|(mut response, body)| {
-            let mut head = BytesMut::new();
-            render_final_response_head(&mut response, false, &mut head)?;
-            head.put_slice(&body);
-            Ok((head, body.len()))
-        });
-        match rendered {
-            Ok((response, body)) => match write(stream, &response).await {
-                Ok(()) => {
-                    progress.sent += body;
-                    Some(code)
-                }
-                Err(write_error) => {
-                    warn!("failed to send error response downstream: {write_error}");
-                    None
-                }
-            },
-            Err(render_error) => {
-                warn!("failed to send error response downstream: {render_error}");
+        match write(stream, &response).await {
+            Ok(()) => {
+                progress.sent += body;
+                Some(code)
+            }
+            Err(write_error) => {
+                warn!("failed to send error response downstream: {write_error}");
                 None
             }
         }
     }
 
-    /// What the classic `logging` hook accounts for when a request ends.
     fn finish(
         &self,
         ctx: &mut HttpRequestContext,
@@ -823,18 +811,38 @@ impl super::LaneFront {
         error: Option<&Error>,
         progress: &Progress,
     ) {
+        let request = super::log::Proxied {
+            idempotency: super::log::idempotency_of(ctx, forward.buffer, forward.head),
+            id: forward.id,
+            id_generated: forward.request.client_id.is_none(),
+            method: forward.method,
+            route: forward.route,
+            protocol: super::log::HTTP1,
+        };
+        self.account(ctx, &request, error, progress);
+    }
+
+    /// What the classic `logging` hook accounts for when a request ends: the operation, the attempt and the access
+    /// line.
+    pub(in crate::http::proxy) fn account(
+        &self,
+        ctx: &mut HttpRequestContext,
+        request: &super::log::Proxied<'_>,
+        error: Option<&Error>,
+        progress: &Progress,
+    ) {
+        if let Some(error) = error
+            && !ctx.left_unsent(error)
+        {
+            warn!(
+                "HTTP request failed with {:?} from {:?}",
+                error.etype(),
+                error.esource()
+            );
+        }
         let elapsed = self.finish_request(ctx, error, progress);
         if let Some(log) = self.service.access_log() {
-            let request = super::log::Proxied {
-                buffer: forward.buffer,
-                head: forward.head,
-                id: forward.id,
-                id_generated: forward.request.client_id.is_none(),
-                method: forward.method,
-                route: forward.route,
-                protocol: super::log::HTTP1,
-            };
-            super::log::write_proxied(log, &self.service_log, ctx, &request, progress, elapsed);
+            super::log::write_proxied(log, &self.service_log, ctx, request, progress, elapsed);
         }
     }
 
@@ -858,6 +866,32 @@ impl super::LaneFront {
         ctx.account_attempt(received, sent, now);
         ctx.record_failed_evacuations(error);
         elapsed
+    }
+}
+
+/// The error response a request that ended in `error` gets: its status, its bytes and the length of its body. `Err`
+/// when none is sent: the status of the response that went out already, if there was one.
+pub(in crate::http::proxy) fn failure_response(
+    ctx: &mut HttpRequestContext,
+    error: &Error,
+    id: &HeaderValue,
+    is_head: bool,
+    sent_status: Option<u16>,
+) -> Result<(u16, BytesMut, usize), Option<u16>> {
+    let (code, reason) = error_answer(ctx, error, sent_status)?;
+    let rendered = error_response(code, error, reason, ctx.pool.as_deref(), Some(id), is_head)
+        .and_then(|(mut response, body)| {
+            let mut head = BytesMut::new();
+            render_final_response_head(&mut response, false, &mut head)?;
+            head.put_slice(&body);
+            Ok((head, body.len()))
+        });
+    match rendered {
+        Ok((response, body)) => Ok((code, response, body)),
+        Err(render_error) => {
+            warn!("failed to send error response downstream: {render_error}");
+            Err(None)
+        }
     }
 }
 

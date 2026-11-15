@@ -127,13 +127,26 @@ pub(in crate::http::proxy) struct Line<'a> {
 
 /// A request the lane proxied, as its line needs it: the request as the lane read it and how it went on.
 pub(in crate::http::proxy) struct Proxied<'a> {
-    pub(in crate::http::proxy) buffer: &'a [u8],
-    pub(in crate::http::proxy) head: &'a RequestHead,
+    pub(in crate::http::proxy) idempotency: Option<&'a [u8]>,
     pub(in crate::http::proxy) id: &'a HeaderValue,
     pub(in crate::http::proxy) id_generated: bool,
     pub(in crate::http::proxy) method: &'a Method,
     pub(in crate::http::proxy) route: &'a HttpRoutePlan,
     pub(in crate::http::proxy) protocol: &'static str,
+}
+
+/// The value of the idempotency header the route of `ctx` names, in the scanned head of the request.
+pub(in crate::http::proxy) fn idempotency_of<'a>(
+    ctx: &HttpRequestContext,
+    buffer: &'a [u8],
+    head: &RequestHead,
+) -> Option<&'a [u8]> {
+    let name = idempotency_header(ctx)?;
+    let name = name.as_str().as_bytes();
+    head.headers()
+        .iter()
+        .find(|header| header.name(buffer).eq_ignore_ascii_case(name))
+        .map(|header| header.value(buffer))
 }
 
 impl<'a> Line<'a> {
@@ -144,15 +157,6 @@ impl<'a> Line<'a> {
         progress: &Progress,
         elapsed: Duration,
     ) -> Self {
-        let idempotency = idempotency_header(ctx).and_then(|name| {
-            let name = name.as_str().as_bytes();
-            request
-                .head
-                .headers()
-                .iter()
-                .find(|header| header.name(request.buffer).eq_ignore_ascii_case(name))
-                .map(|header| header.value(request.buffer))
-        });
         let trace = &ctx.trace;
         Self {
             attempts: ctx.attempt_count(),
@@ -167,7 +171,7 @@ impl<'a> Line<'a> {
                 .evacuation()
                 .map_or(0, |evacuation| evacuation.redispatches()),
             host: ctx.authority.as_ref(),
-            idempotency,
+            idempotency: request.idempotency,
             method: request.method,
             queue_wait: trace.queue_wait,
             reason: trace.failure_reason.unwrap_or(""),

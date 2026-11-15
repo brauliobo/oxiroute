@@ -379,6 +379,10 @@ impl SelectedEndpoint {
         &self.endpoint
     }
 
+    pub(crate) fn into_lease(self) -> EndpointLease {
+        self.lease
+    }
+
     pub(crate) fn server_name(&self) -> &str {
         self.lease.server_name()
     }

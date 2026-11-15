@@ -1,3 +1,5 @@
+use futures_util::FutureExt as _;
+
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::upstream_peer::ReusePeer;
@@ -34,6 +36,16 @@ impl AttemptTimeouts {
     ) {
         session.read_timeout = Some(self.read);
         session.body_read_timeout = Some(self.body_read);
+    }
+
+    /// How long a connection may take to be established.
+    pub(super) fn connect(&self) -> Duration {
+        self.connect
+    }
+
+    /// How long a write may take.
+    pub(super) fn write(&self) -> Duration {
+        self.write
     }
 
     /// How long the response head may take.
@@ -136,25 +148,46 @@ impl HttpRequestContext {
                 remaining = self.remaining_at(now, true)?;
                 self.trace.queue_wait += now.saturating_duration_since(selection_started);
             }
-            self.trace.attempt_started = Some(now);
-            let server = selected.server_label().clone();
-            self.trace.servers.push(server.clone());
-            self.trace.stats = Some(Arc::clone(selected.server_stats()));
-            if let Some(inflight) = &self.inflight {
-                inflight.place_attempt(pool.label(), server.shared());
-                selected.observe_queue_position(inflight.queue_cell());
-                inflight.set_phase(Phase::Connecting, now);
-            }
-            self.selected_upstream_host = host(
-                selected.endpoint(),
-                &proxy_policy(self).upstream_host,
-                self.authority.as_ref(),
-            )?;
-            self.attempted_upstreams
-                .push(selected.server_name().to_owned());
-            self.selected_observation = Some(selected.observation());
-            self.selected = Some(selected);
+            self.adopt_selection(selected, now, host)?;
         }
+        Ok(self.attempt_timeouts(now, remaining))
+    }
+
+    /// The selected server becomes the one the attempt goes to: what the access line, the status page and the server's
+    /// counters say of the attempt, and the host the origin gets.
+    fn adopt_selection(
+        &mut self,
+        selected: SelectedEndpoint,
+        now: Instant,
+        host: impl FnOnce(
+            &RuntimeEndpoint,
+            &HttpUpstreamHost,
+            Option<&Authority>,
+        ) -> pingora::Result<Option<HeaderValue>>,
+    ) -> pingora::Result<()> {
+        let pool = self.pool.as_ref().expect("a pool was selected");
+        self.trace.attempt_started = Some(now);
+        let server = selected.server_label().clone();
+        self.trace.servers.push(server.clone());
+        self.trace.stats = Some(Arc::clone(selected.server_stats()));
+        if let Some(inflight) = &self.inflight {
+            inflight.place_attempt(pool.label(), server.shared());
+            selected.observe_queue_position(inflight.queue_cell());
+            inflight.set_phase(Phase::Connecting, now);
+        }
+        self.selected_upstream_host = host(
+            selected.endpoint(),
+            &proxy_policy(self).upstream_host,
+            self.authority.as_ref(),
+        )?;
+        self.attempted_upstreams
+            .push(selected.server_name().to_owned());
+        self.selected_observation = Some(selected.observation());
+        self.selected = Some(selected);
+        Ok(())
+    }
+
+    fn attempt_timeouts(&self, now: Instant, remaining: Duration) -> AttemptTimeouts {
         let route_policy = proxy_route(self).policy;
         let timeouts = proxy_policy(self).timeouts;
         let attempt = |explicit: Option<u64>, inherited: Duration| {
@@ -164,7 +197,7 @@ impl HttpRequestContext {
         };
         let pool = self.pool.as_ref().expect("a pool was selected");
         let response = pool.server_timeout(route_policy.read_timeout);
-        Ok(AttemptTimeouts {
+        AttemptTimeouts {
             now,
             connect: attempt(
                 timeouts.connect_ms,
@@ -175,7 +208,66 @@ impl HttpRequestContext {
                 .server_timeout(route_policy.write_timeout)
                 .min(remaining),
             body_read: attempt(timeouts.idle_ms, response),
-        })
+        }
+    }
+
+    /// [`Self::next_attempt`] for a caller that cannot wait: `None` when the attempt would have to (the retry delay
+    /// has not passed, or the pool has no server to give at once), with the attempt not begun. The routes the epoll
+    /// data plane serves never wait: their pools answer a selection at once and their retries have no delay.
+    pub(super) fn next_attempt_now(
+        &mut self,
+        host: impl FnOnce(
+            &RuntimeEndpoint,
+            &HttpUpstreamHost,
+            Option<&Authority>,
+        ) -> pingora::Result<Option<HeaderValue>>,
+    ) -> pingora::Result<Option<AttemptTimeouts>> {
+        if self.has_attempted() {
+            self.refresh_clock();
+        }
+        let now = self.now;
+        let remaining = self.remaining_at(now, true)?;
+        if self.selected.is_none() {
+            if self.retry_delay_pending && !proxy_policy(self).next_retry_delay().is_zero() {
+                return Ok(None);
+            }
+            self.retry_delay_pending = false;
+            let pool = Arc::clone(
+                self.pool
+                    .as_ref()
+                    .ok_or_else(|| Error::new_in(ErrorType::InternalError))?,
+            );
+            let tag = self.queue_tag;
+            let selected = match self.retry_server.take() {
+                Some(server) => pool.select_server_endpoint(&server, tag).now_or_never(),
+                None => pool
+                    .select_endpoint_at(&self.attempted_upstreams, tag, crate::clock::wall_ms(now))
+                    .now_or_never(),
+            };
+            let Some(selected) = selected else {
+                return Ok(None);
+            };
+            self.enter_phase(Phase::Queued, now);
+            self.adopt_selection(selected?, now, host)?;
+        }
+        Ok(Some(self.attempt_timeouts(now, remaining)))
+    }
+
+    /// The lease of the selected server, which the connection of the attempt owns from now on.
+    pub(super) fn take_lease(&mut self) -> Option<crate::EndpointLease> {
+        self.note_queue_wait();
+        self.selected.take().map(SelectedEndpoint::into_lease)
+    }
+
+    /// The idle-pool peer of the selected server, whether or not the pool reuses connections.
+    pub(super) fn selected_peer(&self) -> Option<ReusePeer> {
+        self.selected.as_ref()?.reuse_peer()
+    }
+
+    /// The request goes to another reader of the connection before any server was contacted: what it counted as an
+    /// operation is the other reader's to count.
+    pub(super) fn abandon(&mut self) {
+        self.operation_result = Some(HttpOperationResult::Cancelled);
     }
 
     /// The peer for connecting, from the endpoint [`Self::next_attempt`] selected.

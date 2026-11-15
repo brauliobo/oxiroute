@@ -17,6 +17,13 @@ impl HttpRequestContext {
         Some(evacuation.cancellation())
     }
 
+    /// The attempt about to run is served by the epoll data plane, which the operator cannot move or kill.
+    pub(super) fn pin_to_data_plane(&self) {
+        if let Some(evacuation) = self.evacuation() {
+            evacuation.begin_attempt(Some(LeftRunning::DataPlane));
+        }
+    }
+
     /// The upstream response is about to reach the client. Fails when the operator took the request
     /// first, so nothing is sent. Informational responses other than `101` do not commit.
     pub(super) fn commit_response(&self, status: StatusCode) -> pingora::Result<()> {

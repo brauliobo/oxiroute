@@ -16,11 +16,13 @@ use pingora::protocols::http::{
 
 use super::{
     buffers,
-    proxy::{Forward, Framing},
+    proxy::{Forward, Framing, proxy_route},
     rules::{self, RouteEdits},
 };
 use crate::{
-    clock::wall_ms, http::action::ProxyPolicyPlan, upstream_peer::POOL_UNAVAILABLE_HEADER,
+    clock::wall_ms,
+    http::action::{HttpRoutePlan, ProxyPolicyPlan},
+    upstream_peer::POOL_UNAVAILABLE_HEADER,
 };
 
 /// Whether the response head is one the codec serves: final, no upgrade, a plain `Connection` and no `Keep-Alive`.
@@ -81,17 +83,31 @@ fn render_fast(
     keepalive: bool,
     (now, queue): (Instant, Option<(u64, u64)>),
 ) -> Framing {
+    let request = (forward.request.is_head, forward.route.as_ref(), forward.id);
+    let framing = render_head(out, raw, head, request, keepalive, (now, queue));
+    accept_head(session, head);
+    framing
+}
+
+/// The client's response head for a head the codec scanned, for a request the route answers with the id given.
+pub(in crate::http::proxy) fn render_head(
+    out: &mut Vec<u8>,
+    raw: &[u8],
+    head: &ResponseHead,
+    (is_head, route, id): (bool, &HttpRoutePlan, &HeaderValue),
+    keepalive: bool,
+    (now, queue): (Instant, Option<(u64, u64)>),
+) -> Framing {
     let facts = head.facts;
-    let is_head = forward.request.is_head;
     let queue = queue.map(QueueValues::new);
     let mut edits = Edits::new();
     filtered(
         &mut edits,
         raw,
         head,
-        (&forward.route.edits, forward.policy()),
+        (&route.edits, &proxy_route(route).policy),
         queue.as_ref(),
-        forward.id,
+        id,
     );
     let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
         result.expect("a response head needs few edits");
@@ -108,7 +124,6 @@ fn render_fast(
     };
     let minor = if chunked { 1 } else { head.minor };
     write_response(out, raw, head, &edits, minor, Some(automatic));
-    accept_head(session, head);
     match (no_body, chunked) {
         (true, _) => Framing::Empty,
         (false, true) => Framing::Chunked,
@@ -160,7 +175,7 @@ pub(in crate::http::proxy) const RESPONSE_HOP_BY_HOP: [(Class, Name<'static>); 9
 /// and the request id.
 pub(in crate::http::proxy) fn filtered<'a>(
     edits: &mut Edits<'a>,
-    raw: &'a Bytes,
+    raw: &'a [u8],
     head: &ResponseHead,
     (route, policy): (&RouteEdits, &'a ProxyPolicyPlan),
     queue: Option<&'a QueueValues>,

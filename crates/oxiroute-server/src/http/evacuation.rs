@@ -162,6 +162,9 @@ impl Evacuation {
             let (next, fate) = match state {
                 State::Idle | State::Moving | State::Killing => return None,
                 State::Movable if has_destination => (State::Moving, Fate::Redispatched),
+                State::Pinned(LeftRunning::DataPlane) => {
+                    return Some(Fate::LeftRunning(LeftRunning::DataPlane));
+                }
                 State::Movable | State::Pinned(_) if force => (State::Killing, Fate::Forced),
                 State::Movable => return Some(Fate::LeftRunning(LeftRunning::NoDestination)),
                 State::Pinned(reason) => return Some(Fate::LeftRunning(reason)),

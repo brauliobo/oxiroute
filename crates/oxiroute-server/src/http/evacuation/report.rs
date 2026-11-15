@@ -14,16 +14,18 @@ pub enum LeftRunning {
     Upgraded,
     LimitReached,
     NoDestination,
+    DataPlane,
 }
 
 impl LeftRunning {
-    pub(super) const ALL: [Self; 6] = [
+    pub(super) const ALL: [Self; 7] = [
         Self::ResponseStarted,
         Self::NotReplayable,
         Self::BodyNotReplayable,
         Self::Upgraded,
         Self::LimitReached,
         Self::NoDestination,
+        Self::DataPlane,
     ];
 
     #[must_use]
@@ -35,6 +37,7 @@ impl LeftRunning {
             Self::Upgraded => "upgraded",
             Self::LimitReached => "limit_reached",
             Self::NoDestination => "no_destination",
+            Self::DataPlane => "data_plane",
         }
     }
 

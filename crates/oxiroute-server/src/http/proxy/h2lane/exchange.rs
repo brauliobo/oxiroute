@@ -97,8 +97,7 @@ fn write_access_line(
         return;
     };
     let request = lane_log::Proxied {
-        buffer: &wire.text,
-        head: &wire.head,
+        idempotency: lane_log::idempotency_of(ctx, &wire.text, &wire.head),
         id: &plan.id,
         id_generated: plan.id_generated,
         method: &plan.method,

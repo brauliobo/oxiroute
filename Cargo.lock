@@ -2806,6 +2806,7 @@ dependencies = [
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-cpu",
+ "oxiroute-epoll-h1",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
  "oxiroute-h3",

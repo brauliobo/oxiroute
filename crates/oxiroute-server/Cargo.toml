@@ -44,6 +44,7 @@ oxiroute-worker-scaling = { path = "../oxiroute-worker-scaling" }
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-cpu = { path = "../oxiroute-cpu", features = ["std"] }
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
+oxiroute-epoll-h1 = { path = "../oxiroute-epoll-h1" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-cache = { path = "../oxiroute-cache" }
 oxiroute-import = { path = "../oxiroute-import" }

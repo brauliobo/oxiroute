@@ -8,7 +8,7 @@ use super::{proxy::Forward, rules};
 use crate::http::proxy::{HttpRequestContext, proxy_policy};
 
 /// What the request sends to the origin as its `Host`.
-pub(super) enum HostEdit {
+pub(in crate::http::proxy) enum HostEdit {
     AsSent,
     Set(HeaderValue),
     Remove,
@@ -29,7 +29,7 @@ pub(super) fn push_small_body(head: &mut Vec<u8>, forward: &Forward<'_>) -> bool
     small
 }
 
-pub(super) fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
+pub(in crate::http::proxy) fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
     if matches!(
         proxy_policy(ctx).upstream_host,
         HttpUpstreamHost::PreserveIncoming
@@ -45,7 +45,7 @@ pub(super) fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
 /// the classic sequence in its order: the `Connection` of a keep-alive client leaves with the hop-by-hop fields, an
 /// id is stamped when the request has no single valid one, the host policy applies, a client's `close` is not
 /// forwarded and a pool that never reuses connections says `close` itself.
-pub(super) fn render_request(
+pub(in crate::http::proxy) fn render_request(
     out: &mut Vec<u8>,
     forward: &Forward<'_>,
     host: &HostEdit,
