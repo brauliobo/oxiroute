@@ -336,6 +336,13 @@ impl<A> HttpDownstreamPolicyApp<A> {
         .map(Arc::new);
         self
     }
+
+    /// The lane the epoll data plane serves requests with, when the listener has one.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn epoll_lane(&self) -> Option<crate::EpollLane> {
+        self.front.clone().map(crate::EpollLane::new)
+    }
 }
 
 #[async_trait]

@@ -652,6 +652,7 @@ mod attempt;
 mod cache;
 mod compression;
 mod departure;
+pub(crate) mod engine;
 mod evacuation;
 mod h2lane;
 pub(crate) mod lane;

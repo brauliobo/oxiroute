@@ -12,6 +12,7 @@ pub struct ServiceSpec {
     pub proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
     pub kind: ServiceKind,
     pub tls: Option<Arc<TlsProfilePlan>>,
+    pub data_plane: DataPlane,
 }
 
 #[derive(Clone, Debug)]
@@ -297,6 +298,14 @@ impl HttpServicePlan {
             .iter()
             .any(|route| route.lane != LaneRoute::Classic)
     }
+
+    /// Whether the epoll data plane can serve a route of this service, and the service as a whole is one the lane
+    /// serves.
+    pub(crate) fn serves_on_engine(&self) -> bool {
+        self.gzip.is_none()
+            && self.automatic_response_headers
+            && self.route_plans.iter().any(|route| route.engine)
+    }
 }
 
 /// Compiles validated listener definitions into runtime service specifications.
@@ -328,6 +337,7 @@ mod tests {
     fn route(lane: LaneRoute, route_id: &str) -> Arc<HttpRoutePlan> {
         Arc::new(HttpRoutePlan {
             access: None,
+            engine: false,
             lane,
             edits: crate::http::proxy::lane::RouteEdits::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),

@@ -53,6 +53,7 @@ impl From<ServicePlanError> for RuntimeAcquisitionError {
 
 mod compile_http;
 mod compile_services;
+mod data_plane;
 mod disk_registry;
 pub(crate) mod errors;
 mod runtime_plan;
@@ -63,6 +64,8 @@ pub(crate) mod types;
 use compile_http::*;
 #[allow(clippy::wildcard_imports)]
 use compile_services::*;
+pub use data_plane::DataPlane;
+pub(crate) use data_plane::{DataPlanePolicy, ListenerPlane};
 pub(crate) use disk_registry::*;
 pub use runtime_plan::*;
 pub use spec::*;

@@ -347,6 +347,23 @@ impl EndpointPool {
             .await
     }
 
+    /// Whether a selection is answered at once, whatever the load and the health of the servers: no queue to wait in
+    /// and no recovery to wait for.
+    pub(crate) fn selects_at_once(&self) -> bool {
+        self.queue_timeout.is_none() && self.resilience.unavailable_wait.is_none()
+    }
+
+    /// Whether every server of the pool is reached at one fixed socket address, so that a connection to it needs no
+    /// lookup.
+    pub(crate) fn reaches_fixed_addresses(&self) -> bool {
+        self.read_health(|members| {
+            members
+                .endpoints
+                .iter()
+                .all(|server| server.reuse_peer().is_some())
+        })
+    }
+
     /// Whether requests queue by class or tenant, which needs the headers of the request to place.
     pub(crate) fn schedules_queue(&self) -> bool {
         self.queue.schedule.is_some()

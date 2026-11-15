@@ -100,6 +100,17 @@ pub(super) fn add_plain_listener<A>(
     }
 }
 
+/// The text a socket listener's descriptor is registered under, as the tokio path registers it.
+#[cfg(target_os = "linux")]
+pub(super) fn epoll_bind(bind: &ListenerBind) -> String {
+    match bind {
+        ListenerBind::Socket { address, .. } => address.to_string(),
+        ListenerBind::Udp { .. } | ListenerBind::Unix { .. } => {
+            unreachable!("the data plane plan gives the epoll data plane socket listeners only")
+        }
+    }
+}
+
 pub(super) struct RuntimeListenerService<S> {
     generation: Option<Arc<RuntimeGeneration>>,
     inner: S,

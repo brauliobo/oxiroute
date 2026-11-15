@@ -205,6 +205,11 @@ impl ProxyPolicyPlan {
         jittered_delay(self.retry_delay, self.retry_jitter_percent, random_unit())
     }
 
+    /// Whether a retry of a request goes out at once: no retry is allowed, or none is delayed.
+    pub(crate) fn retries_without_delay(&self) -> bool {
+        self.max_retries == 0 || self.retry_delay.is_zero()
+    }
+
     pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {
         if self.final_redispatch && attempts == usize::from(self.max_retries) {
             HttpRetryTarget::NextServer

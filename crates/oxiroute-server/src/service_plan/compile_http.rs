@@ -102,6 +102,7 @@ fn compile_http_route(
     let lane = LaneRoute::compile(&action, &route.policy, access.as_ref());
     let plan = Arc::new(HttpRoutePlan {
         edits: RouteEdits::compile(lane, &action, &route_id),
+        engine: crate::http::proxy::engine::serves(lane, &action),
         lane,
         access,
         action,

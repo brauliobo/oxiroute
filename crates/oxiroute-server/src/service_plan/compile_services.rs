@@ -268,6 +268,10 @@ pub(super) fn compile_listener(
         downstream_timeouts: listener.downstream_timeouts,
         h2_windows: listener.h2_windows,
         proxy_protocol: listener.proxy_protocol,
+        data_plane: match &kind {
+            ServiceKind::Http(plan) => DataPlane::plan(listener.plane, plan),
+            _ => DataPlane::Tokio,
+        },
         kind,
         tls,
     }

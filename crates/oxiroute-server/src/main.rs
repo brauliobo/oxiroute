@@ -45,6 +45,8 @@ use oxiroute_server::{
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     emit_certificate, emit_rtmp_access, with_h2_windows,
 };
+#[cfg(target_os = "linux")]
+use oxiroute_server::{DataPlane, EpollHttpService};
 use pingora::{
     apps::http_app::HttpServer,
     apps::{AcceptGate, ConnectionAdmission, ServerApp},
@@ -622,6 +624,8 @@ fn serve_generation(
         let downstream_timeouts = spec.downstream_timeouts;
         let h2_windows = spec.h2_windows;
         let listener_proxy_protocol = spec.proxy_protocol;
+        #[cfg(target_os = "linux")]
+        let data_plane = spec.data_plane;
 
         match spec.kind {
             ServiceKind::ForwardHttp1(forward_service) => {
@@ -692,22 +696,39 @@ fn serve_generation(
                 );
                 proxy.h2_options = Some(with_h2_windows(default_h2_options(), h2_windows));
                 let upstream = proxy.upstream_h1_connector();
+                let policy = HttpDownstreamPolicyApp::new(proxy, downstream_timeouts).with_lane(
+                    lane_service,
+                    metrics.clone(),
+                    Arc::clone(generation),
+                    Some(challenge_store.clone()),
+                    upstream,
+                    config.fast_lane_enabled(),
+                );
+                #[cfg(target_os = "linux")]
+                let epoll_lane = policy
+                    .epoll_lane()
+                    .filter(|_| data_plane == DataPlane::Epoll);
                 let app = MonitoredHttpApp::new(
-                    HttpListenerApp::new(
-                        HttpDownstreamPolicyApp::new(proxy, downstream_timeouts).with_lane(
-                            lane_service,
-                            metrics.clone(),
-                            Arc::clone(generation),
-                            Some(challenge_store.clone()),
-                            upstream,
-                            config.fast_lane_enabled(),
-                        ),
-                        listener_tls.as_deref(),
-                    )
-                    .with_generation(Arc::clone(generation)),
+                    HttpListenerApp::new(policy, listener_tls.as_deref())
+                        .with_generation(Arc::clone(generation)),
                     metrics.clone(),
                     Arc::clone(generation),
                 );
+                #[cfg(target_os = "linux")]
+                if let Some(lane) = epoll_lane {
+                    let service = EpollHttpService::new(
+                        (service_name, epoll_bind(&listener_bind)),
+                        workers,
+                        app,
+                        lane,
+                        Arc::clone(generation),
+                    );
+                    server.add_service(
+                        RuntimeListenerService::new(service, reservation, Some(metrics))
+                            .with_generation(Arc::clone(generation)),
+                    );
+                    continue;
+                }
                 let mut service = Service::new(service_name, app);
                 service.threads = Some(workers);
                 add_http_listener(

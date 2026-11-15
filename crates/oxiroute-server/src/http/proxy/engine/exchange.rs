@@ -1,0 +1,184 @@
+use std::{net::IpAddr, sync::Arc, time::Instant};
+
+use http::{HeaderValue, Method};
+use log::debug;
+use oxiroute_config::UpstreamConnectionReuse;
+use oxiroute_epoll_h1::{AttemptTimeouts, Failure, Request, Reuse, Selected, Target};
+use oxiroute_h1_head::RequestHead;
+use pingora::{Error, upstreams::peer::Peer as _};
+
+use super::{LOG_TARGET, lease::EngineLease, outcome::Pending};
+use crate::{
+    http::{
+        action::HttpRoutePlan,
+        proxy::{
+            HttpRequestContext,
+            attempt::AttemptTimeouts as Allowed,
+            lane::{
+                LaneFront,
+                head::{self, Request as LaneRequest},
+                log::idempotency_of,
+                proxy::{Forward, decide, upstream_host},
+                render::{HostEdit, host_edit},
+                request_id,
+                rules::Evaluated,
+            },
+        },
+        request_id::generated_request_id_bytes,
+    },
+    upstream_peer::POOL_UNAVAILABLE,
+};
+
+const POOLED_IDLE: std::time::Duration = std::time::Duration::from_mins(1);
+
+pub(super) struct Exchange {
+    pub(super) ctx: Box<HttpRequestContext>,
+    pub(super) route: Arc<HttpRoutePlan>,
+    pub(super) lane: LaneRequest,
+    pub(super) id: HeaderValue,
+    pub(super) method: Method,
+    pub(super) client_ip: Option<IpAddr>,
+    pub(super) values: Evaluated,
+    pub(super) idempotency: Option<Box<[u8]>>,
+    pub(super) host: HostEdit,
+    pub(super) connection_close: bool,
+    pub(super) reasoned: bool,
+    pub(super) pending: Option<Pending>,
+    pub(super) error: Option<Box<Error>>,
+    pub(super) answered_body: usize,
+}
+
+impl Exchange {
+    pub(super) fn begin(front: &LaneFront, request: &Request<'_>, now: Instant) -> Option<Self> {
+        let (buffer, head) = (request.bytes(), request.head());
+        let lane = head::adopt(buffer, head)?;
+        let (route, authority, _) = front.resolve(buffer, &lane)?;
+        if !(route.engine && LaneFront::takes_body(&route, &lane)) {
+            return None;
+        }
+        let client_ip = Some(request.peer().ip());
+        let values = decide(false, &route, (buffer, client_ip), head, &authority)?;
+        let id = request_id(buffer, &lane, generated_request_id_bytes());
+        let method = Method::from_bytes(lane.method(buffer)).ok()?;
+        debug!(target: LOG_TARGET, "served by the epoll data plane: request_id={}", id.to_str().unwrap_or_default());
+        let ctx = front.begin(
+            &Forward {
+                started: now,
+                buffer,
+                method: &method,
+                client_ip,
+                head,
+                request: &lane,
+                route: &route,
+                id: &id,
+                values: &values,
+                keepalive: true,
+            },
+            authority,
+        );
+        let idempotency = idempotency_of(&ctx, buffer, head).map(Box::from);
+        Some(Self {
+            ctx,
+            route,
+            lane,
+            id,
+            method,
+            client_ip,
+            values,
+            idempotency,
+            host: HostEdit::AsSent,
+            connection_close: false,
+            reasoned: false,
+            pending: None,
+            error: None,
+            answered_body: 0,
+        })
+    }
+
+    pub(super) fn forward<'a>(&'a self, buffer: &'a [u8], head: &'a RequestHead) -> Forward<'a> {
+        Forward {
+            started: self.ctx.started_at,
+            buffer,
+            method: &self.method,
+            client_ip: self.client_ip,
+            head,
+            request: &self.lane,
+            route: &self.route,
+            id: &self.id,
+            values: &self.values,
+            keepalive: true,
+        }
+    }
+
+    pub(super) fn select(&mut self) -> Selected<EngineLease> {
+        if let Some(pending) = self.pending.take() {
+            let error = self.retire(pending);
+            if !error.retry() {
+                return self.refuse(error);
+            }
+        }
+        self.error = None;
+        self.ctx.pin_to_data_plane();
+        let first = !self.ctx.has_attempted();
+        match self.ctx.next_attempt_now(upstream_host) {
+            Err(error) => self.refuse(error),
+            Ok(None) => self.decline(first),
+            Ok(Some(allowed)) => self.attach(&allowed, first),
+        }
+    }
+
+    fn refuse(&mut self, error: Box<Error>) -> Selected<EngineLease> {
+        self.error = Some(error);
+        Selected::Refused(Failure::NoServer)
+    }
+
+    fn decline(&mut self, first: bool) -> Selected<EngineLease> {
+        if !first {
+            return self.refuse(Error::new_up(POOL_UNAVAILABLE));
+        }
+        self.ctx.abandon();
+        Selected::Handoff
+    }
+
+    fn attach(&mut self, allowed: &Allowed, first: bool) -> Selected<EngineLease> {
+        let Some(peer) = self.ctx.selected_peer() else {
+            self.ctx.release_lease();
+            return self.decline(first);
+        };
+        let address = peer
+            .address()
+            .as_inet()
+            .copied()
+            .expect("a reuse peer has a socket address");
+        let lease = self.ctx.take_lease().and_then(EngineLease::new);
+        let Some(lease) = lease else {
+            return self.decline(first);
+        };
+        self.host = host_edit(&mut self.ctx);
+        self.connection_close = self
+            .ctx
+            .pool
+            .as_ref()
+            .is_some_and(|pool| pool.connection_reuse() == UpstreamConnectionReuse::Never);
+        let reuse = if self.connection_close {
+            Reuse::Never
+        } else {
+            Reuse::Pooled {
+                idle: peer.idle_timeout().unwrap_or(POOLED_IDLE),
+            }
+        };
+        Selected::Server(Target {
+            address,
+            key: peer.reuse_hash(),
+            reuse,
+            lease,
+            timeouts: AttemptTimeouts {
+                connect: allowed.connect(),
+                header: allowed.read(),
+                body: allowed.body_read(),
+                write: allowed.write(),
+                deadline: Some(self.ctx.deadline),
+            },
+        })
+    }
+}
