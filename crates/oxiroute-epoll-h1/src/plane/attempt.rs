@@ -232,19 +232,14 @@ impl<S: Service> Reactor<S> {
         if client_side || !replayable {
             return false;
         }
-        let stale = flow.reused
-            && !flow.stale_retried
+        let closed_unused = flow.reused
             && flow.first_byte_at.is_none()
             && matches!(failure, Failure::UpstreamClosed | Failure::UpstreamWrite);
-        if stale {
-            flow.stale_retried = true;
-            flow.fresh = true;
-            flow.attempts -= 1;
-            return true;
-        }
         let exchange = flow.exchange.as_mut().expect("an exchange is served once");
-        failure == Failure::UnexpectedStatus
-            || service.recover(exchange, failure, self.now) == Recovery::Retry
+        let retry = failure == Failure::UnexpectedStatus
+            || service.recover(exchange, failure, self.now) == Recovery::Retry;
+        flow.fresh = retry && closed_unused;
+        retry
     }
 
     fn give_up(&mut self, token: Token, client: &mut Client<S>, failure: Failure) -> Step {

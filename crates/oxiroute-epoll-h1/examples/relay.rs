@@ -19,8 +19,7 @@ use std::{
 
 use oxiroute_epoll_h1::{
     Answered, Config, Engine, Failure, Handoff, Listener, Outcome, Recovery, Request, Response,
-    Routed,
-    Selected, Service, Timeouts, Trigger,
+    Routed, Selected, Service, Timeouts, Trigger,
 };
 use service::{Guard, Knobs, Reference, Route};
 

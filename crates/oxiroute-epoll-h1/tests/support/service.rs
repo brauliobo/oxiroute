@@ -10,8 +10,8 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{
-    Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
-    Reuse, Routed, Selected, Service, Target,
+    Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
+    Response, Reuse, Routed, Selected, Service, Target,
 };
 use oxiroute_h1_head::{
     Automatic, Class, Edits, Name, Value, names, write_request, write_response,

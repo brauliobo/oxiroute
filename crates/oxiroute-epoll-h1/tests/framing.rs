@@ -191,9 +191,10 @@ fn an_origin_that_closes_a_connection_it_called_keepalive_does_not_break_the_nex
 }
 
 #[test]
-fn a_pooled_upstream_the_origin_closed_unseen_is_replaced_without_failing_the_request() {
+fn a_pooled_upstream_the_origin_closed_unseen_is_replaced_when_the_service_retries() {
     let knobs = Knobs {
         pause_in_route: Some(Duration::from_millis(200)),
+        retries: 1,
         ..Knobs::default()
     };
     let fixture = Fixture::with(test_config(), oxiroute_epoll_h1::Timeouts::default(), knobs);

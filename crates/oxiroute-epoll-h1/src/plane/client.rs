@@ -121,7 +121,6 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) client_keepalive: bool,
     pub(crate) keepalive: bool,
     pub(crate) attempts: u8,
-    pub(crate) stale_retried: bool,
     pub(crate) reused: bool,
     pub(crate) key: u64,
     pub(crate) reuse: Reuse,

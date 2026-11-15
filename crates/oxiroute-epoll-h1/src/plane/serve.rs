@@ -110,7 +110,6 @@ impl<S: Service> Reactor<S> {
             client_keepalive: keepalive,
             keepalive,
             attempts: 0,
-            stale_retried: false,
             reused: false,
             key: 0,
             reuse: Reuse::Never,
