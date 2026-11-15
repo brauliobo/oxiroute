@@ -18,6 +18,7 @@ pub(crate) const UPSTREAM_REQUEST_ID_HEADER: HeaderName =
     HeaderName::from_static("x-upstream-request-id");
 const DEFAULT_IDEMPOTENCY_HEADER: HeaderName = HeaderName::from_static("idempotency-key");
 
+const PREFIX_LEN: usize = 12;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -39,6 +40,16 @@ fn boot_tag() -> u32 {
     })
 }
 
+/// `rq-` and the boot tag, which every generated id of the process starts with.
+fn id_prefix() -> &'static [u8; PREFIX_LEN] {
+    static PREFIX: OnceLock<[u8; PREFIX_LEN]> = OnceLock::new();
+    PREFIX.get_or_init(|| {
+        let mut prefix = *b"rq-00000000-";
+        write_hex(&mut prefix[3..11], u64::from(boot_tag()));
+        prefix
+    })
+}
+
 /// Lowercase hex of `value` into `out`, most significant digit first, zero padded to the width of `out`.
 fn write_hex(out: &mut [u8], mut value: u64) {
     for digit in out.iter_mut().rev() {
@@ -51,9 +62,9 @@ fn write_hex(out: &mut [u8], mut value: u64) {
 pub(crate) fn generated_request_id_bytes() -> [u8; 24] {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff_ffff;
-    let mut id = *b"rq-00000000-000000000000";
-    write_hex(&mut id[3..11], u64::from(boot_tag()));
-    write_hex(&mut id[12..], sequence);
+    let mut id = [0; 24];
+    id[..PREFIX_LEN].copy_from_slice(id_prefix());
+    write_hex(&mut id[PREFIX_LEN..], sequence);
     id
 }
 
@@ -257,6 +268,17 @@ mod tests {
         assert_eq!(&digits, b"1234");
         write_hex(&mut digits, 0x2f);
         assert_eq!(&digits, b"002f");
+    }
+
+    #[test]
+    fn successive_generated_ids_share_their_prefix_and_count_up() {
+        let (first, second) = (generated_request_id_bytes(), generated_request_id_bytes());
+        assert_eq!(first[..PREFIX_LEN], second[..PREFIX_LEN]);
+        assert_eq!(&first[..3], b"rq-");
+        let sequence = |id: &[u8; 24]| {
+            u64::from_str_radix(std::str::from_utf8(&id[PREFIX_LEN..]).expect("ASCII"), 16)
+        };
+        assert!(sequence(&second).expect("hex") > sequence(&first).expect("hex"));
     }
 
     #[test]
