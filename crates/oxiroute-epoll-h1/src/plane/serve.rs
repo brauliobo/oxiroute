@@ -3,7 +3,7 @@ use std::{net::TcpStream, rc::Rc};
 use oxiroute_h1_head::{Connection, RequestHead, Scan, scan_request};
 
 use super::{
-    client::{Client, Down, Flow, Stage, Window},
+    client::{Buffers, Client, Down, Flow, Stage, Window},
     reactor::{Reactor, Step},
     service::{Handoff, Request, Reuse, Routed, Service},
     slab::Token,
@@ -34,6 +34,9 @@ impl<S: Service> Reactor<S> {
     }
 
     fn read_request(&mut self, token: Token, client: &mut Client<S>) -> Step {
+        if client.stage == Stage::Idle {
+            return self.begin_request(token, client);
+        }
         if client.req_len > 0
             && let Some(step) = self.parse(client)
         {
@@ -42,8 +45,22 @@ impl<S: Service> Reactor<S> {
         self.fill_request(token, client)
     }
 
+    fn begin_request(&mut self, token: Token, client: &mut Client<S>) -> Step {
+        if !client.link.ready.read {
+            return Step::Wait;
+        }
+        self.lease_buffers(client);
+        match self.fill_request(token, client) {
+            Step::Wait => {
+                self.release_buffers(client);
+                Step::Wait
+            }
+            step => step,
+        }
+    }
+
     fn parse(&mut self, client: &mut Client<S>) -> Option<Step> {
-        let buffers = &mut client.buffers;
+        let buffers: &mut Buffers = &mut client.buffers;
         match scan_request(&buffers.req[..client.req_len], &mut buffers.head) {
             Scan::Partial if client.req_len >= self.config.head_limit => Some(Step::Handoff),
             Scan::Partial => None,
@@ -132,11 +149,12 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    pub(crate) fn handoff(&mut self, token: Token, client: Client<S>) {
+    pub(crate) fn handoff(&mut self, token: Token, mut client: Client<S>) {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
         let prefix = client.buffers.req[..client.req_len].to_vec();
+        self.release_buffers(&mut client);
         let Client {
             link,
             service,
@@ -144,7 +162,6 @@ impl<S: Service> Reactor<S> {
             admission,
             listener,
             served,
-            buffers,
             ..
         } = client;
         sys::unwatch(&self.epoll, &link.fd);
@@ -156,7 +173,6 @@ impl<S: Service> Reactor<S> {
             admission,
             requests_served: served,
         });
-        self.recycle(buffers);
     }
 
     fn flush_answer(&mut self, token: Token, client: &mut Client<S>) -> Step {

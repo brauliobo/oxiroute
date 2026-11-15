@@ -1,4 +1,10 @@
-use std::{net::SocketAddr, rc::Rc, sync::Arc, time::Instant};
+use std::{
+    net::SocketAddr,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use oxiroute_h1_head::RequestHead;
 
@@ -35,6 +41,36 @@ impl Buffers {
 }
 
 pub(crate) const HEAD_GROWTH: usize = 4096;
+
+pub(crate) struct Leased(Option<Buffers>);
+
+impl Leased {
+    pub(crate) const fn none() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn hold(&mut self, buffers: Buffers) {
+        self.0 = Some(buffers);
+    }
+
+    pub(crate) fn release(&mut self) -> Option<Buffers> {
+        self.0.take()
+    }
+}
+
+impl Deref for Leased {
+    type Target = Buffers;
+
+    fn deref(&self) -> &Buffers {
+        self.0.as_ref().expect("a client past Idle holds buffers")
+    }
+}
+
+impl DerefMut for Leased {
+    fn deref_mut(&mut self) -> &mut Buffers {
+        self.0.as_mut().expect("a client past Idle holds buffers")
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Window {
@@ -153,7 +189,7 @@ pub(crate) struct Client<S: Service> {
     pub(crate) served: u32,
     pub(crate) stage: Stage,
     pub(crate) deadline: Option<Moment>,
-    pub(crate) buffers: Buffers,
+    pub(crate) buffers: Leased,
     pub(crate) req_len: usize,
     pub(crate) resp_len: usize,
     pub(crate) flow: Option<Flow<S>>,

@@ -205,10 +205,11 @@ impl<S: Service> Reactor<S> {
             _ => head.minor == 1,
         };
         let reusable = origin_keepalive && !matches!(mode, Mode::UntilClose);
-        let down_head = &mut client.buffers.down_head;
+        let buffers: &mut Buffers = &mut client.buffers;
+        let down_head = &mut buffers.down_head;
         down_head.clear();
         let response = Response {
-            bytes: &client.buffers.resp[..head.head_len as usize],
+            bytes: &buffers.resp[..head.head_len as usize],
             head,
             framing,
             keepalive: flow.keepalive,

@@ -3,7 +3,7 @@ use std::{net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
 use rustix::event::epoll::EventFlags;
 
 use super::{
-    client::{Client, Stage, Wait},
+    client::{Buffers, Client, Leased, Stage, Wait},
     clock::Moment,
     config::Trigger,
     link::Link,
@@ -38,10 +38,6 @@ impl<S: Service> Reactor<S> {
         let Some(admission) = service.admit(peer) else {
             return;
         };
-        let buffers = self
-            .spare
-            .pop()
-            .unwrap_or_else(|| super::client::Buffers::new(&self.config));
         let client = Box::new(Client {
             link: Link::new(fd),
             service,
@@ -52,7 +48,7 @@ impl<S: Service> Reactor<S> {
             served: 0,
             stage: Stage::Idle,
             deadline: None,
-            buffers,
+            buffers: Leased::none(),
             req_len: 0,
             resp_len: 0,
             flow: None,
@@ -73,8 +69,8 @@ impl<S: Service> Reactor<S> {
     }
 
     fn drop_unwatched(&mut self, token: Token) {
-        if let Body::Client(client) = self.slab.remove(token) {
-            self.recycle(client.buffers);
+        if let Body::Client(mut client) = self.slab.remove(token) {
+            self.release_buffers(&mut client);
         }
     }
 
@@ -99,7 +95,21 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    pub(crate) fn recycle(&mut self, buffers: super::client::Buffers) {
+    pub(crate) fn lease_buffers(&mut self, client: &mut Client<S>) {
+        let buffers = self
+            .spare
+            .pop()
+            .unwrap_or_else(|| Buffers::new(&self.config));
+        client.buffers.hold(buffers);
+    }
+
+    pub(crate) fn release_buffers(&mut self, client: &mut Client<S>) {
+        if let Some(buffers) = client.buffers.release() {
+            self.recycle(buffers);
+        }
+    }
+
+    pub(crate) fn recycle(&mut self, buffers: Buffers) {
         if self.spare.len() < self.config.max_clients {
             self.spare.push(buffers);
         }
@@ -195,8 +205,7 @@ impl<S: Service> Reactor<S> {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
-        let Client { buffers, .. } = *client;
-        self.recycle(buffers);
+        self.release_buffers(&mut client);
     }
 
     pub(crate) fn close_upstream(&mut self, token: Token) {

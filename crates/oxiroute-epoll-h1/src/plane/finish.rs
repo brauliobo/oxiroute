@@ -43,6 +43,9 @@ impl<S: Service> Reactor<S> {
             (Stage::Idle, client.timeouts.keepalive)
         };
         client.stage = stage;
+        if stage == Stage::Idle {
+            self.release_buffers(client);
+        }
         self.set_deadline(
             token,
             limit.map(|limit| self.moment.after(limit)),

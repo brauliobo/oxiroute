@@ -1,7 +1,7 @@
 use std::{rc::Rc, time::Duration};
 
 use super::{
-    client::{Client, Down, Flow, Stage, Wait, Window},
+    client::{Buffers, Client, Down, Flow, Stage, Wait, Window},
     clock::Moment,
     link::Link,
     reactor::{Reactor, Step},
@@ -181,6 +181,7 @@ impl<S: Service> Reactor<S> {
             ..
         } = client;
         let flow = flow.as_mut().expect("a serving client has a flow");
+        let buffers: &mut Buffers = buffers;
         buffers.up_head.clear();
         let request = Request::new(&buffers.req[..*req_len], &buffers.head, *peer);
         let exchange = flow.exchange.as_ref().expect("an exchange is served once");
