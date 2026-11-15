@@ -54,6 +54,20 @@ impl Request {
             .ok()
             .filter(|host| host.is_ascii())
     }
+
+    pub(in crate::http::proxy) fn target<'a>(&self, buf: &'a [u8]) -> Option<Target<'a>> {
+        Some(Target {
+            host: self.host(buf)?,
+            path: self.path(buf),
+        })
+    }
+}
+
+/// The host and the path a request names, read from its bytes once.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::http::proxy) struct Target<'a> {
+    pub(in crate::http::proxy) host: &'a str,
+    pub(in crate::http::proxy) path: &'a str,
 }
 
 /// Whether the request carries a header that makes the response of a file depend on more than the file: a range or one
@@ -260,6 +274,18 @@ mod tests {
                 "{refused:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_target_is_the_host_and_the_path_without_the_query() {
+        let request = "GET /a/b?x=1 HTTP/1.1\r\nHost: a.test:8080\r\n\r\n";
+        let buffer = request.as_bytes();
+        let mut head = RequestHead::new();
+        let scanned = scan(buffer, line(buffer).expect("line"), &mut head).expect("a head");
+        let target = scanned.target(buffer).expect("a target");
+        assert_eq!((target.host, target.path), ("a.test:8080", "/a/b"));
+        assert_eq!(Some(target.host), scanned.host(buffer));
+        assert_eq!(target.path, scanned.path(buffer));
     }
 
     fn conditional(request: &str) -> bool {
