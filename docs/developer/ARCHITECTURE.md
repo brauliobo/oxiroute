@@ -71,6 +71,13 @@ listener topologies remain on the direct runtime rather than using an untyped fa
 The server crate owns listener admission and dispatches by protocol:
 
 - HTTP reverse proxy routes host/path/method requests into immutable service and pool plans.
+- Plain-HTTP HTTP/1.1 listeners are served by one of two planes, chosen per listener when the generation is prepared
+  (`service_plan::DataPlane`, root option `http_data_plane`). The tokio plane is Pingora's listener, the fast lane and the
+  classic path. The epoll plane (`oxiroute-epoll-h1`, adapted by `http/proxy/engine`) is a thread-per-core event loop
+  that serves the routes the plan marks `engine` and hands every other connection, with the bytes already read, to the
+  tokio plane before any origin is contacted. The adapter reuses the lane's route selection, request context, leases,
+  head rendering and access log; it joins the generation's accept gate (pause on publication, drain on retirement) and
+  the listener's admission, and its connections hold the same admission guards as tokio ones.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by

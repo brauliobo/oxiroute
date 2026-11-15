@@ -180,6 +180,7 @@ oxiroute --output json server evacuate --pool gpu-render node-a
 | `upgraded` | WebSocket or another upgraded connection |
 | `limit_reached` | already evacuated 3 times |
 | `no_destination` | no other server can take it now (all drained, down or at capacity, and the pool has no queue) |
+| `data_plane` | the request is served by the epoll data plane, which finishes it where it is |
 
 Counts are per request, summed over every server and pool of the call. Read them as: `cancelledAndRedispatched`
 left the machine; every `leftRunning` request is still using it, so the machine is free only when they end

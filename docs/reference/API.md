@@ -135,7 +135,7 @@ All targets are validated before anything changes: an unknown pool or server ans
 
 `cancelledAndRedispatched` requests were cancelled and sent to another server; `forced` were cancelled
 without a retry (only with `force`); `leftRunning` counts the others by reason: `response_started`,
-`not_replayable`, `body_not_replayable`, `upgraded`, `limit_reached`, `no_destination` (absent reasons
+`not_replayable`, `body_not_replayable`, `upgraded`, `limit_reached`, `no_destination`, `data_plane` (absent reasons
 are zero). Counts are per request, summed over every target of the call; each target also publishes a
 `server_evacuation` event with its own counts in `/api/v2/events` (version 1 shows it as `unknown`; `server` is
 absent in the event of a pool). Only HTTP reverse proxy
