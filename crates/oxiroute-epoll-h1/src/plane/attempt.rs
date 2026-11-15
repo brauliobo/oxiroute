@@ -261,8 +261,11 @@ impl<S: Service> Reactor<S> {
         }
         let down_head = &mut client.buffers.down_head;
         down_head.clear();
-        let exchange = flow.exchange.as_ref().expect("an exchange is served once");
-        flow.status = Some(service.answer(exchange, failure, flow.is_head, down_head));
+        let exchange = flow.exchange.as_mut().expect("an exchange is served once");
+        let Some(status) = service.answer(exchange, failure, flow.is_head, down_head) else {
+            return Step::Close;
+        };
+        flow.status = Some(status);
         flow.head_pos = 0;
         client.stage = Stage::Answering;
         let limit = client.timeouts.write;

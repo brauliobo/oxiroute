@@ -77,6 +77,13 @@ pub struct Response<'a> {
     pub request_is_head: bool,
 }
 
+pub struct Answered<'a> {
+    pub bytes: &'a [u8],
+    pub head: &'a ResponseHead,
+    pub connected: Option<Instant>,
+    pub now: Instant,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Failure {
     NoServer,
@@ -211,17 +218,17 @@ pub trait Service: Send + Sync + 'static {
         out: &mut Vec<u8>,
     );
 
-    fn judge(&self, exchange: &mut Self::Exchange, status: u16, now: Instant) -> Recovery;
+    fn judge(&self, exchange: &mut Self::Exchange, answered: &Answered<'_>) -> Recovery;
 
     fn recover(&self, exchange: &mut Self::Exchange, failure: Failure, now: Instant) -> Recovery;
 
     fn answer(
         &self,
-        exchange: &Self::Exchange,
+        exchange: &mut Self::Exchange,
         failure: Failure,
         request_is_head: bool,
         out: &mut Vec<u8>,
-    ) -> u16;
+    ) -> Option<u16>;
 
     fn finish(&self, exchange: Self::Exchange, outcome: &Outcome);
 

@@ -18,6 +18,6 @@ mod wheel;
 pub use config::{Config, Timeouts, Trigger};
 pub use engine::{Engine, Listener};
 pub use service::{
-    AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
+    Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
     Reuse, Routed, Selected, Service, Target,
 };

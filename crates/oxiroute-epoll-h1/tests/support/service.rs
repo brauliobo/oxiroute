@@ -10,7 +10,7 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{
-    AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
+    Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
     Reuse, Routed, Selected, Service, Target,
 };
 use oxiroute_h1_head::{
@@ -267,7 +267,8 @@ impl Service for Reference {
         write_response(out, response.bytes, head, &edits, minor, Some(automatic));
     }
 
-    fn judge(&self, exchange: &mut Exchange, status: u16, _now: Instant) -> Recovery {
+    fn judge(&self, exchange: &mut Exchange, answered: &Answered<'_>) -> Recovery {
+        let status = answered.head.status;
         if self.knobs.retry_status == Some(status) && exchange.tries < self.knobs.retries {
             exchange.tries += 1;
             return Recovery::Retry;
@@ -285,11 +286,11 @@ impl Service for Reference {
 
     fn answer(
         &self,
-        exchange: &Exchange,
+        exchange: &mut Exchange,
         failure: Failure,
         _request_is_head: bool,
         out: &mut Vec<u8>,
-    ) -> u16 {
+    ) -> Option<u16> {
         let status = match failure {
             Failure::ConnectTimeout
             | Failure::HeaderTimeout
@@ -303,7 +304,7 @@ impl Service for Reference {
             out,
             "HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\nX-Request-Id: {id}\r\n\r\n"
         );
-        status
+        Some(status)
     }
 
     fn finish(&self, _exchange: Exchange, outcome: &Outcome) {

@@ -7,7 +7,7 @@ use super::{
     client::{Buffers, Client, Down, Flow, Mode, Relay, Wait, Window},
     link::Link,
     reactor::Reactor,
-    service::{Failure, Framing, Recovery, Response, Service},
+    service::{Answered, Failure, Framing, Recovery, Response, Service},
     slab::Token,
     sys::{Read, Wrote},
 };
@@ -180,7 +180,13 @@ impl<S: Service> Reactor<S> {
         let flow = client.flow.as_mut().expect("a serving client has a flow");
         let exchange = flow.exchange.as_mut().expect("an exchange is served once");
         let retryable = flow.replayable && flow.attempts < self.config.max_attempts;
-        if service.judge(exchange, head.status, self.now) == Recovery::Retry && retryable {
+        let answered = Answered {
+            bytes: &client.buffers.resp[..head.head_len as usize],
+            head,
+            connected: flow.connected_at,
+            now: self.now,
+        };
+        if service.judge(exchange, &answered) == Recovery::Retry && retryable {
             return Err(Failure::UnexpectedStatus);
         }
         let no_body = flow.is_head || matches!(head.status, 204 | 304);

@@ -18,7 +18,8 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{
-    Config, Engine, Failure, Handoff, Listener, Outcome, Recovery, Request, Response, Routed,
+    Answered, Config, Engine, Failure, Handoff, Listener, Outcome, Recovery, Request, Response,
+    Routed,
     Selected, Service, Timeouts, Trigger,
 };
 use service::{Guard, Knobs, Reference, Route};
@@ -110,8 +111,8 @@ impl Service for Relay {
         self.inner.render_response(exchange, response, now, out);
     }
 
-    fn judge(&self, exchange: &mut Self::Exchange, status: u16, now: Instant) -> Recovery {
-        self.inner.judge(exchange, status, now)
+    fn judge(&self, exchange: &mut Self::Exchange, answered: &Answered<'_>) -> Recovery {
+        self.inner.judge(exchange, answered)
     }
 
     fn recover(&self, exchange: &mut Self::Exchange, failure: Failure, now: Instant) -> Recovery {
@@ -120,11 +121,11 @@ impl Service for Relay {
 
     fn answer(
         &self,
-        exchange: &Self::Exchange,
+        exchange: &mut Self::Exchange,
         failure: Failure,
         head: bool,
         out: &mut Vec<u8>,
-    ) -> u16 {
+    ) -> Option<u16> {
         self.inner.answer(exchange, failure, head, out)
     }
 
