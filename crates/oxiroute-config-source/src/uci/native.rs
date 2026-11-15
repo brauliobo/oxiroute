@@ -206,7 +206,9 @@ fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, Confi
                 Value::Number(parse_uci_integer::<u64>(section, name, value)?.into())
             }
             "http_fast_lane" => Value::Bool(parse_uci_bool(section, name, value)?),
-            "connection_scheduling" | "worker_scaling" => Value::String(value.clone()),
+            "http_data_plane" | "connection_scheduling" | "worker_scaling" => {
+                Value::String(value.clone())
+            }
             _ => {
                 return Err(ConfigSourceError::parse(
                     "UCI",
@@ -260,7 +262,10 @@ fn decode_nginx_section(
             }
         }
     }
-    object.insert("bearer_token_file".to_owned(), Value::Array(bearer_token_files));
+    object.insert(
+        "bearer_token_file".to_owned(),
+        Value::Array(bearer_token_files),
+    );
     object.insert("upstream_tls".to_owned(), Value::Array(upstream_tls));
     decode_nginx(Value::Object(object), "UCI")
 }
@@ -286,7 +291,10 @@ fn decode_upstream_tls(value: &str) -> Result<Value, ConfigSourceError> {
     };
     let (authority, rest) = value.split_once('=').ok_or_else(invalid)?;
     let (server_name, ca) = match rest.split_once(',') {
-        Some((server_name, ca)) => (server_name, Some(ca.strip_prefix("ca=").ok_or_else(invalid)?)),
+        Some((server_name, ca)) => (
+            server_name,
+            Some(ca.strip_prefix("ca=").ok_or_else(invalid)?),
+        ),
         None => (rest, None),
     };
     Ok(serde_json::json!({

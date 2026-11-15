@@ -39,6 +39,7 @@ fn api() -> (
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        http_data_plane: None,
         connection_scheduling: None,
         connection_age_ms: None,
         worker_scaling: None,

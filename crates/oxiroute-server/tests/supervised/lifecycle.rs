@@ -239,6 +239,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        http_data_plane: None,
         connection_scheduling: None,
         connection_age_ms: None,
         worker_scaling: None,
@@ -352,6 +353,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        http_data_plane: None,
         connection_scheduling: None,
         connection_age_ms: None,
         worker_scaling: None,

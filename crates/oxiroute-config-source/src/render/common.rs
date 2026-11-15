@@ -16,6 +16,7 @@ impl Renderer {
             max_connections,
             listener_workers,
             http_fast_lane,
+            http_data_plane,
             connection_scheduling,
             connection_age_ms,
             worker_scaling,
@@ -52,6 +53,9 @@ impl Renderer {
         }
         if let Some(enabled) = http_fast_lane {
             self.boolean_field("http_fast_lane", *enabled);
+        }
+        if let Some(plane) = http_data_plane {
+            self.string_field("http_data_plane", plane.as_str());
         }
         if let Some(scheduling) = connection_scheduling {
             self.string_field("connection_scheduling", scheduling.as_str());

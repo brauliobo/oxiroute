@@ -102,6 +102,7 @@ fn exclude_nonintegrated_component_controls(
         "log_filter",
         "listener_workers",
         "http_fast_lane",
+        "http_data_plane",
         "connection_scheduling",
         "connection_age_ms",
         "worker_scaling",
