@@ -7,6 +7,7 @@ mod engine;
 mod events;
 mod finish;
 mod link;
+mod pool;
 mod reactor;
 mod relay;
 mod serve;

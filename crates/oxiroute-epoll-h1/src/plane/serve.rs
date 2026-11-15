@@ -76,7 +76,10 @@ impl<S: Service> Reactor<S> {
                 client.req_len += count;
                 if client.stage == Stage::Idle {
                     client.stage = Stage::Head;
-                    let deadline = client.timeouts.request.map(|limit| self.moment.after(limit));
+                    let deadline = client
+                        .timeouts
+                        .request
+                        .map(|limit| self.moment.after(limit));
                     self.set_deadline(token, deadline, &mut client.deadline);
                 }
                 Step::Again
