@@ -41,15 +41,16 @@ impl Wheel {
         }
     }
 
+    fn elapsed_ns(&self, at: Instant) -> u64 {
+        u64::try_from(at.saturating_duration_since(self.base).as_nanos()).unwrap_or(u64::MAX)
+    }
+
     pub(crate) fn tick_of(&self, at: Instant) -> u64 {
-        let elapsed = at.saturating_duration_since(self.base).as_nanos();
-        u64::try_from(elapsed / u128::from(self.tick_ns)).unwrap_or(u64::MAX)
+        self.elapsed_ns(at) / self.tick_ns
     }
 
     fn ceil_tick_of(&self, at: Instant) -> u64 {
-        let elapsed = at.saturating_duration_since(self.base).as_nanos();
-        let tick = u128::from(self.tick_ns);
-        u64::try_from(elapsed.div_ceil(tick)).unwrap_or(u64::MAX)
+        self.elapsed_ns(at).div_ceil(self.tick_ns)
     }
 
     pub(crate) fn armed_due(&self, id: u32) -> Option<u64> {
