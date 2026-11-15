@@ -664,7 +664,7 @@ fn comma_items(value: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
             index += 1;
             continue;
         }
-        index = oxiroute_cpu::find_any3(value, index, [b'\\', b'"', b',']);
+        index = oxiroute_cpu::find_any3(value, index, *b"\\\",");
         let Some(&byte) = value.get(index) else { break };
         if quoted && byte == b'\\' {
             escaped = true;

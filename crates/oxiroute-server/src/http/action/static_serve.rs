@@ -413,7 +413,7 @@ fn percent_decode(value: &[u8]) -> Result<Vec<u8>, StaticServeError> {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
     loop {
-        let end = oxiroute_cpu::find_any3(value, index, [b'%', b'%', b'%']);
+        let end = oxiroute_cpu::find_any3(value, index, *b"%%%");
         decoded.extend_from_slice(&value[index..end]);
         if end == value.len() {
             break;

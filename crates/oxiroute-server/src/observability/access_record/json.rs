@@ -46,12 +46,12 @@ pub(crate) fn push_decimal(out: &mut Vec<u8>, value: u128) {
 }
 
 pub(crate) fn push_text(out: &mut Vec<u8>, text: &str) {
-    if oxiroute_cpu::json_escape_at(text.as_bytes()) != text.len() {
-        serde_json::to_writer(&mut *out, text).expect("writing to a vec cannot fail");
-    } else {
+    if oxiroute_cpu::json_escape_at(text.as_bytes()) == text.len() {
         out.push(b'"');
         out.extend_from_slice(text.as_bytes());
         out.push(b'"');
+    } else {
+        serde_json::to_writer(&mut *out, text).expect("writing to a vec cannot fail");
     }
 }
 

@@ -596,7 +596,7 @@ pub fn canonicalize_http_path(path: &str) -> Option<Cow<'_, str>> {
             }
             _ => index += 1,
         }
-        index = oxiroute_cpu::find_any3(bytes, index, [b'\\', b'/', b'%']);
+        index = oxiroute_cpu::find_any3(bytes, index, *b"\\/%");
     }
     if is_dot_segment(&bytes[segment..]) {
         return None;
