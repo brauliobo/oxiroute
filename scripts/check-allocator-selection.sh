@@ -8,17 +8,23 @@ cd "${repo}"
 command -v nm > /dev/null
 
 check_graph() {
-  local backend=$1
-  shift
-  cargo tree --locked -p oxiroute -e normal,build --prefix none --format '{p}' "$@" > "${work}/tree"
-  python3 - "${backend}" "${work}/tree" <<'PY'
+  local backend=$1 features=$2
+  shift 2
+  cargo tree --locked -p oxiroute -e normal,build --prefix none --format '{p} [{f}]' "$@" > "${work}/tree"
+  python3 - "${backend}" "${features}" "${work}/tree" <<'PY'
 import sys
 from pathlib import Path
 
-packages = {line.split()[0] for line in Path(sys.argv[2]).read_text().splitlines()}
+lines = Path(sys.argv[3]).read_text().splitlines()
+packages = {line.split()[0] for line in lines}
 jemalloc = packages & {'tikv-jemallocator', 'tikv-jemalloc-sys'}
 expected = {'tikv-jemallocator', 'tikv-jemalloc-sys'} if sys.argv[1] == 'jemalloc' else set()
 assert jemalloc == expected, f'allocator dependency mismatch: {jemalloc}, expected {expected}'
+allocator = {frozenset(filter(None, line.rsplit(' [', 1)[1].split(']', 1)[0].split(',')))
+             for line in lines if line.split()[0] == 'oxiroute-allocator'}
+expected_features = frozenset(filter(None, sys.argv[2].split(',')))
+assert allocator == {expected_features}, f'allocator feature mismatch: {allocator}, expected {expected_features}'
+print('Server allocator graph:', sys.argv[1], 'features=', sorted(expected_features))
 PY
 }
 
@@ -64,11 +70,11 @@ PY
 
 [[ $(uname -s) == Linux ]] || { echo 'Allocator linkage checks require Linux' >&2; exit 1; }
 [[ ! -v _RJEM_MALLOC_CONF ]] || { echo 'Unset _RJEM_MALLOC_CONF to test embedded defaults' >&2; exit 1; }
-check_graph jemalloc
-check_graph jemalloc --features alloc-count
-check_graph system --no-default-features
-check_graph system --no-default-features --features alloc-count
-check_graph jemalloc --no-default-features --features heap-profile
+check_graph jemalloc jemalloc
+check_graph jemalloc count,jemalloc --features alloc-count
+check_graph system '' --no-default-features
+check_graph system count --no-default-features --features alloc-count
+check_graph jemalloc jemalloc,profiling --no-default-features --features heap-profile
 check_allocator jemalloc
 check_allocator system --no-default-features
 check_allocator jemalloc --features count
