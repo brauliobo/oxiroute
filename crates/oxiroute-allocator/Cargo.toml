@@ -8,15 +8,17 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
+default = ["jemalloc"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys"]
 # Allocator statistics (mallctl `stats.*`, `stats_print` at exit) and heap profiling for memory investigations
 # (`benchmarks/r2-data-path/heapsum.py` summarises the profiles); not part of release builds.
-profiling = ["tikv-jemallocator/profiling", "tikv-jemallocator/stats"]
+profiling = ["jemalloc", "tikv-jemallocator/profiling", "tikv-jemallocator/stats"]
 # Counts allocator calls and requested bytes (`counting::snapshot`) for the allocation ceilings of the fast lanes.
 count = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemallocator.workspace = true
-tikv-jemalloc-sys = "0.6"
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-sys = { version = "0.6", optional = true }
 
 # The only crate of the workspace that cannot forbid unsafe code: jemalloc reads its configuration from an exported
 # C symbol, which Rust 2024 only accepts as `#[unsafe(export_name)]`. Everything else stays denied.

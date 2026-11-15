@@ -1,12 +1,12 @@
 //! The embedded configuration is what jemalloc reports, with no environment variable set, in a binary that declares
 //! the allocator the way `oxiroute` does; the purging thread starts on request.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "jemalloc"))]
 #![allow(unsafe_code)]
 
 use std::{ffi::c_void, ptr};
 
 #[global_allocator]
-static ALLOCATOR: oxiroute_allocator::Jemalloc = oxiroute_allocator::Jemalloc;
+static ALLOCATOR: oxiroute_allocator::Allocator = oxiroute_allocator::Allocator;
 
 fn option<T: Default>(name: &[u8]) -> T {
     let mut value = T::default();

@@ -38,6 +38,7 @@ local-ip-address.workspace = true
 notify.workspace = true
 openssl.workspace = true
 oxiroute-acme = { path = "../oxiroute-acme" }
+oxiroute-allocator = { path = "../oxiroute-allocator", default-features = false }
 oxiroute-aged-executor = { path = "../oxiroute-aged-executor" }
 oxiroute-worker-scaling = { path = "../oxiroute-worker-scaling" }
 oxiroute-config = { path = "../oxiroute-config" }
@@ -69,7 +70,6 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-oxiroute-allocator = { path = "../oxiroute-allocator" }
 oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
 oxiroute-supervisor-master = { path = "../oxiroute-supervisor-master" }
 oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
@@ -83,8 +83,10 @@ tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 
 [features]
+default = ["jemalloc"]
+jemalloc = ["oxiroute-allocator/jemalloc"]
 # jemalloc heap profiling (see crates/oxiroute-allocator); for memory investigations only.
-heap-profile = ["oxiroute-allocator/profiling"]
+heap-profile = ["jemalloc", "oxiroute-allocator/profiling"]
 # The binary counts its allocator calls and writes them on SIGUSR1 to $OXIROUTE_INTERNAL_TEST_ALLOC_FILE (tests, R2 harness).
 alloc-count = ["oxiroute-allocator/count"]
 

@@ -1,7 +1,19 @@
-//! Global allocator of the oxiroute binary and its embedded jemalloc configuration.
+//! Build-time allocator selection and the default jemalloc configuration.
 
-#[cfg(target_os = "linux")]
-pub use tikv_jemallocator::Jemalloc;
+#[cfg(not(all(target_os = "linux", feature = "jemalloc")))]
+pub use std::alloc::System as SelectedAllocator;
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+pub use tikv_jemallocator::Jemalloc as SelectedAllocator;
+
+#[cfg(not(feature = "count"))]
+pub use SelectedAllocator as Allocator;
+#[cfg(feature = "count")]
+pub use counting::CountingAllocator as Allocator;
+
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+pub const NAME: &str = "jemalloc";
+#[cfg(not(all(target_os = "linux", feature = "jemalloc")))]
+pub const NAME: &str = "system";
 
 /// jemalloc reads its configuration from this NUL-terminated string (a thin pointer, so the array length is part of
 /// the type). Bigger per-thread caches keep the buffers of HTTP/2 and connection-per-request traffic out of the arenas:
@@ -9,7 +21,7 @@ pub use tikv_jemallocator::Jemalloc;
 ///
 /// `background_thread` is not set here: jemalloc would start its thread with the first allocation, and a supervised
 /// worker must still be single-threaded when it adopts its control endpoint. See [`start_background_thread`].
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
 #[allow(unsafe_code)]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static MALLOC_CONF: &[u8; 99] =
@@ -23,7 +35,7 @@ pub static MALLOC_CONF: &[u8; 99] =
 /// # Errors
 ///
 /// Returns the error of `mallctl("background_thread")`.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
 #[allow(unsafe_code)]
 pub fn start_background_thread() -> std::io::Result<()> {
     if std::env::var("_RJEM_MALLOC_CONF").is_ok_and(|conf| conf.contains("background_thread")) {
@@ -47,10 +59,20 @@ pub fn start_background_thread() -> std::io::Result<()> {
     }
 }
 
+/// Starts allocator maintenance. The system allocator needs no initialization.
+///
+/// # Errors
+///
+/// This backend always succeeds.
+#[cfg(not(all(target_os = "linux", feature = "jemalloc")))]
+pub fn start_background_thread() -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Returns the unused pages of every arena to the kernel now. A process frees a lot at once when a generation ends
 /// (the plans, pools and tables of a configuration that was replaced) and jemalloc would keep those pages, resident,
 /// until their decay time is up; the end of a generation is the moment the process knows they are not coming back.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
 #[allow(unsafe_code)]
 pub fn release_unused() {
     // jemalloc's index of "every arena" in the name of an arena operation.
@@ -68,10 +90,10 @@ pub fn release_unused() {
     debug_assert_eq!(status, 0, "jemalloc refused to purge its arenas");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "jemalloc")))]
 pub fn release_unused() {}
 
-#[cfg(all(target_os = "linux", feature = "count"))]
+#[cfg(feature = "count")]
 mod counting;
-#[cfg(all(target_os = "linux", feature = "count"))]
-pub use counting::{CountingJemalloc, snapshot};
+#[cfg(feature = "count")]
+pub use counting::snapshot;
