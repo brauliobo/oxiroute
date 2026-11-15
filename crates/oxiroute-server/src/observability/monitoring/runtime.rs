@@ -535,6 +535,7 @@ impl RuntimeMetrics {
             .process_admission
             .administrative_state
             .store(state as u8, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     /// Changes admission state for one exact listener.
@@ -577,6 +578,7 @@ impl RuntimeMetrics {
             .shared
             .administrative_state
             .store(state as u8, Ordering::Release);
+        Doorbell::process().ring();
         Ok(())
     }
 

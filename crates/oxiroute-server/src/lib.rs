@@ -2,6 +2,7 @@ mod capsule;
 pub mod cli;
 mod clock;
 pub mod config;
+mod doorbell;
 mod encoding;
 mod forward_proxy;
 mod generation;
@@ -31,6 +32,7 @@ mod wire;
 mod test_ports;
 
 pub use config::coordinator as config_coordinator;
+pub use doorbell::Doorbell;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{

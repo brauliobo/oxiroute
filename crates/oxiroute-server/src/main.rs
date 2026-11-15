@@ -34,6 +34,7 @@ use oxiroute_rtmp::{
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
+    Doorbell,
     ConfigWatcherOptions, ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor,
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager,
     HaproxyStatsApi, HaproxyStatsPage, Http3Runtime, HttpDownstreamPolicyApp, HttpListenerApp,
@@ -252,6 +253,8 @@ fn append_allocation_snapshot() {
 
 #[allow(clippy::too_many_lines)]
 fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
+    let generation_manager = GenerationManager::new();
+    let doorbell = Doorbell::process();
     let stop_supervisor = Arc::new(AtomicBool::new(false));
     let reload_requested = Arc::new(AtomicBool::new(false));
     let mut signals = Signals::new(handled_signals())?;
@@ -265,9 +268,13 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
                 match signal {
                     SIGTERM | SIGINT => {
                         signal_stop.store(true, Ordering::Release);
+                        doorbell.ring();
                         break;
                     }
-                    SIGHUP => signal_reload.store(true, Ordering::Release),
+                    SIGHUP => {
+                        signal_reload.store(true, Ordering::Release);
+                        doorbell.ring();
+                    }
                     #[cfg(feature = "alloc-count")]
                     signal_hook::consts::SIGUSR1 => append_allocation_snapshot(),
                     _ => {}
@@ -284,7 +291,6 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     if stop_supervisor.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "startup was cancelled").into());
     }
-    let generation_manager = GenerationManager::new();
     let startup_deadline = std::time::Instant::now() + GENERATION_STARTUP_TIMEOUT;
     let candidate = generation_manager.prepare_with_deadline(*config_document, startup_deadline)?;
     let mut startup = generation_manager.begin_candidate_start(&candidate)?;
@@ -396,11 +402,15 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
         let _ = signal_thread.join();
         return Err(io::Error::other("generation supervisor terminated before startup").into());
     }
-    while !stop_supervisor.load(Ordering::Acquire) {
+    loop {
+        let heard = doorbell.rung();
+        if stop_supervisor.load(Ordering::Acquire) {
+            break;
+        }
         if reload_requested.swap(false, Ordering::AcqRel) {
             config_watcher.wake();
         }
-        thread::sleep(Duration::from_millis(20));
+        doorbell.sleep_after(heard, None);
     }
     signal_handle.close();
     let signal_result = signal_thread.join();
@@ -463,9 +473,6 @@ fn serve_generation(
     };
     let mut server = Server::new_with_opt_and_conf(None, server_config)?;
     server.bootstrap();
-    server.add_service(GenerationRuntimeMarker {
-        generation: Arc::clone(generation),
-    });
 
     let workers = listener_workers(config);
     let handshake_threads = tls_handshake_threads(config);
@@ -840,6 +847,9 @@ fn serve_generation(
             .as_ref()
             .map(FileWatcherSupervisor::monitor),
     )?;
+    if !generation.mark_runtime_started() {
+        return Err(io::Error::other("generation runtime start was not claimed").into());
+    }
     setup
         .send(Ok(()))
         .map_err(|_| io::Error::other("generation setup receiver was dropped"))?;

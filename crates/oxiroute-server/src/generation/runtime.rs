@@ -277,6 +277,7 @@ impl RuntimeGeneration {
 
     pub fn mark_runtime_failed(&self) {
         self.runtime_failed.store(true, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     #[must_use]
@@ -288,6 +289,7 @@ impl RuntimeGeneration {
         self.runtime_lifecycle
             .store(RUNTIME_CANCELLED, Ordering::Release);
         self.runtime_failed.store(true, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     pub fn begin_reference(
@@ -338,11 +340,13 @@ impl RuntimeGeneration {
 
     pub fn stop_accepting(&self) {
         let _ = self.accept_gate.close_and_wait(Duration::ZERO);
+        Doorbell::process().ring();
     }
 
     pub(super) fn start_accepting(&self) {
         self.metrics.activate_limits(self.plan().max_connections);
         self.accept_gate.enable();
+        Doorbell::process().ring();
     }
 
     #[must_use]

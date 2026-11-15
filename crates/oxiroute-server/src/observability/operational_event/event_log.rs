@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::Doorbell;
 
 #[derive(Clone, Debug)]
 pub struct WorkerEventSnapshot {
@@ -369,6 +370,7 @@ fn emit_inner(
         category_result.map_or_else(|| result_for_outcome(&value.outcome), |(_, result)| result);
     let audit_value = publish(&mut state, &mut value, context, operation);
     drop(state);
+    Doorbell::process().ring();
     persist(audit_value, context, event_category, event_result);
 }
 

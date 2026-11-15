@@ -3,13 +3,15 @@ use super::*;
 
 /// How soon a change is looked for again after one was reported, and the minimum gap between two reports.
 pub(super) const BUSY_TICK: Duration = Duration::from_millis(250);
-/// How often a worker whose status did not change looks for a change.
+/// How often a worker with connections open, whose status did not change, looks for a change.
 pub(super) const IDLE_TICK: Duration = Duration::from_secs(1);
 
 /// Builds the worker's status reports and sends them to the master.
 ///
 /// Lifecycle changes always send one. The periodic check sends only when something the master can see
-/// changed, so an idle worker is silent and costs only the counters it reads.
+/// changed, so a worker with connections open and nothing to say is silent and costs only the counters it reads.
+/// A worker with no connection open does not check at all: whatever can change its status rings the process
+/// doorbell.
 pub(super) struct StatusReporter<'a> {
     generation_id: GenerationId,
     generation: &'a RuntimeGeneration,
@@ -46,27 +48,28 @@ impl<'a> StatusReporter<'a> {
         self.send(control, status, event_cursor)
     }
 
-    /// Reports a change if one is due and returns how long the caller may sleep before checking again.
+    /// Reports a change if one is due and returns how long the caller may sleep before checking again; `None`
+    /// when the next check waits for the doorbell.
     ///
     /// Reports are at least `BUSY_TICK` apart; the next check is `BUSY_TICK` after a change and
-    /// `IDLE_TICK` after a check that found none.
+    /// `IDLE_TICK` after a check that found none while connections are open.
     pub(super) fn report_when_due(
         &mut self,
         control: &mut WorkerControl,
         lifecycle: WorkerLifecycle,
-    ) -> Result<Duration, Box<dyn Error>> {
+    ) -> Result<Option<Duration>, Box<dyn Error>> {
         if let Some(remaining) = BUSY_TICK
             .checked_sub(self.last_at.elapsed())
             .filter(|remaining| !remaining.is_zero())
         {
-            return Ok(remaining);
+            return Ok(Some(remaining));
         }
         let (status, event_cursor) = self.build(lifecycle);
         if !is_new_observation(self.last.as_ref(), &status) {
-            return Ok(IDLE_TICK);
+            return Ok(changes_unannounced(&status).then_some(IDLE_TICK));
         }
         self.send(control, status, event_cursor)?;
-        Ok(BUSY_TICK)
+        Ok(Some(BUSY_TICK))
     }
 
     fn send(
@@ -179,6 +182,18 @@ impl<'a> StatusReporter<'a> {
         };
         (status, next_event_cursor)
     }
+}
+
+/// Whether the status can change with nothing to ring the doorbell for it: counters move while connections are
+/// open, and a datagram listener counts without one.
+fn changes_unannounced(status: &WorkerStatus) -> bool {
+    status
+        .metrics
+        .is_none_or(|metrics| metrics.active_connections > 0)
+        || status
+            .listeners
+            .iter()
+            .any(|listener| listener.protocol == "udp")
 }
 
 /// Whether `status` tells the master anything the last report did not; the sequence number does not count.
