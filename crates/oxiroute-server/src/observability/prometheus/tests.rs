@@ -499,7 +499,8 @@ fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert!(
         !registry()
-            .report_stuck(std::time::Duration::from_millis(10))
+            .sweep(std::time::Duration::from_millis(10))
+            .0
             .is_empty()
     );
     let metrics = RuntimeMetrics::new();

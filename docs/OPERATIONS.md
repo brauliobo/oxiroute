@@ -112,15 +112,20 @@ unchanged.
 
 ## Idle behaviour
 
-An instance with no traffic does almost no work and takes almost no wakeups. The supervising master sleeps
+An instance with no traffic does no periodic work and takes no wakeups of its own. The supervising master sleeps
 until a worker sends a frame, a worker exits, a signal or a configuration file event arrives, or the next
 deadline falls due (the 30-second configuration reconciliation, a pending replacement phase, the
-once-per-second report of a draining worker). The worker sleeps on its control channel; it checks its
-runtime and sends its status every second while nothing changes, every 250 ms while counters or events
-change or a retired generation drains, and sends nothing when the status is unchanged. A request from the
-master is served at once. The status carries traffic and listener counters only; process, host, pool and
-certificate sampling happens when the management API or `/metrics` asks for it. The shared Pingora timer
-thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
+once-per-second report of a draining worker). The worker sleeps on its control channel and on a process
+doorbell that whatever can change its status rings: a connection arriving at an idle worker, a listener or
+administrative state change, an operational event, a closed accept gate, a failed or finished runtime. It sends
+its status when one of them changed it, every 250 ms while counters or events change or a retired generation
+drains, and every second only while connections are open or a UDP listener counts datagrams. A request from the
+master is served at once. The direct runtime sleeps on the same doorbell for signals, reload requests, candidate
+generations and retiring ones. The status carries traffic and listener counters only; process, host, pool and
+certificate sampling happens when the management API or `/metrics` asks for it. The ACME renewal thread exists
+only when a certificate is managed by ACME, the in-flight request watchdog sleeps until the earliest request
+that could go quiet (and while none is registered), and the shared Pingora timer thread sleeps until its
+earliest armed timer (and while none is armed).
 
 ## TLS handshake threads
 

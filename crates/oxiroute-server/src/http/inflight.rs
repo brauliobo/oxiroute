@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
+    thread::{self, Thread},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,7 +34,6 @@ use crate::{
 pub(crate) const MAX_PATH_BYTES: usize = 128;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_mins(1);
-const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -416,6 +416,8 @@ pub(crate) struct InflightRegistry {
     /// shard number is the low bits of its key and the guard removes it from the same shard.
     shards: Sharded<Shard>,
     stuck: Mutex<BTreeMap<(String, &'static str), u64>>,
+    watchdog: OnceLock<Thread>,
+    watchdog_parked: AtomicBool,
 }
 
 pub(crate) struct InflightGuard {
@@ -440,14 +442,9 @@ pub(crate) fn registry() -> &'static InflightRegistry {
     static WATCHDOG: OnceLock<()> = OnceLock::new();
     let registry = REGISTRY.get_or_init(InflightRegistry::new);
     WATCHDOG.get_or_init(|| {
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name("oxiroute-inflight".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(WATCHDOG_TICK);
-                    registry.report_stuck(DEFAULT_STUCK_AFTER);
-                }
-            })
+            .spawn(move || registry.watch())
             .expect("spawn in-flight watchdog");
     });
     registry
@@ -458,6 +455,32 @@ impl InflightRegistry {
         Self {
             shards: Sharded::new(Shard::default),
             stuck: Mutex::new(BTreeMap::new()),
+            watchdog: OnceLock::new(),
+            watchdog_parked: AtomicBool::new(false),
+        }
+    }
+
+    fn watch(&self) -> ! {
+        self.watchdog.get_or_init(thread::current);
+        loop {
+            match self.sweep(DEFAULT_STUCK_AFTER).1 {
+                Some(wait) => thread::park_timeout(wait),
+                None => self.park_until_registered(),
+            }
+        }
+    }
+
+    fn park_until_registered(&self) {
+        self.watchdog_parked.store(true, Ordering::SeqCst);
+        if self.sweep(DEFAULT_STUCK_AFTER).1.is_none() {
+            thread::park();
+        }
+        self.watchdog_parked.store(false, Ordering::SeqCst);
+    }
+
+    fn wake_watchdog(&self) {
+        if self.watchdog_parked.load(Ordering::SeqCst) {
+            self.watchdog.get().inspect(|watchdog| watchdog.unpark());
         }
     }
 
@@ -512,6 +535,7 @@ impl InflightRegistry {
             access_log: arrival.access_log,
         });
         self.lock(index).insert(key, Arc::clone(&entry));
+        self.wake_watchdog();
         InflightGuard {
             entry,
             registry: self,
@@ -584,34 +608,46 @@ impl InflightRegistry {
         totals
     }
 
-    /// Counts and logs each stuck request once; the arrival line is what a completion log cannot give.
-    pub(crate) fn report_stuck(&self, stuck_after: Duration) -> Vec<InflightView> {
+    /// Counts and logs each stuck request once; the arrival line is what a completion log cannot give. Says how
+    /// long until the next request not reported yet could go quiet.
+    pub(crate) fn sweep(&self, stuck_after: Duration) -> (Vec<InflightView>, Option<Duration>) {
         let limit = duration_ms(stuck_after);
         let mut reported = Vec::new();
+        let mut next = None::<u64>;
         for entry in self.entries() {
-            if entry.silent_ms() <= limit || entry.stuck_reported.swap(true, Ordering::Relaxed) {
+            if entry.stuck_reported.load(Ordering::Relaxed) {
                 continue;
             }
-            let view = entry.view();
-            let pool = view.pool.clone().unwrap_or_default();
-            *self
-                .stuck
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry((pool, view.phase.as_str()))
-                .or_default() += 1;
-            log::warn!(
-                "request {} stuck in {} for {} ms (pool {:?}, server {:?})",
-                view.request_id,
-                view.phase.as_str(),
-                view.age_ms,
-                view.pool,
-                view.server
-            );
-            entry.write_stuck_line(&view);
-            reported.push(view);
+            let silent = entry.silent_ms();
+            if silent <= limit {
+                let due = limit - silent + 1;
+                next = Some(next.map_or(due, |next| next.min(due)));
+            } else if !entry.stuck_reported.swap(true, Ordering::Relaxed) {
+                reported.push(self.report(&entry));
+            }
         }
-        reported
+        (reported, next.map(Duration::from_millis))
+    }
+
+    fn report(&self, entry: &InflightEntry) -> InflightView {
+        let view = entry.view();
+        let pool = view.pool.clone().unwrap_or_default();
+        *self
+            .stuck
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((pool, view.phase.as_str()))
+            .or_default() += 1;
+        log::warn!(
+            "request {} stuck in {} for {} ms (pool {:?}, server {:?})",
+            view.request_id,
+            view.phase.as_str(),
+            view.age_ms,
+            view.pool,
+            view.server
+        );
+        entry.write_stuck_line(&view);
+        view
     }
 }
 

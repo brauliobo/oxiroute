@@ -18,7 +18,7 @@ use oxiroute_config::ListenerBind;
 
 use crate::listener::inventory::{ListenerEntry, ListenerId, ListenerMetricPolicy};
 use crate::{
-    AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor,
+    AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor, Doorbell,
     FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, ProxyProtocolResult, RoundRobinPool,
 };
 

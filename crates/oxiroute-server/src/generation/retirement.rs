@@ -196,6 +196,18 @@ impl RetiredGenerations {
         expired
     }
 
+    /// When a retired generation is next due to be told to close, or forgotten once it was.
+    pub(crate) fn next_due(&self) -> Option<Instant> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .closed_at
+                    .map_or(entry.since + entry.deadline, |closed| closed + CLOSE_GRACE)
+            })
+            .min()
+    }
+
     /// Process shutdown ends whatever is still draining.
     pub(crate) fn close_for_shutdown(&mut self) {
         for entry in &mut self.entries {

@@ -234,6 +234,16 @@ impl GenerationManager {
     /// Whether the candidate must wait for a retired generation to finish before it may activate.
     ///
     /// The limit is the candidate's own `max_retired_generations`.
+    /// When the oldest retired generation next needs attention, if one is draining.
+    #[must_use]
+    pub fn next_retirement_due(&self) -> Option<Instant> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retired
+            .next_due()
+    }
+
     #[must_use]
     pub fn defer_for_retired_cap(&self, candidate: &GenerationCandidate) -> bool {
         let mut state = self

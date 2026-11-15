@@ -15,7 +15,7 @@ use std::{
 
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    AdministrativeState, GenerationManager, GenerationStatus, ListenerRuntimeState,
+    AdministrativeState, Doorbell, GenerationManager, GenerationStatus, ListenerRuntimeState,
     RuntimeGeneration, ServerAdminState, TrafficSnapshot, WorkerNotice,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
@@ -181,6 +181,8 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     reporter.report(&mut control, lifecycle)?;
 
     let inject_runtime_failure = std::env::var_os(TEST_RUNTIME_FAILURE_ENV).is_some();
+    let doorbell = Doorbell::process();
+    doorbell.pollable()?;
     loop {
         if generation.runtime_failed()
             || (!forced_close && process.as_ref().is_some_and(GenerationProcess::is_finished))
@@ -222,17 +224,18 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     let request = draining.take().expect("a drain request is pending");
                     control.acknowledge(&request, ControlOutcome::Accepted)?;
                     reporter.report(&mut control, lifecycle)?;
-                    BUSY_TICK
+                    Some(BUSY_TICK)
                 } else {
                     reporter.report_when_due(&mut control, lifecycle)?
                 };
                 // A draining generation is polled for its last connection.
                 let wait = if draining.is_some() {
-                    wait.min(BUSY_TICK)
+                    Some(wait.map_or(BUSY_TICK, |wait| wait.min(BUSY_TICK)))
                 } else {
                     wait
                 };
-                control.wait_readable(wait)?;
+                control.wait_readable(doorbell.pollable()?, wait)?;
+                doorbell.settle();
                 continue;
             }
             Err(error) => {

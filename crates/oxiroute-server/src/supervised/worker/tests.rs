@@ -133,6 +133,7 @@ fn assert_prepublication_recording_cleanup(branch: &str) {
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     let started = Instant::now();
 
