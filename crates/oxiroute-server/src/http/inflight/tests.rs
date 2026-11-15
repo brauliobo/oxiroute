@@ -86,6 +86,57 @@ fn phases_pool_server_and_attempts_follow_the_request() {
 }
 
 #[test]
+fn an_entry_that_served_a_request_starts_the_next_one_as_a_new_arrival() {
+    let registry = registry_for_test();
+    let first = attempt_on(
+        registry,
+        "first",
+        "farm",
+        "gpu-1",
+        Some(LeftRunning::DataPlane),
+    );
+    first.set_phase(Phase::Streaming, Instant::now());
+    first.place_route("api".into());
+    let held_cell = first.queue_cell();
+    held_cell.store(3, Ordering::Relaxed);
+    drop(first);
+
+    let second = registry.register(arrival("second", Duration::from_secs(30)));
+    let view = registry.find("second").expect("entry");
+    assert_eq!(
+        (
+            view.phase,
+            view.attempts,
+            view.pool,
+            view.server,
+            view.route
+        ),
+        (Phase::Routed, 0, None, None, None)
+    );
+    assert_eq!((view.waited_ms, view.queue_position), (None, None));
+    let cell = second.queue_cell();
+    assert!(!Arc::ptr_eq(&cell, &held_cell) && cell.load(Ordering::Relaxed) == 0);
+    assert_eq!(second.evacuation().evacuate(true, true), None);
+    assert!(!second.stuck());
+    assert!(registry.find("first").is_none());
+}
+
+#[test]
+fn an_entry_a_scan_still_holds_is_never_handed_to_another_request() {
+    let registry = registry_for_test();
+    let guard = registry.register(arrival("held", Duration::from_secs(30)));
+    let scanned = registry.entries();
+    drop(guard);
+
+    let next = registry.register(arrival("next", Duration::from_secs(30)));
+    assert_eq!(scanned.len(), 1);
+    assert_eq!(scanned[0].view().request_id, "held");
+    assert_eq!(registry.find("next").expect("entry").request_id, "next");
+    assert!(registry.find("held").is_none());
+    drop(next);
+}
+
+#[test]
 fn a_request_registered_with_its_route_and_pool_is_placed_on_arrival() {
     let registry = registry_for_test();
     let pool = Label::new("farm");

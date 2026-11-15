@@ -16,6 +16,7 @@ use std::{
 
 use crate::{
     health::ReadmissionProbe,
+    label::Label,
     observability::upstream_stats::{ServerStats, upstream_stats},
 };
 use arc_swap::ArcSwap;
@@ -79,6 +80,11 @@ use selectable::SelectableView;
 pub use server::ServerOrigin;
 pub(crate) use server::*;
 use weight_index::WeightIndex;
+
+/// Whether `name` is one of the servers `names` lists: the ones a request tried already.
+fn lists(names: &[Label], name: &str) -> bool {
+    names.iter().any(|listed| **listed == *name)
+}
 
 #[cfg(test)]
 mod membership_tests;

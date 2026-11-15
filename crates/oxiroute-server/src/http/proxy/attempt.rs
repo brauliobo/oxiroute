@@ -1,5 +1,3 @@
-use futures_util::FutureExt as _;
-
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::upstream_peer::ReusePeer;
@@ -172,7 +170,7 @@ impl HttpRequestContext {
         self.trace.stats = Some(Arc::clone(selected.server_stats()));
         if let Some(inflight) = &self.inflight {
             inflight.place_attempt(pool.label(), server.shared());
-            selected.observe_queue_position(inflight.queue_cell());
+            selected.observe_queue_position(|| inflight.queue_cell());
             inflight.set_phase(Phase::Connecting, now);
         }
         self.selected_upstream_host = host(
@@ -180,8 +178,7 @@ impl HttpRequestContext {
             &proxy_policy(self).upstream_host,
             self.authority.as_ref(),
         )?;
-        self.attempted_upstreams
-            .push(selected.server_name().to_owned());
+        self.attempted_upstreams.push(server);
         self.selected_observation = Some(selected.observation());
         self.selected = Some(selected);
         Ok(())
@@ -232,20 +229,17 @@ impl HttpRequestContext {
                 return Ok(None);
             }
             self.retry_delay_pending = false;
-            let pool = Arc::clone(
-                self.pool
-                    .as_ref()
-                    .ok_or_else(|| Error::new_in(ErrorType::InternalError))?,
-            );
-            let tag = self.queue_tag;
-            let selected = match self.retry_server.take() {
-                Some(server) => pool.select_server_endpoint(&server, tag).now_or_never(),
-                None => pool
-                    .select_endpoint_at(&self.attempted_upstreams, tag, crate::clock::wall_ms(now))
-                    .now_or_never(),
-            };
-            let Some(selected) = selected else {
+            let pool = self
+                .pool
+                .as_ref()
+                .ok_or_else(|| Error::new_in(ErrorType::InternalError))?;
+            if !pool.selects_at_once() {
                 return Ok(None);
+            }
+            let selected = match self.retry_server.take() {
+                Some(server) => pool.select_server_endpoint_at_once(&server),
+                None => pool
+                    .select_endpoint_at_once(&self.attempted_upstreams, crate::clock::wall_ms(now)),
             };
             self.enter_phase(Phase::Queued, now);
             self.adopt_selection(selected?, now, host)?;
@@ -388,11 +382,11 @@ impl HttpRequestContext {
 /// never retry, so a failed attempt is final unless an operator moved it.
 impl HttpRequestContext {
     pub(super) fn arm_evacuation_for_lane(&self) -> crate::http::evacuation::Cancelled {
-        let Some(evacuation) = self.evacuation() else {
+        let Some(inflight) = self.inflight.as_ref() else {
             return crate::http::evacuation::Cancelled::never();
         };
-        evacuation.begin_attempt(self.evacuation_pin);
-        evacuation.cancelled()
+        inflight.evacuation().begin_attempt(self.evacuation_pin);
+        inflight.cancelled()
     }
 }
 

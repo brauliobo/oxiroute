@@ -16,7 +16,7 @@ use std::{
 };
 
 use futures_util::task::AtomicWaker;
-use pingora::{Error, ErrorType, proxy::UpstreamCancellation};
+use pingora::{Error, ErrorType};
 
 mod report;
 #[cfg(test)]
@@ -175,22 +175,27 @@ impl Evacuation {
             }
         }
     }
+}
 
-    /// Resolves once the operator cancelled the attempt.
-    pub(crate) fn cancellation(self: &Arc<Self>) -> UpstreamCancellation {
-        Box::pin(self.cancelled())
-    }
+/// What owns an `Evacuation`, so the future of its cancellation keeps the owner alive and not a copy of the state.
+pub(crate) trait Evacuable: Send + Sync {
+    fn evacuation(&self) -> &Evacuation;
+}
 
-    /// [`Self::cancellation`] as a plain future, for the callers that await it where it is made.
-    pub(crate) fn cancelled(self: &Arc<Self>) -> Cancelled {
-        Cancelled(Some(Arc::clone(self)))
+impl Evacuable for Evacuation {
+    fn evacuation(&self) -> &Evacuation {
+        self
     }
 }
 
 /// Resolves once the operator cancelled the attempt; never when there is nothing to cancel.
-pub(crate) struct Cancelled(Option<Arc<Evacuation>>);
+pub(crate) struct Cancelled(Option<Arc<dyn Evacuable>>);
 
 impl Cancelled {
+    pub(crate) fn of(owner: Arc<impl Evacuable + 'static>) -> Self {
+        Self(Some(owner))
+    }
+
     /// A wait for a request that cannot be cancelled.
     pub(crate) const fn never() -> Self {
         Self(None)
@@ -201,9 +206,10 @@ impl Future for Cancelled {
     type Output = Box<Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Box<Error>> {
-        let Some(handle) = &self.0 else {
+        let Some(owner) = &self.0 else {
             return Poll::Pending;
         };
+        let handle = owner.evacuation();
         if !handle.load().cancelled() {
             handle.waker.register(context.waker());
         }

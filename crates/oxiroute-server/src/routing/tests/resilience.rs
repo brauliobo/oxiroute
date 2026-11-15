@@ -95,7 +95,7 @@ fn fail_open_prefers_healthy_ejected_soonest_then_fewest_failed_checks() {
 
     let order = (1..=4)
         .scan(Vec::<String>::new(), |excluded, _| {
-            let lease = pool.select_server_excluding(excluded).lease?;
+            let lease = pool.select_server_excluding(&labels(excluded)).lease?;
             excluded.push(lease.server_name().to_owned());
             Some(lease.server_name().to_owned())
         })
@@ -205,8 +205,8 @@ fn fail_open_counts_a_server_as_unattempted_only_once() {
     mark_unhealthy(&pool, 0, 1);
     mark_unhealthy(&pool, 1, 1);
 
-    assert!(pool.has_unattempted_servers(&["a".to_owned()]));
-    assert!(!pool.has_unattempted_servers(&["a".to_owned(), "b".to_owned()]));
+    assert!(pool.has_unattempted_servers(&[Label::from("a")]));
+    assert!(!pool.has_unattempted_servers(&[Label::from("a"), Label::from("b")]));
     let closed = RoundRobinPool::new_named_servers(
         "closed".into(),
         [runtime_server("a", 3000, None)],

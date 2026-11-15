@@ -215,7 +215,7 @@ impl EndpointLease {
     /// Reports this lease's place in the pool queue to `cell` while it waits for capacity.
     ///
     /// Only a lease with a queue deadline ever waits, so any other one reports nothing.
-    pub(crate) fn observe_queue_position(&self, cell: &Arc<AtomicU64>) {
+    pub(crate) fn observe_queue_position(&self, cell: impl FnOnce() -> Arc<AtomicU64>) {
         if self.inner.deadline.is_none() {
             return;
         }
@@ -224,7 +224,7 @@ impl EndpointLease {
             .wait
             .observer
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(cell));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell());
     }
 
     /// Records where a selector wait started, for leases that were not bound before waiting.

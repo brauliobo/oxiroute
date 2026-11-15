@@ -3,18 +3,18 @@ use super::*;
 use crate::http::evacuation::Evacuation;
 
 impl HttpRequestContext {
-    pub(super) fn evacuation(&self) -> Option<&Arc<Evacuation>> {
+    pub(super) fn evacuation(&self) -> Option<&Evacuation> {
         self.inflight.as_ref().map(InflightGuard::evacuation)
     }
 
     /// Lets the operator move or kill the attempt about to run, until it commits to a response.
     pub(super) fn arm_evacuation(&self, session: &Session) -> Option<UpstreamCancellation> {
-        let evacuation = self.evacuation()?;
+        let inflight = self.inflight.as_ref()?;
         let unmovable = self.evacuation_pin.or_else(|| {
             (!request_body_replayable(session)).then_some(LeftRunning::BodyNotReplayable)
         });
-        evacuation.begin_attempt(unmovable);
-        Some(evacuation.cancellation())
+        inflight.evacuation().begin_attempt(unmovable);
+        Some(Box::pin(inflight.cancelled()))
     }
 
     /// The attempt about to run is served by the epoll data plane, which the operator cannot move or kill.

@@ -285,8 +285,9 @@ fn run_reusing(
             .collect::<Vec<_>>();
         if queue_timeout.is_some() && random.below(3) == 0 {
             let expected = reference.reuse(&pool, &excluded).map(name);
-            let lease = runtime
-                .block_on(pool.select_connection_target_waiting(&excluded, QueueTag::default()));
+            let lease = runtime.block_on(
+                pool.select_connection_target_waiting(&labels(&excluded), QueueTag::default()),
+            );
             assert_eq!(
                 lease.as_ref().map(|lease| lease.server_name().to_owned()),
                 expected,
@@ -295,7 +296,7 @@ fn run_reusing(
             held.extend(lease.filter(|_| random.below(3) != 0));
         } else if random.below(2) == 0 {
             let expected = reference.acquire(&pool, &excluded).map(name);
-            let lease = pool.select_server_excluding(&excluded).lease;
+            let lease = pool.select_server_excluding(&labels(&excluded)).lease;
             assert_eq!(
                 lease.as_ref().map(|lease| lease.server_name().to_owned()),
                 expected,
@@ -304,7 +305,7 @@ fn run_reusing(
             held.extend(lease.filter(|_| random.below(3) != 0));
         } else {
             let expected = reference.target(&pool, &excluded).map(name);
-            let lease = pool.select_connection_target_excluding(&excluded);
+            let lease = pool.select_connection_target_excluding(&labels(&excluded));
             assert_eq!(
                 lease.as_ref().map(|lease| lease.server_name().to_owned()),
                 expected,
@@ -390,7 +391,7 @@ fn power_of_two_choices_only_chooses_admissible_servers_and_avoids_the_busiest()
     let mut picks = [0_u32; SERVERS];
     for _ in 0..2000 {
         let lease = pool
-            .select_connection_target_excluding(&excluded)
+            .select_connection_target_excluding(&labels(&excluded))
             .expect("lease");
         picks[lease.server_name()[1..].parse::<usize>().expect("index")] += 1;
     }
