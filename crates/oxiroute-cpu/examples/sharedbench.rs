@@ -7,23 +7,26 @@ use oxiroute_cpu::{
 };
 use std::hint::black_box;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-const ROUNDS: usize = 20_000;
 const SAMPLES: usize = 7;
 
-fn median(mut f: impl FnMut() -> usize) -> (f64, f64, f64) {
-    for _ in 0..ROUNDS / 10 {
-        black_box(f());
-    }
-    let mut samples = [0.0; SAMPLES];
-    for sample in &mut samples {
+fn measure(mut f: impl FnMut() -> usize) -> f64 {
+    let mut rounds = 128;
+    loop {
         let start = Instant::now();
-        for _ in 0..ROUNDS {
+        for _ in 0..rounds {
             black_box(f());
         }
-        *sample = start.elapsed().as_secs_f64() * 1e9 / ROUNDS as f64;
+        let elapsed = start.elapsed();
+        if elapsed >= Duration::from_millis(2) {
+            return elapsed.as_secs_f64() * 1e9 / f64::from(rounds);
+        }
+        rounds *= 2;
     }
+}
+
+fn median(mut samples: [f64; SAMPLES]) -> (f64, f64, f64) {
     samples.sort_by(f64::total_cmp);
     (samples[SAMPLES / 2], samples[0], samples[SAMPLES - 1])
 }
@@ -35,8 +38,21 @@ fn compare(
     old: impl Fn(&[u8]) -> usize,
     new: impl Fn(&[u8]) -> usize,
 ) {
-    let (old, old_min, old_max) = median(|| old(black_box(buf)));
-    let (new, new_min, new_max) = median(|| new(black_box(buf)));
+    let mut old_samples = [0.0; SAMPLES];
+    let mut new_samples = [0.0; SAMPLES];
+    for sample in 0..SAMPLES {
+        let mut before = || old_samples[sample] = measure(|| old(black_box(buf)));
+        let mut after = || new_samples[sample] = measure(|| new(black_box(buf)));
+        if sample % 2 == 0 {
+            before();
+            after();
+        } else {
+            after();
+            before();
+        }
+    }
+    let (old, old_min, old_max) = median(old_samples);
+    let (new, new_min, new_max) = median(new_samples);
     println!(
         "{},{operation},{shape},{},{old:.3},{new:.3},{old_min:.3},{old_max:.3},{new_min:.3},{new_max:.3}",
         level().name(),

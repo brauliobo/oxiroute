@@ -61,7 +61,7 @@ pub fn json_escape_at_with(level: Level, buf: &[u8]) -> usize {
 #[inline]
 #[must_use]
 pub fn header_value_end(buf: &[u8], from: usize) -> usize {
-    auto_at::<HEADER_CONTROL>(buf, from, [0; 3])
+    runtime_at::<HEADER_CONTROL>(buf, from, [0; 3])
 }
 
 /// [`header_value_end`] at `level`, clamped to the hardware.
@@ -101,6 +101,9 @@ fn at<const KIND: u8>(level: Level, buf: &[u8], from: usize, args: [u8; 3]) -> u
 
 #[inline]
 pub(crate) fn scalar_at<const KIND: u8>(buf: &[u8], from: usize, args: [u8; 3]) -> usize {
+    if KIND == HEADER_CONTROL {
+        return scalar_header_at(buf, from);
+    }
     let Some(rest) = buf.get(from..) else {
         return from;
     };
@@ -110,12 +113,22 @@ pub(crate) fn scalar_at<const KIND: u8>(buf: &[u8], from: usize, args: [u8; 3]) 
         .unwrap_or(rest.len())
 }
 
+fn scalar_header_at(buf: &[u8], from: usize) -> usize {
+    let mut end = from;
+    loop {
+        end = crate::scalar::control_at(buf, end);
+        if buf.get(end) != Some(&b'\t') {
+            return end;
+        }
+        end += 1;
+    }
+}
+
 fn matches<const KIND: u8>(b: u8, args: [u8; 3]) -> bool {
     match KIND {
         ANY3 => args.contains(&b),
         OUTSIDE_RANGE => b < args[0] || b > args[1],
         JSON_ESCAPE => b < 0x20 || matches!(b, b'"' | b'\\'),
-        HEADER_CONTROL => (b < 0x20 && b != b'\t') || b == 0x7f,
         _ => unreachable!(),
     }
 }
