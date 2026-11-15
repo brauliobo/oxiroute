@@ -14,6 +14,7 @@
 
 use log::debug;
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
+use std::ops::Deref;
 use std::sync::{Arc, Once, OnceLock};
 
 use crate::connectors::tls::replace_leftmost_underscore;
@@ -29,8 +30,6 @@ use crate::tls::ext::{
 use crate::tls::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode, SslVersion};
 use crate::tls::x509::store::X509StoreBuilder;
 use crate::upstreams::peer::{Peer, ALPN};
-
-pub type TlsConnector = SslConnector;
 
 const CIPHER_LIST: &str = "AES-128-GCM-SHA256\
     :AES-256-GCM-SHA384\
@@ -87,32 +86,51 @@ fn init_ssl_cert_env_vars() {
 
 #[derive(Clone)]
 pub struct Connector {
-    pub(crate) ctx: Arc<SslConnector>, // Arc to support clone
+    pub(crate) ctx: Arc<LazyContext>, // Arc to support clone
+}
+
+/// The client context of a connector, built when the first TLS peer connects: building one parses the whole
+/// system CA bundle, which a proxy without TLS upstreams never needs.
+pub(crate) struct LazyContext {
+    options: Option<ConnectorOptions>,
+    own: OnceLock<SslConnector>,
 }
 
 /// The client context for the system trust store, built once per process.
 ///
-/// Building a context parses the whole system CA bundle, so connectors without a private CA, client
-/// certificate or key log share this one instead of each parsing the bundle again.
-static SYSTEM_TRUST_CONTEXT: OnceLock<Connector> = OnceLock::new();
+/// Connectors without a private CA, client certificate or key log share this one instead of each parsing the
+/// bundle again.
+static SYSTEM_TRUST_CONTEXT: OnceLock<SslConnector> = OnceLock::new();
 
 fn uses_system_trust(options: &ConnectorOptions) -> bool {
     options.ca_file.is_none() && options.cert_key_file.is_none() && !options.debug_ssl_keylog
 }
 
+impl Deref for LazyContext {
+    type Target = SslConnector;
+
+    fn deref(&self) -> &SslConnector {
+        let slot = if self.options.as_ref().is_none_or(uses_system_trust) {
+            &SYSTEM_TRUST_CONTEXT
+        } else {
+            &self.own
+        };
+        slot.get_or_init(|| Connector::build(self.options.as_ref()))
+    }
+}
+
 impl Connector {
     pub fn new(options: Option<ConnectorOptions>) -> Self {
-        if options.as_ref().is_none_or(uses_system_trust) {
-            SYSTEM_TRUST_CONTEXT
-                .get_or_init(|| Self::build(options))
-                .clone()
-        } else {
-            Self::build(options)
+        Connector {
+            ctx: Arc::new(LazyContext {
+                options,
+                own: OnceLock::new(),
+            }),
         }
     }
 
-    fn build(options: Option<ConnectorOptions>) -> Self {
-        if options.as_ref().is_none_or(|conf| conf.ca_file.is_none()) {
+    fn build(options: Option<&ConnectorOptions>) -> SslConnector {
+        if options.is_none_or(|conf| conf.ca_file.is_none()) {
             init_ssl_cert_env_vars();
         }
         // `SslConnector::builder` already loads the default system trust locations.
@@ -130,7 +148,7 @@ impl Connector {
         builder
             .set_min_proto_version(Some(SslVersion::TLS1))
             .unwrap();
-        if let Some(conf) = options.as_ref() {
+        if let Some(conf) = options {
             if let Some(ca_file_path) = conf.ca_file.as_ref() {
                 builder.set_ca_file(ca_file_path).unwrap();
             }
@@ -156,9 +174,7 @@ impl Connector {
             }
         }
 
-        Connector {
-            ctx: Arc::new(builder.build()),
-        }
+        builder.build()
     }
 }
 

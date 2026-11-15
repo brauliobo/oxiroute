@@ -17,15 +17,17 @@ pub const NAME: &str = "system";
 
 /// jemalloc reads its configuration from this NUL-terminated string (a thin pointer, so the array length is part of
 /// the type). Bigger per-thread caches keep the buffers of HTTP/2 and connection-per-request traffic out of the arenas:
-/// -2% to -5% instructions on those lanes. `_RJEM_MALLOC_CONF` at run time still overrides every key.
+/// -2% to -5% instructions on those lanes. `thp:never` keeps jemalloc's 2 MiB extents from becoming transparent huge
+/// pages on hosts that enable them for every mapping: an idle process held 49 MiB more. `_RJEM_MALLOC_CONF` at run
+/// time still overrides every key.
 ///
 /// `background_thread` is not set here: jemalloc would start its thread with the first allocation, and a supervised
 /// worker must still be single-threaded when it adopts its control endpoint. See [`start_background_thread`].
 #[cfg(all(target_os = "linux", feature = "jemalloc"))]
 #[allow(unsafe_code)]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-pub static MALLOC_CONF: &[u8; 99] =
-    b"tcache_nslots_small_min:400,tcache_nslots_small_max:2000,tcache_nslots_large:400,tcache_max:131072\0";
+pub static MALLOC_CONF: &[u8; 109] =
+    b"tcache_nslots_small_min:400,tcache_nslots_small_max:2000,tcache_nslots_large:400,tcache_max:131072,thp:never\0";
 
 /// Starts the jemalloc background thread that returns dirty pages when their decay time is up. Without it jemalloc only
 /// purges while some thread allocates, so a process that went idle after a burst (thousands of connections closed)
