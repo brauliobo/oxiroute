@@ -14,8 +14,19 @@ use std::task::{Context, Poll};
 /// Blocks kept per thread: as many requests as were in flight at the same time and then some.
 const POOLED_BLOCKS: usize = 64;
 
+struct BlockCache(Vec<(Layout, NonNull<u8>)>);
+
+impl Drop for BlockCache {
+    fn drop(&mut self) {
+        for (layout, block) in self.0.drain(..) {
+            // SAFETY: cached blocks have no live future and retain their allocation layout.
+            unsafe { dealloc(block.as_ptr(), layout) };
+        }
+    }
+}
+
 thread_local! {
-    static BLOCKS: RefCell<Vec<(Layout, NonNull<u8>)>> = const { RefCell::new(Vec::new()) };
+    static BLOCKS: RefCell<BlockCache> = const { RefCell::new(BlockCache(Vec::new())) };
 }
 
 pub struct PooledFuture<F> {
@@ -30,8 +41,8 @@ unsafe impl<F: Sync> Sync for PooledFuture<F> {}
 fn take_block(layout: Layout) -> NonNull<u8> {
     BLOCKS
         .with_borrow_mut(|blocks| {
-            let at = blocks.iter().rposition(|(held, _)| *held == layout)?;
-            Some(blocks.swap_remove(at).1)
+            let at = blocks.0.iter().rposition(|(held, _)| *held == layout)?;
+            Some(blocks.0.swap_remove(at).1)
         })
         .unwrap_or_else(|| {
             // SAFETY: a future is never zero-sized here (it holds its arguments).
@@ -43,9 +54,9 @@ fn take_block(layout: Layout) -> NonNull<u8> {
 fn give_block(layout: Layout, block: NonNull<u8>) {
     let kept = BLOCKS.try_with(|blocks| {
         let mut blocks = blocks.borrow_mut();
-        let room = blocks.len() < POOLED_BLOCKS;
+        let room = blocks.0.len() < POOLED_BLOCKS;
         if room {
-            blocks.push((layout, block));
+            blocks.0.push((layout, block));
         }
         room
     });
@@ -146,8 +157,137 @@ impl Future for ErasedFuture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::{GlobalAlloc, System};
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    struct TrackingAllocator;
+
+    #[global_allocator]
+    static ALLOCATOR: TrackingAllocator = TrackingAllocator;
+    static TRACKING: AtomicBool = AtomicBool::new(false);
+    static FREED: AtomicUsize = AtomicUsize::new(0);
+    static TRACKED: [AtomicUsize; POOLED_BLOCKS + 1] =
+        [const { AtomicUsize::new(0) }; POOLED_BLOCKS + 1];
+
+    // Only registered block addresses count, so allocations from parallel tests cannot affect the result.
+    unsafe impl GlobalAlloc for TrackingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            if TRACKING.load(Ordering::Relaxed) {
+                for tracked in &TRACKED {
+                    if tracked
+                        .compare_exchange(pointer as usize, 0, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        FREED.fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+            unsafe { System.dealloc(pointer, layout) };
+        }
+    }
+
+    fn track_block(pointer: NonNull<u8>) {
+        assert!(TRACKED.iter().any(|tracked| tracked
+            .compare_exchange(
+                0,
+                pointer.as_ptr() as usize,
+                Ordering::Relaxed,
+                Ordering::Relaxed
+            )
+            .is_ok()));
+    }
+
+    #[repr(align(256))]
+    struct TrackedFuture(Arc<AtomicUsize>);
+
+    impl Future for TrackedFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for TrackedFuture {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn thread_exit_frees_cached_blocks_and_preserves_live_futures() {
+        TRACKING.store(true, Ordering::Relaxed);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let counter = drops.clone();
+        std::thread::spawn(move || {
+            let futures: Vec<_> = (0..=POOLED_BLOCKS)
+                .map(|_| {
+                    let future = PooledFuture::new(|| TrackedFuture(counter.clone()));
+                    assert_eq!(future.future.as_ptr() as usize % 256, 0);
+                    track_block(future.future.cast());
+                    future
+                })
+                .collect();
+            drop(futures);
+            assert_eq!(FREED.load(Ordering::Relaxed), 1);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(FREED.load(Ordering::Relaxed), POOLED_BLOCKS + 1);
+
+        let counter = drops.clone();
+        std::thread::spawn(move || {
+            thread_local! {
+                static LATE: RefCell<Option<PooledFuture<TrackedFuture>>> = const { RefCell::new(None) };
+            }
+            // Initialized first, so its future is dropped after the block cache has been destroyed.
+            LATE.with(|_| {});
+            let future = PooledFuture::new(|| TrackedFuture(counter));
+            track_block(future.future.cast());
+            LATE.with_borrow_mut(|late| *late = Some(future));
+        })
+        .join()
+        .unwrap();
+        assert_eq!(FREED.load(Ordering::Relaxed), POOLED_BLOCKS + 2);
+
+        let counter = drops.clone();
+        let mut live = std::thread::spawn(move || {
+            let future = PooledFuture::new(|| TrackedFuture(counter));
+            track_block(future.future.cast());
+            future
+        })
+        .join()
+        .unwrap();
+        assert_eq!(FREED.load(Ordering::Relaxed), POOLED_BLOCKS + 2);
+        let waker = futures::task::noop_waker();
+        assert!(Pin::new(&mut live)
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending());
+        std::thread::spawn(move || drop(live)).join().unwrap();
+        assert_eq!(FREED.load(Ordering::Relaxed), POOLED_BLOCKS + 3);
+
+        let counter = drops.clone();
+        std::thread::spawn(move || {
+            let future = ErasedFuture::new(|| TrackedFuture(counter));
+            track_block(future.future);
+            drop(future);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(FREED.load(Ordering::Relaxed), POOLED_BLOCKS + 4);
+        assert_eq!(drops.load(Ordering::Relaxed), POOLED_BLOCKS + 4);
+        assert!(TRACKED
+            .iter()
+            .all(|tracked| tracked.load(Ordering::Relaxed) == 0));
+        TRACKING.store(false, Ordering::Relaxed);
+    }
 
     fn big() -> impl Future<Output = usize> {
         async {
@@ -196,7 +336,7 @@ mod tests {
             .map(|_| PooledFuture::new(|| async { 1_usize }))
             .collect();
         drop(futures);
-        assert_eq!(BLOCKS.with_borrow(Vec::len), POOLED_BLOCKS);
+        assert_eq!(BLOCKS.with_borrow(|blocks| blocks.0.len()), POOLED_BLOCKS);
     }
 
     #[tokio::test]
