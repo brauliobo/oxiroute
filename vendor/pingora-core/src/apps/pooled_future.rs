@@ -38,20 +38,29 @@ unsafe impl<F: Send> Send for PooledFuture<F> {}
 unsafe impl<F: Sync> Sync for PooledFuture<F> {}
 
 /// A block for `layout`: one this thread kept, else a new one.
-fn take_block(layout: Layout) -> NonNull<u8> {
+fn take_block<F>() -> NonNull<F> {
+    let layout = Layout::new::<F>();
+    if layout.size() == 0 {
+        return NonNull::dangling();
+    }
     BLOCKS
         .with_borrow_mut(|blocks| {
             let at = blocks.0.iter().rposition(|(held, _)| *held == layout)?;
-            Some(blocks.0.swap_remove(at).1)
+            Some(blocks.0.swap_remove(at).1.cast())
         })
         .unwrap_or_else(|| {
-            // SAFETY: a future is never zero-sized here (it holds its arguments).
-            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout))
+            // SAFETY: the layout is nonzero and represents F.
+            NonNull::new(unsafe { alloc(layout) })
+                .unwrap_or_else(|| handle_alloc_error(layout))
+                .cast()
         })
 }
 
 /// Keeps `block` for the next future of its layout, or frees it when the thread holds enough.
 fn give_block(layout: Layout, block: NonNull<u8>) {
+    if layout.size() == 0 {
+        return;
+    }
     let kept = BLOCKS.try_with(|blocks| {
         let mut blocks = blocks.borrow_mut();
         let room = blocks.0.len() < POOLED_BLOCKS;
@@ -70,7 +79,7 @@ impl<F: Future> PooledFuture<F> {
     /// The future is written where it will live: the block is taken before `make` runs.
     #[inline(always)]
     pub fn new(make: impl FnOnce() -> F) -> Self {
-        let future = take_block(Layout::new::<F>()).cast::<F>();
+        let future = take_block::<F>();
         // SAFETY: the block is valid for `layout` and owned by this value.
         unsafe { future.write(make()) };
         Self { future }
@@ -124,7 +133,7 @@ impl ErasedFuture {
     #[inline(always)]
     pub fn new<F: Future<Output = ()> + Send + 'static>(make: impl FnOnce() -> F) -> Self {
         let layout = Layout::new::<F>();
-        let future = take_block(layout);
+        let future = take_block::<F>().cast::<u8>();
         // SAFETY: the block is valid for `layout` and owned by this value.
         unsafe { future.cast::<F>().write(make()) };
         Self {
@@ -174,10 +183,16 @@ mod tests {
     // Only registered block addresses count, so allocations from parallel tests cannot affect the result.
     unsafe impl GlobalAlloc for TrackingAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if layout.size() == 0 {
+                std::process::abort();
+            }
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            if layout.size() == 0 {
+                std::process::abort();
+            }
             if TRACKING.load(Ordering::Relaxed) {
                 for tracked in &TRACKED {
                     if tracked
@@ -219,6 +234,52 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[repr(align(4096))]
+    struct AlignedZeroSized;
+
+    static ZERO_SIZED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Future for AlignedZeroSized {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+            assert_eq!(self.get_mut() as *mut Self as usize % 4096, 0);
+            Poll::Ready(())
+        }
+    }
+
+    impl Drop for AlignedZeroSized {
+        fn drop(&mut self) {
+            ZERO_SIZED_DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn zero_sized_futures_poll_and_drop_without_allocating_blocks() {
+        assert_eq!(std::mem::size_of::<AlignedZeroSized>(), 0);
+        assert_eq!(std::mem::size_of::<std::future::Pending<()>>(), 0);
+        let cached = BLOCKS.with_borrow(|blocks| blocks.0.len());
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        let mut typed = PooledFuture::new(std::future::pending::<()>);
+        assert!(Pin::new(&mut typed).poll(&mut context).is_pending());
+        drop(typed);
+        let mut erased = ErasedFuture::new(std::future::pending::<()>);
+        assert!(Pin::new(&mut erased).poll(&mut context).is_pending());
+        drop(erased);
+
+        let mut typed = PooledFuture::new(|| AlignedZeroSized);
+        assert!(Pin::new(&mut typed).poll(&mut context).is_ready());
+        drop(typed);
+        let mut erased = ErasedFuture::new(|| AlignedZeroSized);
+        assert!(Pin::new(&mut erased).poll(&mut context).is_ready());
+        drop(erased);
+
+        assert_eq!(ZERO_SIZED_DROPS.load(Ordering::Relaxed), 2);
+        assert_eq!(BLOCKS.with_borrow(|blocks| blocks.0.len()), cached);
     }
 
     #[test]
