@@ -1,0 +1,165 @@
+use std::{net::SocketAddr, rc::Rc, sync::Arc, time::Instant};
+
+use oxiroute_h1_head::RequestHead;
+
+use super::{
+    chunked::ChunkScanner,
+    config::{Config, Timeouts},
+    link::Link,
+    service::{AttemptTimeouts, Failure, Reuse, Service},
+    slab::Token,
+};
+
+pub(crate) type Shared<S> = Rc<Arc<S>>;
+
+pub(crate) struct Buffers {
+    pub(crate) req: Box<[u8]>,
+    pub(crate) resp: Box<[u8]>,
+    pub(crate) up_head: Vec<u8>,
+    pub(crate) down_head: Vec<u8>,
+    pub(crate) head: Box<RequestHead>,
+}
+
+impl Buffers {
+    pub(crate) fn new(config: &Config) -> Self {
+        let head_capacity = config.head_limit + HEAD_GROWTH;
+        Self {
+            req: vec![0; config.request_buffer].into_boxed_slice(),
+            resp: vec![0; config.response_buffer].into_boxed_slice(),
+            up_head: Vec::with_capacity(head_capacity),
+            down_head: Vec::with_capacity(head_capacity),
+            head: Box::new(RequestHead::new()),
+        }
+    }
+}
+
+pub(crate) const HEAD_GROWTH: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Window {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+impl Window {
+    pub(crate) const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    pub(crate) fn consume(&mut self, count: usize) {
+        self.start += count;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Stage {
+    Idle,
+    Head,
+    Serving,
+    Answering,
+    Lingering,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Wait {
+    Connect,
+    UpstreamWrite,
+    Header,
+    Body,
+    ClientRead,
+    ClientWrite,
+}
+
+impl Wait {
+    pub(crate) const fn failure(self) -> Failure {
+        match self {
+            Self::Connect => Failure::ConnectTimeout,
+            Self::UpstreamWrite => Failure::UpstreamWrite,
+            Self::Header => Failure::HeaderTimeout,
+            Self::Body => Failure::BodyTimeout,
+            Self::ClientRead | Self::ClientWrite => Failure::ClientTimeout,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Mode {
+    Empty,
+    Length(u64),
+    Chunked(ChunkScanner),
+    UntilClose,
+}
+
+pub(crate) struct Relay {
+    pub(crate) mode: Mode,
+    pub(crate) window: Window,
+    pub(crate) head_pos: usize,
+    pub(crate) complete: bool,
+    pub(crate) reusable: bool,
+}
+
+pub(crate) enum Down {
+    Awaiting,
+    Relaying(Relay),
+    Finished { reusable: bool },
+}
+
+pub(crate) struct Flow<S: Service> {
+    pub(crate) exchange: Option<S::Exchange>,
+    pub(crate) upstream: Option<Token>,
+    pub(crate) head_len: usize,
+    pub(crate) body_unread: u64,
+    pub(crate) window: Window,
+    pub(crate) head_pos: usize,
+    pub(crate) request_end: usize,
+    pub(crate) replayable: bool,
+    pub(crate) is_head: bool,
+    pub(crate) client_keepalive: bool,
+    pub(crate) keepalive: bool,
+    pub(crate) attempts: u8,
+    pub(crate) stale_retried: bool,
+    pub(crate) reused: bool,
+    pub(crate) key: u64,
+    pub(crate) reuse: Reuse,
+    pub(crate) timeouts: Option<AttemptTimeouts>,
+    pub(crate) wait: Wait,
+    pub(crate) started: Instant,
+    pub(crate) attempt_started: Instant,
+    pub(crate) connected_at: Option<Instant>,
+    pub(crate) first_byte_at: Option<Instant>,
+    pub(crate) down: Down,
+    pub(crate) status: Option<u16>,
+    pub(crate) failure: Option<Failure>,
+    pub(crate) received: u64,
+    pub(crate) sent: u64,
+    pub(crate) upload_done: bool,
+    pub(crate) upload_failed: bool,
+    pub(crate) contacted: bool,
+    pub(crate) fresh: bool,
+}
+
+pub(crate) struct Client<S: Service> {
+    pub(crate) link: Link,
+    pub(crate) service: Shared<S>,
+    pub(crate) timeouts: Timeouts,
+    pub(crate) listener: usize,
+    pub(crate) peer: SocketAddr,
+    pub(crate) admission: S::Admission,
+    pub(crate) served: u32,
+    pub(crate) stage: Stage,
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) buffers: Buffers,
+    pub(crate) req_len: usize,
+    pub(crate) resp_len: usize,
+    pub(crate) flow: Option<Flow<S>>,
+}
+
+impl<S: Service> Client<S> {
+    pub(crate) fn flow(&mut self) -> &mut Flow<S> {
+        self.flow.as_mut().expect("a serving client has a flow")
+    }
+}
