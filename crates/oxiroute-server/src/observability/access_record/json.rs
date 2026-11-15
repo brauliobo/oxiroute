@@ -46,10 +46,7 @@ pub(crate) fn push_decimal(out: &mut Vec<u8>, value: u128) {
 }
 
 pub(crate) fn push_text(out: &mut Vec<u8>, text: &str) {
-    if text
-        .bytes()
-        .any(|byte| byte < 0x20 || byte == b'"' || byte == b'\\')
-    {
+    if oxiroute_cpu::json_escape_at(text.as_bytes()) != text.len() {
         serde_json::to_writer(&mut *out, text).expect("writing to a vec cannot fail");
     } else {
         out.push(b'"');
@@ -240,6 +237,23 @@ mod tests {
         let mut out = Vec::new();
         Safe::verified("api").write_json(&mut out);
         assert_eq!(out, br#""api""#);
+    }
+
+    #[test]
+    fn json_text_matches_the_serializer_across_vector_and_unicode_boundaries() {
+        for length in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
+            for at in 0..=length {
+                for character in (0..=0x9f)
+                    .filter_map(char::from_u32)
+                    .chain(['"', '\\', 'é', '🦀'])
+                {
+                    let text = format!("{}{character}{}", "a".repeat(at), "b".repeat(length - at));
+                    let mut actual = Vec::new();
+                    push_text(&mut actual, &text);
+                    assert_eq!(actual, serde_json::to_vec(&text).unwrap());
+                }
+            }
+        }
     }
 
     #[test]

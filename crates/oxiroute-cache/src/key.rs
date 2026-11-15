@@ -90,14 +90,13 @@ impl BaseKey {
         if input.path.is_empty()
             || !input.path.starts_with('/')
             || input.path.contains(['?', '#'])
-            || !input.path.bytes().all(is_uri_byte)
+            || !oxiroute_cpu::ascii_range(input.path.as_bytes(), b'!', b'~')
         {
             return Err(KeyError::InvalidPath);
         }
-        if input
-            .query
-            .is_some_and(|query| query.contains('#') || !query.bytes().all(is_uri_byte))
-        {
+        if input.query.is_some_and(|query| {
+            query.contains('#') || !oxiroute_cpu::ascii_range(query.as_bytes(), b'!', b'~')
+        }) {
             return Err(KeyError::InvalidQuery);
         }
         let scheme = input.scheme.to_ascii_lowercase();
@@ -308,10 +307,6 @@ const fn is_scheme_byte(byte: u8, first: bool) -> bool {
         || (!first && (byte.is_ascii_digit() || byte == b'+' || byte == b'-' || byte == b'.'))
 }
 
-const fn is_uri_byte(byte: u8) -> bool {
-    byte >= b'!' && byte <= b'~'
-}
-
 fn normalize_field_value(value: &[u8], output: &mut Vec<u8>) {
     let mut whitespace = false;
     for byte in trim_ows(value) {
@@ -323,6 +318,51 @@ fn normalize_field_value(value: &[u8], output: &mut Vec<u8>) {
             }
             output.push(*byte);
             whitespace = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_keys_accept_exactly_visible_ascii_paths_and_queries() {
+        let headers = HeaderMap::new();
+        for length in [16, 32, 64, 128] {
+            for at in 1..length {
+                for byte in 0u8..=127 {
+                    let mut path = vec![b'a'; length];
+                    path[0] = b'/';
+                    path[at] = byte;
+                    let path = std::str::from_utf8(&path).unwrap();
+                    let input = RequestKeyInput {
+                        method: &Method::GET,
+                        scheme: "http",
+                        authority: "example.com",
+                        path,
+                        query: None,
+                        headers: &headers,
+                    };
+                    let visible = (b'!'..=b'~').contains(&byte);
+                    assert_eq!(
+                        BaseKey::new(input, 1024).is_ok(),
+                        visible && !matches!(byte, b'?' | b'#')
+                    );
+                    assert_eq!(
+                        BaseKey::new(
+                            RequestKeyInput {
+                                path: "/",
+                                query: Some(path),
+                                ..input
+                            },
+                            1024
+                        )
+                        .is_ok(),
+                        visible && byte != b'#'
+                    );
+                }
+            }
         }
     }
 }

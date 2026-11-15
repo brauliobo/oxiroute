@@ -35,9 +35,9 @@ const SENSITIVE_MARKERS: &[&str] = &[
 /// Control characters removed and the length bounded; borrowed when the text is already clean.
 fn bounded_text(value: &str) -> Cow<'_, str> {
     // Printable ASCII, nearly every value, is clean without decoding it.
-    let printable = |value: &str| value.bytes().all(|byte| (0x20..0x7f).contains(&byte));
     if value.len() <= MAX_SAFE_TEXT_BYTES
-        && (printable(value) || !value.chars().any(char::is_control))
+        && (oxiroute_cpu::ascii_range(value.as_bytes(), 0x20, 0x7e)
+            || !value.chars().any(char::is_control))
     {
         return Cow::Borrowed(value);
     }
@@ -335,6 +335,23 @@ mod tests {
         assert_eq!(redact_text("caf\u{e9} \u{2603}"), "caf\u{e9} \u{2603}");
         assert_eq!(redact_text(&"x".repeat(200)).len(), 128);
         assert_eq!(redact_text(&"\u{e9}".repeat(200)).chars().count(), 128);
+    }
+
+    #[test]
+    fn printable_scanning_preserves_unicode_controls_and_text_bounds() {
+        for length in [15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
+            for at in 0..=length {
+                for character in (0..=0x9f).filter_map(char::from_u32).chain(['é', '🦀']) {
+                    let text = format!("{}{character}{}", "a".repeat(at), "b".repeat(length - at));
+                    let expected: String = text
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(128)
+                        .collect();
+                    assert_eq!(super::bounded_text(&text), expected);
+                }
+            }
+        }
     }
 
     #[test]

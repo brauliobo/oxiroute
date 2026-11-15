@@ -16,7 +16,7 @@ pub(crate) struct SecureBearerToken {
 impl SecureBearerToken {
     pub(crate) fn new(token: &[u8]) -> Result<Self, SecureBearerTokenError> {
         if !(MIN_TOKEN_BYTES..=MAX_TOKEN_BYTES).contains(&token.len())
-            || !token.iter().all(|byte| matches!(byte, 0x21..=0x7e))
+            || !oxiroute_cpu::ascii_range(token, 0x21, 0x7e)
         {
             return Err(SecureBearerTokenError::InvalidToken);
         }

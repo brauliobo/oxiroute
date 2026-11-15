@@ -14,6 +14,23 @@ use super::{
 const TOKEN: &[u8] = b"0123456789abcdefghijklmnopqrstuv";
 
 #[test]
+fn token_syntax_accepts_only_visible_ascii_at_every_vector_offset() {
+    for length in [32, 33, 63, 64, 65, 127, 128, 129, 512] {
+        let mut token = vec![b'x'; length];
+        for at in 0..length {
+            for byte in 0..=255u8 {
+                token[at] = byte;
+                assert_eq!(
+                    SecureBearerToken::new(&token).is_ok(),
+                    (b'!'..=b'~').contains(&byte)
+                );
+            }
+            token[at] = b'x';
+        }
+    }
+}
+
+#[test]
 fn token_authorization_requires_an_exact_bearer_credential() {
     let token = SecureBearerToken::new(TOKEN).expect("visible 32-byte token");
     assert!(token.authorizes(b"Bearer 0123456789abcdefghijklmnopqrstuv"));

@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use http::{

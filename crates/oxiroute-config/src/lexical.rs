@@ -596,6 +596,7 @@ pub fn canonicalize_http_path(path: &str) -> Option<Cow<'_, str>> {
             }
             _ => index += 1,
         }
+        index = oxiroute_cpu::find_any3(bytes, index, [b'\\', b'/', b'%']);
     }
     if is_dot_segment(&bytes[segment..]) {
         return None;
@@ -709,6 +710,20 @@ mod path_tests {
     fn the_single_pass_check_accepts_exactly_what_the_three_pass_check_accepted() {
         let checked = walk(&mut Vec::new(), 6);
         assert_eq!(checked, (0..=6).map(|length| 8_u32.pow(length)).sum());
+    }
+
+    #[test]
+    fn path_scanning_preserves_escapes_segments_and_unicode_across_vector_boundaries() {
+        for length in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
+            for at in 0..=length {
+                for special in [
+                    "/", "//", "/./", "/../", "\\", "%", "%2", "%2f", "%3a", "%FF", "é", "🦀",
+                ] {
+                    let path = format!("/{}{special}{}", "a".repeat(at), "b".repeat(length - at));
+                    assert_eq!(canonicalize_http_path(&path), reference(&path), "{path:?}");
+                }
+            }
+        }
     }
 }
 

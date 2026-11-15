@@ -412,21 +412,21 @@ pub(super) fn path_components(path: &Path) -> Result<Vec<OsString>, ()> {
 fn percent_decode(value: &[u8]) -> Result<Vec<u8>, StaticServeError> {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
-    while index < value.len() {
-        if value[index] == b'%' {
-            let digits = value
-                .get(index + 1..index + 3)
-                .ok_or(StaticServeError::Unsafe)?;
-            decoded.push(
-                hex(digits[0])
-                    .and_then(|high| hex(digits[1]).map(|low| high << 4 | low))
-                    .ok_or(StaticServeError::Unsafe)?,
-            );
-            index += 3;
-        } else {
-            decoded.push(value[index]);
-            index += 1;
+    loop {
+        let end = oxiroute_cpu::find_any3(value, index, [b'%', b'%', b'%']);
+        decoded.extend_from_slice(&value[index..end]);
+        if end == value.len() {
+            break;
         }
+        let digits = value
+            .get(end + 1..end + 3)
+            .ok_or(StaticServeError::Unsafe)?;
+        decoded.push(
+            hex(digits[0])
+                .and_then(|high| hex(digits[1]).map(|low| high << 4 | low))
+                .ok_or(StaticServeError::Unsafe)?,
+        );
+        index = end + 3;
     }
     Ok(decoded)
 }
@@ -463,5 +463,34 @@ pub(crate) fn builtin_content_type(name: &OsStr) -> &'static str {
         "woff2" => "font/woff2",
         "xml" => "application/xml",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::{StaticServeError, percent_decode};
+
+    #[test]
+    fn percent_decoding_preserves_literal_runs_and_octets_at_every_offset() {
+        for length in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
+            for at in 0..=length {
+                for byte in 0..=255u8 {
+                    let value = format!("{}%{byte:02x}{}", "a".repeat(at), "b".repeat(length - at));
+                    let expected = [vec![b'a'; at], vec![byte], vec![b'b'; length - at]].concat();
+                    assert_eq!(percent_decode(value.as_bytes()), Ok(expected));
+                }
+                for malformed in ["%", "%a", "%ag", "%g0"] {
+                    let value = format!("{}{malformed}", "a".repeat(at));
+                    assert_eq!(
+                        percent_decode(value.as_bytes()),
+                        Err(StaticServeError::Unsafe)
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            percent_decode("é🦀".as_bytes()),
+            Ok("é🦀".as_bytes().to_vec())
+        );
     }
 }

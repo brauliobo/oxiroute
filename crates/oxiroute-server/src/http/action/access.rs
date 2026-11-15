@@ -174,7 +174,7 @@ impl BasicHtpasswdAccess {
         if encoded.len() > MAX_BASIC_CREDENTIAL_BYTES * 2 {
             return None;
         }
-        let Ok(decoded) = STANDARD.decode(encoded) else {
+        let Ok(decoded) = crate::encoding::decode_base64(encoded) else {
             return None;
         };
         let decoded = Zeroizing::new(decoded);

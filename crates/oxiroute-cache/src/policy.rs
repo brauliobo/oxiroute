@@ -657,10 +657,16 @@ fn comma_items(value: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
     let mut start = 0;
     let mut quoted = false;
     let mut escaped = false;
-    for (index, byte) in value.iter().copied().enumerate() {
+    let mut index = 0;
+    while index < value.len() {
         if escaped {
             escaped = false;
-        } else if quoted && byte == b'\\' {
+            index += 1;
+            continue;
+        }
+        index = oxiroute_cpu::find_any3(value, index, [b'\\', b'"', b',']);
+        let Some(&byte) = value.get(index) else { break };
+        if quoted && byte == b'\\' {
             escaped = true;
         } else if byte == b'"' {
             quoted = !quoted;
@@ -672,6 +678,7 @@ fn comma_items(value: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
             items.push(item);
             start = index + 1;
         }
+        index += 1;
     }
     if quoted || escaped {
         return Err(ParseError::InvalidDirective);
@@ -784,4 +791,75 @@ const fn is_token(byte: u8) -> bool {
                 | b'|'
                 | b'~'
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference_items(value: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
+        let (mut start, mut quoted, mut escaped) = (0, false, false);
+        let mut items = Vec::new();
+        for (index, &byte) in value.iter().enumerate() {
+            if escaped {
+                escaped = false;
+            } else if quoted && byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = !quoted;
+            } else if byte == b',' && !quoted {
+                let item = trim_ows(&value[start..index]);
+                if item.is_empty() {
+                    return Err(ParseError::InvalidDirective);
+                }
+                items.push(item);
+                start = index + 1;
+            }
+        }
+        if quoted || escaped {
+            return Err(ParseError::InvalidDirective);
+        }
+        let last = trim_ows(&value[start..]);
+        if last.is_empty() {
+            return Err(ParseError::InvalidDirective);
+        }
+        items.push(last);
+        Ok(items)
+    }
+
+    #[test]
+    fn comma_scanning_preserves_quoted_and_escaped_separators_at_every_offset() {
+        for length in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
+            for at in 0..=length {
+                for special in [
+                    b",\"a,b\"".as_slice(),
+                    b"\"a\\\"b\"",
+                    b"\"a\\",
+                    b"\\,",
+                    b",,",
+                    b" \t",
+                    b"\x80\xff",
+                ] {
+                    let value =
+                        [vec![b'a'; at], special.to_vec(), vec![b'b'; length - at]].concat();
+                    assert_eq!(comma_items(&value), reference_items(&value), "{value:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comma_scanning_matches_the_state_machine_for_all_short_grammars() {
+        const ALPHABET: &[u8] = b"a,\"\\ \t";
+        for length in 0..=6u32 {
+            for mut encoding in 0..ALPHABET.len().pow(length) {
+                let mut value = vec![0; length as usize];
+                for byte in &mut value {
+                    *byte = ALPHABET[encoding % ALPHABET.len()];
+                    encoding /= ALPHABET.len();
+                }
+                assert_eq!(comma_items(&value), reference_items(&value), "{value:?}");
+            }
+        }
+    }
 }
