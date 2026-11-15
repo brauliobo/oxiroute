@@ -2,10 +2,6 @@
 
 use oxiroute_cpu::is_tchar;
 
-/// Index of the first byte below 0x20 or DEL at or after `i`, or the buffer length. A tab is reported like any
-/// other control byte; the caller decides what it means.
-pub(crate) use oxiroute_cpu::control_at;
-
 /// Bit set for a token byte (`tchar` of RFC 9110).
 pub(crate) const TOKEN: u8 = 1;
 /// Bit set for an ASCII capital.
@@ -49,12 +45,5 @@ pub(crate) static TARGET: [bool; 256] = target_table();
 /// Whether `bytes` are valid `HeaderValue` contents: no control byte but a tab, no DEL.
 #[must_use]
 pub fn is_header_value(bytes: &[u8]) -> bool {
-    let mut i = control_at(bytes, 0);
-    while i < bytes.len() {
-        if bytes[i] != b'\t' {
-            return false;
-        }
-        i = control_at(bytes, i + 1);
-    }
-    true
+    oxiroute_cpu::header_value_end(bytes, 0) == bytes.len()
 }

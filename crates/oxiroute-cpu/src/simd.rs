@@ -1,10 +1,9 @@
 //! The vector kernels, one per level, behind [`dispatch!`].
 //!
-//! Everything `unsafe` of the crate is in this file, of two kinds:
+//! Everything `unsafe` of the crate is in this module, of two kinds:
 //!
-//! * calling a `#[target_feature]` kernel from the dispatchers: the level they receive never exceeds the hardware
-//!   level ([`Level::clamp`], or [`crate::level`] which is lowered from it), so the CPU has every feature the kernel
-//!   of that level enables;
+//! * calling a `#[target_feature]` kernel from the dispatchers: the level they receive is supported by the hardware
+//!   and OS ([`Level::clamp`], or [`crate::level`]), including when a VM exposes non-nested feature sets;
 //! * loading a vector register: from a reference to an array (all bytes readable, unaligned loads) or, for AVX-512,
 //!   masked so that no lane past the slice is read.
 #![allow(unsafe_code)]
@@ -12,14 +11,17 @@
 use crate::{Level, TokenRun, is_tchar, scalar};
 use core::arch::x86_64::*;
 
+pub(crate) mod scan;
+
 /// Calls the arm of `$level`; the scalar arm is the answer for [`Level::Scalar`].
 macro_rules! dispatch {
-    ($level:expr, $scalar:expr, sse42: $sse42:expr, avx2: $avx2:expr, avx512: $avx512:expr) => {
+    ($level:expr, $scalar:expr, sse2: $sse2:expr, sse42: $sse42:expr, avx2: $avx2:expr, avx512: $avx512:expr) => {
         match $level {
-            // SAFETY: see the module docs: `$level` is at most the hardware level.
+            // SAFETY: see the module docs: `$level` is a supported backend.
             Level::Avx512 => unsafe { $avx512 },
             Level::Avx2 => unsafe { $avx2 },
             Level::Sse42 => unsafe { $sse42 },
+            Level::Sse2 => $sse2,
             Level::Scalar => $scalar,
         }
     };
@@ -27,11 +29,13 @@ macro_rules! dispatch {
 
 pub(crate) fn control_at(level: Level, buf: &[u8], i: usize) -> usize {
     dispatch!(level, scalar::control_at(buf, i),
+        sse2: unsafe { control_at_sse42(buf, i) },
         sse42: control_at_sse42(buf, i), avx2: control_at_avx2(buf, i), avx512: control_at_avx512(buf, i))
 }
 
 pub(crate) fn token_run(level: Level, buf: &[u8]) -> TokenRun {
     dispatch!(level, scalar::token_run(buf),
+        sse2: scalar::token_run(buf),
         sse42: token_run_sse42(buf), avx2: token_run_avx2(buf), avx512: token_run_avx512(buf))
 }
 
@@ -78,7 +82,7 @@ fn live(rest: &[u8]) -> u64 {
     low_bits(rest.len().min(64) as u32)
 }
 
-#[target_feature(enable = "sse4.2,popcnt")]
+#[target_feature(enable = "sse2")]
 fn control_at_sse42(buf: &[u8], mut i: usize) -> usize {
     while let Some(bytes) = chunk(buf, i) {
         let x = load128(bytes);
@@ -92,7 +96,7 @@ fn control_at_sse42(buf: &[u8], mut i: usize) -> usize {
     scalar::control_at(buf, i)
 }
 
-#[target_feature(enable = "avx2,bmi1,bmi2")]
+#[target_feature(enable = "avx2")]
 fn control_at_avx2(buf: &[u8], mut i: usize) -> usize {
     while let Some(bytes) = chunk(buf, i) {
         let x = load256(bytes);
@@ -117,7 +121,7 @@ fn controls512(x: __m512i) -> u64 {
         | _mm512_cmpeq_epi8_mask(x, _mm512_set1_epi8(0x7f))
 }
 
-#[target_feature(enable = "avx512bw,bmi1,bmi2")]
+#[target_feature(enable = "avx512bw")]
 fn control_at_avx512(buf: &[u8], mut i: usize) -> usize {
     while let Some(bytes) = chunk(buf, i) {
         let found = controls512(load512(bytes));
@@ -190,7 +194,7 @@ fn bits(mask: i32) -> u64 {
 }
 
 #[inline]
-#[target_feature(enable = "sse4.2")]
+#[target_feature(enable = "ssse3")]
 fn masks128(x: __m128i) -> Masks {
     let nibble = _mm_set1_epi8(0x0f);
     let lo = _mm_shuffle_epi8(load128(&LO), _mm_and_si128(x, nibble));
@@ -258,7 +262,7 @@ fn masks512(x: __m512i) -> Masks {
     }
 }
 
-#[target_feature(enable = "sse4.2,popcnt")]
+#[target_feature(enable = "ssse3")]
 fn token_run_sse42(buf: &[u8]) -> TokenRun {
     let mut run = TokenRun::default();
     let mut i = 0;
@@ -271,7 +275,7 @@ fn token_run_sse42(buf: &[u8]) -> TokenRun {
     run.then(scalar::token_run(&buf[i..]))
 }
 
-#[target_feature(enable = "avx2,bmi1,bmi2")]
+#[target_feature(enable = "avx2")]
 fn token_run_avx2(buf: &[u8]) -> TokenRun {
     let mut run = TokenRun::default();
     let mut i = 0;
@@ -284,7 +288,7 @@ fn token_run_avx2(buf: &[u8]) -> TokenRun {
     run.then(scalar::token_run(&buf[i..]))
 }
 
-#[target_feature(enable = "avx512bw,bmi1,bmi2")]
+#[target_feature(enable = "avx512bw")]
 fn token_run_avx512(buf: &[u8]) -> TokenRun {
     let mut run = TokenRun::default();
     let mut i = 0;

@@ -12,8 +12,11 @@ default = ["std"]
 # Detects the CPU at run time (and honours OXIROUTE_CPU_LEVEL). Without it every scanner takes the scalar path.
 std = []
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 # The only crate besides the allocator that cannot forbid unsafe code: calling a `#[target_feature]` function and loading
-# a vector register from a slice are `unsafe`. Both live in `simd.rs`, behind one `#[allow]`.
+# a vector register from a slice are `unsafe`. Both live in the `simd` module, behind one `#[allow]`.
 [lints.rust]
 unsafe_code = "deny"
 

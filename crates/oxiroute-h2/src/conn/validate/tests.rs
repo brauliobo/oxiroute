@@ -156,3 +156,25 @@ fn fields_apply_the_request_rules() {
     assert!(!field(b"content-length", &[b'1'; 20], &mut cl));
     assert_eq!(cl, Some(12));
 }
+
+#[test]
+fn values_at_vector_boundaries_agree_with_http() {
+    for len in [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 512] {
+        let mut bytes = vec![b'\t'; len];
+        assert!(value(&bytes));
+        for at in [0, len / 2, len.saturating_sub(1)]
+            .into_iter()
+            .filter(|&at| at < len)
+        {
+            for b in 0..=255 {
+                bytes[at] = b;
+                assert_eq!(
+                    value(&bytes),
+                    HeaderValue::from_bytes(&bytes).is_ok(),
+                    "len={len} at={at} byte={b}"
+                );
+            }
+            bytes[at] = b'\t';
+        }
+    }
+}

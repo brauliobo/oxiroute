@@ -1,10 +1,10 @@
 //! Runtime CPU dispatch for the hot byte scanners.
 //!
 //! The binary is built for generic x86-64; nothing here depends on a `target-cpu` or `target-feature` flag. [`level`]
-//! detects the CPU once ([`Level`]) and every scanner picks the widest kernel that level allows: SSE4.2 (16 bytes),
-//! AVX2 (32) or AVX-512 (64). The scalar scanner is the fallback of every level and the oracle of `tests/`.
+//! detects the CPU once ([`Level`]) and every scanner picks a supported kernel: SSE2/SSSE3 (16 bytes), AVX2 (32) or
+//! AVX-512 BW (64). Scalar implementations are the oracle of `tests/` and handle the non-vector tails.
 //!
-//! `OXIROUTE_CPU_LEVEL=scalar|sse42|avx2|avx512` lowers the level (to triage or to test a kernel on a CPU that has
+//! `OXIROUTE_CPU_LEVEL=scalar|sse2|sse42|avx2|avx512` caps the level (to triage or to test a kernel on a CPU that has
 //! more); it can never raise it above what the CPU runs. Off x86-64, or without the `std` feature, the level is
 //! always [`Level::Scalar`].
 //!
@@ -17,6 +17,7 @@ extern crate std;
 
 mod level;
 mod scalar;
+mod scan;
 #[cfg(target_arch = "x86_64")]
 mod simd;
 #[cfg(not(target_arch = "x86_64"))]
@@ -33,6 +34,10 @@ mod simd {
 }
 
 pub use level::{ENV, Level, level};
+pub use scan::{
+    ascii_range, ascii_range_with, find_any3, find_any3_with, header_value_end,
+    header_value_end_with, json_escape_at, json_escape_at_with,
+};
 
 /// Whether `b` is a `tchar` of RFC 9110: a byte a header name or a method is made of.
 #[must_use]

@@ -13,11 +13,7 @@ fn child_reports_the_level() {
     let requested = std::env::var(ENV)
         .ok()
         .map(|name| Level::parse(&name).unwrap());
-    assert_eq!(
-        actual,
-        requested.map_or(Level::hardware(), |requested| requested
-            .min(Level::hardware()))
-    );
+    assert_eq!(actual, requested.map_or_else(Level::hardware, Level::clamp));
 }
 
 fn child(value: &str) -> std::process::Output {
@@ -47,6 +43,22 @@ fn an_unknown_level_is_refused() {
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stdout)
-            .contains("OXIROUTE_CPU_LEVEL=avx: expected scalar, sse42, avx2 or avx512")
+            .contains("OXIROUTE_CPU_LEVEL=avx: expected scalar, sse2, sse42, avx2 or avx512")
+    );
+}
+
+#[test]
+fn expected_hardware_backend_is_exercised() {
+    if let Ok(expected) = std::env::var("OXIROUTE_EXPECT_CPU_LEVEL") {
+        assert_eq!(Level::hardware().name(), expected);
+    }
+    if let Ok(expected) = std::env::var("OXIROUTE_EXPECT_SELECTED_LEVEL") {
+        assert_eq!(level().name(), expected);
+    }
+    eprintln!(
+        "hardware={} features={:?}; selected={}",
+        Level::hardware().name(),
+        Level::hardware().features(),
+        level().name()
     );
 }

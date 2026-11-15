@@ -2,7 +2,7 @@
 
 use crate::class::{Class, TITLED, classify, same_name};
 use crate::miss::MissReason;
-use crate::tables::{TOKEN, UNDERSCORE, UPPER, control_at};
+use crate::tables::{TOKEN, UNDERSCORE, UPPER};
 
 /// Headers a head may carry before it is a miss (or slow).
 pub const MAX_HEADERS: usize = 64;
@@ -127,21 +127,16 @@ fn crlf(buf: &[u8], i: usize) -> Step<usize> {
 /// End of the value that starts at `start`: the index of its CR, with the line known to end in CRLF.
 #[inline(always)]
 fn value_end(buf: &[u8], start: usize) -> Step<usize> {
-    let mut end = control_at(buf, start);
-    loop {
-        match buf.get(end) {
-            Some(b'\t') => end = control_at(buf, end + 1),
-            Some(b'\r') => {
-                return match buf.get(end + 1) {
-                    Some(b'\n') => Ok(end),
-                    Some(_) => bad(MissReason::BareCr),
-                    None => Err(Stop::Partial),
-                };
-            }
-            Some(b'\n') => return bad(MissReason::BareLf),
-            Some(_) => return bad(MissReason::Control),
-            None => return Err(Stop::Partial),
-        }
+    let end = oxiroute_cpu::header_value_end(buf, start);
+    match buf.get(end) {
+        Some(b'\r') => match buf.get(end + 1) {
+            Some(b'\n') => Ok(end),
+            Some(_) => bad(MissReason::BareCr),
+            None => Err(Stop::Partial),
+        },
+        Some(b'\n') => bad(MissReason::BareLf),
+        Some(_) => bad(MissReason::Control),
+        None => Err(Stop::Partial),
     }
 }
 
