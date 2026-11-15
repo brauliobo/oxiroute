@@ -1,7 +1,7 @@
 //! A relay on the engine with the semantics of a real service: host and path routes, header edits, request ids,
 //! counters per route and status, an access line per request and the timeouts of an attempt.
 //!
-//! relay --listen ADDR --origin ADDR [--threads N] [--trigger edge|level] [--requests N]
+//! relay --listen ADDR --origin ADDR [--threads N] [--level] [--requests N]
 
 #[path = "../tests/support/date.rs"]
 #[allow(clippy::pedantic)]
@@ -24,14 +24,14 @@ use oxiroute_epoll_h1::{
 use service::{Guard, Knobs, Reference, Route};
 
 const ROUTES: [(&str, &str); 8] = [
-    ("bench.example", "/b"),
-    ("bench.example", "/x"),
+    ("bench.example.com", "/b"),
+    ("bench.example.com", "/x"),
     ("a.example", "/"),
     ("b.example", "/"),
     ("c.example", "/api"),
     ("d.example", "/s"),
     ("e.example", "/"),
-    ("bench.example", "/"),
+    ("bench.example.com", "/"),
 ];
 
 const LOG_FLUSH: usize = 60_000;
@@ -161,13 +161,8 @@ fn arguments() -> Arguments {
             "--listen" => parsed.listen = value().parse().expect("listen address"),
             "--origin" => parsed.origin = value().parse().expect("origin address"),
             "--threads" => parsed.threads = value().parse().expect("threads"),
-            "--trigger" => {
-                parsed.trigger = if value() == "level" {
-                    Trigger::Level
-                } else {
-                    Trigger::Edge
-                }
-            }
+            "--edge" => parsed.trigger = Trigger::Edge,
+            "--level" => parsed.trigger = Trigger::Level,
             "--requests" => parsed.requests = Some(value().parse().expect("requests")),
             other => panic!("unknown flag {other}"),
         }
