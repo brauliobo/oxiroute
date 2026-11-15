@@ -5,7 +5,7 @@
 //! completion, then exactly `--requests` requests are measured; `--hook-stop` runs afterwards.
 
 use std::{
-    io,
+    io::{self, Read as _},
     net::SocketAddr,
     process::ExitCode,
     sync::{
@@ -179,24 +179,39 @@ impl Outcome {
 }
 
 /// Content checks beyond status and length: every body byte equals `fill`, a header has an exact value, a header is
-/// absent. A proxy that answers with the right size but the wrong content, or ignores a header rule, counts as errors.
+/// absent. `--expect-gzip-bytes N` validates gzip integrity and N decoded bytes before checking the fill byte.
+/// A proxy with the right size but wrong content, or incorrect header rules, counts as errors.
 #[derive(Default)]
 struct Checks {
     fill: Option<u8>,
+    gzip_bytes: Option<usize>,
     header: Option<(String, String)>,
     absent: Option<String>,
 }
 
 impl Checks {
+    fn body(&self, bytes: &[u8], encoding: Option<&str>) -> bool {
+        if let Some(length) = self.gzip_bytes {
+            if !encoding.is_some_and(|encoding| encoding.eq_ignore_ascii_case("gzip")) {
+                return false;
+            }
+            let mut decoded = Vec::new();
+            let result = flate2::read::MultiGzDecoder::new(bytes).take(length as u64 + 1).read_to_end(&mut decoded);
+            return result.is_ok() && decoded.len() == length
+                && self.fill.is_none_or(|byte| decoded.iter().all(|&found| found == byte));
+        }
+        self.fill.is_none_or(|byte| bytes.iter().all(|&found| found == byte))
+    }
+
     fn h1(&self, buf: &[u8], head_end: usize) -> bool {
         let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
-        self.fill.is_none_or(|byte| buf[head_end..].iter().all(|&found| found == byte))
+        self.body(&buf[head_end..], header_value(&head, "content-encoding:"))
             && self.header.as_ref().is_none_or(|(name, value)| header_value(&head, &format!("{name}:")) == Some(value))
             && self.absent.as_ref().is_none_or(|name| header_value(&head, &format!("{name}:")).is_none())
     }
 
     fn h2(&self, headers: &HeaderMap, body: &[u8]) -> bool {
-        self.fill.is_none_or(|byte| body.iter().all(|&found| found == byte))
+        self.body(body, headers.get("content-encoding").and_then(|value| value.to_str().ok()))
             && self.header.as_ref().is_none_or(|(name, value)| {
                 headers.get(name.as_str()).and_then(|found| found.to_str().ok()) == Some(value)
             })
@@ -286,9 +301,9 @@ impl ServerCertVerifier for NoVerify {
 }
 
 /// `browser` offers the post-quantum hybrid group first, with a share for X25519 next to it (what current browsers
-/// send); any other value is the plain ring provider.
+/// send); any other value is the plain ring provider. TLS 1.3 offers only AES-128-GCM/SHA-256, matching every proxy.
 fn tls_provider(groups: &str) -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(match groups {
+    let mut provider = match groups {
         "browser" => {
             let mut provider = rustls::crypto::aws_lc_rs::default_provider();
             provider.kx_groups = vec![
@@ -298,7 +313,10 @@ fn tls_provider(groups: &str) -> Arc<rustls::crypto::CryptoProvider> {
             provider
         }
         _ => rustls::crypto::ring::default_provider(),
-    })
+    };
+    provider.cipher_suites.retain(|suite| suite.version() != &rustls::version::TLS13
+        || suite.suite() == rustls::CipherSuite::TLS13_AES_128_GCM_SHA256);
+    Arc::new(provider)
 }
 
 /// The client certificate chain and key (PEM files) of `--client-cert` and `--client-key`.
@@ -385,6 +403,7 @@ fn spec_from(flags: &Flags) -> Spec {
             (name.trim().to_owned(), value.trim().to_owned())
         }),
         absent: lower("expect-no-header"),
+        gzip_bytes: flags.get("expect-gzip-bytes").map(|value| value.parse().expect("--expect-gzip-bytes BYTES")),
     };
     let scheme = if matches!(proto, Proto::H2Tls | Proto::H3) { "https" } else { "http" };
     Spec {
@@ -509,6 +528,55 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
+async fn read_through(io: &mut Io, buf: &mut Vec<u8>, end: usize) -> io::Result<()> {
+    while buf.len() < end {
+        if io.read_buf(buf).await? == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+    }
+    Ok(())
+}
+
+async fn read_line(io: &mut Io, buf: &mut Vec<u8>, start: usize) -> io::Result<usize> {
+    loop {
+        if let Some(end) = find(&buf[start..], b"\r\n") {
+            return Ok(start + end);
+        }
+        read_through(io, buf, buf.len() + 1).await?;
+    }
+}
+
+async fn read_chunked(io: &mut Io, buf: &mut Vec<u8>, head_end: usize) -> io::Result<usize> {
+    let mut cursor = head_end;
+    let mut written = head_end;
+    loop {
+        let line_end = read_line(io, buf, cursor).await?;
+        let line = std::str::from_utf8(&buf[cursor..line_end]).map_err(io::Error::other)?;
+        let length = usize::from_str_radix(line.split(';').next().expect("chunk size"), 16)
+            .map_err(io::Error::other)?;
+        cursor = line_end + 2;
+        if length == 0 {
+            loop {
+                let end = read_line(io, buf, cursor).await?;
+                if end == cursor {
+                    buf.truncate(written);
+                    return Ok(written - head_end);
+                }
+                cursor = end + 2;
+            }
+        }
+        let end = cursor.checked_add(length).and_then(|end| end.checked_add(2))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk length overflow"))?;
+        read_through(io, buf, end).await?;
+        if &buf[end - 2..end] != b"\r\n" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "missing chunk terminator"));
+        }
+        buf.copy_within(cursor..end - 2, written);
+        written += length;
+        cursor = end;
+    }
+}
+
 async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
     buf.clear();
     let head_end = loop {
@@ -530,12 +598,8 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
         return Ok(Outcome::new(status, 0, close, head_end));
     }
     if header_value(&head, "transfer-encoding:").is_some_and(|value| value.contains("chunked")) {
-        while !buf[head_end..].ends_with(b"0\r\n\r\n") {
-            if io.read_buf(buf).await? == 0 {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-        }
-        return Ok(Outcome::new(status, buf.len() - head_end, close, head_end));
+        let length = read_chunked(io, buf, head_end).await?;
+        return Ok(Outcome::new(status, length, close, head_end));
     }
     if let Some(length) = header_value(&head, "content-length:").and_then(|value| value.parse::<usize>().ok()) {
         while buf.len() < head_end + length {
@@ -587,8 +651,11 @@ async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>, reque
             Ok(outcome)
         }
         Client::H3(link) => {
-            let (status, body_len) = link.request(request_for(spec, ()), &spec.body).await?;
-            Ok(Outcome::new(status, body_len, false, 0))
+            let response = link.request(request_for(spec, ()), &spec.body).await?;
+            let (parts, body) = response.into_parts();
+            let mut outcome = Outcome::new(parts.status.as_u16(), body.len(), false, 0);
+            outcome.checks = spec.checks.h2(&parts.headers, &body);
+            Ok(outcome)
         }
         Client::Raw(io) => {
             scratch.clear();
@@ -832,9 +899,87 @@ mod tests {
     fn checks(fill: Option<u8>, header: Option<(&str, &str)>, absent: Option<&str>) -> Checks {
         Checks {
             fill,
+            gzip_bytes: None,
             header: header.map(|(name, value)| (name.to_owned(), value.to_owned())),
             absent: absent.map(str::to_owned),
         }
+    }
+
+    async fn fragmented_response(wire: &[u8], fragment: usize) -> io::Result<(Outcome, Vec<u8>)> {
+        let (mut sender, receiver) = tokio::io::duplex(64);
+        let wire = wire.to_vec();
+        let sending = tokio::spawn(async move {
+            for chunk in wire.chunks(fragment) {
+                sender.write_all(chunk).await?;
+                tokio::task::yield_now().await;
+            }
+            sender.shutdown().await
+        });
+        let mut receiver: Io = Box::new(receiver);
+        let mut bytes = Vec::new();
+        let result = read_response(&mut receiver, &mut bytes).await;
+        sending.await.expect("sender task")?;
+        result.map(|outcome| (outcome, bytes))
+    }
+
+    #[tokio::test]
+    async fn chunked_responses_decode_across_every_fragment_boundary_and_accept_trailers() {
+        let wire = concat!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "2;test=yes\r\nxx\r\n2\r\nxx\r\n0\r\nX-Trailer: done\r\n\r\n",
+        ).as_bytes();
+        for fragment in 1..=wire.len() {
+            let (outcome, bytes) = fragmented_response(wire, fragment)
+                .await
+                .expect("valid chunked response");
+            assert_eq!(outcome.body_len, 4, "fragment={fragment}");
+            assert_eq!(&bytes[outcome.head_end..], b"xxxx", "fragment={fragment}");
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_or_truncated_chunked_responses_fail() {
+        for body in [
+            b"x\r\nxx\r\n0\r\n\r\n".as_slice(),
+            b"2\r\nx",
+            b"2\r\nxx??0\r\n\r\n",
+            b"0\r\nTrailer: unfinished",
+            b"ffffffffffffffff\r\n",
+            b"fffffffffffffffff\r\n",
+        ] {
+            let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            wire.extend_from_slice(body);
+            assert!(fragmented_response(&wire, 1).await.is_err(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn tls13_benchmarks_offer_the_same_cipher_without_removing_tls12() {
+        for group in ["default", "browser"] {
+            let provider = tls_provider(group);
+            let suites: Vec<_> = provider.cipher_suites.iter()
+                .filter(|suite| suite.version() == &rustls::version::TLS13).map(|suite| suite.suite()).collect();
+            assert_eq!(suites, vec![rustls::CipherSuite::TLS13_AES_128_GCM_SHA256]);
+            assert!(provider.cipher_suites.iter().any(|suite| suite.version() == &rustls::version::TLS12));
+        }
+    }
+
+    #[test]
+    fn gzip_checks_require_exact_decoded_bytes_length_and_integrity() {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(b"xxxx").expect("encode fixture");
+        let mut bytes = encoder.finish().expect("gzip fixture");
+        let valid = Checks { fill: Some(b'x'), gzip_bytes: Some(4), ..Checks::default() };
+        assert!(valid.body(&bytes, Some("gzip")));
+        assert!(!valid.body(&bytes, None));
+        assert!(!valid.body(&bytes[..bytes.len() - 1], Some("gzip")));
+        assert!(!Checks { fill: Some(b'y'), gzip_bytes: Some(4), ..Checks::default() }.body(&bytes, Some("gzip")));
+        assert!(!Checks { fill: Some(b'x'), gzip_bytes: Some(3), ..Checks::default() }.body(&bytes, Some("gzip")));
+        let checksum = bytes.len() - 8;
+        bytes[checksum] ^= 1;
+        assert!(!valid.body(&bytes, Some("gzip")));
+        assert!(!valid.body(b"invalid gzip", Some("gzip")));
     }
 
     #[test]

@@ -3,8 +3,8 @@
 
 use std::{io, net::{Ipv4Addr, SocketAddr}, sync::Arc};
 
-use bytes::{Buf, Bytes};
-use hyper::Request;
+use bytes::{BufMut, Bytes, BytesMut};
+use hyper::{Request, Response};
 use quinn::{ClientConfig, Endpoint, crypto::rustls::QuicClientConfig};
 
 /// A client endpoint on its own UDP socket that trusts what `tls` trusts (QUIC needs TLS 1.3 and the `h3` ALPN).
@@ -36,18 +36,18 @@ impl Link {
         self.connection.close_reason().is_some()
     }
 
-    /// Sends one request (an optional body, then FIN) and drains the answer: status and body length.
-    pub async fn request(&mut self, request: Request<()>, body: &Bytes) -> io::Result<(u16, usize)> {
+    /// Sends one request (an optional body, then FIN) and collects the answer for content validation.
+    pub async fn request(&mut self, request: Request<()>, body: &Bytes) -> io::Result<Response<Bytes>> {
         let mut stream = self.send.send_request(request).await.map_err(io::Error::other)?;
         if !body.is_empty() {
             stream.send_data(body.clone()).await.map_err(io::Error::other)?;
         }
         stream.finish().await.map_err(io::Error::other)?;
-        let status = stream.recv_response().await.map_err(io::Error::other)?.status().as_u16();
-        let mut length = 0;
+        let response = stream.recv_response().await.map_err(io::Error::other)?;
+        let mut body = BytesMut::new();
         while let Some(chunk) = stream.recv_data().await.map_err(io::Error::other)? {
-            length += chunk.remaining();
+            body.put(chunk);
         }
-        Ok((status, length))
+        Ok(response.map(|()| body.freeze()))
     }
 }
