@@ -534,6 +534,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'max_connections', kind: 'integer' },
   { path: 'listener_workers', kind: 'integer' },
   { path: 'http_fast_lane', kind: 'boolean' },
+  { path: 'http_data_plane', kind: 'enum' },
   { path: 'connection_scheduling', kind: 'enum' },
   { path: 'connection_age_ms', kind: 'integer' },
   { path: 'worker_scaling', kind: 'enum' },
