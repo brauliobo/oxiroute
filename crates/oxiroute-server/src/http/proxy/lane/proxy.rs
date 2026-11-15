@@ -36,7 +36,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use super::{
     Served, buffers,
-    head::Request,
+    head::{Request, Target},
     render::{host_edit, push_small_body, render_request},
     response::serve_fast,
     rules,
@@ -215,7 +215,11 @@ impl super::LaneFront {
             forward.id.to_str().unwrap_or_default()
         );
         let upstream = &*self.upstream;
-        let mut ctx = self.begin(&forward, authority);
+        let target = forward
+            .request
+            .target(forward.buffer)
+            .expect("the route was selected for this host");
+        let mut ctx = self.begin(&forward, authority, &target);
         let mut progress = Progress {
             received: 0,
             sent: 0,
@@ -251,6 +255,7 @@ impl super::LaneFront {
         &self,
         forward: &Forward<'_>,
         authority: Authority,
+        target: &Target<'_>,
     ) -> Box<HttpRequestContext> {
         let (buffer, request, route) = (forward.buffer, forward.request, forward.route);
         let replay_safe = proxy_route(route).policy.request_is_replay_safe_with(
@@ -272,8 +277,8 @@ impl super::LaneFront {
             route: (route, forward.id, authority),
             line: (
                 forward.method,
-                request.host(buffer),
-                request.path(buffer),
+                Some(target.host),
+                target.path,
                 forward.client_ip,
             ),
             fields: Scanned(buffer, forward.head),
@@ -812,7 +817,7 @@ impl super::LaneFront {
         progress: &Progress,
     ) {
         let request = super::log::Proxied {
-            idempotency: super::log::idempotency_of(ctx, forward.buffer, forward.head),
+            idempotency: self.idempotency_of(ctx, forward.buffer, forward.head),
             id: forward.id,
             id_generated: forward.request.client_id.is_none(),
             method: forward.method,
@@ -820,6 +825,17 @@ impl super::LaneFront {
             protocol: super::log::HTTP1,
         };
         self.account(ctx, &request, error, progress);
+    }
+
+    /// The idempotency value the access line of a request carries; a service without an access log reads none.
+    pub(in crate::http::proxy) fn idempotency_of<'a>(
+        &self,
+        ctx: &HttpRequestContext,
+        buffer: &'a [u8],
+        head: &RequestHead,
+    ) -> Option<&'a [u8]> {
+        self.service.access_log()?;
+        super::log::idempotency_of(ctx, buffer, head)
     }
 
     /// What the classic `logging` hook accounts for when a request ends: the operation, the attempt and the access

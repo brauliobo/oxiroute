@@ -18,8 +18,8 @@ impl EndpointPool {
     }
 
     #[must_use]
-    pub(crate) fn has_unattempted_servers(&self, attempted: &[String]) -> bool {
-        self.has_unattempted_by(|server| attempted.contains(&server.name))
+    pub(crate) fn has_unattempted_servers(&self, attempted: &[Label]) -> bool {
+        self.has_unattempted_by(|server| lists(attempted, &server.name))
     }
 
     fn has_unattempted_by(&self, attempted: impl Fn(&PoolEndpoint) -> bool) -> bool {

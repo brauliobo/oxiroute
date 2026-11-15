@@ -166,7 +166,7 @@ impl UpstreamPlan {
 
     pub(crate) async fn select_endpoint(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         tag: QueueTag,
     ) -> pingora::Result<SelectedEndpoint> {
         self.select_endpoint_at(excluded, tag, crate::routing::now_unix_ms())
@@ -176,22 +176,18 @@ impl UpstreamPlan {
     /// [`Self::select_endpoint`] for a caller that has the wall-clock time already.
     pub(crate) async fn select_endpoint_at(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         tag: QueueTag,
         now_unix_ms: u64,
     ) -> pingora::Result<SelectedEndpoint> {
-        let lease = if self.http_version == HttpVersion::Http3
-            || self.connection_reuse == UpstreamConnectionReuse::Never
-        {
-            self.selector.select_wait_excluding(excluded, tag).await
-        } else {
+        let lease = if self.reuses_connections() {
             self.selector
                 .select_connection_target_waiting_at(excluded, tag, now_unix_ms)
                 .await
+        } else {
+            self.selector.select_wait_excluding(excluded, tag).await
         };
-        lease
-            .map(SelectedEndpoint::new)
-            .ok_or_else(|| Error::new_up(POOL_UNAVAILABLE))
+        Self::selected(lease)
     }
 
     pub(crate) async fn select_server_endpoint(
@@ -199,19 +195,59 @@ impl UpstreamPlan {
         name: &str,
         tag: QueueTag,
     ) -> pingora::Result<SelectedEndpoint> {
-        let lease = if self.http_version == HttpVersion::Http3
-            || self.connection_reuse == UpstreamConnectionReuse::Never
-        {
-            self.selector.select_server_wait(name, tag).await
-        } else {
+        let lease = if self.reuses_connections() {
             self.selector.select_server_connection_target(name)
+        } else {
+            self.selector.select_server_wait(name, tag).await
         };
+        Self::selected(lease)
+    }
+
+    /// Whether a selection is answered without waiting: no queue to wait in and no recovery to wait for.
+    pub(crate) fn selects_at_once(&self) -> bool {
+        self.selector.selects_at_once()
+    }
+
+    /// [`Self::select_endpoint_at`] for a pool that [`selects at once`](Self::selects_at_once).
+    pub(crate) fn select_endpoint_at_once(
+        &self,
+        excluded: &[Label],
+        now_unix_ms: u64,
+    ) -> pingora::Result<SelectedEndpoint> {
+        let lease = if self.reuses_connections() {
+            self.selector
+                .select_connection_target_at_once(excluded, now_unix_ms)
+        } else {
+            self.selector.select_excluding_at_once(excluded)
+        };
+        Self::selected(lease)
+    }
+
+    /// [`Self::select_server_endpoint`] for a pool that [`selects at once`](Self::selects_at_once).
+    pub(crate) fn select_server_endpoint_at_once(
+        &self,
+        name: &str,
+    ) -> pingora::Result<SelectedEndpoint> {
+        let lease = if self.reuses_connections() {
+            self.selector.select_server_connection_target(name)
+        } else {
+            self.selector.select_named_at_once(name)
+        };
+        Self::selected(lease)
+    }
+
+    fn reuses_connections(&self) -> bool {
+        self.http_version != HttpVersion::Http3
+            && self.connection_reuse != UpstreamConnectionReuse::Never
+    }
+
+    fn selected(lease: Option<EndpointLease>) -> pingora::Result<SelectedEndpoint> {
         lease
             .map(SelectedEndpoint::new)
             .ok_or_else(|| Error::new_up(POOL_UNAVAILABLE))
     }
 
-    pub(crate) fn has_unattempted(&self, attempted: &[String]) -> bool {
+    pub(crate) fn has_unattempted(&self, attempted: &[Label]) -> bool {
         self.selector.has_unattempted_servers(attempted)
     }
 
@@ -383,10 +419,6 @@ impl SelectedEndpoint {
         self.lease
     }
 
-    pub(crate) fn server_name(&self) -> &str {
-        self.lease.server_name()
-    }
-
     pub(crate) fn server_label(&self) -> &crate::label::Label {
         self.lease.server_label()
     }
@@ -409,10 +441,7 @@ impl SelectedEndpoint {
         self.lease.queue_wait()
     }
 
-    pub(crate) fn observe_queue_position(
-        &self,
-        cell: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-    ) {
+    pub(crate) fn observe_queue_position(&self, cell: impl FnOnce() -> Arc<AtomicU64>) {
         self.lease.observe_queue_position(cell);
     }
 

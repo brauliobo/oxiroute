@@ -17,7 +17,6 @@ use crate::{
             lane::{
                 LaneFront,
                 head::{self, Request as LaneRequest},
-                log::idempotency_of,
                 proxy::{Forward, decide, upstream_host},
                 render::{HostEdit, host_edit},
                 request_id,
@@ -52,14 +51,15 @@ impl Exchange {
     pub(super) fn begin(front: &LaneFront, request: &Request<'_>, now: Instant) -> Option<Self> {
         let (buffer, head) = (request.bytes(), request.head());
         let lane = head::adopt(buffer, head)?;
-        let (route, authority, _) = front.resolve(buffer, &lane)?;
+        let method = Method::from_bytes(lane.method(buffer)).ok()?;
+        let target = lane.target(buffer)?;
+        let (route, authority, _) = front.resolve(&method, &target)?;
         if !(route.engine && LaneFront::takes_body(&route, &lane)) {
             return None;
         }
         let client_ip = Some(request.peer().ip());
         let values = decide(false, &route, (buffer, client_ip), head, &authority)?;
         let id = request_id(buffer, &lane, generated_request_id_bytes());
-        let method = Method::from_bytes(lane.method(buffer)).ok()?;
         debug!(target: LOG_TARGET, "served by the epoll data plane: request_id={}", id.to_str().unwrap_or_default());
         let ctx = front.begin(
             &Forward {
@@ -75,8 +75,9 @@ impl Exchange {
                 keepalive: true,
             },
             authority,
+            &target,
         );
-        let idempotency = idempotency_of(&ctx, buffer, head).map(Box::from);
+        let idempotency = front.idempotency_of(&ctx, buffer, head).map(Box::from);
         Some(Self {
             ctx,
             route,

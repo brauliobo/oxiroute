@@ -260,41 +260,34 @@ impl LaneFront {
         }
     }
 
-    /// The authority the request names and its path, when the lane may serve the request at all: not a challenge of
-    /// the certificate authority, and an authority that is one.
-    fn target_of<'b>(
-        &self,
-        buffer: &'b [u8],
-        request: &head::Request,
-    ) -> Option<(Authority, &'b str)> {
-        let path = request.path(buffer);
-        let authority = head::authority(request.host(buffer)?)?;
+    /// The authority the request names, when the lane may serve the request at all: not a challenge of the certificate
+    /// authority, and an authority that is one.
+    fn authority_of(&self, target: &head::Target<'_>) -> Option<Authority> {
+        let authority = head::authority(target.host)?;
         if authority.as_str().contains('@') {
             return None;
         }
         if self
             .challenge
             .as_ref()
-            .is_some_and(|store| store.holds(path))
+            .is_some_and(|store| store.holds(target.path))
         {
             return None;
         }
-        Some((authority, path))
+        Some(authority)
     }
 
     fn pick(
         &self,
-        buffer: &[u8],
-        request: &head::Request,
+        method: &Method,
         authority: &Authority,
         path: &str,
     ) -> Option<(Arc<HttpRoutePlan>, Option<Arc<CachedFile>>)> {
-        let method = Method::from_bytes(request.method(buffer)).ok()?;
         let route = self
             .service
-            .select_route_path(Some(authority.as_str()), path, &method)
+            .select_route_path(Some(authority.as_str()), path, method)
             .filter(|route| route.lane != LaneRoute::Classic)?;
-        let file = peek::cached_file(route, path, &method).ok()?;
+        let file = peek::cached_file(route, path, method).ok()?;
         Some((Arc::clone(route), file))
     }
 
@@ -306,10 +299,13 @@ impl LaneFront {
         request: &head::Request,
         early: peek::Early<'_>,
     ) -> Option<Selected> {
-        let (authority, path) = self.target_of(buffer, request)?;
-        let (route, file) = match early.route(buffer, request) {
-            Some(selected) => selected,
-            None => self.pick(buffer, request, &authority, path)?,
+        let target = request.target(buffer)?;
+        let authority = self.authority_of(&target)?;
+        let (route, file) = if let Some(selected) = early.route(buffer, request) {
+            selected
+        } else {
+            let method = Method::from_bytes(request.method(buffer)).ok()?;
+            self.pick(&method, &authority, target.path)?
         };
         Some((route, authority, file))
     }
@@ -317,11 +313,11 @@ impl LaneFront {
     /// The route a request is served by, selected from its scanned head alone.
     pub(in crate::http::proxy) fn resolve(
         &self,
-        buffer: &[u8],
-        request: &head::Request,
+        method: &Method,
+        target: &head::Target<'_>,
     ) -> Option<Selected> {
-        let (authority, path) = self.target_of(buffer, request)?;
-        let (route, file) = self.pick(buffer, request, &authority, path)?;
+        let authority = self.authority_of(target)?;
+        let (route, file) = self.pick(method, &authority, target.path)?;
         Some((route, authority, file))
     }
 

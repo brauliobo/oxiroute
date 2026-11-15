@@ -17,7 +17,7 @@ pub(super) async fn dispatch_h3_upstream_request(
     mut cache_transaction: Option<CacheTransaction>,
 ) -> Option<u16> {
     let mut attempted = Vec::new();
-    let mut retry_server: Option<String> = None;
+    let mut retry_server: Option<crate::label::Label> = None;
     let max_attempts = usize::from(proxy.policy.max_retries).saturating_add(1);
     let retry_safe = proxy.policy.request_is_replay_safe(
         request.method(),
@@ -105,7 +105,7 @@ pub(super) async fn dispatch_h3_upstream_request(
             }
             transaction.apply_validators(upstream_request.headers_mut());
         }
-        attempted.push(selected.server_name().to_owned());
+        attempted.push(selected.server_label().clone());
         let mut response = None;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
