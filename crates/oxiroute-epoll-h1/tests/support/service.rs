@@ -10,8 +10,8 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{
-    AttemptTimeouts, Failure, Framing, Handoff, Outcome, Recovery, Request, Response, Reuse,
-    Routed, Selected, Service, Target,
+    AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request, Response,
+    Reuse, Routed, Selected, Service, Target,
 };
 use oxiroute_h1_head::{
     Automatic, Class, Edits, Name, Value, names, write_request, write_response,
@@ -87,6 +87,14 @@ impl Guard {
         counter.fetch_add(1, Ordering::SeqCst);
         Self(Arc::clone(counter))
     }
+}
+
+impl Lease for Guard {
+    fn connecting(&self) -> bool {
+        true
+    }
+
+    fn idle(&self, _idle: bool) {}
 }
 
 impl Drop for Guard {

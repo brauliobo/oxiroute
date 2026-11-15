@@ -43,6 +43,17 @@ impl Wire {
         }
     }
 
+    pub fn silent_for(&mut self, limit: Duration) -> bool {
+        self.stream
+            .set_read_timeout(Some(limit))
+            .expect("read timeout");
+        let silent = !self.fill();
+        self.stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("read timeout");
+        silent
+    }
+
     pub fn send(&mut self, bytes: &[u8]) {
         self.stream.write_all(bytes).expect("send");
     }

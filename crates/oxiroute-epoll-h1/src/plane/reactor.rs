@@ -3,8 +3,8 @@ use std::{
     os::fd::OwnedFd,
     rc::Rc,
     sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -34,7 +34,66 @@ pub(crate) const DRAINING: u8 = 1;
 pub(crate) const STOPPING: u8 = 2;
 
 pub(crate) struct Control {
-    pub(crate) state: AtomicU8,
+    state: AtomicU8,
+    accepting: AtomicBool,
+    armed: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Control {
+    pub(crate) fn new(accepting: bool) -> Self {
+        Self {
+            state: AtomicU8::new(RUNNING),
+            accepting: AtomicBool::new(accepting),
+            armed: Mutex::new(0),
+            changed: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn state(&self) -> u8 {
+        self.state.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn raise(&self, state: u8) {
+        self.state.fetch_max(state, Ordering::Relaxed);
+        self.announce();
+    }
+
+    pub(crate) fn accepting(&self) -> bool {
+        self.accepting.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_accepting(&self, accepting: bool) {
+        self.accepting.store(accepting, Ordering::Release);
+    }
+
+    fn armed(&self) -> MutexGuard<'_, usize> {
+        self.armed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn announce(&self) {
+        drop(self.armed());
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn arm(&self) {
+        *self.armed() += 1;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn disarm(&self) {
+        *self.armed() -= 1;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn wait_armed(&self, threads: usize) {
+        let armed = self.armed();
+        drop(
+            self.changed
+                .wait_while(armed, |armed| *armed != threads && self.state() == RUNNING)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +125,8 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) control: Arc<Control>,
     pub(crate) drain_deadline: Option<Instant>,
     pub(crate) wake: OwnedFd,
+    pub(crate) listeners: Vec<Token>,
+    pub(crate) armed: bool,
 }
 
 impl<S: Service> Reactor<S> {
@@ -93,11 +154,14 @@ impl<S: Service> Reactor<S> {
             control,
             drain_deadline: None,
             wake: wake.try_clone()?,
+            listeners: Vec::with_capacity(listeners.len()),
+            armed: false,
         };
         reactor.watch_wake(wake)?;
         for (index, listener) in listeners.into_iter().enumerate() {
-            reactor.watch_listener(index, listener)?;
+            reactor.add_listener(index, listener)?;
         }
+        reactor.set_armed(reactor.control.accepting())?;
         Ok(reactor)
     }
 
@@ -109,7 +173,7 @@ impl<S: Service> Reactor<S> {
         sys::watch(&self.epoll, fd, token.to_u64(), EventFlags::IN)
     }
 
-    fn watch_listener(&mut self, index: usize, listener: ListenerFd<S>) -> io::Result<()> {
+    fn add_listener(&mut self, index: usize, listener: ListenerFd<S>) -> io::Result<()> {
         sys::prepare_listener(&listener.fd)?;
         self.services
             .push((Rc::new(listener.service), listener.timeouts));
@@ -120,15 +184,36 @@ impl<S: Service> Reactor<S> {
                 index,
             })
             .ok_or(Errno::NOSPC)?;
-        let Some(Body::Listener { fd, .. }) = self.slab.body(token) else {
-            unreachable!("just inserted")
-        };
-        sys::watch(
-            &self.epoll,
-            fd,
-            token.to_u64(),
-            EventFlags::IN | EventFlags::EXCLUSIVE,
-        )
+        self.listeners.push(token);
+        Ok(())
+    }
+
+    pub(crate) fn set_armed(&mut self, armed: bool) -> io::Result<()> {
+        if armed == self.armed {
+            return Ok(());
+        }
+        for token in &self.listeners {
+            let Some(Body::Listener { fd, .. }) = self.slab.body(*token) else {
+                continue;
+            };
+            if armed {
+                sys::watch(
+                    &self.epoll,
+                    fd,
+                    token.to_u64(),
+                    EventFlags::IN | EventFlags::EXCLUSIVE,
+                )?;
+            } else {
+                sys::unwatch(&self.epoll, fd);
+            }
+        }
+        self.armed = armed;
+        if armed {
+            self.control.arm();
+        } else {
+            self.control.disarm();
+        }
+        Ok(())
     }
 
     pub(crate) fn run(mut self) -> io::Result<()> {
@@ -161,7 +246,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn finished(&mut self) -> bool {
-        if self.control.state.load(Ordering::Relaxed) == STOPPING {
+        if self.control.state() == STOPPING {
             self.abort_all();
         }
         if self.drain_deadline.is_some_and(|at| self.now >= at) {
@@ -197,8 +282,9 @@ impl<S: Service> Reactor<S> {
     fn woken(&mut self) {
         let mut counter = [0_u8; 8];
         let _ = rustix::io::read(&self.wake, &mut counter);
-        match self.control.state.load(Ordering::Relaxed) {
+        match self.control.state() {
             DRAINING | STOPPING => self.begin_drain(),
+            _ if self.set_armed(self.control.accepting()).is_err() => self.control.raise(STOPPING),
             _ => {}
         }
     }

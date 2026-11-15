@@ -19,7 +19,7 @@ pub(crate) struct Upstream<S: Service> {
     pub(crate) phase: Phase,
     pub(crate) client: Option<Token>,
     pub(crate) deadline: Option<Instant>,
-    pub(crate) _lease: S::Lease,
+    pub(crate) lease: S::Lease,
     pub(crate) idle: Option<std::time::Duration>,
 }
 

@@ -4,7 +4,7 @@ use super::{
     client::{Client, Down, Flow, Stage, Wait, Window},
     link::Link,
     reactor::{Reactor, Step},
-    service::{Failure, Recovery, Request, Reuse, Selected, Service, Target},
+    service::{Failure, Lease as _, Recovery, Request, Reuse, Selected, Service, Target},
     slab::{Body, Token},
     sys,
     upstream::{Phase, Upstream},
@@ -69,6 +69,7 @@ impl<S: Service> Reactor<S> {
                 self.close_upstream_detached(token);
                 continue;
             }
+            upstream.lease.idle(false);
             return Some(token);
         }
         None
@@ -95,6 +96,9 @@ impl<S: Service> Reactor<S> {
         address: std::net::SocketAddr,
         lease: S::Lease,
     ) -> Step {
+        if !lease.connecting() {
+            return self.fail(token, client, Failure::NoCapacity);
+        }
         let Ok(connecting) = sys::connect(&address) else {
             return self.fail(token, client, Failure::Connect);
         };
@@ -114,7 +118,7 @@ impl<S: Service> Reactor<S> {
             phase,
             client: Some(token),
             deadline: None,
-            _lease: lease,
+            lease,
             idle,
         };
         let Some(upstream_token) = self.slab.insert(Body::Upstream(upstream)) else {

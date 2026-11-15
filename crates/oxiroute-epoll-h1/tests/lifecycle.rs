@@ -227,3 +227,29 @@ fn idle_upstream_connections_are_closed_at_their_idle_deadline() {
     assert_eq!(wire.reply().body.len(), 1);
     assert_eq!(fixture.origin.accepted(), 2);
 }
+
+#[test]
+fn a_paused_engine_keeps_serving_its_connections_and_leaves_new_ones_queued_until_it_resumes() {
+    let fixture = Fixture::start();
+    let mut served = fixture.wire();
+    served.get("/size/2");
+    assert_eq!(served.reply().status, 200);
+    fixture.engine().pause();
+    let mut queued = fixture.wire();
+    queued.get("/size/2");
+    assert!(queued.silent_for(Duration::from_millis(300)));
+    served.get("/size/2");
+    assert_eq!(served.reply().status, 200);
+    fixture.engine().resume();
+    assert_eq!(queued.reply().status, 200);
+}
+
+#[test]
+fn an_engine_started_paused_accepts_nothing_until_it_resumes() {
+    let fixture = Fixture::paused();
+    let mut queued = fixture.wire();
+    queued.get("/size/2");
+    assert!(queued.silent_for(Duration::from_millis(300)));
+    fixture.engine().resume();
+    assert_eq!(queued.reply().status, 200);
+}

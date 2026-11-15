@@ -61,12 +61,36 @@ impl Fixture {
         Self::with_routes(config, timeouts, knobs, origin, routes)
     }
 
+    pub fn paused() -> Self {
+        let origin = Origin::start();
+        let routes = vec![Route {
+            host: "test.example",
+            prefix: "/",
+            origin: origin.addr,
+        }];
+        Self::build(
+            (test_config(), Timeouts::default(), Knobs::default()),
+            origin,
+            routes,
+            false,
+        )
+    }
+
     pub fn with_routes(
         config: Config,
         timeouts: Timeouts,
         knobs: Knobs,
         origin: Origin,
         routes: Vec<Route>,
+    ) -> Self {
+        Self::build((config, timeouts, knobs), origin, routes, true)
+    }
+
+    fn build(
+        (config, timeouts, knobs): (Config, Timeouts, Knobs),
+        origin: Origin,
+        routes: Vec<Route>,
+        accepting: bool,
     ) -> Self {
         let (sender, handoffs) = mpsc::channel();
         let (paused_sender, paused) = mpsc::channel();
@@ -79,7 +103,12 @@ impl Fixture {
         )
         .expect("listeners");
         let addr = listener.local_addr().expect("listener address");
-        let engine = Engine::start(&config, vec![listener]).expect("engine starts");
+        let engine = if accepting {
+            Engine::start(&config, vec![listener])
+        } else {
+            Engine::start_paused(&config, vec![listener])
+        }
+        .expect("engine starts");
         Self {
             addr,
             origin,

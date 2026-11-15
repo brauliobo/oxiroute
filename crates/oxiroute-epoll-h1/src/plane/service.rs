@@ -94,6 +94,7 @@ pub enum Failure {
     ClientGone,
     ClientTimeout,
     Shutdown,
+    NoCapacity,
 }
 
 impl Failure {
@@ -115,6 +116,7 @@ impl Failure {
             Self::ClientGone => "client_gone",
             Self::ClientTimeout => "client_timeout",
             Self::Shutdown => "shutdown",
+            Self::NoCapacity => "no_capacity",
         }
     }
 }
@@ -132,6 +134,12 @@ pub struct AttemptTimeouts {
     pub body: Duration,
     pub write: Duration,
     pub deadline: Option<Instant>,
+}
+
+pub trait Lease {
+    fn connecting(&self) -> bool;
+
+    fn idle(&self, idle: bool);
 }
 
 pub struct Target<L> {
@@ -185,7 +193,7 @@ pub struct Handoff<A> {
 pub trait Service: Send + Sync + 'static {
     type Admission: Send + 'static;
     type Exchange;
-    type Lease;
+    type Lease: Lease;
 
     fn admit(&self, peer: SocketAddr) -> Option<Self::Admission>;
 

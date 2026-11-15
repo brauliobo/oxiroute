@@ -3,7 +3,7 @@ use std::rc::Rc;
 use super::{
     client::{Client, Down, Stage},
     reactor::{Reactor, Step},
-    service::{Failure, Outcome, Service},
+    service::{Failure, Lease as _, Outcome, Service},
     slab::Token,
     sys,
     upstream::Phase,
@@ -102,6 +102,7 @@ impl<S: Service> Reactor<S> {
             && self.pool.put(upstream.key, token)
         {
             upstream.phase = Phase::Idle;
+            upstream.lease.idle(true);
             upstream.client = None;
             let deadline = self.now + idle;
             upstream.deadline = Some(deadline);

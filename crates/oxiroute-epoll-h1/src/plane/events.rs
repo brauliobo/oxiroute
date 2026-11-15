@@ -215,11 +215,8 @@ impl<S: Service> Reactor<S> {
         if self.drain_deadline.is_some() {
             return;
         }
-        let draining = self
-            .control
-            .state
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == DRAINING;
+        let _ = self.set_armed(false);
+        let draining = self.control.state() == DRAINING;
         self.drain_deadline = Some(if draining {
             self.now + self.config.drain
         } else {

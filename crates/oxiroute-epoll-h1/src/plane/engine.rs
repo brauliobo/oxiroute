@@ -2,11 +2,7 @@ use std::{
     io,
     net::SocketAddr,
     os::fd::OwnedFd,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-        mpsc,
-    },
+    sync::{Arc, mpsc},
     thread::{self, JoinHandle},
 };
 
@@ -17,7 +13,7 @@ use rustix::{
 
 use super::{
     config::{Config, Timeouts},
-    reactor::{Control, DRAINING, ListenerFd, RUNNING, Reactor, STOPPING},
+    reactor::{Control, DRAINING, ListenerFd, Reactor, STOPPING},
     service::Service,
     sys,
 };
@@ -77,6 +73,21 @@ pub struct Engine {
 
 impl Engine {
     pub fn start<S: Service>(config: &Config, listeners: Vec<Listener<S>>) -> io::Result<Self> {
+        Self::launch(config, listeners, true)
+    }
+
+    pub fn start_paused<S: Service>(
+        config: &Config,
+        listeners: Vec<Listener<S>>,
+    ) -> io::Result<Self> {
+        Self::launch(config, listeners, false)
+    }
+
+    fn launch<S: Service>(
+        config: &Config,
+        listeners: Vec<Listener<S>>,
+        accepting: bool,
+    ) -> io::Result<Self> {
         let mut per_thread = (0..config.threads).map(|_| Vec::new()).collect::<Vec<_>>();
         for listener in listeners {
             if listener.sockets.len() != config.threads {
@@ -90,9 +101,7 @@ impl Engine {
                 });
             }
         }
-        let control = Arc::new(Control {
-            state: AtomicU8::new(RUNNING),
-        });
+        let control = Arc::new(Control::new(accepting));
         let (ready_tx, ready_rx) = mpsc::channel();
         let mut engine = Self {
             control: Arc::clone(&control),
@@ -128,16 +137,32 @@ impl Engine {
         Ok(engine)
     }
 
+    pub fn pause(&self) {
+        self.set_accepting(false);
+    }
+
+    pub fn resume(&self) {
+        self.set_accepting(true);
+    }
+
     pub fn drain(&self) {
-        self.signal(DRAINING);
+        self.control.raise(DRAINING);
+        self.wake();
     }
 
     pub fn stop(&self) {
-        self.signal(STOPPING);
+        self.control.raise(STOPPING);
+        self.wake();
     }
 
-    fn signal(&self, state: u8) {
-        self.control.state.fetch_max(state, Ordering::Relaxed);
+    fn set_accepting(&self, accepting: bool) {
+        self.control.set_accepting(accepting);
+        self.wake();
+        self.control
+            .wait_armed(if accepting { self.threads.len() } else { 0 });
+    }
+
+    fn wake(&self) {
         for wake in &self.wakers {
             let _ = rustix::io::write(wake, &1_u64.to_ne_bytes());
         }
