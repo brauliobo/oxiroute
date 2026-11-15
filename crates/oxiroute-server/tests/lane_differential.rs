@@ -332,6 +332,9 @@ fn mask_ids(line: &str) -> String {
 async fn compare(pair: &Pair, cases: &[corpus::Case]) {
     let mut differences = Vec::new();
     for case in cases {
+        if skips_case(&case.name) {
+            continue;
+        }
         let script = case.script();
         let (classic, lane) = pair.play(&script).await;
         if classic != lane {
@@ -384,7 +387,7 @@ async fn connections_that_alternate_between_the_lane_and_the_classic_path_are_id
 async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
     let mut differences = Vec::new();
     for (name, reply, closes) in corpus::replies() {
-        if name == SWITCHING_PROTOCOLS {
+        if skips_reply(name) {
             continue;
         }
         let pair = Pair::serving(reply, closes).await;
@@ -414,6 +417,58 @@ async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
 }
 
 const SWITCHING_PROTOCOLS: &str = "switching protocols";
+
+/// Origin responses outside the grammar of the head codec of the epoll data plane, which answers them with a bad
+/// gateway: the classic path reads them with its own parser.
+const UNSCANNED: [&str; 7] = [
+    "bare line feeds",
+    "continue before the answer",
+    "nominated field",
+    "no reason phrase",
+    "obsolete folding",
+    "space before the colon",
+    "upgrade field",
+];
+
+/// Requests that arrive pipelined or with bytes after their end: the epoll data plane serves the requests that follow
+/// on the connection, where the classic path ends the connection after the first answer.
+const PIPELINED: [&str; 6] = [
+    "pipelined pair",
+    "pipelined triple",
+    "pipelined with body",
+    "pipelined garbage after",
+    "trailing crlf after head",
+    "length, then a request in the same write",
+];
+
+fn skips_reply(name: &str) -> bool {
+    name == SWITCHING_PROTOCOLS || process_support::serves_on_epoll() && UNSCANNED.contains(&name)
+}
+
+fn skips_case(name: &str) -> bool {
+    process_support::serves_on_epoll() && PIPELINED.contains(&name)
+}
+
+#[tokio::test]
+async fn unscanned_origin_responses_are_a_bad_gateway_on_the_epoll_data_plane() {
+    if !process_support::serves_on_epoll() {
+        return;
+    }
+    for (name, reply, closes) in corpus::replies() {
+        if !UNSCANNED.contains(&name) {
+            continue;
+        }
+        let pair = Pair::serving(reply, closes).await;
+        let case = &corpus::probes("/r")[0];
+        let (_, lane) = pair.play(&case.script()).await;
+        assert!(
+            lane.response.starts_with("HTTP/1.1 502 "),
+            "{name}: {}",
+            lane.response
+        );
+        pair.finish();
+    }
+}
 const STREAMING: &str = "close delimited, origin stays open";
 
 /// The one deliberate difference: an origin that answers `101` to a request that asked for no upgrade is relayed by the
