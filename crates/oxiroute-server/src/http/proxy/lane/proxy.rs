@@ -610,7 +610,7 @@ impl super::LaneFront {
                 head.extend_from_slice(&rendered);
                 (status, framing, refused, keepalive, false)
             };
-        ctx.remaining_at(now, true)?;
+        ctx.ensure_open_at(now, true)?;
         let retries_on_status = refused || proxy_policy(ctx).retries_on_status(status);
         if retries_on_status
             && status_retry_possible(ctx, refused, false)

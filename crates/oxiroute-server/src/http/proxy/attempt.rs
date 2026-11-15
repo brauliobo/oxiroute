@@ -88,7 +88,7 @@ impl HttpRequestContext {
             self.refresh_clock();
         }
         let mut now = self.now;
-        let remaining = self.remaining_at(now, true)?;
+        let mut remaining = self.remaining_at(now, true)?;
         let Some(pool) = &self.pool else {
             return Err(Error::new_in(ErrorType::InternalError));
         };
@@ -103,6 +103,7 @@ impl HttpRequestContext {
                 self.retry_delay_pending = false;
                 self.now = Instant::now();
                 now = self.now;
+                remaining = self.remaining_at(now, true)?;
             }
             self.enter_phase(Phase::Queued, now);
             let selection_started = now;
@@ -117,9 +118,8 @@ impl HttpRequestContext {
                     true,
                 )
             } else {
-                let wait = self.remaining_at(now, true)?;
                 let (selected, waited) = promptly(
-                    wait,
+                    remaining,
                     pool.select_endpoint_at(
                         &self.attempted_upstreams,
                         self.queue_tag,
@@ -133,8 +133,9 @@ impl HttpRequestContext {
             if waited {
                 self.now = Instant::now();
                 now = self.now;
+                remaining = self.remaining_at(now, true)?;
+                self.trace.queue_wait += now.saturating_duration_since(selection_started);
             }
-            self.trace.queue_wait += now.saturating_duration_since(selection_started);
             self.trace.attempt_started = Some(now);
             let server = selected.server_label().clone();
             self.trace.servers.push(server.clone());
@@ -154,7 +155,6 @@ impl HttpRequestContext {
             self.selected_observation = Some(selected.observation());
             self.selected = Some(selected);
         }
-        let remaining = self.remaining_at(now, true)?;
         let route_policy = proxy_route(self).policy;
         let timeouts = proxy_policy(self).timeouts;
         let attempt = |explicit: Option<u64>, inherited: Duration| {
@@ -268,7 +268,7 @@ impl HttpRequestContext {
         } else {
             self.refresh_clock()
         };
-        self.remaining_at(now, true)?;
+        self.ensure_open_at(now, true)?;
         self.enter_phase(Phase::AwaitingHeaders, now);
         self.trace.connected_at = Some(now);
         self.trace.connect = self
