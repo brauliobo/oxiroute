@@ -407,3 +407,6 @@ tests and strict clippy.
   `Box<std::os::unix::net::SocketAddr>`, so `SocketAddr` is the size of an IP address instead of a path one and the
   `SocketDigest` of every connection (and every `HttpPeer`) is about 350 bytes smaller; path addresses are built
   through `From`.
+- A connection another acceptor took is served like an accepted one: `protocols/l4/stream.rs` `Stream::adopt` builds the
+  stream of a non-blocking `std::net::TcpStream` on the calling runtime with its peer address and the bytes already read,
+  and `server/transfer_fd` `Fds::take_owned` hands a descriptor of the container to its caller as an `OwnedFd`.
