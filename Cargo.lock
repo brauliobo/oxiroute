@@ -2922,6 +2922,14 @@ name = "oxiroute-cpu"
 version = "6.5.2"
 
 [[package]]
+name = "oxiroute-epoll-h1"
+version = "6.5.2"
+dependencies = [
+ "oxiroute-h1-head",
+ "rustix",
+]
+
+[[package]]
 name = "oxiroute-forward-proxy"
 version = "6.5.2"
 dependencies = [

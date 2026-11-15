@@ -1,0 +1,23 @@
+[package]
+name = "oxiroute-epoll-h1"
+description = "Thread-per-core epoll HTTP/1 data plane: serves plain HTTP/1.1 proxy exchanges on raw sockets and hands every other connection back"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+oxiroute-h1-head = { path = "../oxiroute-h1-head" }
+rustix.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+missing_errors_doc = "allow"
+struct_excessive_bools = "allow"
+too_many_lines = "allow"
