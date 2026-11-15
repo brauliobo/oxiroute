@@ -97,6 +97,28 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace --locked --jobs 4
 
+  cpu-targets:
+    name: Generic and native CPU dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cpu-targets
+
+      - name: Install CPU emulator
+        run: sudo apt-get update && sudo apt-get install --yes qemu-user
+
+      - name: Verify scanners on baseline, SSSE3, AVX2 and native CPUs
+        run: ./scripts/test-cpu-targets.sh
+
   release-archive:
     name: Release archive policy
     runs-on: ubuntu-24.04

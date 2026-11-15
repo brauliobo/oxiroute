@@ -184,10 +184,10 @@ against the glibc of the runner image (Ubuntu 24.04); older distributions need t
 
 ## Runtime CPU dispatch and the ISA guard
 
-Every artefact but `x86-64-v3` is a generic x86-64 binary: SSE4.2, AVX2 and AVX-512 code paths are compiled as
+Every artefact but `x86-64-v3` is a generic x86-64 binary: SSE2, SSSE3, AVX2 and AVX-512 code paths are compiled as
 `#[target_feature]` variants and chosen at run time by the `oxiroute-cpu` crate, on by default. The original failure was
 a `SIGILL` on an Intel Celeron J4125 (SSE4.2 and POPCNT, no AVX) from a build that had baked AVX in. For triage and
-tests, `OXIROUTE_CPU_LEVEL=scalar|sse42|avx2|avx512` forces a level; it can only lower the level and never exceeds what
+tests, `OXIROUTE_CPU_LEVEL=scalar|sse2|sse42|avx2|avx512` forces a level; it can only lower the level and never exceeds what
 the CPU supports.
 
 Three gates keep a CPU target out of the shipped bytes:
@@ -212,6 +212,21 @@ Three gates keep a CPU target out of the shipped bytes:
   non-zero exit or `SIGILL`. Without `qemu-x86_64` (package `qemu-user`) it prints `SKIPPED` and exits 0; `--require`
   makes that exit 1. A dynamic binary needs the host loader or `QEMU_LD_PREFIX=<baseline sysroot>`; a host glibc built
   for x86-64-v3 raises `SIGILL` before the binary runs.
+
+`scripts/test-cpu-targets.sh` builds and executes the CPU and HTTP/1 scanner tests for generic x86-64 and the
+native build host. The generic test executables also run under QEMU with baseline, SSSE3 and AVX2 CPUs, including an
+AVX2 CPU with unrelated POPCNT and BMI features masked. Separate masks of SSE3, SSSE3 and SSE4 verify that
+selection respects Rust’s target-feature dependencies and lowers the backend when needed. Each emulated run asserts
+both the detected and selected backend; setting a requested level above the emulated hardware must not execute
+unsupported instructions.
+`CPU_TEST_CPUS` overrides the realistic matrix as space-separated `CPU=LEVEL` pairs; `CPU_TEST_MASKED_CPUS` overrides
+the additional feature masks, which apply only to CPU primitives. HTTP/1 differential tests use the real CPU profiles:
+the external `httparse` oracle assumes AVX2 implies its compiler-required SSE features and cannot run on an inconsistent
+CPUID combination. These masks establish primitive dispatch coverage, not full application coverage.
+AVX-512 requires a capable native host or an emulator that implements it; requesting it on an AVX2-only emulator
+does not establish AVX-512 coverage.
+For a host whose libraries require x86-64-v3, set `QEMU_LD_PREFIX=/path/to/baseline-sysroot` to compatible generic
+loader, glibc and compiler runtime libraries. This changes the emulated loader; it does not alter the host libraries.
 
 `scripts/test-verify-baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
 "Release archive policy").

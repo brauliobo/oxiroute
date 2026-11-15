@@ -2805,6 +2805,7 @@ dependencies = [
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
+ "oxiroute-cpu",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
  "oxiroute-h3",
@@ -2884,6 +2885,7 @@ dependencies = [
  "crc32fast",
  "http",
  "httpdate",
+ "oxiroute-cpu",
  "rustix",
  "tempfile",
  "thiserror 2.0.21",
@@ -2897,6 +2899,7 @@ version = "6.5.2"
 dependencies = [
  "chrono-tz",
  "http",
+ "oxiroute-cpu",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2920,6 +2923,9 @@ dependencies = [
 [[package]]
 name = "oxiroute-cpu"
 version = "6.5.2"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "oxiroute-forward-proxy"
