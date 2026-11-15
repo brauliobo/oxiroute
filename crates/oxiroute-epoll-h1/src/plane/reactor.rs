@@ -20,7 +20,7 @@ use rustix::{
 };
 
 use super::{
-    client::{Buffers, Shared},
+    client::{Pooled, Shared},
     clock::{Clock, Moment},
     config::{Config, Timeouts},
     service::Service,
@@ -117,7 +117,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) slab: Slab<S>,
     pub(crate) wheel: Wheel,
     pub(crate) pool: IdlePool,
-    pub(crate) spare: Vec<Buffers>,
+    pub(crate) spare: Vec<Pooled>,
     pub(crate) services: Vec<(Shared<S>, Timeouts)>,
     pub(crate) response: Box<ResponseHead>,
     pub(crate) expired: Vec<u32>,

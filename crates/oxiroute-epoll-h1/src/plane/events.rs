@@ -3,7 +3,7 @@ use std::{net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
 use rustix::event::epoll::EventFlags;
 
 use super::{
-    client::{Buffers, Client, Leased, Stage, Wait},
+    client::{Client, Leased, Pooled, Stage, Wait},
     clock::Moment,
     config::Trigger,
     link::Link,
@@ -99,7 +99,7 @@ impl<S: Service> Reactor<S> {
         let buffers = self
             .spare
             .pop()
-            .unwrap_or_else(|| Buffers::new(&self.config));
+            .unwrap_or_else(|| Pooled::new(&self.config));
         client.buffers.hold(buffers);
     }
 
@@ -109,7 +109,7 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    pub(crate) fn recycle(&mut self, buffers: Buffers) {
+    pub(crate) fn recycle(&mut self, buffers: Pooled) {
         if self.spare.len() < self.config.max_clients {
             self.spare.push(buffers);
         }

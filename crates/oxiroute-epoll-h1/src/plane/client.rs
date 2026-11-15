@@ -42,18 +42,26 @@ impl Buffers {
 
 pub(crate) const HEAD_GROWTH: usize = 4096;
 
-pub(crate) struct Leased(Option<Buffers>);
+pub(crate) struct Pooled(Box<Buffers>);
+
+impl Pooled {
+    pub(crate) fn new(config: &Config) -> Self {
+        Self(Box::new(Buffers::new(config)))
+    }
+}
+
+pub(crate) struct Leased(Option<Pooled>);
 
 impl Leased {
     pub(crate) const fn none() -> Self {
         Self(None)
     }
 
-    pub(crate) fn hold(&mut self, buffers: Buffers) {
+    pub(crate) fn hold(&mut self, buffers: Pooled) {
         self.0 = Some(buffers);
     }
 
-    pub(crate) fn release(&mut self) -> Option<Buffers> {
+    pub(crate) fn release(&mut self) -> Option<Pooled> {
         self.0.take()
     }
 }
@@ -62,13 +70,13 @@ impl Deref for Leased {
     type Target = Buffers;
 
     fn deref(&self) -> &Buffers {
-        self.0.as_ref().expect("a client past Idle holds buffers")
+        &self.0.as_ref().expect("a client past Idle holds buffers").0
     }
 }
 
 impl DerefMut for Leased {
     fn deref_mut(&mut self) -> &mut Buffers {
-        self.0.as_mut().expect("a client past Idle holds buffers")
+        &mut self.0.as_mut().expect("a client past Idle holds buffers").0
     }
 }
 
