@@ -1,9 +1,10 @@
-use std::{net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Instant};
+use std::{net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
 
 use rustix::event::epoll::EventFlags;
 
 use super::{
     client::{Client, Stage, Wait},
+    clock::Moment,
     config::Trigger,
     link::Link,
     reactor::{DRAINING, Reactor, Step},
@@ -77,11 +78,11 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    fn arm_client(&mut self, token: Token, limit: Option<std::time::Duration>) {
+    fn arm_client(&mut self, token: Token, limit: Option<Duration>) {
         let Some(mut client) = self.slab.take_client(token) else {
             return;
         };
-        let deadline = limit.map(|limit| self.now + limit);
+        let deadline = limit.map(|limit| self.moment.after(limit));
         self.set_deadline(token, deadline, &mut client.deadline);
         self.slab.put_client(token, client);
     }
@@ -89,8 +90,8 @@ impl<S: Service> Reactor<S> {
     pub(crate) fn set_deadline(
         &mut self,
         token: Token,
-        deadline: Option<Instant>,
-        slot: &mut Option<Instant>,
+        deadline: Option<Moment>,
+        slot: &mut Option<Moment>,
     ) {
         *slot = deadline;
         if let Some(deadline) = deadline {
@@ -156,7 +157,7 @@ impl<S: Service> Reactor<S> {
             _ => return,
         };
         match deadline {
-            Some(deadline) if deadline > self.now => self.wheel.schedule(token.index, deadline),
+            Some(deadline) if deadline > self.moment => self.wheel.schedule(token.index, deadline),
             Some(_) => self.expired_deadline(token),
             None => {}
         }
@@ -178,8 +179,7 @@ impl<S: Service> Reactor<S> {
             return Step::Close;
         }
         let flow = client.flow();
-        let total = flow.timeouts.and_then(|timeouts| timeouts.deadline);
-        let failure = if total.is_some_and(|total| total <= self.now) {
+        let failure = if flow.total.is_some_and(|total| total <= self.moment) {
             Failure::TotalTimeout
         } else {
             flow.wait.failure()

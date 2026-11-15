@@ -1,10 +1,9 @@
 use std::{
     collections::HashMap,
     hash::{BuildHasherDefault, Hasher},
-    time::Instant,
 };
 
-use super::{link::Link, service::Service, slab::Token};
+use super::{clock::Moment, link::Link, service::Service, slab::Token};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Phase {
@@ -18,7 +17,7 @@ pub(crate) struct Upstream<S: Service> {
     pub(crate) key: u64,
     pub(crate) phase: Phase,
     pub(crate) client: Option<Token>,
-    pub(crate) deadline: Option<Instant>,
+    pub(crate) deadline: Option<Moment>,
     pub(crate) lease: S::Lease,
     pub(crate) idle: Option<std::time::Duration>,
 }

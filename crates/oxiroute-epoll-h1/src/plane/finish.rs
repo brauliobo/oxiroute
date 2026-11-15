@@ -45,7 +45,7 @@ impl<S: Service> Reactor<S> {
         client.stage = stage;
         self.set_deadline(
             token,
-            limit.map(|limit| self.now + limit),
+            limit.map(|limit| self.moment.after(limit)),
             &mut client.deadline,
         );
         Step::Again
@@ -57,7 +57,7 @@ impl<S: Service> Reactor<S> {
         }
         sys::shutdown_write(&client.link.fd);
         client.stage = Stage::Lingering;
-        let deadline = Some(self.now + self.config.linger);
+        let deadline = Some(self.moment.after(self.config.linger));
         self.set_deadline(token, deadline, &mut client.deadline);
         Step::Again
     }
@@ -80,10 +80,10 @@ impl<S: Service> Reactor<S> {
             ended: self.now,
             connect: flow
                 .connected_at
-                .map(|at| at.saturating_duration_since(flow.attempt_started)),
+                .map(|at| at.since(flow.attempt_started)),
             header: flow
                 .first_byte_at
-                .map(|at| at.saturating_duration_since(flow.attempt_started)),
+                .map(|at| at.since(flow.attempt_started)),
             keepalive: flow.keepalive,
         };
         Rc::clone(&client.service).finish(exchange, &outcome);
@@ -104,7 +104,7 @@ impl<S: Service> Reactor<S> {
             upstream.phase = Phase::Idle;
             upstream.lease.idle(true);
             upstream.client = None;
-            let deadline = self.now + idle;
+            let deadline = self.moment.after(idle);
             upstream.deadline = Some(deadline);
             self.wheel.ensure(token.index, deadline);
             return;

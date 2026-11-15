@@ -152,7 +152,7 @@ impl<S: Service> Reactor<S> {
             {
                 Read::Data(count) => {
                     client.resp_len += count;
-                    client.flow().first_byte_at.get_or_insert(self.now);
+                    client.flow().first_byte_at.get_or_insert(self.moment);
                     progressed = true;
                 }
                 Read::Block => return Ok(progressed),
@@ -183,7 +183,7 @@ impl<S: Service> Reactor<S> {
         let answered = Answered {
             bytes: &client.buffers.resp[..head.head_len as usize],
             head,
-            connected: flow.connected_at,
+            connected: flow.connected_at.map(|at| self.clock.instant(at)),
             now: self.now,
         };
         if service.judge(exchange, &answered) == Recovery::Retry && retryable {

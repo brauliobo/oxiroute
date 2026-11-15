@@ -1,7 +1,7 @@
 //! Serialising the headers of a head in the order of a [`HeaderOrder`], byte for byte as the classic writers do.
 
 use crate::edit::Edit;
-use crate::fields::{LINE_IS_CLEAN, MAX_HEADERS, NAME_HAS_UPPER, TAIL_IS_CLEAN};
+use crate::fields::{Header, LINE_IS_CLEAN, MAX_HEADERS, NAME_HAS_UPPER, TAIL_IS_CLEAN};
 use crate::order::{HeaderOrder, Items};
 use alloc::vec::Vec;
 
@@ -43,23 +43,19 @@ fn put_added(out: &mut Vec<u8>, edit: &Edit<'_>) {
 }
 
 /// A header line whose name or tail is not what the classic writer emits.
-fn put_parsed(out: &mut Vec<u8>, items: &Items<'_>, index: usize) {
-    let h = &items.headers[index];
+fn put_parsed(out: &mut Vec<u8>, buf: &[u8], h: &Header) {
     match h.class.titled() {
         Some(titled) => out.extend_from_slice(titled),
-        None if h.flags & NAME_HAS_UPPER != 0 => put_lowercase(
-            out,
-            items.buf,
-            h.name_start as usize,
-            usize::from(h.name_len),
-        ),
-        None => out.extend_from_slice(h.name(items.buf)),
+        None if h.flags & NAME_HAS_UPPER != 0 => {
+            put_lowercase(out, buf, h.name_start as usize, usize::from(h.name_len));
+        }
+        None => out.extend_from_slice(h.name(buf)),
     }
     if h.flags & TAIL_IS_CLEAN != 0 {
-        out.extend_from_slice(&items.buf[h.colon()..h.clean_line_end()]);
+        out.extend_from_slice(&buf[h.colon()..h.clean_line_end()]);
     } else {
         out.extend_from_slice(b": ");
-        out.extend_from_slice(h.value(items.buf));
+        out.extend_from_slice(h.value(buf));
         out.extend_from_slice(b"\r\n");
     }
 }
@@ -81,20 +77,47 @@ impl Walk<'_> {
     }
 }
 
+/// Consecutive scanned lines that are already what the classic writer emits, copied as one slice of the buffer.
+struct Run {
+    start: usize,
+    end: usize,
+    next: usize,
+}
+
+impl Run {
+    const EMPTY: Self = Self {
+        start: 0,
+        end: 0,
+        next: 0,
+    };
+
+    #[inline(always)]
+    fn flush(&mut self, out: &mut Vec<u8>, buf: &[u8]) {
+        if self.end > self.start {
+            out.extend_from_slice(&buf[self.start..self.end]);
+            *self = Self::EMPTY;
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, out: &mut Vec<u8>, buf: &[u8], index: usize, h: &Header) {
+        if self.end == self.start || self.next != index {
+            self.flush(out, buf);
+            self.start = h.name_start as usize;
+        }
+        self.end = h.clean_line_end();
+        self.next = index + 1;
+    }
+}
+
 /// Writes `name: value\r\n` for each item of `walk` whose class is not in `skip` (a mask of [`crate::Class::bit`],
 /// never `Other`). Consecutive scanned lines that are already what the classic writer emits are copied as one run.
 pub(crate) fn emit(out: &mut Vec<u8>, items: &Items<'_>, walk: Walk<'_>, skip: u32) {
-    let mut run: Option<(usize, usize)> = None;
-    let flush = |out: &mut Vec<u8>, run: &mut Option<(usize, usize)>| {
-        if let Some((first, last)) = run.take() {
-            let start = items.headers[first].name_start as usize;
-            out.extend_from_slice(&items.buf[start..items.headers[last].clean_line_end()]);
-        }
-    };
+    let mut run = Run::EMPTY;
     walk.for_each(items.headers.len(), |item| {
         let index = usize::from(item);
         if index >= MAX_HEADERS {
-            flush(out, &mut run);
+            run.flush(out, items.buf);
             let edit = &items.edits[index - MAX_HEADERS];
             if skip & edit.name().class.bit() == 0 {
                 put_added(out, edit);
@@ -103,16 +126,13 @@ pub(crate) fn emit(out: &mut Vec<u8>, items: &Items<'_>, walk: Walk<'_>, skip: u
         }
         let h = &items.headers[index];
         if skip & h.class.bit() != 0 {
-            flush(out, &mut run);
-        } else if h.flags & LINE_IS_CLEAN == 0 {
-            flush(out, &mut run);
-            put_parsed(out, items, index);
-        } else if let Some((_, last)) = run.as_mut().filter(|(_, last)| *last + 1 == index) {
-            *last = index;
+            run.flush(out, items.buf);
+        } else if h.flags & LINE_IS_CLEAN != 0 {
+            run.push(out, items.buf, index, h);
         } else {
-            flush(out, &mut run);
-            run = Some((index, index));
+            run.flush(out, items.buf);
+            put_parsed(out, items.buf, h);
         }
     });
-    flush(out, &mut run);
+    run.flush(out, items.buf);
 }

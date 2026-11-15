@@ -3,9 +3,27 @@
 #![allow(unsafe_code)]
 
 use oxiroute_cpu::{
-    Level, ascii_range_with, control_at_with, find_any3_with, header_value_end_with,
-    json_escape_at_with, token_run_with,
+    Job, Lanes, Level, WIDTH, ascii_range_with, control_at_with, dispatch_with, find_any3_with,
+    header_value_end_with, json_escape_at_with,
 };
+
+struct TokenRun<'a>(&'a [u8]);
+
+impl Job for TokenRun<'_> {
+    type Out = usize;
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) -> usize {
+        let mut at = 0;
+        loop {
+            let stop = lanes.token(&lanes.window(self.0, at)).stop;
+            if stop != 0 {
+                return at + stop.trailing_zeros() as usize;
+            }
+            at += WIDTH;
+        }
+    }
+}
 
 struct Pages {
     base: *mut libc::c_void,
@@ -58,7 +76,7 @@ fn scanners_never_read_before_or_after_the_slice() {
         eprintln!("guard-page coverage: {}", level.name());
         for len in 0..=192 {
             for buf in [&middle[..len], &middle[middle.len() - len..]] {
-                assert_eq!(token_run_with(level, buf).len, len);
+                assert_eq!(dispatch_with(level, TokenRun(buf)), len);
                 assert_eq!(json_escape_at_with(level, buf), len);
                 assert!(ascii_range_with(level, buf, 32, 126));
                 assert_eq!(ascii_range_with(level, buf, 0, 31), len == 0);

@@ -17,7 +17,7 @@ use oxiroute_h1_head::{
     Automatic, Class, Edits, Name, Value, names, write_request, write_response,
 };
 
-use super::date::http_date;
+use super::date::cached_http_date;
 
 const HOP_BY_HOP: [Class; 9] = [
     Class::Connection,
@@ -138,7 +138,7 @@ impl Reference {
 
     fn date(&self, now: Instant) -> [u8; 29] {
         let wall = self.clock.1.duration_since(UNIX_EPOCH).unwrap_or_default();
-        http_date(wall.as_secs() + now.saturating_duration_since(self.clock.0).as_secs())
+        cached_http_date(wall.as_secs() + now.saturating_duration_since(self.clock.0).as_secs())
     }
 
     fn route_of(&self, request: &Request<'_>) -> Option<&Route> {

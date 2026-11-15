@@ -5,7 +5,7 @@
 //! the entry (the last entry moves into the hole), `insert` replaces the first value in place and drops the others,
 //! `append` adds a value to the entry or a new entry at the end.
 
-use crate::class::{Class, same_name};
+use crate::class::Class;
 use crate::edit::{Edit, MAX_EDITS, Name};
 use crate::fields::{Header, MAX_HEADERS};
 
@@ -38,11 +38,15 @@ impl Items<'_> {
     }
 
     fn same(&self, a: u8, b: u8) -> bool {
-        same_name(self.name(a), self.class(a), self.name(b), self.class(b))
+        let class = self.class(a);
+        class == self.class(b)
+            && (class != Class::Other || self.name(a).eq_ignore_ascii_case(self.name(b)))
     }
 
     fn is(&self, item: u8, name: &Name<'_>) -> bool {
-        same_name(self.name(item), self.class(item), name.lower, name.class)
+        let class = self.class(item);
+        class == name.class
+            && (class != Class::Other || self.name(item).eq_ignore_ascii_case(name.lower))
     }
 }
 
@@ -62,24 +66,20 @@ impl HeaderOrder {
     /// The order after the scanned headers were appended one by one. `duplicate_names` and `present` are the scanner's
     /// facts; without duplicates the entries are the headers in arrival order and nothing is compared.
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn new(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
+        let count = items.headers.len();
         let mut order = Self {
-            entries: [0; MAX_ITEMS],
+            entries: core::array::from_fn(|item| item as u8),
             next: [NONE; MAX_ITEMS],
-            len: 0,
+            len: count,
             present,
         };
-        let count = items.headers.len();
         if duplicate_names {
+            order.len = 0;
             for item in 0..count as u8 {
                 order.append(items, item);
             }
-        } else {
-            for (slot, item) in order.entries.iter_mut().zip(0..count as u8) {
-                *slot = item;
-            }
-            order.len = count;
         }
         order
     }
@@ -147,7 +147,7 @@ impl HeaderOrder {
 
     /// The order after all the edits of `items`, applied in sequence.
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn after_edits(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
         let mut order = Self::new(items, duplicate_names, present);
         for index in 0..items.edits.len() {
