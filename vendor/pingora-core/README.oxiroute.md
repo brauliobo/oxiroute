@@ -17,6 +17,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
 - `connectors/tls/boringssl_openssl/mod.rs` invokes it after CA, verification,
   hostname, and ALPN setup, but before clearing the OpenSSL error stack and
   starting the handshake. Hook failures become `TLSHandshakeFailure` errors.
+  The client context, which parses the system CA bundle, is built when the first TLS peer connects, and
+  connectors using the system trust store share one.
 - `apps/mod.rs` exposes an opaque connection-admission guard and a transport-handshake timeout hook,
   defaulting to 60 seconds, and
   `services/listening.rs` acquires it after TCP accept and retains it through the handshake and

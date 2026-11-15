@@ -43,7 +43,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tls::TlsConnector;
 
 #[derive(Clone, Debug)]
 pub(crate) struct IdleConnection {
@@ -252,7 +251,7 @@ impl TransportConnector {
                         &peer,
                         bind_to,
                         alpn_override,
-                        &tls_ctx.ctx,
+                        &tls_ctx,
                         Some(offload_wait),
                     )
                     .await
@@ -260,7 +259,7 @@ impl TransportConnector {
                 .await
                 .or_err(InternalError, "offload runtime failure")??
         } else {
-            do_connect(peer, bind_to, alpn_override, &self.tls_ctx.ctx, None).await?
+            do_connect(peer, bind_to, alpn_override, &self.tls_ctx, None).await?
         };
 
         if let Some(lifetime) = lifetime {
@@ -413,7 +412,7 @@ async fn do_connect<P: Peer + Send + Sync>(
     peer: &P,
     bind_to: Option<BindTo>,
     alpn_override: Option<ALPN>,
-    tls_ctx: &TlsConnector,
+    tls_ctx: &tls::Connector,
     offload_wait_duration: Option<Duration>,
 ) -> Result<Stream> {
     // Create the future that does the connections, but don't evaluate it until
@@ -438,7 +437,7 @@ async fn do_connect_inner<P: Peer + Send + Sync>(
     peer: &P,
     bind_to: Option<BindTo>,
     alpn_override: Option<ALPN>,
-    tls_ctx: &TlsConnector,
+    tls_ctx: &tls::Connector,
     offload_wait_duration: Option<Duration>,
 ) -> Result<Stream> {
     let l4_connect_start = Instant::now();
@@ -451,7 +450,7 @@ async fn do_connect_inner<P: Peer + Send + Sync>(
         let local_addr = stream
             .get_socket_digest()
             .and_then(|digest| digest.local_addr().and_then(|addr| addr.as_inet()).copied());
-        let tls_stream = tls::connect(stream, peer, alpn_override, tls_ctx)
+        let tls_stream = tls::connect(stream, peer, alpn_override, &tls_ctx.ctx)
             .await
             .map_err(|e| attach_connect_local_addr(e, local_addr))?;
         Ok(Box::new(tls_stream))
@@ -1348,7 +1347,7 @@ mod tests {
     /// the decomposed error type and message.
     async fn get_do_connect_failure_with_peer(peer: &BasicPeer) -> (ErrorType, String) {
         let tls_connector = Connector::new(None);
-        let stream = do_connect(peer, None, None, &tls_connector.ctx, None).await;
+        let stream = do_connect(peer, None, None, &tls_connector, None).await;
         match stream {
             Ok(_) => panic!("should throw an error"),
             Err(e) => (
@@ -1422,7 +1421,7 @@ mod tests {
         peer.options.connection_timeout = Some(Duration::from_secs(5));
 
         let tls_connector = Connector::new(None);
-        let err = do_connect(&peer, None, None, &tls_connector.ctx, None)
+        let err = do_connect(&peer, None, None, &tls_connector, None)
             .await
             .unwrap_err();
 
