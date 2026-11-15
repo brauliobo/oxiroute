@@ -26,3 +26,5 @@ cast_possible_truncation = "allow"
 wildcard_imports = "allow"
 # Benchmark arithmetic.
 cast_precision_loss = "allow"
+# Window operations are one-to-ten line steps that must inline into the `#[target_feature]` function that runs the job.
+inline_always = "allow"

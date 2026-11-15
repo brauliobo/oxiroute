@@ -1,9 +1,10 @@
 //! The request scanner: one pass over a request head, refusing everything the classic parser might read differently.
 
-use crate::class::{Class, HOP_BY_HOP_REQUEST};
-use crate::fields::{Block, Header, MAX_HEADERS, Stop, scan_fields};
+use oxiroute_cpu::{Job, Lanes, dispatch};
+
+use crate::class::{Class, HOP_BY_HOP_REQUEST, ieq};
+use crate::fields::{Block, Header, MAX_HEADERS, Stop, name_run, scan_fields};
 use crate::miss::{MissReason, Scan};
-use crate::tables::{NAME, TARGET};
 
 /// The longest method token the scanner takes.
 pub const MAX_METHOD_LEN: usize = 32;
@@ -161,14 +162,9 @@ fn miss<T>(reason: MissReason) -> Result<T, Stop> {
     Err(Stop::Bad(reason))
 }
 
-fn method_end(buf: &[u8]) -> Result<usize, Stop> {
-    let mut i = 0;
-    while let Some(&c) = buf.get(i) {
-        if NAME[usize::from(c)] == 0 {
-            break;
-        }
-        i += 1;
-    }
+#[inline(always)]
+fn method_end<L: Lanes>(lanes: L, buf: &[u8]) -> Result<usize, Stop> {
+    let (i, _) = name_run(lanes, buf, 0);
     match buf.get(i) {
         Some(b' ') if i > 0 && i <= MAX_METHOD_LEN => Ok(i),
         _ if i > MAX_METHOD_LEN => miss(MissReason::MethodTooLong),
@@ -177,16 +173,25 @@ fn method_end(buf: &[u8]) -> Result<usize, Stop> {
     }
 }
 
-fn target_end(buf: &[u8], start: usize) -> Result<usize, Stop> {
+#[inline(always)]
+fn target_run<L: Lanes>(lanes: L, buf: &[u8], mut at: usize) -> usize {
+    loop {
+        let stop = lanes.target_mask(&lanes.window(buf, at));
+        at += stop.trailing_zeros() as usize;
+        if stop != 0 {
+            return at;
+        }
+    }
+}
+
+#[inline(always)]
+fn target_end<L: Lanes>(lanes: L, buf: &[u8], start: usize) -> Result<usize, Stop> {
     match buf.get(start) {
         Some(b'/') => {}
         Some(_) => return miss(MissReason::Target),
         None => return Err(Stop::Partial),
     }
-    let mut i = start + 1;
-    while buf.get(i).is_some_and(|&c| TARGET[usize::from(c)]) {
-        i += 1;
-    }
+    let i = target_run(lanes, buf, start + 1);
     if i - start > MAX_TARGET_LEN {
         return miss(MissReason::TargetTooLong);
     }
@@ -247,9 +252,9 @@ pub(crate) fn connection(buf: &[u8], h: &Header, dup: bool) -> Connection {
     let value = h.value(buf);
     if dup {
         Connection::Other
-    } else if value.eq_ignore_ascii_case(b"keep-alive") {
+    } else if ieq::<10>(value, b"keep-alive") {
         Connection::KeepAlive
-    } else if value.eq_ignore_ascii_case(b"close") {
+    } else if ieq::<5>(value, b"close") {
         Connection::Close
     } else {
         Connection::Other
@@ -273,10 +278,11 @@ impl RequestLine {
     }
 }
 
-fn line(buf: &[u8]) -> Result<RequestLine, Stop> {
-    let method_end = method_end(buf)?;
+#[inline(always)]
+fn line<L: Lanes>(lanes: L, buf: &[u8]) -> Result<RequestLine, Stop> {
+    let method_end = method_end(lanes, buf)?;
     let target_start = method_end + 1;
-    let target_end = target_end(buf, target_start)?;
+    let target_end = target_end(lanes, buf, target_start)?;
     let fields_start = version_end(buf, target_end + 1)?;
     Ok(RequestLine {
         method: Span {
@@ -291,10 +297,16 @@ fn line(buf: &[u8]) -> Result<RequestLine, Stop> {
     })
 }
 
-fn scan(buf: &[u8], line: RequestLine, out: &mut RequestHead) -> Result<(), Stop> {
+#[inline(always)]
+fn scan<L: Lanes>(
+    lanes: L,
+    buf: &[u8],
+    line: RequestLine,
+    out: &mut RequestHead,
+) -> Result<(), Stop> {
     let fields_start = line.fields_start as usize;
     let mut block = Block::new();
-    scan_fields(buf, fields_start, &mut out.headers, &mut block)?;
+    scan_fields(lanes, buf, fields_start, &mut out.headers, &mut block)?;
     let facts = &mut out.facts;
     let has = |class: Class| block.seen & class.bit() != 0;
     if !has(Class::Host) {
@@ -361,6 +373,51 @@ fn stopped(stop: Stop) -> Scan {
     }
 }
 
+struct ScanLine<'a>(&'a [u8]);
+
+impl Job for ScanLine<'_> {
+    type Out = Result<RequestLine, Stop>;
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) -> Self::Out {
+        line(lanes, self.0)
+    }
+}
+
+struct ScanFields<'a> {
+    buf: &'a [u8],
+    line: RequestLine,
+    out: &'a mut RequestHead,
+}
+
+impl Job for ScanFields<'_> {
+    type Out = Result<(), Stop>;
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) -> Self::Out {
+        scan(lanes, self.buf, self.line, self.out)
+    }
+}
+
+struct ScanHead<'a> {
+    buf: &'a [u8],
+    out: &'a mut RequestHead,
+}
+
+impl Job for ScanHead<'_> {
+    type Out = Result<(), Stop>;
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) -> Self::Out {
+        let line = line(lanes, self.buf)?;
+        scan(lanes, self.buf, line, self.out)
+    }
+}
+
+fn fits_offsets(buf: &[u8]) -> bool {
+    u32::try_from(buf.len()).is_ok()
+}
+
 /// Reads the request line at the start of `buf`, for a caller that needs the method and the target before the fields.
 /// The error is `Partial` or `Miss`, as [`scan_request`] would answer for the same bytes, never `Head`; the line is
 /// the one [`scan_request_fields`] continues from.
@@ -369,16 +426,16 @@ fn stopped(stop: Stop) -> Scan {
 ///
 /// `Partial` when the line is not complete, `Miss` when it is not the lane's.
 pub fn scan_request_line(buf: &[u8]) -> Result<RequestLine, Scan> {
-    if u32::try_from(buf.len()).is_err() {
+    if !fits_offsets(buf) {
         return Err(Scan::Miss(MissReason::TooLarge));
     }
-    line(buf).map_err(stopped)
+    dispatch(ScanLine(buf)).map_err(stopped)
 }
 
 /// Scans the header fields that follow `line`, which [`scan_request_line`] read from the start of the same `buf`.
 #[must_use]
 pub fn scan_request_fields(buf: &[u8], line: RequestLine, out: &mut RequestHead) -> Scan {
-    scan(buf, line, out).map_or_else(stopped, |()| Scan::Head)
+    dispatch(ScanFields { buf, line, out }).map_or_else(stopped, |()| Scan::Head)
 }
 
 /// Scans the request head at the start of `buf`.
@@ -387,8 +444,8 @@ pub fn scan_request_fields(buf: &[u8], line: RequestLine, out: &mut RequestHead)
 /// facts; see the crate documentation for what is refused. `out` is only meaningful after `Head`.
 #[must_use]
 pub fn scan_request(buf: &[u8], out: &mut RequestHead) -> Scan {
-    match scan_request_line(buf) {
-        Ok(line) => scan_request_fields(buf, line, out),
-        Err(miss) => miss,
+    if !fits_offsets(buf) {
+        return Scan::Miss(MissReason::TooLarge);
     }
+    dispatch(ScanHead { buf, out }).map_or_else(stopped, |()| Scan::Head)
 }

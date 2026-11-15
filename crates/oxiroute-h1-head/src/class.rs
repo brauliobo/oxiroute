@@ -136,11 +136,12 @@ fn word<const N: usize, const W: usize>(bytes: &[u8; N], at: usize) -> u64 {
     u64::from_le_bytes(le)
 }
 
-/// Case-insensitive equality of a token `name` with a lowercase letters-and-hyphens `lit`. `|0x20` folds exactly the
-/// ASCII capitals; a token byte can only collide with a hyphen through a CR, which is not one. Whole words are
+/// Case-insensitive equality of a token or header value `name` with a lowercase letters-and-hyphens `lit`. `|0x20` folds
+/// exactly the ASCII capitals; a byte can only collide with a hyphen through a CR, which neither a token nor a scanned
+/// value holds. Whole words are
 /// compared, the last overlapping the one before when `N` is not a multiple of the word size.
 #[inline(always)]
-fn ieq<const N: usize>(name: &[u8], lit: &[u8; N]) -> bool {
+pub(crate) fn ieq<const N: usize>(name: &[u8], lit: &[u8; N]) -> bool {
     let Ok(name) = <&[u8; N]>::try_from(name) else {
         return false;
     };
@@ -167,7 +168,7 @@ fn ieq<const N: usize>(name: &[u8], lit: &[u8; N]) -> bool {
 }
 
 /// The class of a header name made of token bytes, whatever its case.
-#[inline]
+#[inline(always)]
 #[must_use]
 pub fn classify(name: &[u8]) -> Class {
     let Some(&first) = name.first() else {

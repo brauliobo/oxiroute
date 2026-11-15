@@ -1,8 +1,9 @@
 //! The header block shared by requests and responses: one pass over the lines noting names, values and facts.
 
+use oxiroute_cpu::{Lanes, WIDTH};
+
 use crate::class::{Class, TITLED, classify, same_name};
 use crate::miss::MissReason;
-use crate::tables::{TOKEN, UNDERSCORE, UPPER, control_at};
 
 /// Headers a head may carry before it is a miss (or slow).
 pub const MAX_HEADERS: usize = 64;
@@ -74,8 +75,8 @@ pub(crate) struct Block {
     pub dup: u32,
     /// The index of the first header of each class.
     pub first: [u8; 32],
-    /// OR of the byte classes of all names.
-    pub bits: u8,
+    /// OR of the [`NAME_HAS_UPPER`] and [`NAME_HAS_UNDERSCORE`] flags of all names.
+    pub name_flags: u8,
     /// Two headers share a name, in any case.
     pub duplicate_names: bool,
 }
@@ -88,17 +89,17 @@ impl Block {
             seen: 0,
             dup: 0,
             first: [0; 32],
-            bits: 0,
+            name_flags: 0,
             duplicate_names: false,
         }
     }
 
     pub(crate) const fn underscore(&self) -> bool {
-        self.bits & UNDERSCORE != 0
+        self.name_flags & NAME_HAS_UNDERSCORE != 0
     }
 
     pub(crate) const fn upper(&self) -> bool {
-        self.bits & UPPER != 0
+        self.name_flags & NAME_HAS_UPPER != 0
     }
 }
 
@@ -124,13 +125,25 @@ fn crlf(buf: &[u8], i: usize) -> Step<usize> {
     }
 }
 
+/// Index of the first control byte at or after `at`, or the end of `buf`.
+#[inline(always)]
+fn control_at<L: Lanes>(lanes: L, buf: &[u8], mut at: usize) -> usize {
+    loop {
+        let found = lanes.control_mask(&lanes.window(buf, at));
+        if found != 0 {
+            return at + found.trailing_zeros() as usize;
+        }
+        at += WIDTH;
+    }
+}
+
 /// End of the value that starts at `start`: the index of its CR, with the line known to end in CRLF.
 #[inline(always)]
-fn value_end(buf: &[u8], start: usize) -> Step<usize> {
-    let mut end = control_at(buf, start);
+fn value_end<L: Lanes>(lanes: L, buf: &[u8], start: usize) -> Step<usize> {
+    let mut end = control_at(lanes, buf, start);
     loop {
         match buf.get(end) {
-            Some(b'\t') => end = control_at(buf, end + 1),
+            Some(b'\t') => end = control_at(lanes, buf, end + 1),
             Some(b'\r') => {
                 return match buf.get(end + 1) {
                     Some(b'\n') => Ok(end),
@@ -145,14 +158,28 @@ fn value_end(buf: &[u8], start: usize) -> Step<usize> {
     }
 }
 
-/// Length of the run of token bytes at the start of `line`, and the OR of their classes.
-#[inline(never)]
-fn name_run(line: &[u8]) -> (usize, u8) {
-    let run = oxiroute_cpu::token_run(line);
-    let bits = (u8::from(run.len > 0) * TOKEN)
-        | (u8::from(run.upper) * UPPER)
-        | (u8::from(run.underscore) * UNDERSCORE);
-    (run.len, bits)
+/// The lanes before the first lane of a window that is `n` bytes into a run.
+#[inline(always)]
+fn lanes_before(n: u32) -> u32 {
+    ((1u64 << n) - 1) as u32
+}
+
+/// Length of the run of token bytes at `at`, and the [`NAME_HAS_UPPER`] and [`NAME_HAS_UNDERSCORE`] flags it carries.
+#[inline(always)]
+pub(crate) fn name_run<L: Lanes>(lanes: L, buf: &[u8], at: usize) -> (usize, u8) {
+    let mut len = 0;
+    let mut flags = 0;
+    loop {
+        let masks = lanes.token(&lanes.window(buf, at + len));
+        let n = masks.stop.trailing_zeros();
+        let taken = lanes_before(n);
+        flags |= u8::from(masks.upper & taken != 0) * NAME_HAS_UPPER;
+        flags |= u8::from(masks.underscore & taken != 0) * NAME_HAS_UNDERSCORE;
+        len += n as usize;
+        if n < WIDTH as u32 {
+            return (len, flags);
+        }
+    }
 }
 
 /// Whether the name at `index`, of class [`Class::Other`], repeats one before it.
@@ -163,7 +190,9 @@ fn repeats_other(buf: &[u8], headers: &[Header], index: usize, name: &[u8]) -> b
 }
 
 /// Scans the lines from `start` to the blank line that ends the head, filling `headers` and `block`.
-pub(crate) fn scan_fields(
+#[inline(always)]
+pub(crate) fn scan_fields<L: Lanes>(
+    lanes: L,
     buf: &[u8],
     start: usize,
     headers: &mut [Header; MAX_HEADERS],
@@ -172,10 +201,10 @@ pub(crate) fn scan_fields(
     let mut other_buckets = 0u64;
     let mut i = start;
     loop {
-        let Some(line) = buf.get(i..).filter(|line| !line.is_empty()) else {
+        let Some(&first) = buf.get(i) else {
             return Err(Stop::Partial);
         };
-        match line[0] {
+        match first {
             b'\r' => {
                 block.head_len = crlf(buf, i)? as u32;
                 block.duplicate_names |= block.dup != 0;
@@ -184,9 +213,9 @@ pub(crate) fn scan_fields(
             b'\n' => return bad(MissReason::BareLf),
             _ => {}
         }
-        let (len, bits) = name_run(line);
+        let (len, name_flags) = name_run(lanes, buf, i);
         let name_end = i + len;
-        match line.get(len) {
+        match buf.get(name_end) {
             Some(b':') if len > 0 => {}
             Some(b' ' | b'\t') if len == 0 => return bad(MissReason::Folding),
             Some(b' ' | b'\t') => return bad(MissReason::SpaceBeforeColon),
@@ -200,14 +229,14 @@ pub(crate) fn scan_fields(
         while matches!(buf.get(value_start), Some(b' ' | b'\t')) {
             value_start += 1;
         }
-        let end = value_end(buf, value_start)?;
+        let end = value_end(lanes, buf, value_start)?;
         let mut value_stop = end;
         while value_stop > value_start && matches!(buf[value_stop - 1], b' ' | b'\t') {
             value_stop -= 1;
         }
 
         let index = usize::from(block.count);
-        let name = &line[..len];
+        let name = &buf[i..name_end];
         let class = classify(name);
         if class == Class::Other {
             let key = len ^ usize::from(name[0] | 0x20) ^ (usize::from(name[len - 1] | 0x20) << 2);
@@ -224,10 +253,11 @@ pub(crate) fn scan_fields(
         }
         let tail_clean =
             value_start == name_end + 2 && value_stop == end && buf[name_end + 1] == b' ';
+        let has_upper = name_flags & NAME_HAS_UPPER != 0;
         let name_clean = if TITLED & class.bit() == 0 {
-            bits & UPPER == 0
+            !has_upper
         } else {
-            bits & UPPER != 0 && class.titled().is_some_and(|titled| name == titled)
+            has_upper && class.titled().is_some_and(|titled| name == titled)
         };
         let slot = headers
             .get_mut(index)
@@ -238,11 +268,11 @@ pub(crate) fn scan_fields(
             value_len: (value_stop - value_start) as u32,
             name_len: len as u8,
             class,
-            flags: ((bits >> 1) & (NAME_HAS_UPPER | NAME_HAS_UNDERSCORE))
+            flags: name_flags
                 | (u8::from(tail_clean && name_clean) * LINE_IS_CLEAN)
                 | (u8::from(tail_clean) * TAIL_IS_CLEAN),
         };
-        block.bits |= bits;
+        block.name_flags |= name_flags;
         block.count += 1;
         i = end + 2;
     }
