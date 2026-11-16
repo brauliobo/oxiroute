@@ -11,8 +11,8 @@ use std::{
 };
 
 use atomic_waker::AtomicWaker;
-pub use oxiroute_aged_order::{Age, Stats};
 use oxiroute_aged_order::AgedQueue;
+pub use oxiroute_aged_order::{Age, Stats};
 
 /// Nothing that holds these locks can leave the data half updated, so a poisoned lock is still consistent.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

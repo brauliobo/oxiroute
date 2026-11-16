@@ -116,7 +116,10 @@ fn the_p999_wait_stays_within_a_few_passes_under_a_flood_of_newer_items() {
         mut waits, stats, ..
     } = flood(Age::Adaptive(MULTIPLE), ITEMS, 400_000);
 
-    assert!(stats.aged_polls > 0, "the oldest item was never served first");
+    assert!(
+        stats.aged_polls > 0,
+        "the oldest item was never served first"
+    );
     let bound = pass(ITEMS).mul_f64(3.0 * MULTIPLE);
     let p999 = percentile(&mut waits, 999);
     assert!(p999 <= bound, "p99.9 {p999:?}, pass {:?}", pass(ITEMS));
