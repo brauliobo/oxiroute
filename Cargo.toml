@@ -21,6 +21,7 @@ members = [
     "crates/oxiroute-supervision-unix",
     "crates/oxiroute-tls-client",
     "crates/oxiroute-tls-rustls",
+    "crates/oxiroute-uring",
     "crates/oxiroute-worker-scaling",
     "vendor/pingora-proxy",
 ]
