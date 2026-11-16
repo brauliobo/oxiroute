@@ -120,6 +120,15 @@ lto = "fat"
 inherits = "release"
 panic = "abort"
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.oxiroute-cpu]
+opt-level = 3
+
+[profile.dev.package.oxiroute-h1-head]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

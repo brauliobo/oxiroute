@@ -8,7 +8,8 @@ then add the runtime and wire evidence needed to support the user-facing claim.
 ```sh
 cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
-cargo +1.97.1 test --workspace --locked --jobs 4
+./scripts/ci/tiers.sh check
+./scripts/test/all.sh
 ./scripts/verify-control-plane-contract.sh
 ./scripts/verify-fuzz.sh
 ./scripts/verify/line_limit.sh
@@ -19,13 +20,47 @@ pnpm --dir ui verify:bundle
 pnpm --dir ui test:browser -- --workers=2
 ```
 
-For a locked toolchain check when it is installed:
+The checked-in locked gate is Rust `1.97.1`, matching the workspace manifests and CI. `cargo test --workspace` still
+runs everything on the default plane chain, one binary after the other, which is several times slower than the lanes.
 
-```sh
-cargo +1.97.1 test --workspace --locked --jobs 4
-```
+## Test Tiers And Lanes
 
-The checked-in locked gate is Rust `1.97.1`, matching the workspace manifests and CI.
+[`scripts/ci/tiers.txt`](../../scripts/ci/tiers.txt) lists every test binary once with the tiers it runs in, and
+`./scripts/ci/tiers.sh check` (a lint step in CI) fails when a new `tests/*.rs` target, a `tests/*/main.rs` target or a
+unit-test binary is in no tier. A lane runs the binaries of its tiers with
+[cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked`; CI pins version 0.9.150), so the lanes, local
+and in CI, cannot skip a binary that another lane leaves unrun.
+
+| Lane | Command | Tiers | What it proves |
+| --- | --- | --- | --- |
+| Core | `scripts/test/core.sh` | `core` | Plane-independent behavior, once, on the default plane chain |
+| Planes | `scripts/test/planes.sh tokio\|epoll\|io_uring\|all` | `planes`, plus `engine`, `epoll` or `uring` for the driver | The plane-sensitive suites with `OXIROUTE_TEST_HTTP_DATA_PLANE` set, and the engine suites of the plane's driver (`EPOLL_H1_TRIGGER=level` on epoll, `EPOLL_H1_DRIVER=io_uring` on io_uring) |
+| TLS | `scripts/test/tls.sh openssl\|rustls\|all` | `tls` | The downstream TLS suites once per backend (`OXIROUTE_INTERNAL_TEST_TLS_BACKEND`) |
+| Documentation | `scripts/test/doc.sh` | | Doc tests, which nextest does not run |
+| Slow | `scripts/test/slow.sh` | `slow` | Tests that wait out a real default duration; nightly and on demand, not on pull requests |
+| Everything | `scripts/test/all.sh` | all but `slow` | What the pull request gate runs |
+
+Before a plane lane runs, `scripts/ci/probe.sh <plane>` starts the real binary on that plane and checks that it
+announces the plane; the binary refuses a plane the machine cannot run (a kernel with `kernel.io_uring_disabled`, a
+seccomp policy that blocks `io_uring`), so an `io_uring` lane fails instead of running on epoll. CI assumes the
+`ubuntu-24.04` hosted runner image (kernel 6.8 or newer, which has `io_uring` enabled) and prints the image and kernel
+of every plane leg. Only Linux runs the plane matrix: `.github/workflows/platform.yml` checks nothing but metadata on
+macOS and Windows, which have no epoll or `io_uring` plane and serve HTTP on tokio.
+
+A binary is plane-sensitive when it reaches the plane switch of `tests/support/process.rs`: its configurations have a
+plain HTTP listener with the fast lane, and the harness puts them on the suite's plane. Suites that pick their planes
+themselves (`epoll_safety`, `epoll_responses`) run all of them in every lane and stay in `core`. To decide a new
+binary, run it with `OXIROUTE_TEST_HTTP_DATA_PLANE=epoll`; when a suite starts the real binary on plain HTTP it is
+`planes`, when it uses the TLS harness of `tests/support/proxy.rs` it is also `tls`.
+
+CI (`.github/workflows/ci.yml`) builds every test binary once (`cargo nextest archive`), shares the archive, and runs
+`core`, the three `planes` legs and the two `tls` legs from it in parallel; `.github/workflows/nightly.yml` runs `slow`.
+A test whose wait is the behavior under test (a default read limit, a drain deadline) moves to the `slow` tier instead
+of being deleted; every other wait is a short configurable one or an event.
+
+The dev profile builds line tables only, and the CPU-bound scanners (`oxiroute-cpu`, `oxiroute-h1-head`) with
+optimization, because their corpus tests run for minutes unoptimized; CI builds without debug information, which keeps
+the archive small.
 
 Security and release dependency gates can be run directly when the pinned tools are installed:
 

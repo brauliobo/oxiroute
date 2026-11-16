@@ -9,7 +9,7 @@ use oxiroute_config::{
     PoolQueueClass, PoolQueuePolicy,
 };
 
-use super::{OK, Pair, features::log_lines, play};
+use super::{Fleet, OK, Pair, features::log_lines, play};
 use crate::h1_wire::{Origin, Step, Wire};
 
 const R503: &[u8] =
@@ -307,9 +307,11 @@ async fn a_connection_that_fails_is_retried_on_another_server() {
 /// A route with retries that nothing triggers costs nothing: the requests are as they are without them.
 #[tokio::test]
 async fn routes_with_retries_pass_the_plain_corpus() {
-    let pair = Pair::configured(OK, false, false, with_retry(retry(2, &[502, 503], &[]))).await;
-    super::compare(&pair, &super::corpus::requests("/r")).await;
-    pair.finish();
+    let fleet =
+        Fleet::of(|_| Pair::configured(OK, false, false, with_retry(retry(2, &[502, 503], &[]))))
+            .await;
+    super::compare(&fleet, &super::corpus::requests("/r")).await;
+    fleet.finish();
 }
 
 fn with_queue(config: &mut ConfigDraft) {

@@ -16,12 +16,13 @@ concurrency:
 env:
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_DEV_DEBUG: none
 
 jobs:
   lint:
     name: Format, control-plane contract and clippy
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -69,12 +70,19 @@ jobs:
       - name: Verify unsafe code and raw io_uring stay in their crate
         run: ./scripts/verify/unsafe_containment.sh
 
+      - name: Verify every test binary is in a test tier
+        run: ./scripts/ci/tiers.sh check
+
+      - name: Lint the test lane scripts
+        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,core,doc,planes,slow,tls}.sh scripts/ci/{probe,tiers}.sh scripts/lib/nextest.sh
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 
-  test:
-    name: Locked Rust 1.97.1 workspace tests
+  archive:
+    name: Build the workspace tests once
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -82,11 +90,42 @@ jobs:
       - name: Install Rust 1.97.1
         uses: dtolnay/rust-toolchain@1.97.1
 
+      - name: Install nextest 0.9.150
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: nextest@0.9.150
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test
+          shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Archive every workspace test binary
+        run: cargo nextest archive --workspace --locked --build-jobs 4 --archive-file "${RUNNER_TEMP}/tests.tar.zst"
+
+      - name: Share the archive with the test jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-archive
+          path: ${{ runner.temp }}/tests.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      - name: Run the documentation tests on the built workspace
+        run: ./scripts/test/doc.sh
+
+  core:
+    name: Plane-independent tests
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the test archive
+        uses: ./.github/actions/archive
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -104,8 +143,46 @@ jobs:
         run: pnpm install --frozen-lockfile --prefer-offline
         working-directory: ui
 
-      - name: Run workspace tests
-        run: cargo test --workspace --locked --jobs 4
+      - name: Run the core tier on the default plane chain
+        run: ./scripts/test/core.sh
+
+  planes:
+    name: ${{ matrix.plane }} data plane
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        plane: [tokio, epoll, io_uring]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the test archive
+        uses: ./.github/actions/archive
+
+      - name: Run the plane-sensitive tiers on ${{ matrix.plane }}
+        run: ./scripts/test/planes.sh ${{ matrix.plane }}
+
+  tls:
+    name: ${{ matrix.backend }} TLS backend
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [openssl, rustls]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the test archive
+        uses: ./.github/actions/archive
+
+      - name: Run the TLS tier on ${{ matrix.backend }}
+        run: ./scripts/test/tls.sh ${{ matrix.backend }}
 
   cpu-targets:
     name: Generic and native CPU dispatch
@@ -132,6 +209,7 @@ jobs:
   release-archive:
     name: Release archive policy
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -151,6 +229,7 @@ jobs:
   fuzz-contract:
     name: Bounded fuzz harness and corpus contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -163,28 +242,10 @@ jobs:
       - name: Verify every checked-in fuzz target and seed
         run: ./scripts/verify-fuzz.sh
 
-  coverage-manifests:
-    name: Coverage manifest validation
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust 1.97.1
-        uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: coverage
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Validate coverage JSON and manifests
-        run: cargo +1.97.1 test -p oxiroute-import --test coverage_manifests --locked --jobs 4
-
   package:
     name: Arch package service metadata
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -202,6 +263,7 @@ jobs:
   ui:
     name: UI tests and build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -249,6 +311,7 @@ jobs:
   stats-ui:
     name: Stats page build, embedded assets and browser tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       NO_PROXY: 127.0.0.1,localhost
     steps:
@@ -314,6 +377,7 @@ jobs:
   browser:
     name: Deterministic dashboard browser tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       NO_PROXY: 127.0.0.1,localhost
     steps:
@@ -376,39 +440,3 @@ jobs:
           path: |
             ui/test-results
             ui/playwright-report
-
-  acme-local:
-    name: Scripted local ACME tests
-    runs-on: ubuntu-24.04
-    env:
-      CARGO_BUILD_JOBS: 4
-      CARGO_INCREMENTAL: 0
-      OXIROUTE_ACME_DIRECTORY_URL: http://127.0.0.1:14000/directory
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust 1.97.1
-        uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: acme
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Fetch locked Rust dependencies
-        run: cargo +1.97.1 fetch --locked
-
-      - name: Assert the ACME test endpoint is loopback-only
-        shell: bash
-        run: |
-          case "${OXIROUTE_ACME_DIRECTORY_URL}" in
-            http://127.0.0.1:14000/*) ;;
-            *) printf 'ACME tests must use the loopback fake endpoint\n' >&2; exit 1 ;;
-          esac
-
-      - name: Run scripted ACME tests without network access
-        run: cargo +1.97.1 test -p oxiroute-acme --locked --jobs 4
-        env:
-          CARGO_NET_OFFLINE: true

@@ -8,7 +8,7 @@ use oxiroute_config::{
     UpstreamTls,
 };
 
-use super::{OK, Pair, compare, corpus, play};
+use super::{Fleet, OK, Pair, SHARDS, compare, corpus, play};
 use crate::{
     fixture_support::fixture,
     h1_wire::{Origin, Wire},
@@ -141,17 +141,17 @@ fn preserved_host(config: &mut ConfigDraft) {
 #[tokio::test]
 async fn requests_with_forwarding_rules_are_identical_on_both_paths() {
     for edit in [preserved_host, literal_host, nginx_host] {
-        let pair = Pair::configured(OK, false, false, edit).await;
-        compare(&pair, &corpus::forwarded("/r")).await;
-        pair.finish();
+        let fleet = Fleet::of(|_| Pair::configured(OK, false, false, edit)).await;
+        compare(&fleet, &corpus::forwarded("/r")).await;
+        fleet.finish();
     }
 }
 
 #[tokio::test]
 async fn requests_with_bodies_are_identical_on_both_paths() {
-    let pair = Pair::start(OK).await;
-    compare(&pair, &corpus::bodies("/r")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::start(OK)).await;
+    compare(&fleet, &corpus::bodies("/r")).await;
+    fleet.finish();
 }
 
 /// The origin has seen a part of a body that goes over the route's limit, and how much depends on the reads: the
@@ -172,54 +172,29 @@ async fn a_chunked_body_over_the_limit_is_refused_on_both_paths() {
 
 #[tokio::test]
 async fn requests_with_bodies_and_rules_are_identical_on_both_paths() {
-    let pair = Pair::configured(OK, false, false, literal_host).await;
-    compare(&pair, &corpus::bodies("/r")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::configured(OK, false, false, literal_host)).await;
+    compare(&fleet, &corpus::bodies("/r")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn requests_with_bodies_to_a_tls_origin_are_identical_on_both_paths() {
-    let pair = Pair::configured(OK, false, true, tls_origin).await;
-    compare(&pair, &corpus::bodies("/r")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::configured(OK, false, true, tls_origin)).await;
+    compare(&fleet, &corpus::bodies("/r")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn requests_with_forwarding_rules_pass_the_plain_corpus_on_both_paths() {
-    let pair = Pair::configured(OK, false, false, literal_host).await;
-    compare(&pair, &corpus::requests("/r")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::configured(OK, false, false, literal_host)).await;
+    compare(&fleet, &corpus::requests("/r")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn responses_with_header_rules_are_identical_on_both_paths() {
-    let mut differences = Vec::new();
-    for (name, reply, closes) in corpus::replies() {
-        if super::skips_reply(name) {
-            continue;
-        }
-        let pair = Pair::configured(reply, closes, false, preserved_host).await;
-        for case in corpus::probes("/r") {
-            if name == super::STREAMING && case.name == "two on one connection" {
-                continue;
-            }
-            let script = case.script();
-            let (classic, lane) = pair.play(&script).await;
-            if classic != lane {
-                differences.push(format!(
-                    "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
-                    case.name
-                ));
-            }
-        }
-        pair.finish();
-    }
-    assert!(
-        differences.is_empty(),
-        "{} differ:\n{}",
-        differences.len(),
-        differences.join("\n")
-    );
+    super::compare_replies(|reply, closes| Pair::configured(reply, closes, false, preserved_host))
+        .await;
 }
 
 /// A pool whose servers speak HTTP/1.1 over TLS, verified against the fixture CA.
@@ -233,41 +208,15 @@ fn tls_origin(config: &mut ConfigDraft) {
 
 #[tokio::test]
 async fn requests_to_a_tls_origin_are_identical_on_both_paths() {
-    let pair = Pair::configured(OK, false, true, tls_origin).await;
-    compare(&pair, &corpus::forwarded("/r")).await;
-    compare(&pair, &corpus::sequences()).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::configured(OK, false, true, tls_origin)).await;
+    compare(&fleet, &corpus::forwarded("/r")).await;
+    compare(&fleet, &corpus::sequences()).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn replies_from_a_tls_origin_are_identical_on_both_paths() {
-    let mut differences = Vec::new();
-    for (name, reply, closes) in corpus::replies() {
-        if super::skips_reply(name) {
-            continue;
-        }
-        let pair = Pair::configured(reply, closes, true, tls_origin).await;
-        for case in corpus::probes("/r") {
-            if name == super::STREAMING && case.name == "two on one connection" {
-                continue;
-            }
-            let script = case.script();
-            let (classic, lane) = pair.play(&script).await;
-            if classic != lane {
-                differences.push(format!(
-                    "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
-                    case.name
-                ));
-            }
-        }
-        pair.finish();
-    }
-    assert!(
-        differences.is_empty(),
-        "{} differ:\n{}",
-        differences.len(),
-        differences.join("\n")
-    );
+    super::compare_replies(|reply, closes| Pair::configured(reply, closes, true, tls_origin)).await;
 }
 
 /// An origin certificate the proxy does not trust is refused on both paths, without a request reaching the origin.
@@ -330,9 +279,9 @@ fn volatile_fields_masked(line: &str) -> String {
 /// `cases`: the responses are compared as everywhere, then the lines.
 async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases: &[corpus::Case]) {
     let directory = tempfile::tempdir().expect("log directory");
-    let [classic_log, lane_log] =
-        ["classic.log", "lane.log"].map(|name| directory.path().join(name));
-    let (classic_path, lane_path) = (classic_log.clone(), lane_log.clone());
+    let logs = |shard: usize| {
+        ["classic", "lane"].map(|path| directory.path().join(format!("{path}-{shard}.log")))
+    };
     let origin = || async move {
         if closes {
             Origin::start_closing(reply).await
@@ -340,23 +289,35 @@ async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases
             Origin::start(reply).await
         }
     };
-    let classic = Wire::over(origin().await, move |config| {
-        super::with_fixed_route(config);
-        config.http_services[0].access_log = Some(AccessLogPolicy::File { path: classic_path });
-        config.http_fast_lane = Some(false);
+    let fleet = Fleet::of(|shard| {
+        let [classic_path, lane_path] = logs(shard);
+        async move {
+            let classic = Wire::over(origin().await, move |config| {
+                super::with_fixed_route(config);
+                config.http_services[0].access_log =
+                    Some(AccessLogPolicy::File { path: classic_path });
+                config.http_fast_lane = Some(false);
+            })
+            .await;
+            let lane = Wire::over(origin().await, move |config| {
+                super::with_fixed_route(config);
+                config.http_services[0].access_log =
+                    Some(AccessLogPolicy::File { path: lane_path });
+            })
+            .await;
+            Pair { classic, lane }.warmed().await
+        }
     })
     .await;
-    let lane = Wire::over(origin().await, move |config| {
-        super::with_fixed_route(config);
-        config.http_services[0].access_log = Some(AccessLogPolicy::File { path: lane_path });
-    })
-    .await;
-    let pair = Pair { classic, lane }.warmed().await;
-    compare(&pair, cases).await;
-    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
-    pair.finish();
-    assert!(!classic_lines.is_empty());
-    assert_eq!(classic_lines, lane_lines);
+    compare(&fleet, cases).await;
+    for shard in 0..SHARDS {
+        let [classic_log, lane_log] = logs(shard);
+        let (classic_lines, lane_lines) =
+            (log_lines(&classic_log).await, log_lines(&lane_log).await);
+        assert!(!classic_lines.is_empty());
+        assert_eq!(classic_lines, lane_lines, "shard {shard}");
+    }
+    fleet.finish();
 }
 
 #[tokio::test]

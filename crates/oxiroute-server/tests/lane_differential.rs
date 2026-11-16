@@ -28,7 +28,9 @@ mod reading;
 mod retries;
 
 use std::fmt::Write as _;
-use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
+use std::{fs, future::Future, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
+
+use futures_util::{StreamExt as _, future::join_all, stream};
 
 use oxiroute_config::{
     ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation,
@@ -333,22 +335,47 @@ fn mask_ids(line: &str) -> String {
     out
 }
 
-/// Runs every case of `cases` against both proxies and reports every difference at once.
-async fn compare(pair: &Pair, cases: &[corpus::Case]) {
-    let mut differences = Vec::new();
-    for case in cases {
-        if skips_case(&case.name) {
-            continue;
-        }
-        let script = case.script();
-        let (classic, lane) = pair.play(&script).await;
-        if classic != lane {
-            differences.push(format!(
-                "case `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
-                case.name
-            ));
-        }
+const SHARDS: usize = 4;
+
+/// [`SHARDS`] pairs that share the cases of a corpus: every case ends with the silence that shows a connection stays
+/// open, so the cases of one pair queue up behind each other's silences while the pairs wait side by side.
+struct Fleet(Vec<Pair>);
+
+impl Fleet {
+    async fn of<Made: Future<Output = Pair>>(make: impl Fn(usize) -> Made) -> Self {
+        Self(join_all((0..SHARDS).map(make)).await)
     }
+
+    fn finish(self) {
+        self.0.into_iter().for_each(Pair::finish);
+    }
+}
+
+/// Runs every case of `cases` against both proxies and reports every difference at once.
+async fn compare(fleet: &Fleet, cases: &[corpus::Case]) {
+    let shards = fleet.0.iter().enumerate().map(|(shard, pair)| async move {
+        let mut differences = Vec::new();
+        for (index, case) in cases.iter().enumerate().skip(shard).step_by(SHARDS) {
+            if skips_case(&case.name) {
+                continue;
+            }
+            let script = case.script();
+            let (classic, lane) = pair.play(&script).await;
+            if classic != lane {
+                differences.push((
+                    index,
+                    format!(
+                        "case `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
+                        case.name
+                    ),
+                ));
+            }
+        }
+        differences
+    });
+    let mut differences: Vec<_> = join_all(shards).await.into_iter().flatten().collect();
+    differences.sort_by_key(|(index, _)| *index);
+    let differences: Vec<_> = differences.into_iter().map(|(_, text)| text).collect();
     assert!(
         differences.is_empty(),
         "{} of {} cases differ:\n{}",
@@ -362,40 +389,43 @@ const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Origin: yes\r\n\r\
 
 #[tokio::test]
 async fn proxied_requests_are_identical_on_both_paths() {
-    let pair = Pair::start(OK).await;
-    compare(&pair, &corpus::requests("/r")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::start(OK)).await;
+    compare(&fleet, &corpus::requests("/r")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn fixed_responses_are_identical_on_both_paths() {
-    let pair = Pair::start(OK).await;
-    compare(&pair, &corpus::requests("/fixed")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::start(OK)).await;
+    compare(&fleet, &corpus::requests("/fixed")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn literal_redirects_are_identical_on_both_paths() {
-    let pair = Pair::start(OK).await;
-    compare(&pair, &corpus::requests("/moved")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::start(OK)).await;
+    compare(&fleet, &corpus::requests("/moved")).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn connections_that_alternate_between_the_lane_and_the_classic_path_are_identical() {
-    let pair = Pair::start(OK).await;
-    compare(&pair, &corpus::sequences()).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::start(OK)).await;
+    compare(&fleet, &corpus::sequences()).await;
+    fleet.finish();
 }
 
-#[tokio::test]
-async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
-    let mut differences = Vec::new();
-    for (name, reply, closes) in corpus::replies() {
-        if skips_reply(name) {
-            continue;
-        }
-        let pair = Pair::serving(reply, closes).await;
+/// The probes of the corpus against every shape of reply, [`SHARDS`] replies at a time, each on a pair that `make`
+/// starts for it.
+async fn compare_replies<Made: Future<Output = Pair>>(
+    make: impl Fn(&'static [u8], bool) -> Made + Copy,
+) {
+    let replies = corpus::replies()
+        .into_iter()
+        .filter(|(name, ..)| !skips_reply(name));
+    let per_reply = replies.map(|(name, reply, closes)| async move {
+        let pair = make(reply, closes).await;
+        let mut differences = Vec::new();
         for case in corpus::probes("/r") {
             // A request that arrives while a response still streams closes the connection on the classic path, which
             // watches the client; the lane serves it after the response, which never ends here.
@@ -412,13 +442,26 @@ async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
             }
         }
         pair.finish();
-    }
+        differences
+    });
+    let differences: Vec<_> = stream::iter(per_reply)
+        .buffer_unordered(SHARDS)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
     assert!(
         differences.is_empty(),
         "{} differ:\n{}",
         differences.len(),
         differences.join("\n")
     );
+}
+
+#[tokio::test]
+async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
+    compare_replies(Pair::serving).await;
 }
 
 const SWITCHING_PROTOCOLS: &str = "switching protocols";
@@ -496,17 +539,19 @@ fn static_cases() -> Vec<corpus::Case> {
 #[tokio::test]
 async fn static_file_requests_are_identical_on_both_paths() {
     let directory = static_root();
-    let pair = Pair::mixed(&directory.path().join("public"), None).await;
-    compare(&pair, &static_cases()).await;
-    pair.finish();
+    let root = directory.path().join("public");
+    let fleet = Fleet::of(|_| Pair::mixed(&root, None)).await;
+    compare(&fleet, &static_cases()).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn connections_that_alternate_between_static_files_and_the_lane_are_identical() {
     let directory = static_root();
-    let pair = Pair::mixed(&directory.path().join("public"), None).await;
-    compare(&pair, &corpus::static_sequences()).await;
-    pair.finish();
+    let root = directory.path().join("public");
+    let fleet = Fleet::of(|_| Pair::mixed(&root, None)).await;
+    compare(&fleet, &corpus::static_sequences()).await;
+    fleet.finish();
 }
 
 /// A route bound to a host makes the lane read the `Host` field before it decides, and a request for another host
@@ -514,12 +559,13 @@ async fn connections_that_alternate_between_static_files_and_the_lane_are_identi
 #[tokio::test]
 async fn static_file_requests_on_a_host_bound_route_are_identical_on_both_paths() {
     let directory = static_root();
-    let pair = Pair::mixed(&directory.path().join("public"), Some("example.test")).await;
-    compare(&pair, &corpus::static_requests()).await;
-    compare(&pair, &corpus::static_sequences()).await;
+    let root = directory.path().join("public");
+    let fleet = Fleet::of(|_| Pair::mixed(&root, Some("example.test"))).await;
+    compare(&fleet, &corpus::static_requests()).await;
+    compare(&fleet, &corpus::static_sequences()).await;
     let elsewhere = corpus::static_requests_for("other.test");
-    compare(&pair, &elsewhere).await;
-    pair.finish();
+    compare(&fleet, &elsewhere).await;
+    fleet.finish();
 }
 
 /// With the cache holding every file, the lane answers the plain requests itself and hands the conditional, range and
@@ -527,21 +573,22 @@ async fn static_file_requests_on_a_host_bound_route_are_identical_on_both_paths(
 #[tokio::test]
 async fn static_file_requests_answered_from_the_cache_are_identical_on_both_paths() {
     let directory = static_root();
-    let pair = Pair::mixed_holding(&directory.path().join("public"), None, 600_000).await;
-    compare(&pair, &static_cases()).await;
-    compare(&pair, &corpus::static_sequences()).await;
-    pair.finish();
+    let root = directory.path().join("public");
+    let fleet = Fleet::of(|_| Pair::mixed_holding(&root, None, 600_000)).await;
+    compare(&fleet, &static_cases()).await;
+    compare(&fleet, &corpus::static_sequences()).await;
+    fleet.finish();
 }
 
 #[tokio::test]
 async fn static_file_requests_on_a_host_bound_route_answered_from_the_cache_are_identical() {
     let directory = static_root();
     let root = directory.path().join("public");
-    let pair = Pair::mixed_holding(&root, Some("example.test"), 600_000).await;
-    compare(&pair, &corpus::static_requests()).await;
-    compare(&pair, &corpus::static_sequences()).await;
-    compare(&pair, &corpus::static_requests_for("other.test")).await;
-    pair.finish();
+    let fleet = Fleet::of(|_| Pair::mixed_holding(&root, Some("example.test"), 600_000)).await;
+    compare(&fleet, &corpus::static_requests()).await;
+    compare(&fleet, &corpus::static_sequences()).await;
+    compare(&fleet, &corpus::static_requests_for("other.test")).await;
+    fleet.finish();
 }
 
 /// A file replaced while the cache holds it is served as it was, whole, until the window ends; then the next request

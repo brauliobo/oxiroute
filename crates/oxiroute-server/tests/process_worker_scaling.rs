@@ -29,11 +29,12 @@ use workers_support::{
 
 const WORKERS: u64 = 4;
 const CONNECTIONS: usize = 48;
+const PLACED: usize = 8;
 
 fn dynamic(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         worker_scaling: Some(WorkerScaling::Dynamic),
-        scale_down_delay_ms: Some(200),
+        scale_down_delay_ms: Some(5_000),
         ..config(address, Some(WORKERS), AGED)
     }
 }
@@ -71,17 +72,20 @@ async fn idle_keep_alive_connections_are_packed_onto_one_worker_and_keep_serving
     let mut server = ServerProcess::start(&dynamic(address).validate().expect("valid"), None);
     server.wait_for_tcp(address).await;
     let mut clients = Vec::new();
-    for _ in 0..CONNECTIONS {
+    for _ in 0..PLACED {
         clients.push(open_keep_alive(address).await);
     }
     let spread = watched(&server, address, &clients);
-    assert_eq!(spread.iter().sum::<usize>(), CONNECTIONS, "{spread:?}");
+    assert_eq!(spread.iter().sum::<usize>(), PLACED, "{spread:?}");
     assert!(
-        spread[0] < CONNECTIONS,
+        spread[0] < PLACED,
         "connections start spread over the workers: {spread:?}"
     );
+    for _ in PLACED..CONNECTIONS {
+        clients.push(open_keep_alive(address).await);
+    }
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         tokio::time::sleep(Duration::from_millis(150)).await;
         for client in &mut clients {

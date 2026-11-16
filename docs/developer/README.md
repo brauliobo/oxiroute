@@ -74,7 +74,7 @@ The core Rust and dashboard checks are:
 ```sh
 cargo +1.97.1 fmt --all --check
 nice cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
-nice cargo +1.97.1 test --workspace --locked --jobs 4
+nice ./scripts/test/all.sh
 pnpm --dir ui test
 nice pnpm --dir ui build
 ```
