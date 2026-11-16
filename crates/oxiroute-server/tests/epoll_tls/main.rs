@@ -106,7 +106,8 @@ async fn a_tls_listener_stays_on_the_tokio_path_unless_epoll_is_chosen() {
         async |port, _| fetch(port, &["--http1.1"]).await,
     )
     .await;
-    assert_eq!(served, 0);
+    let chosen_by_the_suite = process_support::suite_data_plane() == Some(HttpDataPlane::Epoll);
+    assert_eq!(served > 0, chosen_by_the_suite);
 }
 
 #[tokio::test]
