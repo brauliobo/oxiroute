@@ -7,15 +7,13 @@
     clippy::too_many_lines
 )]
 #![allow(clippy::many_single_char_names)]
-mod raw_rig;
-mod support;
 use std::time::Duration;
 
+use crate::rig::*;
+use crate::support::Reaction::{GoAway, Reset, Status};
+use crate::support::*;
 use oxiroute_h2::Reason;
 use oxiroute_h2::server::Config;
-use raw_rig::*;
-use support::Reaction::{GoAway, Reset, Status};
-use support::*;
 
 // ---- basics ----
 

@@ -6,8 +6,6 @@
 3 crates/oxiroute-h1-head/tests/common/classic
 2 crates/oxiroute-h1-head/tests/request
 2 crates/oxiroute-h1-head/tests/response
-4 crates/oxiroute-h2/tests/hpack
-2 crates/oxiroute-h2/tests/raw
 3 crates/oxiroute-import/src/nginx/rtmp
 2 crates/oxiroute-import/src/nginx/stream
 7 crates/oxiroute-import/tests/haproxy
