@@ -1,6 +1,13 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod store;
+
+pub(crate) use store::*;
+
+#[cfg(test)]
+mod batching_tests;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AuditContext {
     pub correlation_id: String,

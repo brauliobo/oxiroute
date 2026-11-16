@@ -37,16 +37,12 @@ const AUDIT_SCAN_LIMIT_BYTES: usize = MAX_AUDIT_FILE_BYTES as usize + 1;
 const CORRELATION_ID_MAX_BYTES: usize = 64;
 
 mod audit;
-mod audit_store;
 mod event;
 mod event_log;
 
 pub(crate) use audit::*;
-pub(crate) use audit_store::*;
 pub(crate) use event::*;
 pub use event_log::*;
 
-#[cfg(test)]
-mod audit_batching_tests;
 #[cfg(test)]
 mod tests;
