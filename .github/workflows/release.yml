@@ -1,8 +1,43 @@
-name: Release archive and provenance
+name: Release archive, binaries and packages
+
+# A v* tag builds every asset of the release and attaches them, with ONE SHA256SUMS, to the GitHub release of the tag (created
+# if missing). scripts/package/ is the single owner of the asset set (families, architectures, names, matrices):
+#   - the source archive and its provenance (archive);
+#   - ONE binary per architecture, built in a container of the oldest supported glibc (almalinux:9, 2.34) by the reusable
+#     workflow release-binary.yml, in parallel on a native runner of each architecture: binary-x86_64 (profile-guided and
+#     BOLT-laid-out) and binary-aarch64 (profile-guided, no BOLT: scripts/install-bolt.sh pins amd64 packages and no BOLT
+#     replay is verified on aarch64). binary-extras builds the x86_64 abort (and on request x86-64-v3) flavours, which are
+#     tarballs only. binary-tests runs the workspace tests against the shipped x86_64 binaries;
+#   - .deb (Debian 12 and 13, Ubuntu 22.04 and 24.04), .rpm for the RHEL family 9 (AlmaLinux 9, Rocky Linux 9, AlmaLinux 10)
+#     and Amazon Linux 2023, each on x86_64 and aarch64: the reusable workflow release-packages.yml repackages the binary of
+#     the architecture (no compilation) and installs it in a fresh container of every image of its family. packages-ARCH
+#     starts the moment binary-ARCH is done;
+#   - publish: refuses a release that lacks one of them, that was not profile-guided, whose packages are not the binary of the
+#     tarball of their architecture, or whose notes file is missing (docs/RELEASE_NOTES_<version>.md).
+# Nothing is published by a pull request or a push to a branch: they run the same jobs as a dry run (PGO=0, BOLT=0, the default
+# flavour only), and only when a file that the packages depend on changed (recipe_paths_re in scripts/package/families.sh).
+# workflow_dispatch with publish attaches the assets to the existing release of the tag; the source archive is verified byte for
+# byte against the published one and never uploaded again.
 
 on:
   push:
     tags: ['v*']
+    branches: [main]
+  pull_request:
+    paths:
+      - packaging/**
+      - scripts/package/**
+      - scripts/build-release-binaries.sh
+      - scripts/lib/reject-isa-flags.sh
+      - scripts/verify-baseline-isa.sh
+      - scripts/verify-binary-paths.sh
+      - scripts/verify/glibc_floor.sh
+      - benchmarks/scripts/pgo.sh
+      - docs/user/INSTALL.md
+      - docs/MANAGEMENT_CLI.md
+      - .github/workflows/release.yml
+      - .github/workflows/release-binary.yml
+      - .github/workflows/release-packages.yml
   workflow_dispatch:
     inputs:
       tag:
@@ -10,17 +45,17 @@ on:
         required: true
         type: string
       publish:
-        description: Attach the binaries to the existing release of the tag (its source assets are verified byte for byte and never uploaded again)
+        description: Attach the binaries and packages to the existing release of the tag (its source assets are verified byte for byte and never uploaded again)
         required: false
         default: false
         type: boolean
       pgo:
-        description: Build the release binaries with profile-guided optimization (false publishes a plain build)
+        description: Build the release binaries and packages with profile-guided optimization (false publishes a plain build, which the publish job refuses)
         required: false
         default: true
         type: boolean
       bolt:
-        description: Lay out the release binaries with BOLT after profile-guided optimization (false skips the stage)
+        description: Lay out the x86_64 release binaries with BOLT after profile-guided optimization (false skips the stage)
         required: false
         default: true
         type: boolean
@@ -36,40 +71,117 @@ on:
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+  RELEASE: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+  PUBLISH: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+  PGO: ${{ (github.event_name == 'workflow_dispatch' && !inputs.pgo) && '0' || (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
 
 jobs:
+  changes:
+    name: Select the assets of this run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.what.outputs.version }}
+      build: ${{ steps.what.outputs.build }}
+      pgo: ${{ steps.what.outputs.pgo }}
+      bolt: ${{ steps.what.outputs.bolt }}
+      attest: ${{ steps.what.outputs.attest }}
+      flavours: ${{ steps.what.outputs.flavours }}
+      assemble_matrix: ${{ steps.what.outputs.assemble_matrix }}
+      install_matrix: ${{ steps.what.outputs.install_matrix }}
+      extras_matrix: ${{ steps.what.outputs.extras_matrix }}
+      has_extras: ${{ steps.what.outputs.has_extras }}
+      tests_matrix: ${{ steps.what.outputs.tests_matrix }}
+      has_tests: ${{ steps.what.outputs.has_tests }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Require the existing release that receives the assets
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: '[[ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" == false ]]'
+
+      - name: Test the package scripts and the release asset set
+        run: scripts/package/main.sh selftest
+
+      - name: Select the version, the assets and the matrices
+        id: what
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          ABORT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.abort_flavour) && '0' || env.RELEASE == 'true' && '1' || '0' }}
+          V3: ${{ (github.event_name == 'workflow_dispatch' && inputs.v3_flavour) && '1' || '0' }}
+          BOLT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.bolt) && '0' || env.RELEASE == 'true' && '1' || '0' }}
+        run: |
+          if [[ "${RELEASE}" == true ]]; then
+            version="${TAG#v}"
+            build=true
+          else
+            version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+            base="${BEFORE}"
+            [[ "${GITHUB_EVENT_NAME}" != pull_request ]] && git cat-file -e "${base}^{commit}" 2> /dev/null || base=HEAD^1
+            build="$(scripts/package/main.sh changed "${base}")"
+          fi
+          {
+            printf 'version=%s\nbuild=%s\npgo=%s\nbolt=%s\nattest=%s\n' "${version}" "${build}" "${PGO}" "${BOLT}" "${PUBLISH}"
+            printf 'flavours=%s\n' "$(scripts/package/main.sh matrix flavours)"
+            for matrix in assemble install extras tests; do
+              printf '%s_matrix=%s\nhas_%s=%s\n' "${matrix}" "$(scripts/package/main.sh matrix "${matrix}")" \
+                "${matrix}" "$(scripts/package/main.sh matrix any "${matrix}")"
+            done
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Verify version metadata, package checksums and release notes
+        if: env.RELEASE == 'true'
+        run: ./scripts/verify-release-version.sh "${{ steps.what.outputs.version }}"
+
   archive:
     name: Verify release archive and provenance
+    needs: changes
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
-      CARGO_INCREMENTAL: 0
       CARGO_BUILD_JOBS: 3
+      RELEASE_VERSION: ${{ needs.changes.outputs.version }}
     steps:
       - name: Check out release ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust 1.97.1
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@766a42937d994bd78bb4591385445c188ccb3f09 # 1.97.1
         with:
+          toolchain: 1.97.1
           components: rustfmt
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.3.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -88,15 +200,6 @@ jobs:
 
       - name: Verify bounded fuzz targets and crash-corpus seeds
         run: ./scripts/verify-fuzz.sh
-
-      - name: Select release version
-        run: |
-          version="${{ inputs.tag || github.ref_name }}"
-          version="${version#v}"
-          printf 'RELEASE_VERSION=%s\n' "${version}" >> "${GITHUB_ENV}"
-
-      - name: Verify version metadata
-        run: ./scripts/verify-release-version.sh "${RELEASE_VERSION}"
 
       - name: Test release archive policy
         run: ./scripts/test-release-archive.sh
@@ -117,13 +220,12 @@ jobs:
             exit 1
           }
 
-      - name: Write checksums and source provenance
+      - name: Write source provenance
         run: |
           archive="release/oxiroute-${RELEASE_VERSION}.tar.gz"
-          sha256sum "${archive}" > release/SHA256SUMS
           commit="$(git rev-parse HEAD)"
           source_date_epoch="$(git log -1 --format=%ct HEAD -- . ':(exclude)packaging/arch/**')"
-          checksum="$(cut -d' ' -f1 release/SHA256SUMS)"
+          checksum="$(sha256sum "${archive}" | cut -d' ' -f1)"
           printf '{\n  "schema": "oxiroute.release-provenance.v1",\n  "version": "%s",\n  "commit": "%s",\n  "source_date_epoch": %s,\n  "archive_sha256": "%s"\n}\n' \
             "${RELEASE_VERSION}" "${commit}" "${source_date_epoch}" "${checksum}" > release/SOURCE-PROVENANCE.json
 
@@ -135,119 +237,260 @@ jobs:
         run: |
           published="$(mktemp -d)"
           gh release download "${TAG}" --dir "${published}" \
-            --pattern "oxiroute-${RELEASE_VERSION}.tar.gz" --pattern SHA256SUMS --pattern SOURCE-PROVENANCE.json
-          for asset in "oxiroute-${RELEASE_VERSION}.tar.gz" SHA256SUMS SOURCE-PROVENANCE.json; do
+            --pattern "oxiroute-${RELEASE_VERSION}.tar.gz" --pattern SOURCE-PROVENANCE.json
+          for asset in "oxiroute-${RELEASE_VERSION}.tar.gz" SOURCE-PROVENANCE.json; do
             cmp "${published}/${asset}" "release/${asset}"
           done
 
       - name: Upload release verification files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: oxiroute-release-${{ inputs.tag || github.ref_name }}
           path: release
 
       - name: Attest release archive provenance
-        uses: actions/attest-build-provenance@v2
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: release/oxiroute-*.tar.gz
 
-      - name: Publish tagged release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            release/oxiroute-*.tar.gz
-            release/SHA256SUMS
-            release/SOURCE-PROVENANCE.json
+  binary-x86_64:
+    name: Binary x86_64
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-binary.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      version: ${{ needs.changes.outputs.version }}
+      arch: x86_64
+      runner: ubuntu-24.04
+      flavour: unwind
+      pgo: ${{ needs.changes.outputs.pgo }}
+      bolt: ${{ needs.changes.outputs.bolt }}
+      attest: ${{ needs.changes.outputs.attest }}
 
-  binaries:
-    name: Build ${{ matrix.target }} ${{ matrix.flavour }} release binaries
-    needs: archive
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 300
+  binary-aarch64:
+    name: Binary aarch64
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-binary.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      version: ${{ needs.changes.outputs.version }}
+      arch: aarch64
+      runner: ubuntu-24.04-arm
+      flavour: unwind
+      pgo: ${{ needs.changes.outputs.pgo }}
+      bolt: '0'
+      attest: ${{ needs.changes.outputs.attest }}
+
+  binary-extras:
+    name: Binary x86_64 ${{ matrix.flavour }}
+    needs: changes
+    if: needs.changes.outputs.build == 'true' && needs.changes.outputs.has_extras == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
-      # One flavour at a time: both append their line to the same release notes.
-      max-parallel: 1
-      matrix:
-        target: [x86_64-unknown-linux-gnu]
-        flavour: ${{ fromJSON(format('["unwind"{0}{1}]', (github.event_name != 'workflow_dispatch' || inputs.abort_flavour) && ',"abort"' || '', (github.event_name == 'workflow_dispatch' && inputs.v3_flavour) && ',"v3"' || '')) }}
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
+      matrix: ${{ fromJSON(needs.changes.outputs.extras_matrix) }}
+    uses: ./.github/workflows/release-binary.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      version: ${{ needs.changes.outputs.version }}
+      arch: x86_64
+      runner: ubuntu-24.04
+      flavour: ${{ matrix.flavour }}
+      pgo: ${{ needs.changes.outputs.pgo }}
+      bolt: ${{ needs.changes.outputs.bolt }}
+      attest: ${{ needs.changes.outputs.attest }}
+
+  binary-tests:
+    name: Workspace tests against the ${{ matrix.flavour }} binary
+    needs: [changes, binary-x86_64, binary-extras]
+    if: >-
+      ${{ !cancelled() && needs.changes.outputs.build == 'true' && needs.changes.outputs.has_tests == 'true'
+      && needs.binary-x86_64.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.binary-extras.result) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.tests_matrix) }}
     env:
-      CARGO_INCREMENTAL: 0
-      PGO_TARGET: ${{ matrix.target }}
-      PGO: ${{ (github.event_name == 'workflow_dispatch' && !inputs.pgo) && '0' || '1' }}
-      BOLT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.bolt) && '0' || '1' }}
-      FLAVOUR: ${{ matrix.flavour }}
+      BOLT_TEST_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - name: Check out release ref
-        uses: actions/checkout@v4
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Require the existing release that receives the binaries
-        if: github.event_name == 'workflow_dispatch' && inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: '[[ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" == false ]]'
-
-      - name: Install Rust 1.97.1 with the matching llvm-profdata
-        uses: dtolnay/rust-toolchain@1.97.1
+      - name: Download the binary tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          targets: ${{ matrix.target }}
-          components: llvm-tools
+          name: oxiroute-binaries-x86_64-${{ matrix.flavour }}
+          path: dist
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@766a42937d994bd78bb4591385445c188ccb3f09 # 1.97.1
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache the cargo build of the workspace tests
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.3.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
 
-      - name: Install UI dependencies (the workspace tests run against the release binary build the management UI)
+      - name: Install UI dependencies (the workspace tests build the management UI)
         run: pnpm install --frozen-lockfile --prefer-offline
         working-directory: ui
 
-      - name: Install BOLT (pinned package, SHA-256 verified)
-        if: env.BOLT == '1'
+      - name: Run the whole workspace test suite against the shipped binary
         run: |
-          bin="$(./scripts/install-bolt.sh "${RUNNER_TEMP}/bolt")"
-          printf 'BOLT_BIN_DIR=%s\n' "${bin}" >> "${GITHUB_ENV}"
+          stem="$(scripts/package/main.sh stem "${{ needs.changes.outputs.version }}" x86_64 "${{ matrix.flavour }}")"
+          tar --directory dist --extract --file "dist/${stem}.tar.gz" "${stem}/bin/oxiroute"
+          scripts/test-release-binary.sh "dist/${stem}/bin/oxiroute"
 
-      - name: Build release binaries (profile-guided and BOLT-laid-out unless disabled)
+  packages-x86_64:
+    name: Packages x86_64
+    needs: [changes, binary-x86_64]
+    if: needs.changes.outputs.build == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-packages.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      tag: ${{ inputs.tag || github.ref_name }}
+      version: ${{ needs.changes.outputs.version }}
+      arch: x86_64
+      runner: ubuntu-24.04
+      pgo: ${{ needs.changes.outputs.pgo }}
+      attest: ${{ needs.changes.outputs.attest }}
+      assemble_matrix: ${{ needs.changes.outputs.assemble_matrix }}
+      install_matrix: ${{ needs.changes.outputs.install_matrix }}
+
+  packages-aarch64:
+    name: Packages aarch64
+    needs: [changes, binary-aarch64]
+    if: needs.changes.outputs.build == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-packages.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      tag: ${{ inputs.tag || github.ref_name }}
+      version: ${{ needs.changes.outputs.version }}
+      arch: aarch64
+      runner: ubuntu-24.04-arm
+      pgo: ${{ needs.changes.outputs.pgo }}
+      attest: ${{ needs.changes.outputs.attest }}
+      assemble_matrix: ${{ needs.changes.outputs.assemble_matrix }}
+      install_matrix: ${{ needs.changes.outputs.install_matrix }}
+
+  publish:
+    name: Publish the release assets
+    needs:
+      - changes
+      - archive
+      - binary-x86_64
+      - binary-aarch64
+      - binary-extras
+      - binary-tests
+      - packages-x86_64
+      - packages-aarch64
+    if: ${{ !cancelled() && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+      VERSION: ${{ needs.changes.outputs.version }}
+      X86_64_FLAVOURS: ${{ needs.changes.outputs.flavours }}
+    steps:
+      - name: Require every job to have succeeded (only a job that has nothing to build may be skipped)
         env:
-          RELEASE_REF: ${{ inputs.tag || github.ref_name }}
-          PGO_WORK: /tmp/oxiroute-pgo
-        run: ./scripts/build-release-binaries.sh "${RELEASE_REF#v}" release-binaries
+          MUST_SUCCEED: ${{ needs.archive.result }} ${{ needs.binary-x86_64.result }} ${{ needs.binary-aarch64.result }} ${{ needs.packages-x86_64.result }} ${{ needs.packages-aarch64.result }}
+          EXTRAS: ${{ needs.binary-extras.result }}:${{ needs.changes.outputs.has_extras }}
+          TESTS: ${{ needs.binary-tests.result }}:${{ needs.changes.outputs.has_tests }}
+        run: |
+          for result in ${MUST_SUCCEED}; do
+            [[ "${result}" == success ]] || { echo 'refusing to publish: the archive, binary and package jobs must all have succeeded' >&2; exit 1; }
+          done
+          for job in "${EXTRAS}" "${TESTS}"; do
+            [[ "${job}" == success:true || "${job}" == skipped:false ]] || { echo "refusing to publish: ${job} (result:has jobs)" >&2; exit 1; }
+          done
 
-      - name: Upload release binaries
-        uses: actions/upload-artifact@v4
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: oxiroute-binaries-${{ matrix.target }}-${{ matrix.flavour }}-${{ inputs.tag || github.ref_name }}
-          path: release-binaries
+          ref: ${{ inputs.tag || github.ref }}
 
-      - name: Attest release binary provenance
-        uses: actions/attest-build-provenance@v2
+      - name: Download the source archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          subject-path: release-binaries/oxiroute-*.tar.gz
+          pattern: oxiroute-release-*
+          merge-multiple: true
+          path: dist
 
-      - name: Publish tagged release binaries
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
-        uses: softprops/action-gh-release@v2
+      - name: Download the binary tarballs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          append_body: true
-          body_path: release-binaries/pgo-note-${{ matrix.target }}${{ matrix.flavour == 'abort' && '-abort' || matrix.flavour == 'v3' && '-x86-64-v3' || '' }}.md
-          files: |
-            release-binaries/oxiroute-*.tar.gz
-            release-binaries/oxiroute-*.tar.gz.sha256
-            release-binaries/oxiroute-*.build.json
+          pattern: oxiroute-binaries-*
+          merge-multiple: true
+          path: dist
+
+      - name: Download the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Refuse an incomplete or plain-built release and write the one SHA256SUMS
+        run: scripts/package/main.sh assets sums dist "${VERSION}"
+
+      - name: Attach the assets to the release (a new release stays a draft until every asset is on it)
+        run: |
+          notes="docs/RELEASE_NOTES_${VERSION}.md"
+          [[ -f "${notes}" ]] || { echo "write ${notes} first" >&2; exit 1; }
+          { cat "${notes}"; printf '\n'; scripts/package/main.sh assets notes dist "${VERSION}"; } > release-notes.md
+          files=()
+          while read -r asset; do
+            [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch && ( "${asset}" == "oxiroute-${VERSION}.tar.gz" || "${asset}" == SOURCE-PROVENANCE.json ) ]] && continue
+            files+=("dist/${asset}")
+          done < <(scripts/package/main.sh assets list "${VERSION}")
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            gh release edit "${TAG}" --notes-file release-notes.md
+            gh release upload "${TAG}" "${files[@]}" --clobber
+          else
+            gh release create "${TAG}" --verify-tag --draft --title "${TAG}" --notes-file release-notes.md
+            gh release upload "${TAG}" "${files[@]}" --clobber
+            gh release edit "${TAG}" --draft=false
+          fi
