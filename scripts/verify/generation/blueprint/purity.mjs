@@ -24,10 +24,19 @@ const compilerModules = new Set([
   'listener/inventory.rs',
   'registry/host.rs',
   'routing.rs',
+  'routing/health.rs',
+  'routing/policy.rs',
+  'routing/route.rs',
+  'routing/route/index.rs',
+  'routing/route/paths.rs',
   'service_plan.rs',
   'tls/mod.rs',
   'tls/upstream.rs',
   'topology.rs',
+  'upstream_peer.rs',
+  'topology/attributes.rs',
+  'topology/builder.rs',
+  'topology/ids.rs',
 ])
 const roots = ['generation/compiler.rs::GenerationCompiler::compile']
 const acquisitionNames = /(^|::)(acquire|open|load|read|write|bind|connect|resolve|spawn|prepare_tls|to_socket_addrs)$/
@@ -35,6 +44,13 @@ const forbiddenImports = /^(std::(fs|net::ToSocketAddrs|thread)|openssl|pingora|
 const mixedModuleImports = new Map([
   ['health.rs', new Set([
     'pingora::{ ErrorType, http::RequestHeader, lb::{ Backend, health_check::{HealthCheck, HttpHealthCheck, TcpHealthCheck}, }, server::ShutdownWatch, services::{ServiceReadyNotifier, background::BackgroundService}, }',
+  ])],
+  ['upstream_peer.rs', new Set([
+    'pingora::{ Error, ErrorType, protocols::{Digest, l4::socket::SocketAddr as PeerAddress}, upstreams::peer::{HttpPeer, HttpUpstreamRequestPolicy, Peer}, }',
+  ])],
+  ['tls/upstream.rs', new Set([
+    'openssl::{ asn1::Asn1Time, error::ErrorStack, sha::sha256, ssl::SslVersion, x509::{X509, X509PurposeId, store::X509StoreBuilder, verify::X509VerifyFlags}, }',
+    'pingora::{ protocols::tls::{CaType, TlsConfigureHook, TlsRef}, upstreams::peer::{HttpPeer, Scheme}, }',
   ])],
   ['http/action.rs', new Set([
     'openssl::{ hash::{Hasher, MessageDigest}, memcmp, sha::sha256, }',
@@ -78,7 +94,7 @@ for (const call of [
   'PassiveFailurePolicy::from_config', 'ProxyPolicyPlan::compile', 'RedirectPlan::compile',
   'Route::new', 'RoutePolicyPlan::compile', 'RuntimeEndpoint::compile', 'StaticFilesBlueprint::compile',
   'RequestHeader::build',
-  'StatusCode::', 'String::', 'Vec::', 'VodApplicationBlueprint::compile',
+  'StatusCode::', 'String::', 'Vec::', 'usize::try_from', 'pingora::Error::', 'u32::try_from', 'RtmpSessionLimits::default', 'Groups::default', 'Node::default', 'default', 'VodApplicationBlueprint::compile',
   'RtmpCallbackEndpointBlueprint::parse', 'RtmpAccessPolicy::new', 'RtmpAccessRule::new',
   'RtmpSessionCeilings::new', 'ExecLimits::new', 'ExecEnvironment::new', 'VodLimits::', 'RecordingStoreLimits::',
   'RecorderMediaMask::new', 'RecordingPathPolicy::new', 'RtmpNetwork::parse', 'CacheTimeline::new',
@@ -102,7 +118,8 @@ const reviewedValueMethods = new Map([
   'with_window_ack_size', 'profile', 'config', 'transport', 'application', 'stream_name',
   'with_segment_policy', 'with_extensions',
   'port', 'is_absolute', 'to_str', 'from_pathname',
-  'set_version', 'append_header', 'effective_h2_windows',
+  'set_version', 'append_header', 'effective_h2_windows', 'as_u16', 'as_str', 'values_mut', 'iter_mut', 'sort_by_key', 'to_ascii_lowercase', 'or_default', 'entry', 'http_data_plane_choice', 'fast_lane_enabled',
+  'aged_per_worker', 'is_some_and', 'err',
   'parse',
 ].map((name) => [name, 'reviewed std/external immutable or local value operation']))
 
@@ -396,7 +413,7 @@ function verify(sources) {
         ? receiver
           ? byName.get(qualifiedMethod) ?? []
           : byName.get(methodName) ?? []
-        : byName.get(resolvedName) ?? byName.get(methodName) ?? []
+        : byName.get(resolvedName) ?? byName.get(resolvedName.split('::').slice(-2).join('::')) ?? byName.get(methodName) ?? []
       const local = candidates.filter((candidate) => compilerModules.has(candidate.relative))
       if (local.length === 1) {
         queue.push(local[0].key)
@@ -411,7 +428,7 @@ function verify(sources) {
         throw new Error(`${item.relative}:${item.name}: ambiguous local call ${resolvedName}`)
       }
       if (call.kind === 'method' && reviewedValueMethods.has(methodName)) continue
-      if (call.kind === 'path' && closures.has(resolvedName)) continue
+      if (call.kind !== 'method' && closures.has(resolvedName)) continue
       if (call.kind === 'item' && /^[A-Z]/.test(methodName)) {
         continue // Reviewed enum/associated constant value; not an invocation.
       }
@@ -463,10 +480,14 @@ mustFail('indirect helper acquisition', mutateRoot((source) => source.replace(in
 mustFail('acquisition import', mutateRoot((source) => `use std::fs;\n${source}`))
 mustFail('aliased acquisition import', mutateRoot((source) => `use std::fs as disk;\n${source.replace(injection, `${injection} disk::read("secret").unwrap();`)}`))
 mustFail('reached helper module import', (candidate) => {
-  candidate.set('routing.rs', `use std::fs as disk;\n${candidate.get('routing.rs')}`)
+  candidate.set('routing/route.rs', `use std::fs as disk;\n${candidate.get('routing/route.rs')}`)
 })
 mustFail('renamed import in indirect module', (candidate) => {
-  candidate.set('routing.rs', `use std::fs as renamed_disk;\n${candidate.get('routing.rs').replace('fn compile_passive_health(', 'fn compile_passive_health(').replace('{', '{ renamed_disk::read("secret").unwrap();', 1)}`)
+  candidate.set('routing/route.rs', `use std::fs as renamed_disk;\n${candidate.get('routing/route.rs').replace('pub fn new(routes: Vec<Route>) -> Self {', 'pub fn new(routes: Vec<Route>) -> Self { renamed_disk::read("secret").unwrap();')}`)
+})
+mustFail('kernel probe in the data plane chain', (candidate) => {
+  const chain = 'service_plan/data_plane/chain.rs'
+  candidate.set(chain, candidate.get(chain).replace('if let Err(missing) = (self.capability)(capabilities) {', 'if let Err(missing) = (self.capability)(capabilities) { oxiroute_epoll_h1::io_uring_support().unwrap();'))
 })
 mustFail('receiver ambiguity acquisition', mutateRoot((source) => source.replace(injection, `${injection} Impure.parse();`).concat('\nstruct Impure; impl Impure { fn parse(&self) { std::fs::read("secret").unwrap(); } }\n')))
 mustFail('constructor chained receiver acquisition', mutateRoot((source) => source.replace(injection, `${injection} Impure::new().run();`).concat('\nstruct Impure; impl Impure { fn new() -> Self { Self } fn run(&self) { std::fs::read("secret").unwrap(); } }\n')))
