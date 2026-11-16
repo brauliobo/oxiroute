@@ -2,7 +2,6 @@
 1632 crates/oxiroute-cache/tests/cache_core.rs
 3463 crates/oxiroute-config-source/tests/lua_config.rs
 1952 crates/oxiroute-config-source/tests/lua_render.rs
-1002 crates/oxiroute-import/src/apache/lower.rs
 2481 crates/oxiroute-import/tests/nginx_lower.rs
 1092 crates/oxiroute-import/tests/nginx_rtmp.rs
 1152 crates/oxiroute-rtmp/tests/recording_worker.rs
