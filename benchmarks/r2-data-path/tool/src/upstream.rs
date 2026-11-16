@@ -5,7 +5,8 @@
 //! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo),
 //! `/echo-headers` (the request headers as text, one per line), `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms, `/cookie1k` like `/b1k` with a `Set-Cookie`,
 //! `/cc1k` like `/b1k` with `Cache-Control: max-age=60`, `/rv1k` an always stale `ETag` entry that answers 304 to a
-//! matching `If-None-Match` (revalidation).
+//! matching `If-None-Match` (revalidation), `/__served` the number of other requests answered so far (a cache-hit lane
+//! proves from it that no measured request reached the origin).
 
 use std::{
     convert::Infallible,
@@ -105,10 +106,16 @@ async fn echo_upgraded(upgraded: hyper::upgrade::Upgraded) {
 const SLOW_EVERY: u64 = 500;
 const SLOW_DELAY: Duration = Duration::from_millis(200);
 static SLOW_COUNTER: AtomicU64 = AtomicU64::new(0);
+static SERVED: AtomicU64 = AtomicU64::new(0);
 
 async fn handle(mut request: Request<Incoming>) -> Result<Response<Body>, Infallible> {
     let payloads = payloads();
     let path = request.uri().path().to_owned();
+    if path == "/__served" {
+        let served = SERVED.load(Ordering::Relaxed).to_string();
+        return Ok(full("text/plain", Bytes::from(served)));
+    }
+    SERVED.fetch_add(1, Ordering::Relaxed);
     Ok(match path.as_str() {
         "/b0" => full("application/octet-stream", Bytes::new()),
         "/b1k" => full("application/octet-stream", payloads.b1k.clone()),
