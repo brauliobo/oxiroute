@@ -179,7 +179,7 @@ def build(args):
     service = {
         "name": "bench",
         "routes": routes,
-        "upstream_io_timeout_ms": 30000,
+        "upstream_io_timeout_ms": args.io_timeout_ms,
         "max_request_body_bytes": 10485760,
     }
     if on("access_log"):
@@ -279,6 +279,9 @@ def build(args):
             "policy": tls_policy,
         }]
         listener["tls_profile"] = "bench-tls"
+    for item in args.listener_set:
+        key, value = item.split("=", 1)
+        listener[key] = json.loads(value)
     for index in range(1, args.listeners):
         config["listeners"].append(
             dict(listener, name=f"bench{index}", bind={"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 10 + index}"}))
@@ -335,9 +338,12 @@ def main():
                         help="policy.backend of the TLS profile")
     parser.add_argument("--baseline", action="store_true",
                         help="the binary is an older release: leave out options it does not know (backend, ktls)")
+    parser.add_argument("--io-timeout-ms", type=int, default=30000, help="upstream_io_timeout_ms of the service")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     parser.add_argument("--set", action="append", default=[], help="a root option as KEY=JSON (repeatable)")
+    parser.add_argument("--listener-set", action="append", default=[],
+                        help="an option of the first listener as KEY=JSON (repeatable)")
     args = parser.parse_args()
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("return " + lua(build(args)) + "\n")

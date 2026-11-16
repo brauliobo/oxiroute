@@ -12,6 +12,7 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `run.sh` | Entry point; `run.sh --help` lists every option. Wraps `run.py`. |
 | `run.py` | Lane table, process orchestration, `perf stat` / strace / allocator-shim / `perf record` measurements. |
 | `gen_config.py` | Renders the Lua configuration of a lane from independent feature switches. |
+| `h3_impair.py` | HTTP/3 and TCP+TLS of OxiRoute and nginx over an impaired link (netem delay, loss and rate in an unprivileged user and network namespace), or on a plain namespace loopback: download time, goodput and server CPU per MiB, or the 1 KiB request rate. |
 | `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, HTTP/3, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
 | `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run; `table.py --markdown DIR LANE...` prints the release comparison table of `compare.sh`. |
 | `compare.sh` | Instructions per request of an older release (`--base`, run with `--baseline` so no option it does not know is generated), the new binary with the fast lane off and the new binary, one lane after the other; scratch on disk under `~/.local/state/oxiroute-bench`. |
@@ -144,6 +145,35 @@ Compare before and after with the same load tool, lane and CPU sets, on binaries
 `python3 benchmarks/r2-data-path/table.py /tmp/h3-after/results.json /tmp/h3-before/results.json` prints the
 instruction delta per lane. `instr_per_req` counts every proxy thread (the H3 listener thread, runtime helpers); read the
 spread columns before trusting a delta below 1%.
+
+## HTTP/3 on impaired links
+
+`h3_impair.py` re-executes itself under `unshare --user --map-root-user --net`, so it needs no privileges and changes
+nothing on the host: inside the namespace it raises the loopback device with a 1500-byte MTU, adds a `netem` qdisc
+(delay of half the round trip in each direction, loss in each direction, optional `rate` and queue length) and starts
+the server, the client and the qdisc, all of which end with the namespace. It needs `unshare`, `tc`, `ip`, `ethtool`,
+`openssl`, `curl` built with HTTP/3 (ngtcp2) and, for the nginx rows, an nginx built with `http_v3`.
+
+```sh
+export OXIROUTE_BIN=/path/to/oxiroute R2TOOL_BIN=/path/to/r2tool
+benchmarks/r2-data-path/h3_impair.py download --server oxiroute --proto h3 --rtt-ms 40 --loss-pct 0.5 --size-mib 10 --runs 5 \
+  --set http3_segmentation_offload=false --set 'http3_congestion_control="bbr"'
+benchmarks/r2-data-path/h3_impair.py download --server nginx --proto h3 --rtt-ms 100 --loss-pct 1 --nginx-stream-buffer 4m
+benchmarks/r2-data-path/h3_impair.py small --server oxiroute --server-cpus 8-9 --client-cpus 12-15
+```
+
+* Every run is one fresh connection that downloads one static file (at most 64 MiB, the H3 response bound) with curl;
+  `--client r2tool` uses the quinn client instead. The record holds p50, p99 (with five runs, the slowest run), goodput
+  (size over p50), the server's CPU milliseconds per MiB (user plus system of every server process, from `/proc`),
+  the bytes, packets and drops the qdisc saw, and the `some avg10` CPU pressure before and after the measured section.
+* UDP and TCP segmentation offload must be off on an impaired link: `netem` drops one whole segmented batch, so
+  loss would arrive in bursts of up to ten packets. The script turns TSO, GSO and GRO off on the namespace loopback
+  for TCP; for QUIC set `http3_segmentation_offload = false` (`--set`). `--keep-offload` leaves the loopback features on.
+* `small` and every run without impairment hold `/tmp/oxiroute-bench.lock` while they measure; use the pinned CPU
+  sets of the harness (`--server-cpus 8-9 --client-cpus 12-15`). Impaired runs take `--server-cpus` and `--client-cpus`
+  from outside those sets.
+* The server CPU counters tick at 10 ms: a measured section has to burn several hundred milliseconds to give a stable
+  CPU per MiB or per request (`--requests 200000` for `small`).
 
 ## Soak
 
