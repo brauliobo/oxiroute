@@ -10,8 +10,8 @@ use crate::{
     E_UNSUPPORTED_FEATURE, Report, Severity,
 };
 
-use super::{DirectiveOrigin, ListenEndpoint, NginxValue, StaticEndpoint};
-use super::{
+use crate::nginx::{DirectiveOrigin, ListenEndpoint, NginxValue, StaticEndpoint};
+use crate::nginx::{
     ExpandedDirective, ExpandedOccurrence, IncludeCandidateStatus, IncludeEdge, OccurrenceDecision,
     OccurrenceDisposition, OccurrenceId, SourceGraph, Word,
 };

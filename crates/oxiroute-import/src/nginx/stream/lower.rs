@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::{
+use crate::nginx::{
     DirectiveOrigin, EffectiveStream, EffectiveStreamListen, EffectiveStreamProxyPass,
     EffectiveStreamServer, EffectiveStreamUpstream, OccurrenceDecision, OccurrenceDisposition,
     OccurrenceId, SourceGraph, StaticEndpoint, StreamDestination, StreamResolution, load,
@@ -78,16 +78,16 @@ pub(super) fn lower_stream(loaded: Report<SourceGraph>) -> StreamImportReport {
     lower_stream_with_mode(loaded, false)
 }
 
-pub(super) fn lower_stream_root(loaded: Report<SourceGraph>) -> StreamImportReport {
+pub(in crate::nginx) fn lower_stream_root(loaded: Report<SourceGraph>) -> StreamImportReport {
     lower_stream_with_mode(loaded, true)
 }
 
 fn lower_stream_with_mode(loaded: Report<SourceGraph>, complete_root: bool) -> StreamImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
     let resolved = if complete_root {
-        super::stream_semantic::resolve_stream_root_graph(&graph)
+        super::semantic::resolve_stream_root_graph(&graph)
     } else {
-        super::stream_semantic::resolve_stream_graph(&graph)
+        super::semantic::resolve_stream_graph(&graph)
     };
     let (resolution, resolve_diagnostics) = resolved.into_parts();
     diagnostics.extend(resolve_diagnostics);
@@ -313,10 +313,10 @@ impl Lowerer {
             );
         }
         match endpoint {
-            super::ListenEndpoint::Socket { .. } => {
+            crate::nginx::ListenEndpoint::Socket { .. } => {
                 self.record(format!("{listener_path}/bind/address"), origins);
             }
-            super::ListenEndpoint::Unix { .. } => {
+            crate::nginx::ListenEndpoint::Unix { .. } => {
                 self.record(format!("{listener_path}/bind/path"), origins);
             }
         }
@@ -525,13 +525,13 @@ impl Lowerer {
     }
 }
 
-fn listener_bind(endpoint: &super::ListenEndpoint) -> Option<ListenerBind> {
+fn listener_bind(endpoint: &crate::nginx::ListenEndpoint) -> Option<ListenerBind> {
     match endpoint {
-        super::ListenEndpoint::Unix { path } => Some(ListenerBind::Unix {
+        crate::nginx::ListenEndpoint::Unix { path } => Some(ListenerBind::Unix {
             path: path.clone(),
             mode: None,
         }),
-        super::ListenEndpoint::Socket { address, port } => {
+        crate::nginx::ListenEndpoint::Socket { address, port } => {
             let address = address
                 .strip_prefix(b"[")
                 .and_then(|address| address.strip_suffix(b"]"))

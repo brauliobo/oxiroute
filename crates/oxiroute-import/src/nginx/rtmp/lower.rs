@@ -19,7 +19,7 @@ use crate::{
     candidate::{CanonicalCandidateState, empty_config, finalize_candidate},
 };
 
-use super::{
+use crate::nginx::{
     DirectiveOrigin, EffectiveRtmpApplication, EffectiveRtmpExecProfile, EffectiveRtmpRecorder,
     EffectiveRtmpServer, OccurrenceDecision, OccurrenceDisposition, OccurrenceId, RtmpRecordMode,
     RtmpResolution, SourceGraph, load,
@@ -103,7 +103,7 @@ pub(super) fn lower_rtmp(loaded: Report<SourceGraph>) -> RtmpImportReport {
     lower_rtmp_with_mode(loaded, false, None, None)
 }
 
-pub(super) fn lower_rtmp_root(
+pub(in crate::nginx) fn lower_rtmp_root(
     loaded: Report<SourceGraph>,
     host_timezone: Option<&str>,
     recording_root: Option<&Path>,
@@ -119,9 +119,9 @@ fn lower_rtmp_with_mode(
 ) -> RtmpImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
     let resolved = if complete_root {
-        super::rtmp_semantic::resolve_rtmp_root_graph(&graph)
+        super::semantic::resolve_rtmp_root_graph(&graph)
     } else {
-        super::rtmp_semantic::resolve_rtmp_graph(&graph)
+        super::semantic::resolve_rtmp_graph(&graph)
     };
     let (resolution, resolve_diagnostics) = resolved.into_parts();
     diagnostics.extend(resolve_diagnostics);
@@ -260,7 +260,7 @@ impl Lowerer {
     fn lower_server(
         &mut self,
         server: &EffectiveRtmpServer,
-        rtmp: &super::EffectiveRtmp,
+        rtmp: &crate::nginx::EffectiveRtmp,
         rtmp_index: usize,
         server_index: usize,
     ) {
@@ -717,9 +717,11 @@ impl Lowerer {
         let Ok(name) = std::str::from_utf8(&decision.name.value) else {
             return false;
         };
-        super::directive_specs().iter().any(|spec| {
+        crate::nginx::directive_specs().iter().any(|spec| {
             spec.name == name
-                && spec.contexts.contains(&super::DirectiveContext::NginxMain)
+                && spec
+                    .contexts
+                    .contains(&crate::nginx::DirectiveContext::NginxMain)
                 && spec.name != "rtmp"
         })
     }

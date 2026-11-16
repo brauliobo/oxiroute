@@ -84,7 +84,7 @@ pub fn import_root_with_options(
             "nginx host timezone overlay must have one unique host-wide value",
         ));
     }
-    let rtmp = super::super::rtmp_lower::lower_rtmp_root(
+    let rtmp = super::super::rtmp::lower::lower_rtmp_root(
         Report::new(graph.clone(), Vec::new()),
         options
             .host_timezones
@@ -97,7 +97,7 @@ pub fn import_root_with_options(
             .map(|overlay| overlay.path.as_path()),
     );
     let stream =
-        super::super::stream_lower::lower_stream_root(Report::new(graph.clone(), Vec::new()));
+        super::super::stream::lower::lower_stream_root(Report::new(graph.clone(), Vec::new()));
 
     diagnostics.extend(http.diagnostics.iter().cloned());
     diagnostics.extend(rtmp.diagnostics.iter().cloned());

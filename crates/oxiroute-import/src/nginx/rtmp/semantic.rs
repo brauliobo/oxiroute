@@ -10,7 +10,7 @@ use oxiroute_config::{
     RtmpHlsPolicy, RtmpRecordMask,
 };
 
-use super::{
+use crate::nginx::{
     DirectiveContext, DirectiveError, DirectiveOrigin, ExpandedDirective, ExpandedOccurrence,
     IncludeCandidateStatus, NginxValue, OccurrenceDecision, OccurrenceDisposition, OccurrenceId,
     SourceGraph, Word, directive_specs, validate_directive,

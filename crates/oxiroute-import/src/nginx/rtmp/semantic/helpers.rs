@@ -409,7 +409,7 @@ pub(super) fn sockets_overlap(first: SocketAddr, second: SocketAddr) -> bool {
     first.ip() == second.ip() || first.ip().is_unspecified() || second.ip().is_unspecified()
 }
 
-pub(super) fn include_failure(edge: &super::super::IncludeEdge) -> Option<DiagnosticCode> {
+pub(super) fn include_failure(edge: &crate::nginx::IncludeEdge) -> Option<DiagnosticCode> {
     edge.failure.or_else(|| {
         edge.candidates
             .iter()
