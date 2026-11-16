@@ -75,6 +75,21 @@ fn a_request_head_that_does_not_complete_is_closed_at_the_request_deadline() {
 }
 
 #[test]
+fn a_request_head_that_does_not_complete_stays_bounded_without_a_request_timeout() {
+    let timeouts = Timeouts {
+        request: None,
+        ..timeouts()
+    };
+    let fixture = Fixture::with(test_config(), timeouts, recorded());
+    let mut wire = fixture.wire();
+    wire.send(b"GET /size/3 HTTP/1.1\r\nHost: test.");
+    let started = Instant::now();
+    assert!(wire.ended());
+    assert!(started.elapsed() >= SHORT / 2 && started.elapsed() < Duration::from_secs(3));
+    assert!(fixture.outcomes().is_empty());
+}
+
+#[test]
 fn an_origin_that_is_slow_to_answer_gets_a_504_at_the_header_deadline() {
     let knobs = Knobs {
         header: SHORT,

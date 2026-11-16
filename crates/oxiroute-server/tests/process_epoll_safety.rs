@@ -14,7 +14,12 @@ mod http_support;
 #[path = "support/process.rs"]
 mod process_support;
 
-use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use http_support::http_request;
 use oxiroute_config::{ConfigDraft, HttpDataPlane, Management};
@@ -276,3 +281,24 @@ async fn a_response_in_flight_survives_the_replacement_of_its_generation(plane: 
 }
 
 on_both_planes!(a_response_in_flight_survives_the_replacement_of_its_generation);
+
+async fn a_partial_request_head_is_closed_at_the_default_read_limit(plane: HttpDataPlane) {
+    let origin = Scripted::start(|_| async {}).await;
+    let proxy = Proxy::start(origin.address, plane, |_| {}).await;
+    let mut client = proxy.connect().await;
+    client
+        .write_all(b"GET /r HTTP/1.1\r\nHost: example.test\r\nX-A:")
+        .await
+        .unwrap();
+    let started = Instant::now();
+    let _ = timeout(Duration::from_secs(90), client.read_to_end(&mut Vec::new()))
+        .await
+        .expect("a partial head stayed open past 90 seconds");
+    let open = started.elapsed();
+    assert!(
+        (Duration::from_secs(55)..Duration::from_secs(75)).contains(&open),
+        "a partial head was closed after {open:?}"
+    );
+}
+
+on_both_planes!(a_partial_request_head_is_closed_at_the_default_read_limit);

@@ -64,6 +64,8 @@ use local::{Exchange, Local};
 /// holds for it.
 pub(in crate::http::proxy) type Selected = (Arc<HttpRoutePlan>, Authority, Option<Arc<CachedFile>>);
 
+const PINGORA_READ_TIMEOUT: Duration = Duration::from_mins(1);
+
 /// The downstream timeouts of the listener, as the classic path applies them to a session.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LaneTimeouts {
@@ -196,10 +198,10 @@ impl LaneFront {
                 self.timeouts
                     .keepalive
                     .is_none()
-                    .then_some(Duration::from_mins(1))
+                    .then_some(PINGORA_READ_TIMEOUT)
             }),
             keepalive: self.timeouts.keepalive,
-            request: self.timeouts.request,
+            request: Some(self.timeouts.request.unwrap_or(PINGORA_READ_TIMEOUT)),
             write: self.timeouts.session_write(),
         }
     }
@@ -210,7 +212,7 @@ impl LaneFront {
             return self.timeouts.keepalive;
         }
         self.timeouts.request.or_else(|| {
-            (self.timeouts.keepalive.is_none() && !stopping).then_some(Duration::from_mins(1))
+            (self.timeouts.keepalive.is_none() && !stopping).then_some(PINGORA_READ_TIMEOUT)
         })
     }
 
