@@ -13,6 +13,7 @@ use super::{
     clock::Moment,
     config::{Config, Timeouts},
     link::Link,
+    pipes::Carry,
     service::{AttemptTimeouts, Failure, Reuse, Service},
     slab::Token,
 };
@@ -145,6 +146,7 @@ pub(crate) struct Relay {
     pub(crate) head_pos: usize,
     pub(crate) complete: bool,
     pub(crate) reusable: bool,
+    pub(crate) carry: Carry,
 }
 
 pub(crate) enum Down {
