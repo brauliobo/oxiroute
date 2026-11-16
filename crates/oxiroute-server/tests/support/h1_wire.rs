@@ -39,6 +39,8 @@ pub const STEP: Duration = Duration::from_secs(5);
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
     Reply(&'static [u8]),
+    /// Answers and closes the connection.
+    ReplyThenClose(&'static [u8]),
     /// Reads the request and closes the connection without a word.
     Drop,
     /// Answers after a while.
@@ -126,6 +128,10 @@ impl Origin {
                                 if stream.write_all(reply).await.is_err() {
                                     return;
                                 }
+                            }
+                            Step::ReplyThenClose(reply) => {
+                                drop(stream.write_all(reply).await);
+                                return;
                             }
                             Step::Drop => return,
                             Step::Slow(delay, reply) => {
