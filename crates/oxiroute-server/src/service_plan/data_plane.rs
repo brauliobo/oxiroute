@@ -1,4 +1,5 @@
 mod chain;
+mod host;
 mod selection;
 #[cfg(test)]
 mod tests;
@@ -6,6 +7,7 @@ mod tests;
 use std::sync::Arc;
 
 use oxiroute_config::{ConfigDraft, HttpDataPlane, ListenerBind, Protocol};
+use thiserror::Error;
 
 use self::chain::{Candidate, ListenerShape, PLANES, Planes};
 pub use self::{
@@ -43,6 +45,40 @@ impl DataPlane {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+#[error("{0}")]
+pub(crate) struct MissingCapability(pub(crate) String);
+
+type Capability = Result<(), MissingCapability>;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlaneCapabilities {
+    epoll: Option<Capability>,
+    io_uring: Option<Capability>,
+}
+
+impl PlaneCapabilities {
+    #[cfg(test)]
+    pub(crate) const fn known(epoll: Capability, io_uring: Capability) -> Self {
+        Self {
+            epoll: Some(epoll),
+            io_uring: Some(io_uring),
+        }
+    }
+
+    pub(crate) fn epoll(&self) -> Capability {
+        self.epoll
+            .clone()
+            .expect("the host detects every plane the chain can reach")
+    }
+
+    pub(crate) fn io_uring(&self) -> Capability {
+        self.io_uring
+            .clone()
+            .expect("the host detects every plane the chain can reach")
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EngineConditions {
     pub(crate) fast_lane: bool,
@@ -64,20 +100,25 @@ pub(crate) struct DataPlanePolicy {
 }
 
 impl DataPlanePolicy {
-    pub(crate) fn of(config: &ConfigDraft) -> Result<Self, ServicePlanError> {
-        Self::resolve(
+    pub(crate) fn of(
+        config: &ConfigDraft,
+        capabilities: &PlaneCapabilities,
+    ) -> Result<Self, ServicePlanError> {
+        Self::evaluate(
             config.http_data_plane_choice(),
+            capabilities,
             EngineConditions::of(config),
             PLANES,
         )
     }
 
-    pub(crate) fn resolve(
+    pub(crate) fn evaluate(
         setting: Option<HttpDataPlane>,
+        capabilities: &PlaneCapabilities,
         conditions: EngineConditions,
         planes: Planes,
     ) -> Result<Self, ServicePlanError> {
-        let candidates = planes.candidates(setting, conditions);
+        let candidates = planes.candidates(setting, capabilities, conditions);
         refuse_explicit_plane(setting, &candidates)?;
         Ok(Self {
             candidates: candidates.into(),

@@ -1,10 +1,9 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use oxiroute_config::{HttpDataPlane, ListenerBind, Protocol};
 
 use super::{
-    DataPlane, DataPlanePolicy, EngineConditions, ListenerPlane, PlaneSelection, Skip, Skipped,
-    chain::{Link, PLANES, Planes, Probe},
+    DataPlane, DataPlanePolicy, EngineConditions, ListenerPlane, MissingCapability,
+    PlaneCapabilities, PlaneSelection, Skip, Skipped,
+    chain::{Link, PLANES, Planes},
 };
 use crate::ServicePlanError;
 
@@ -30,20 +29,6 @@ const KINDS: [Kind; 8] = [
 ];
 const RING_REFUSED: &str = "the kernel disables io_uring (kernel.io_uring_disabled = 2)";
 
-fn granted() -> Option<String> {
-    None
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn ring_refused() -> Option<String> {
-    Some(RING_REFUSED.to_owned())
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn epoll_missing() -> Option<String> {
-    Some("epoll is not available on this platform".to_owned())
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kernel {
     Both,
@@ -52,28 +37,19 @@ enum Kernel {
 }
 
 impl Kernel {
-    fn probes(self) -> (Probe, Probe) {
+    fn capabilities(self) -> PlaneCapabilities {
+        let ring = MissingCapability(RING_REFUSED.to_owned());
+        let epoll = MissingCapability("epoll is not available on this platform".to_owned());
         match self {
-            Self::Both => (granted, granted),
-            Self::EpollOnly => (ring_refused, granted),
-            Self::Neither => (ring_refused, epoll_missing),
+            Self::Both => PlaneCapabilities::known(Ok(()), Ok(())),
+            Self::EpollOnly => PlaneCapabilities::known(Ok(()), Err(ring)),
+            Self::Neither => PlaneCapabilities::known(Err(epoll), Err(ring)),
         }
     }
 
-    fn planes(self, order: &'static [DataPlane]) -> Planes {
-        let (ring, epoll) = self.probes();
+    fn planes(order: &'static [DataPlane]) -> Planes {
         Planes {
-            catalog: [
-                Link {
-                    probe: ring,
-                    ..Link::IO_URING
-                },
-                Link {
-                    probe: epoll,
-                    ..Link::EPOLL
-                },
-                Link::TOKIO,
-            ],
+            catalog: [Link::IO_URING, Link::EPOLL, Link::TOKIO],
             order,
         }
     }
@@ -115,9 +91,7 @@ impl Kind {
 
     fn listener(self, policy: &DataPlanePolicy) -> ListenerPlane {
         match self {
-            Self::Tls | Self::TlsOpenssl => {
-                policy.listener(Protocol::Http, &socket(), true)
-            }
+            Self::Tls | Self::TlsOpenssl => policy.listener(Protocol::Http, &socket(), true),
             Self::Http3 => policy.listener(Protocol::Http3, &socket(), true),
             Self::Unix => policy.listener(Protocol::Http, &unix(), false),
             _ => policy.listener(Protocol::Http, &socket(), false),
@@ -153,10 +127,18 @@ enum Outcome {
 fn plan(
     setting: Option<HttpDataPlane>,
     kind: Kind,
-    planes: Planes,
+    kernel: Kernel,
+    order: &'static [DataPlane],
 ) -> Result<PlaneSelection, ServicePlanError> {
-    let policy = DataPlanePolicy::resolve(setting, kind.conditions(), planes)?;
-    Ok(kind.listener(&policy).select(kind.routes(), kind.terminable()))
+    let policy = DataPlanePolicy::evaluate(
+        setting,
+        &kernel.capabilities(),
+        kind.conditions(),
+        Kernel::planes(order),
+    )?;
+    Ok(kind
+        .listener(&policy)
+        .select(kind.routes(), kind.terminable()))
 }
 
 fn outcome(
@@ -165,7 +147,7 @@ fn outcome(
     kernel: Kernel,
     kind: Kind,
 ) -> Outcome {
-    match plan(setting, kind, kernel.planes(order)) {
+    match plan(setting, kind, kernel, order) {
         Ok(selection) => Outcome::Plane(selection.plane),
         Err(ServicePlanError::DataPlaneUnavailable { skip, .. }) => Outcome::Refused(match skip {
             Skip::Unavailable(_) => Refusal::Missing,
@@ -187,11 +169,13 @@ fn expected(
     let epoll = kernel != Kernel::Neither;
     let epoll_tls = kind == Kind::Tls && setting == Some(HttpDataPlane::Epoll);
     let served = |plane| {
-        Outcome::Plane(if kind.engine_listener() || (epoll_tls && plane == DataPlane::Epoll) {
-            plane
-        } else {
-            DataPlane::Tokio
-        })
+        Outcome::Plane(
+            if kind.engine_listener() || (epoll_tls && plane == DataPlane::Epoll) {
+                plane
+            } else {
+                DataPlane::Tokio
+            },
+        )
     };
     match setting {
         Some(HttpDataPlane::Tokio) => Outcome::Plane(DataPlane::Tokio),
@@ -240,7 +224,7 @@ fn the_shipped_order_is_one_of_the_two_tested_orders() {
 #[test]
 fn an_omitted_setting_takes_io_uring_then_epoll_then_tokio_in_the_shipped_order() {
     let chosen = |kernel: Kernel| {
-        plan(None, Kind::PlainHttp, kernel.planes(SHIPPED))
+        plan(None, Kind::PlainHttp, kernel, SHIPPED)
             .expect("the chain never refuses")
             .plane
     };
@@ -251,16 +235,18 @@ fn an_omitted_setting_takes_io_uring_then_epoll_then_tokio_in_the_shipped_order(
 
 #[test]
 fn leaving_io_uring_out_of_the_order_keeps_it_available_when_chosen_explicitly() {
-    let planes = Kernel::Both.planes(WITHOUT_RING);
-    let chosen = |setting| plan(setting, Kind::PlainHttp, planes).expect("valid").plane;
+    let chosen = |setting| {
+        plan(setting, Kind::PlainHttp, Kernel::Both, WITHOUT_RING)
+            .expect("valid")
+            .plane
+    };
     assert_eq!(chosen(None), DataPlane::Epoll);
     assert_eq!(chosen(Some(HttpDataPlane::IoUring)), DataPlane::IoUring);
 }
 
 #[test]
 fn a_skipped_plane_is_reported_with_the_reason_and_the_chosen_plane() {
-    let planes = Kernel::EpollOnly.planes(SHIPPED);
-    let selection = plan(None, Kind::PlainHttp, planes).expect("valid");
+    let selection = plan(None, Kind::PlainHttp, Kernel::EpollOnly, SHIPPED).expect("valid");
     assert_eq!(selection.plane, DataPlane::Epoll);
     assert_eq!(
         selection.skipped,
@@ -277,7 +263,7 @@ fn a_skipped_plane_is_reported_with_the_reason_and_the_chosen_plane() {
 
 #[test]
 fn every_better_plane_that_cannot_serve_a_listener_is_reported() {
-    let selection = plan(None, Kind::Tls, Kernel::Both.planes(SHIPPED)).expect("valid");
+    let selection = plan(None, Kind::Tls, Kernel::Both, SHIPPED).expect("valid");
     assert_eq!(selection.plane, DataPlane::Tokio);
     assert_eq!(
         selection.skipped,
@@ -296,7 +282,7 @@ fn every_better_plane_that_cannot_serve_a_listener_is_reported() {
 
 #[test]
 fn scheduling_the_ring_cannot_run_leaves_the_listener_on_epoll() {
-    let selection = plan(None, Kind::Scheduled, Kernel::Both.planes(SHIPPED)).expect("valid");
+    let selection = plan(None, Kind::Scheduled, Kernel::Both, SHIPPED).expect("valid");
     assert_eq!(selection.plane, DataPlane::Epoll);
     assert_eq!(
         selection.skipped,
@@ -312,69 +298,38 @@ fn an_explicit_refusal_names_the_missing_capability() {
     let refused = plan(
         Some(HttpDataPlane::IoUring),
         Kind::PlainHttp,
-        Kernel::EpollOnly.planes(SHIPPED),
+        Kernel::EpollOnly,
+        SHIPPED,
     );
     let message = refused.expect_err("io_uring is missing").to_string();
     assert!(message.contains("kernel.io_uring_disabled"), "{message}");
     assert!(message.contains("\"io_uring\""), "{message}");
 }
 
-static RING_PROBES: AtomicUsize = AtomicUsize::new(0);
-static EPOLL_PROBES: AtomicUsize = AtomicUsize::new(0);
-
-fn counted_ring() -> Option<String> {
-    RING_PROBES.fetch_add(1, Ordering::Relaxed);
-    None
-}
-
-fn counted_epoll() -> Option<String> {
-    EPOLL_PROBES.fetch_add(1, Ordering::Relaxed);
-    None
-}
-
 #[test]
-fn a_generation_probes_only_the_planes_its_setting_can_choose_and_once() {
-    let planes = Planes {
-        catalog: [
-            Link {
-                probe: counted_ring,
-                ..Link::IO_URING
-            },
-            Link {
-                probe: counted_epoll,
-                ..Link::EPOLL
-            },
-            Link::TOKIO,
-        ],
-        order: SHIPPED,
-    };
-    let probes = || {
+fn the_host_detects_only_the_planes_the_setting_can_reach() {
+    let detected = |setting| {
+        let capabilities = PlaneCapabilities::detect(setting);
         (
-            RING_PROBES.load(Ordering::Relaxed),
-            EPOLL_PROBES.load(Ordering::Relaxed),
+            capabilities.epoll.is_some(),
+            capabilities.io_uring.is_some(),
         )
     };
-    let conditions = EngineConditions {
-        fast_lane: true,
-        scheduling: false,
-    };
-    DataPlanePolicy::resolve(Some(HttpDataPlane::Tokio), conditions, planes).expect("valid");
-    assert_eq!(probes(), (0, 0));
-    DataPlanePolicy::resolve(Some(HttpDataPlane::Epoll), conditions, planes).expect("valid");
-    assert_eq!(probes(), (0, 1));
-    let policy = DataPlanePolicy::resolve(None, conditions, planes).expect("valid");
-    assert_eq!(probes(), (1, 2));
-    for _ in 0..3 {
-        Kind::PlainHttp.listener(&policy).select(true, true);
-    }
-    assert_eq!(probes(), (1, 2));
+    assert_eq!(detected(Some(HttpDataPlane::Tokio)), (false, false));
+    assert_eq!(detected(Some(HttpDataPlane::Epoll)), (true, false));
+    assert_eq!(detected(Some(HttpDataPlane::IoUring)), (false, true));
+    assert_eq!(detected(None), (true, false));
 }
 
 #[test]
-fn the_real_probes_agree_with_what_the_default_chain_selects() {
+fn the_detected_capabilities_agree_with_what_the_default_chain_selects() {
     let ring = oxiroute_epoll_h1::io_uring_support().is_ok();
     let epoll = oxiroute_epoll_h1::supported();
-    let selected = plan(None, Kind::PlainHttp, PLANES).expect("valid").plane;
+    let capabilities = PlaneCapabilities::detect(None);
+    let policy =
+        DataPlanePolicy::evaluate(None, &capabilities, Kind::PlainHttp.conditions(), PLANES)
+            .expect("valid");
+    let selected = Kind::PlainHttp.listener(&policy).select(true, true).plane;
     let wanted = DataPlane::DEFAULT_ORDER
         .iter()
         .copied()

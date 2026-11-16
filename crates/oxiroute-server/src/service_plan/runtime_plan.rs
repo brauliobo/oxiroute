@@ -9,6 +9,7 @@ pub struct RuntimePlan {
     pub topology: Arc<TopologySnapshot>,
     source: Arc<ValidatedConfig>,
     passive_policy: Option<PassiveFailurePolicy>,
+    plane_capabilities: PlaneCapabilities,
 }
 
 pub(crate) struct GenerationAcquisition {
@@ -169,7 +170,8 @@ fn runtime_plan_with_passive_failure_policy_internal(
     config: &ValidatedConfig,
     passive_policy: Option<PassiveFailurePolicy>,
 ) -> Result<RuntimePlan, ServicePlanError> {
-    let blueprint = GenerationCompiler::compile(config)?;
+    let plane_capabilities = PlaneCapabilities::detect(config.as_draft().http_data_plane_choice());
+    let blueprint = GenerationCompiler::compile(config, &plane_capabilities)?;
     if let Some(passive_policy) = passive_policy {
         passive_policy
             .validate()
@@ -185,6 +187,7 @@ fn runtime_plan_with_passive_failure_policy_internal(
         topology: blueprint.topology,
         source: Arc::new(config.clone()),
         passive_policy,
+        plane_capabilities,
     })
 }
 
@@ -224,7 +227,7 @@ fn acquire_runtime_services_with_mode(
     mode: AcquisitionMode,
     deadline: Option<Instant>,
 ) -> Result<GenerationAcquisition, RuntimeAcquisitionError> {
-    let blueprint = GenerationCompiler::compile(&plan.source)?;
+    let blueprint = GenerationCompiler::compile(&plan.source, &plan.plane_capabilities)?;
     let mut acquired = GenerationAcquisition::empty();
     acquired.tls = Some(
         crate::tls::prepare_tls_blueprint(&blueprint.tls)
