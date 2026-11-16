@@ -185,17 +185,24 @@ sudo modprobe tls                                   # now
 grep -E 'TlsTxSw|TlsCurrTxSw|TlsDecryptError' /proc/net/tls_stat   # converted since boot, alive now
 ```
 
-Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend, `"auto"` behaves exactly as
+Without the module, or with an older kernel or an unsupported cipher, `"auto"` behaves exactly as
 `"off"`; the log of the profile says once (info) whether kernel TLS is active or why not. Set `ktls = "off"` to keep
 all TLS in user space. A converted connection that then serves small responses costs 1% to 4% more instructions per
 request; the break-even is one large file per 200 small requests.
+
+The `rustls` backend converts TLS 1.2 and TLS 1.3 connections (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305) and the
+kernel then encrypts and decrypts both directions. A connection stays in user space when the peer has sent plaintext
+that was not read yet, half a record, or the next request ahead of the conversion; a later large file asks again. After
+the conversion a TLS 1.3 `KeyUpdate` or a renegotiation from the client ends the connection, because the kernel cannot
+follow it without the traffic secret that rustls does not hand out; clients that rekey on long downloads should use
+the `openssl` backend or `ktls = "off"`.
 
 ## TLS backend
 
 `tls_profiles[].policy.backend` is `"openssl"` by default; `"rustls"` runs the handshakes and records of the profile's
 listeners with rustls and aws-lc-rs. It offers only the TLS 1.3 and ECDHE AEAD suites (a `cipher_list` is followed with
 OpenSSL's semantics and the DHE, CBC and RSA key exchange suites it selects are left out, with a warning at start;
-`dh_parameters_path` is ignored), and has no kernel TLS. Switch one profile at a time (a reload applies it to new
+`dh_parameters_path` is ignored). Switch one profile at a time (a reload applies it to new
 connections) and compare the handshake and error counters before moving more.
 
 ## Shutdown
