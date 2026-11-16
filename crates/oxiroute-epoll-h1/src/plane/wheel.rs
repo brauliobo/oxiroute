@@ -53,8 +53,12 @@ impl Wheel {
         due > 0 && (due - 1).saturating_mul(self.tick_ns) >= deadline.nanos()
     }
 
+    fn node(&self, id: u32) -> Node {
+        self.nodes.get(id as usize).copied().unwrap_or(UNARMED)
+    }
+
     pub(crate) fn armed_due(&self, id: u32) -> Option<u64> {
-        let node = self.nodes.get(id as usize)?;
+        let node = self.node(id);
         node.armed.then_some(node.due)
     }
 
@@ -69,6 +73,9 @@ impl Wheel {
 
     pub(crate) fn schedule(&mut self, id: u32, deadline: Moment) {
         self.cancel(id);
+        if id as usize >= self.nodes.len() {
+            self.nodes.resize(id as usize + 1, UNARMED);
+        }
         let due = self
             .ceil_tick_of(deadline)
             .clamp(self.cursor, self.cursor + MASK);
@@ -91,14 +98,10 @@ impl Wheel {
     }
 
     pub(crate) fn cancel(&mut self, id: u32) {
-        let Some(node) = self
-            .nodes
-            .get(id as usize)
-            .copied()
-            .filter(|node| node.armed)
-        else {
+        let node = self.node(id);
+        if !node.armed {
             return;
-        };
+        }
         let bucket = (node.due & MASK) as usize;
         if node.prev == NONE {
             self.heads[bucket] = node.next;

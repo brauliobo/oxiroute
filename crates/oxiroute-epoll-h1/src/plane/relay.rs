@@ -1,14 +1,12 @@
 use super::{
     chunked::{HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
-    client::{Buffers, Client, Down, Flow, Mode, Relay, Wait, Window},
+    client::{Buffers, Client, Down, Flow, Mode, RESPONSE_TAIL, Relay, Wait, Window},
     link::Link,
     reactor::Reactor,
     service::{Failure, Service},
     slab::Token,
     sys::{Read, Wrote},
 };
-
-pub(crate) const TAIL_ROOM: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Moved {
@@ -179,22 +177,18 @@ impl<S: Service> Reactor<S> {
             let Some(origin) = self.slab.upstream_mut(upstream) else {
                 return Err(Failure::UpstreamClosed);
             };
-            let end = usable(buffers);
-            let read = match relay.mode {
-                Mode::UntilClose => origin.link.recv(&mut buffers.resp[HEADER_ROOM..end]),
-                _ => origin.link.recv(&mut buffers.resp[..end]),
+            let first = if matches!(relay.mode, Mode::UntilClose) {
+                HEADER_ROOM
+            } else {
+                0
             };
+            let read = buffers.resp.recv(&mut origin.link, first, usize::MAX);
             match read {
                 Read::Data(count) => {
-                    let start = if matches!(relay.mode, Mode::UntilClose) {
-                        HEADER_ROOM
-                    } else {
-                        0
-                    };
                     absorb(
                         relay,
                         &mut buffers.resp,
-                        Window::new(start, start + count),
+                        Window::new(first, first + count),
                         &mut flow.sent,
                     )?;
                     progressed = true;
@@ -218,24 +212,20 @@ impl<S: Service> Reactor<S> {
     }
 }
 
-fn usable(buffers: &Buffers) -> usize {
-    buffers.resp.len() - TAIL_ROOM
-}
-
 fn read_body<S: Service>(
     link: &mut Link,
     buffers: &mut Buffers,
     flow: &mut Flow<S>,
     req_len: &mut usize,
 ) -> Read {
-    let capacity = buffers.req.len();
+    let capacity = buffers.req.limit();
     let (start, room) = if flow.replayable {
         (*req_len, capacity - *req_len)
     } else {
         (0, capacity)
     };
     let room = usize::try_from(flow.body_unread).map_or(room, |unread| room.min(unread));
-    let read = link.recv(&mut buffers.req[start..start + room]);
+    let read = buffers.req.recv(link, start, room);
     if let Read::Data(count) = read {
         flow.body_unread -= count as u64;
         flow.window = Window::new(start, start + count);
@@ -286,8 +276,8 @@ pub(crate) fn absorb(
                 Window::new(data.start, data.start)
             } else {
                 let start = write_chunk_header(resp, data.start, count);
-                resp[data.end..data.end + TAIL_ROOM].copy_from_slice(b"\r\n");
-                Window::new(start, data.end + TAIL_ROOM)
+                resp[data.end..data.end + RESPONSE_TAIL].copy_from_slice(b"\r\n");
+                Window::new(start, data.end + RESPONSE_TAIL)
             };
             *sent += count as u64;
         }

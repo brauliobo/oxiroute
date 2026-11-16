@@ -10,6 +10,7 @@ mod link;
 mod origin_head;
 mod pool;
 mod reactor;
+mod region;
 mod relay;
 mod schedule;
 mod serve;
