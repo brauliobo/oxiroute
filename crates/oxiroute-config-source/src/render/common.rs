@@ -24,6 +24,8 @@ impl Renderer {
             target_busy_percent,
             scale_down_delay_ms,
             tls_handshake_threads,
+            http3_congestion_control,
+            http3_segmentation_offload,
             retirement,
             management,
             registry,
@@ -77,6 +79,12 @@ impl Renderer {
         }
         if let Some(threads) = tls_handshake_threads {
             self.integer_field("tls_handshake_threads", threads);
+        }
+        if let Some(control) = http3_congestion_control {
+            self.string_field("http3_congestion_control", control.as_str());
+        }
+        if let Some(enabled) = http3_segmentation_offload {
+            self.boolean_field("http3_segmentation_offload", *enabled);
         }
         if let Some(filter) = log_filter {
             self.string_field("log_filter", filter);

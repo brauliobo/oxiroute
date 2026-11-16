@@ -20,8 +20,8 @@ use http::{
 use log::{error, warn};
 use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
-    DownstreamTimeoutPolicy, HttpRetryTarget, HttpRetryTrigger, TlsKeyExchangeGroup,
-    is_unambiguous_http_path,
+    CongestionControl, DownstreamTimeoutPolicy, Http3Transport, HttpRetryTarget, HttpRetryTrigger,
+    TlsKeyExchangeGroup, is_unambiguous_http_path,
 };
 use oxiroute_h3::{
     Code as H3Code, HeadError,
@@ -30,6 +30,7 @@ use oxiroute_h3::{
     },
 };
 use pingora::apps::AcceptGateParticipant;
+use quinn::congestion::{BbrConfig, CubicConfig};
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};

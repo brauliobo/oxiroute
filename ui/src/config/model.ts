@@ -1029,6 +1029,7 @@ export interface UdpPolicyConfig {
 export type HttpDataPlane = 'epoll' | 'tokio'
 
 export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker' | 'auto'
+export type CongestionControl = 'cubic' | 'bbr'
 
 export type WorkerScaling = 'static' | 'dynamic'
 
@@ -1059,6 +1060,8 @@ export interface CanonicalConfig {
   target_busy_percent?: number
   scale_down_delay_ms?: number
   tls_handshake_threads?: number
+  http3_congestion_control?: CongestionControl
+  http3_segmentation_offload?: boolean
   retirement?: RetirementConfig
   management: ManagementConfig | null
   log_filter?: string

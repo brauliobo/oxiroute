@@ -542,6 +542,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'target_busy_percent', kind: 'integer' },
   { path: 'scale_down_delay_ms', kind: 'integer' },
   { path: 'tls_handshake_threads', kind: 'integer' },
+  { path: 'http3_congestion_control', kind: 'enum' },
+  { path: 'http3_segmentation_offload', kind: 'boolean' },
   { path: 'log_filter', kind: 'string' },
   { path: 'audit', kind: 'object' },
   { path: 'audit.dir', kind: 'string' },

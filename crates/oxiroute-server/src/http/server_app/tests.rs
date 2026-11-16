@@ -180,6 +180,8 @@ fn generation() -> Arc<RuntimeGeneration> {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         version: 1,
         max_connections: None,

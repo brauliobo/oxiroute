@@ -51,6 +51,14 @@ pub struct ConfigDraft {
     /// Omitted means one thread per 8 CPUs (1 to 4); `0` handshakes on the workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_handshake_threads: Option<u64>,
+    /// Congestion controller of every HTTP/3 connection: `cubic` (the default) or `bbr`. `bbr` keeps the rate up on links
+    /// with random loss or a long round trip, where `cubic` backs off at every loss, and it ramps up more slowly on a LAN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http3_congestion_control: Option<CongestionControl>,
+    /// Whether HTTP/3 listeners send several datagrams per system call (UDP generic segmentation offload, `UDP_SEGMENT`).
+    /// Omitted means on; `false` is for a NIC, driver or virtual network that mishandles segmented datagrams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http3_segmentation_offload: Option<bool>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,

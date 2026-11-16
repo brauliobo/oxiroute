@@ -110,6 +110,8 @@ fn exclude_nonintegrated_component_controls(
         "target_busy_percent",
         "scale_down_delay_ms",
         "tls_handshake_threads",
+        "http3_congestion_control",
+        "http3_segmentation_offload",
         "http_services[].drain_deadline_ms",
         "forward_proxy_services[].drain_deadline_ms",
         "l4_services[].drain_deadline_ms",

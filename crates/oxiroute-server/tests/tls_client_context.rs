@@ -72,6 +72,8 @@ fn child_counts_ca_bundle_parses() {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         upstream_pools: (0..POOLS).map(http_health_pool).collect(),
         ..empty_config()

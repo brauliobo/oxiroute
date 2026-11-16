@@ -205,8 +205,13 @@ fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, Confi
             | "scale_down_delay_ms" => {
                 Value::Number(parse_uci_integer::<u64>(section, name, value)?.into())
             }
-            "http_fast_lane" => Value::Bool(parse_uci_bool(section, name, value)?),
-            "http_data_plane" | "connection_scheduling" | "worker_scaling" => {
+            "http_fast_lane" | "http3_segmentation_offload" => {
+                Value::Bool(parse_uci_bool(section, name, value)?)
+            }
+            "http_data_plane"
+            | "connection_scheduling"
+            | "worker_scaling"
+            | "http3_congestion_control" => {
                 Value::String(value.clone())
             }
             _ => {

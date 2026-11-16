@@ -231,6 +231,8 @@ fn dns_pool_shapes_compile_with_named_policy() {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         max_connections: Some(4_096),
         upstream_pools: vec![
@@ -1630,6 +1632,8 @@ fn canonical_config() -> ConfigDraft {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         listeners: vec![
             Listener {

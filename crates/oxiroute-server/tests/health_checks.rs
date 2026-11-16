@@ -297,6 +297,8 @@ async fn health_groups_schedule_independently() {
             target_busy_percent: None,
             scale_down_delay_ms: None,
             tls_handshake_threads: None,
+            http3_congestion_control: None,
+            http3_segmentation_offload: None,
             retirement: None,
             upstream_pools: vec![
                 pool(
@@ -362,6 +364,8 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
             target_busy_percent: None,
             scale_down_delay_ms: None,
             tls_handshake_threads: None,
+            http3_congestion_control: None,
+            http3_segmentation_offload: None,
             retirement: None,
             upstream_pools: vec![UpstreamPool {
                 name: "mixed".into(),
@@ -452,6 +456,8 @@ async fn validation_enforces_programmatic_endpoint_cardinality() {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         upstream_pools: vec![UpstreamPool {
             name: "oversized".into(),
@@ -586,6 +592,8 @@ fn config(endpoint: UpstreamEndpoint, health_check: HealthCheck) -> ConfigDraft 
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         upstream_pools: vec![pool("checked", endpoint, health_check)],
         ..empty_config()

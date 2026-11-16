@@ -236,6 +236,8 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         version: 1,
         max_connections: None,
