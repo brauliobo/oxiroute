@@ -293,6 +293,8 @@ fn a_fresh_hit_counts_only_the_hit_and_shares_the_stored_representation() {
     assert_eq!(hit.status(), StatusCode::OK);
     assert_eq!(hit.body().as_ref(), b"body");
     assert!(hit.headers().get(http::header::AGE).is_none());
+    assert_eq!(cache.stats().hits, 0);
+    cache.record_hit(&hit);
     let stats = cache.stats();
     assert_eq!((stats.hits, stats.misses), (1, 0));
     assert!(cache.fresh_hit(request("/b", &empty)).is_none());
@@ -364,7 +366,7 @@ fn a_fresh_hit_matches_the_vary_of_its_own_request_and_renews_the_entry() {
     store_delta(&cache, prepared(&cache, "/o", &empty, &cacheable()));
     assert!(cache.fresh_hit(request("/v", &fr)).is_none());
     assert!(cache.fresh_hit(request("/v", &empty)).is_none());
-    assert!(cache.fresh_hit(request("/v", &en)).is_some());
+    cache.record_hit(&cache.fresh_hit(request("/v", &en)).expect("hit"));
     store_delta(&cache, prepared(&cache, "/p", &empty, &cacheable()));
     assert!(cache.fresh_hit(request("/v", &en)).is_some());
     assert!(cache.fresh_hit(request("/o", &empty)).is_none());
@@ -390,7 +392,9 @@ fn concurrent_stores_and_lookups_keep_the_whole_cache_within_its_bounds() {
                     if index % 3 == 0 {
                         store_delta(cache, prepared(cache, &path, empty, response));
                     }
-                    let _ = cache.fresh_hit(request(&path, empty));
+                    if let Some(hit) = cache.fresh_hit(request(&path, empty)) {
+                        cache.record_hit(&hit);
+                    }
                     let _ = cache.lookup(request(&path, empty));
                 }
             });
@@ -413,7 +417,8 @@ fn concurrent_hits_of_one_entry_are_all_counted() {
         for _ in 0..8 {
             scope.spawn(|| {
                 for _ in 0..2_000 {
-                    assert!(cache.fresh_hit(request("/hot", &empty)).is_some());
+                    let hit = cache.fresh_hit(request("/hot", &empty)).expect("hit");
+                    cache.record_hit(&hit);
                 }
             });
         }

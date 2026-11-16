@@ -313,7 +313,7 @@ impl Cache {
             }
             Probe::Found(candidate) => candidate,
         };
-        state.touch(&candidate.key);
+        state.touch(candidate.entry.key());
         state.count(candidate.verdict);
         drop(state);
         Ok(candidate.into_lookup())
@@ -321,7 +321,8 @@ impl Cache {
 
     /// The fresh representation that answers the request as it is, and nothing else: a request or a representation
     /// that needs more than that (a bypass, a miss, a stale or revalidated entry, a malformed directive) has no answer
-    /// here, and nothing is counted or changed for it, so [`Cache::lookup`] can decide it.
+    /// here, so [`Cache::lookup`] can decide it. Nothing is counted or changed until the caller serves the hit and
+    /// says so with [`Cache::record_hit`].
     #[must_use]
     pub fn fresh_hit(&self, request: RequestKeyInput<'_>) -> Option<FreshHit> {
         let Ok(Admission::Lookup(policy)) = self.admit(request) else {
@@ -329,19 +330,22 @@ impl Cache {
         };
         let base = BaseKey::new(request, self.shared.config.max_key_bytes).ok()?;
         let probing = self.probing(&base, request.headers, &policy);
-        let mut state = self.shared.shard(&base).lock();
+        let state = self.shared.shard(&base).lock();
         let Probe::Found(candidate) = state.probe(&probing) else {
             return None;
         };
-        if candidate.verdict != Verdict::Fresh {
-            return None;
-        }
-        state.touch(&candidate.key);
-        state.count(candidate.verdict);
-        Some(FreshHit {
+        (candidate.verdict == Verdict::Fresh).then_some(FreshHit {
             entry: candidate.entry,
             age: candidate.age,
         })
+    }
+
+    /// Counts a hit that was served and marks its representation as the most recently used.
+    pub fn record_hit(&self, hit: &FreshHit) {
+        let key = hit.entry.key();
+        let mut state = self.shared.shard(key.base()).lock();
+        state.touch(key);
+        state.count(Verdict::Fresh);
     }
 
     fn admit(&self, request: RequestKeyInput<'_>) -> Result<Admission, CacheError> {

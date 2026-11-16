@@ -335,7 +335,6 @@ impl State {
             return Probe::Expired(key.clone());
         }
         Probe::Found(Candidate {
-            key: key.clone(),
             entry: Arc::clone(&stored.entry),
             age,
             verdict: Verdict::of(&stored.entry, age, request.policy),
@@ -359,7 +358,6 @@ pub(super) enum Probe {
 }
 
 pub(super) struct Candidate {
-    pub(super) key: CacheKey,
     pub(super) entry: Arc<PreparedEntry>,
     pub(super) age: Duration,
     pub(super) verdict: Verdict,
