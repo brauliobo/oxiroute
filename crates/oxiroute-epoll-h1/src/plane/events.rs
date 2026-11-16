@@ -81,6 +81,7 @@ impl<S: Service> Reactor<S> {
             peer,
             admission,
             stage,
+            queued: false,
             deadline: None,
             buffers: Leased::none(),
             req_len: 0,
@@ -136,6 +137,16 @@ impl<S: Service> Reactor<S> {
             Step::Close
         };
         self.resume(token, client, step);
+    }
+
+    pub(crate) fn start_queued(&mut self) {
+        while let Some(token) = self.starts.grant() {
+            if let Some(mut client) = self.slab.take_client(token) {
+                client.queued = false;
+                self.resume(token, client, Step::Again);
+            }
+            self.starts.settle();
+        }
     }
 
     pub(crate) fn resume(&mut self, token: Token, mut client: Box<Client<S>>, step: Step) {
@@ -312,7 +323,8 @@ impl<S: Service> Reactor<S> {
             return;
         };
         let reading = match client.stage {
-            Stage::Handshake | Stage::Idle | Stage::Head | Stage::Lingering => true,
+            Stage::Idle => !client.queued,
+            Stage::Handshake | Stage::Head | Stage::Lingering => true,
             Stage::Serving => client
                 .flow
                 .as_ref()

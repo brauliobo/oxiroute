@@ -19,6 +19,7 @@ mod serve;
 mod service;
 mod slab;
 mod spare;
+mod starts;
 mod splice;
 mod sys;
 mod tls;

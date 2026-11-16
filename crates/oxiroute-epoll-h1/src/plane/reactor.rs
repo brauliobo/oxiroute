@@ -23,6 +23,7 @@ use super::{
     service::Service,
     slab::{Body, Slab, Token},
     spare::Spare,
+    starts::Starts,
     sys,
     tls::TlsRouter,
     upstream::IdlePool,
@@ -119,6 +120,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) slab: Slab<S>,
     pub(crate) wheel: Wheel,
     pub(crate) pool: IdlePool,
+    pub(crate) starts: Starts,
     pub(crate) buffers: BufferPool,
     pub(crate) pipes: Option<Pipes>,
     pub(crate) services: Vec<(Shared<S>, Timeouts)>,
@@ -161,6 +163,7 @@ impl<S: Service> Reactor<S> {
             slab: Slab::new(),
             wheel: Wheel::new(config.tick),
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
+            starts: Starts::new(config.starts_per_pass),
             buffers: BufferPool::default(),
             pipes,
             services: Vec::with_capacity(listeners.len()),
@@ -257,11 +260,13 @@ impl<S: Service> Reactor<S> {
             self.driver.wait(timeout, &mut events)?;
             self.now = Instant::now();
             self.moment = self.clock.moment(self.now);
+            self.starts.begin_pass();
             self.begin_batch(events.len());
             for event in events.drain(..) {
                 self.dispatch(event);
             }
             self.serve_ready();
+            self.start_queued();
             self.fire_timers();
             if self.finished() {
                 return Ok(());
@@ -271,7 +276,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn timeout(&self) -> Option<Duration> {
-        if self.backlogged() {
+        if self.backlogged() || self.starts.pending() {
             return Some(Duration::ZERO);
         }
         let wheel = self.wheel.next_wake(self.moment);

@@ -54,6 +54,9 @@ impl<S: Service> Reactor<S> {
         if !client.link.can_read() {
             return Step::Wait;
         }
+        if !self.starts.admit(token, &mut client.queued) {
+            return Step::Wait;
+        }
         self.lease_buffers(client);
         match self.fill_request(token, client) {
             Step::Wait => {
