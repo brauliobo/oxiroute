@@ -80,6 +80,7 @@ pub struct Counters {
     pub admitted: AtomicUsize,
     pub live_admissions: Arc<AtomicUsize>,
     pub live_leases: Arc<AtomicUsize>,
+    pub spent_retries: AtomicUsize,
 }
 
 pub struct Guard(Arc<AtomicUsize>);
@@ -289,8 +290,10 @@ impl Service for Reference {
 
     fn judge(&self, exchange: &mut Exchange, answered: &Answered<'_>) -> Recovery {
         let status = answered.head.status;
-        if self.knobs.retry_status == Some(status) && exchange.tries < self.knobs.retries {
+        let wanted = self.knobs.retry_status == Some(status) && exchange.tries < self.knobs.retries;
+        if answered.retryable && wanted {
             exchange.tries += 1;
+            self.counters.spent_retries.fetch_add(1, Ordering::SeqCst);
             return Recovery::Retry;
         }
         Recovery::Answer

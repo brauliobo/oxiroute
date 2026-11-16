@@ -113,6 +113,7 @@ impl Exchange {
         let refused = refused_by_pool(answered.bytes, answered.head);
         let retries_on_status = refused || proxy_policy(ctx).retries_on_status(status);
         if retries_on_status
+            && answered.retryable
             && status_retry_possible(ctx, refused, false)
             && ctx.spend_retry_budget()
         {

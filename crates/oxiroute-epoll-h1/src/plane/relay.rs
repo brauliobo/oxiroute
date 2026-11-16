@@ -185,6 +185,7 @@ impl<S: Service> Reactor<S> {
             head,
             connected: flow.connected_at.map(|at| self.clock.instant(at)),
             now: self.now,
+            retryable,
         };
         if service.judge(exchange, &answered) == Recovery::Retry && retryable {
             return Err(Failure::UnexpectedStatus);

@@ -107,6 +107,7 @@ pub struct Answered<'a> {
     pub head: &'a ResponseHead,
     pub connected: Option<Instant>,
     pub now: Instant,
+    pub retryable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -62,6 +62,34 @@ fn a_retryable_status_is_retried_and_only_the_final_answer_reaches_the_client() 
 }
 
 #[test]
+fn a_request_too_large_to_replay_is_never_offered_a_retry() {
+    let knobs = Knobs {
+        retries: 1,
+        retry_status: Some(503),
+        ..recorded()
+    };
+    let fixture = Fixture::with(test_config(), Timeouts::default(), knobs);
+    let spent = || {
+        fixture
+            .service
+            .counters
+            .spent_retries
+            .load(Ordering::SeqCst)
+    };
+    let mut wire = fixture.wire();
+    let body = vec![b'x'; 40_000];
+    wire.send(b"POST /flaky HTTP/1.1\r\nHost: test.example\r\nContent-Length: 40000\r\n\r\n");
+    wire.send(&body);
+    assert_eq!(wire.reply().status, 503);
+    assert_eq!(spent(), 0);
+    fixture.origin.flaky_left.store(1, Ordering::SeqCst);
+    let mut small = fixture.wire();
+    small.get("/flaky");
+    assert_eq!(small.reply().status, 200);
+    assert_eq!(spent(), 1);
+}
+
+#[test]
 fn a_retry_the_service_allows_replays_a_request_that_was_buffered() {
     let knobs = Knobs {
         retries: 2,

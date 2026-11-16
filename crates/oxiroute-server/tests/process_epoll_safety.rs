@@ -440,13 +440,43 @@ impl Held {
     }
 }
 
+async fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+    let mut bytes = read_head(stream).await;
+    let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+    let length = text
+        .split("content-length:")
+        .nth(1)
+        .and_then(|rest| rest.split("\r\n").next())
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let head_end = text.find("\r\n\r\n").map_or(bytes.len(), |end| end + 4);
+    while bytes.len() < head_end + length {
+        let mut chunk = [0_u8; 8192];
+        match stream.read(&mut chunk).await {
+            Ok(count) if count > 0 => bytes.extend_from_slice(&chunk[..count]),
+            _ => break,
+        }
+    }
+    bytes
+}
+
 async fn replying_origin(reply: &'static [u8]) -> Scripted {
     Scripted::start(move |mut stream| async move {
-        while !read_head(&mut stream).await.is_empty() {
+        while !read_request(&mut stream).await.is_empty() {
             stream.write_all(reply).await.expect("origin answer");
         }
     })
     .await
+}
+
+fn with_second_server(config: &mut ConfigDraft, second: SocketAddr, algorithm: UpstreamAlgorithm) {
+    config.upstream_pools[0].algorithm = algorithm;
+    config.upstream_pools[0].servers.push(UpstreamServer {
+        name: "origin-b".into(),
+        endpoint: config_support::socket_endpoint(second),
+        max_connections: None,
+        dns_resolution: DnsResolutionPolicy::OnConnect,
+    });
 }
 
 async fn proxy_over_two_origins(
@@ -456,13 +486,7 @@ async fn proxy_over_two_origins(
 ) -> Proxy {
     let second = second.address;
     Proxy::start(first.address, plane, move |config| {
-        config.upstream_pools[0].algorithm = UpstreamAlgorithm::First;
-        config.upstream_pools[0].servers.push(UpstreamServer {
-            name: "origin-b".into(),
-            endpoint: config_support::socket_endpoint(second),
-            max_connections: None,
-            dns_resolution: DnsResolutionPolicy::OnConnect,
-        });
+        with_second_server(config, second, UpstreamAlgorithm::First);
     })
     .await
 }
