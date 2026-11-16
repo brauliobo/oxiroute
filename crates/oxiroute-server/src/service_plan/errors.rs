@@ -165,6 +165,11 @@ pub enum ServicePlanError {
     EpollUnsupported,
     #[error("http_data_plane \"epoll\" needs http_fast_lane, which is turned off")]
     EpollNeedsFastLane,
+    #[error(
+        "http_data_plane \"epoll\" cannot honour worker_scaling \"dynamic\" or connection_scheduling \
+         \"aged_per_worker\" (connection_age_ms); use \"tokio\" or leave http_data_plane unset"
+    )]
+    EpollNeedsPlainScheduling,
     #[error("L4 service `{service}` references unknown pool `{pool}`")]
     UnknownL4Pool { service: String, pool: String },
     #[error("L4 service `{service}` references TLS-enabled upstream pool `{pool}`")]

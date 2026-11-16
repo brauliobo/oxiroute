@@ -77,7 +77,11 @@ The server crate owns listener admission and dispatches by protocol:
   that serves the routes the plan marks `engine` and hands every other connection, with the bytes already read, to the
   tokio plane before any origin is contacted. The adapter reuses the lane's route selection, request context, leases,
   head rendering and access log; it joins the generation's accept gate (pause on publication, drain on retirement) and
-  the listener's admission, and its connections hold the same admission guards as tokio ones.
+  the listener's admission, and its connections hold the same admission guards as tokio ones. `DataPlanePolicy` is the
+  one place that decides which listeners the engine may serve: the platform, `http_fast_lane` and the worker scheduling
+  the engine can run (`work_stealing` without dynamic scaling) are its conditions; an unset `http_data_plane` falls back
+  to tokio when one fails and an explicit `epoll` is a plan error. An engine thread that panics or fails marks the
+  generation's runtime failed instead of leaving a listener that accepts connections nothing serves.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by

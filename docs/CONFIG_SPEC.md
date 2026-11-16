@@ -307,11 +307,17 @@ Current constraints:
   (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
   Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
   and fixed-response routes, other platforms) is served by the tokio/Pingora path, which receives the connection with the
-  bytes already read. `tokio` forces the tokio/Pingora path for every request. `epoll` chooses the epoll data plane
-  explicitly: the configuration is rejected when the platform does not support it and is never silently downgraded (the
-  server performs that check when it prepares the generation; the value itself is checked when the configuration is
-  loaded). Changing the value is an ordinary reload: the plane belongs to the generation. Connections served by either
-  plane appear identically in status, metrics and access logs.
+  bytes already read. `tokio` forces the tokio/Pingora path for every request. The epoll plane runs one thread per
+  `listener_workers` with the kernel spreading connections, so it does not honour `worker_scaling = "dynamic"` or
+  `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with its `connection_age_ms`: when
+  one of them is set, an omitted `http_data_plane` selects the tokio plane for every listener. `epoll` chooses the epoll
+  data plane explicitly: the configuration is rejected when the platform does not support it, when `http_fast_lane` is
+  `false` or when it sets dynamic scaling or aged scheduling, and is never silently downgraded (the server performs
+  that check when it prepares the generation; the value itself is checked when the configuration is loaded). The epoll
+  plane serves requests that a client sends back to back on one connection without waiting for the answers (pipelining)
+  one after the other, where the classic path closes such a connection after the first answer. Changing the value is an
+  ordinary reload: the plane belongs to the generation. Connections served by either plane appear identically in
+  status, metrics and access logs.
 - Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
   every TLS listener. Omitted means one thread per 8 CPUs, at least 1 and at most 4. The accepted socket's whole server
   handshake (key exchange, certificate selection, ALPN and client-certificate verification, signature) runs on these

@@ -285,7 +285,14 @@ are the lane's own, so a request is accounted identically on either plane. Every
 HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
 ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
 (`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
-cannot run it. The option is an ordinary reload.
+cannot run it, with `http_fast_lane = false`, and with `worker_scaling = "dynamic"` or aged connection scheduling
+(`connection_scheduling`, `connection_age_ms`), which only the tokio plane honours: with one of them set and the option
+omitted every listener is served by the tokio plane. The option is an ordinary reload.
+
+A client that sends requests back to back on one connection without waiting for the answers is served in order by the
+epoll plane; the classic path closes such a connection after the first answer. When a thread of the plane panics or
+fails, the generation is marked failed and the supervisor replaces the worker. When the process runs out of file
+descriptors, the plane closes the connections it cannot accept and keeps serving the others, instead of stalling.
 
 An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
 server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
