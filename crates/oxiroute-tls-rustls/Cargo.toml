@@ -9,15 +9,19 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+libc.workspace = true
 log.workspace = true
+nix.workspace = true
 pingora.workspace = true
 rustls.workspace = true
 sha2.workspace = true
+socket2.workspace = true
 tokio.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
 rcgen = "0.14.10"
+tempfile.workspace = true
 tokio-rustls.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
 

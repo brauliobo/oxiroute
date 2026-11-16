@@ -65,7 +65,9 @@ hickory-resolver = { version = "0.26.3", default-features = false, features = ["
 log = "0.4.35"
 local-ip-address = "0.6.13"
 kdl = { version = "=6.7.1", default-features = false }
+libc = "0.2.191"
 mlua = { version = "0.12", features = ["lua54", "serialize", "vendored"] }
+nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 notify = "8.2"
 openssl = "0.10.82"
 parking_lot = { version = "0.13", features = ["arc_lock"] }
@@ -81,6 +83,7 @@ serde_json = { version = "1.0.154", features = ["raw_value"] }
 sha2 = "0.11"
 signal-hook = "0.4"
 slab = "0.4.12"
+socket2 = "0.6.5"
 tempfile = "3.27"
 thiserror = "2.0.21"
 tikv-jemallocator = "0.6"
