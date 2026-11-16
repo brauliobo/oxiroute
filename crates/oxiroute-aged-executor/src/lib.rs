@@ -80,7 +80,8 @@ impl AgedExecutor {
         self.shared.stats()
     }
 
-    /// The sum of the statistics of every live executor of the process (`oldest_ready` and `age` are the largest).
+    /// The sum of the statistics of every live aged queue of the process, the executors and the queues of the epoll
+    /// data plane threads (`oldest_ready` and `age` are the largest).
     #[must_use]
     pub fn process_stats() -> Stats {
         let executors = queue::lock(&EXECUTORS);
@@ -88,6 +89,6 @@ impl AgedExecutor {
             .iter()
             .filter_map(Weak::upgrade)
             .map(|shared| shared.stats())
-            .fold(Stats::default(), Stats::combine)
+            .fold(oxiroute_aged_order::process_stats(), Stats::combine)
     }
 }

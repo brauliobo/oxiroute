@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/oxiroute-aged-executor",
+    "crates/oxiroute-aged-order",
     "crates/oxiroute-cache",
     "crates/oxiroute-acme",
     "crates/oxiroute-allocator",
