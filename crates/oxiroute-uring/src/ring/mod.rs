@@ -36,6 +36,7 @@ pub struct Ring {
     stagings: Vec<Vec<u8>>,
     starved: VecDeque<Handle>,
     stalled_accepts: Vec<Handle>,
+    spare: Option<OwnedFd>,
     available: u16,
     spills: Vec<Vec<u8>>,
     zombies: VecDeque<(Instant, Handle)>,
@@ -61,6 +62,7 @@ impl Ring {
             stagings: Vec::new(),
             starved: VecDeque::new(),
             stalled_accepts: Vec::new(),
+            spare: Self::spare_descriptor(),
             available: config.buffers,
             spills: Vec::new(),
             zombies: VecDeque::new(),
@@ -142,7 +144,7 @@ impl Ring {
         self.expire_zombies();
         self.rearm_starved();
         if progress {
-            self.retry_stalled_accepts();
+            self.recover_accepts();
         }
     }
 

@@ -250,9 +250,14 @@ impl Ring {
     }
 
     pub(crate) fn polled(&mut self, handle: Handle) {
-        if let Some(slot) = self.slot_any(handle) {
-            slot.poll = None;
+        let Some(slot) = self.slot_any(handle) else {
+            return;
+        };
+        slot.poll = None;
+        if slot.acceptor.is_some() {
+            self.connection_waits(handle);
+        } else {
+            self.emit(handle, |tag| Event::Notified { tag });
         }
-        self.emit(handle, |tag| Event::Notified { tag });
     }
 }

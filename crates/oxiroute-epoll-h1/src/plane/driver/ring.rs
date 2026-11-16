@@ -131,7 +131,7 @@ impl Uring {
         let handle = self
             .ring
             .borrow_mut()
-            .listen(fd.try_clone()?, token.to_u64());
+            .listen(fd.try_clone()?, token.to_u64())?;
         self.listeners.push((token, handle));
         Ok(())
     }
@@ -148,7 +148,11 @@ impl Uring {
     }
 
     pub(crate) fn serve_listener(&self, token: Token, serves: bool) {
-        if let Some((_, handle)) = self.listeners.iter().find(|(listener, _)| *listener == token) {
+        if let Some((_, handle)) = self
+            .listeners
+            .iter()
+            .find(|(listener, _)| *listener == token)
+        {
             self.ring.borrow_mut().set_accepting(*handle, serves);
         }
     }

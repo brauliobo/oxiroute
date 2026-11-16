@@ -74,7 +74,10 @@ impl Harness {
     pub fn listener(&mut self) -> (Handle, SocketAddr) {
         let socket = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = socket.local_addr().expect("address");
-        let handle = self.ring.listen(OwnedFd::from(socket), LISTENER);
+        let handle = self
+            .ring
+            .listen(OwnedFd::from(socket), LISTENER)
+            .expect("listen");
         self.ring.set_accepting(handle, true);
         self.baseline = self.ring.in_flight();
         (handle, address)
