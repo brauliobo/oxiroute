@@ -88,7 +88,11 @@ The server crate owns listener admission and dispatches by protocol:
   The engine's I/O goes through a driver: readiness (`epoll`, the default) or, when `http_data_plane` is `io_uring`,
   completions of a per-thread ring owned by `oxiroute-uring`. The state machine, `Service` trait, timer wheel and tests
   are shared; the io_uring driver turns completions into the readiness the state machine consumes and owns the buffers
-  of operations in flight. Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
+  of operations in flight. A response the ring accepted is sent whole or the connection fails; a closed connection
+  waits up to `Config::flush` (a minute) for the peer to take it and is then reset, never ended with a clean end of
+  stream. A listener that runs out of descriptors waits for a waiting connection and sheds it through a spare
+  descriptor instead of retrying, so it neither spins nor stops. Measurements are in
+  `benchmarks/reports/io-uring-http1/README.md`.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by
