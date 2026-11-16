@@ -1,11 +1,7 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{collections::HashMap, net::TcpStream};
 
+use crate::support::{Harness, client, small, write_all};
 use oxiroute_uring::{Config, Event, Read, Sent};
-use support::{Harness, client, small, write_all};
 
 fn echo_round(
     harness: &mut Harness,

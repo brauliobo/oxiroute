@@ -1,15 +1,11 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{net::TcpListener, os::fd::OwnedFd, time::Duration};
 
+use crate::support::{Harness, client, read_all, small, write_all};
 use oxiroute_uring::{Config, Event, Read, Sent, Taskrun};
 use rustix::{
     event::{EventfdFlags, eventfd},
     net::{AddressFamily, SocketFlags, SocketType, socket_with},
 };
-use support::{Harness, client, read_all, small, write_all};
 
 #[test]
 fn a_ring_configured_like_the_plane_passes_its_own_probe() {

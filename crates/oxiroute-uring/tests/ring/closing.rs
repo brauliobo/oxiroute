@@ -1,16 +1,12 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{
     io::{ErrorKind, Read as _, Write as _},
     net::TcpStream,
     time::{Duration, Instant},
 };
 
+use crate::support::{Harness, client, read_all, small, write_all};
 use oxiroute_uring::{Config, Event, Read, Sent};
 use rustix::net::sockopt;
-use support::{Harness, client, read_all, small, write_all};
 
 fn shrink_send_buffer(stream: &TcpStream) {
     sockopt::set_socket_recv_buffer_size(stream, 65536).expect("receive buffer");

@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::pedantic)]
+#![allow(dead_code)]
 
 use std::{
     io::{Read as _, Write as _},
