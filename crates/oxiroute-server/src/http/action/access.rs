@@ -2,6 +2,10 @@ use super::verified_credentials::VerifiedCredentials;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod log;
+
+pub(crate) use log::*;
+
 const MAX_HTPASSWD_FILE_BYTES: usize = 1024 * 1024;
 const MAX_BASIC_CREDENTIAL_BYTES: usize = 2048;
 const MAX_BASIC_USERNAME_BYTES: usize = 256;

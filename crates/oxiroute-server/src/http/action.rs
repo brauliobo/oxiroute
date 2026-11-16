@@ -50,7 +50,6 @@ use crate::{
 };
 
 mod access;
-mod access_log;
 mod affinity;
 mod plan;
 mod pool_select;
@@ -63,7 +62,6 @@ mod static_serve;
 mod verified_credentials;
 
 pub(crate) use access::*;
-pub(crate) use access_log::*;
 pub(crate) use affinity::*;
 pub(crate) use plan::*;
 pub(crate) use pool_select::*;
@@ -79,5 +77,3 @@ mod static_request_tests;
 #[cfg(test)]
 mod retry_tests;
 
-#[cfg(test)]
-mod access_log_tests;
