@@ -34,6 +34,9 @@ pub enum MissReason {
     TransferEncoding,
     /// A `Content-Length` that is duplicated, empty, longer than 18 digits or not only digits.
     ContentLength,
+    /// A `Connection` line that is not visible ASCII, an option that is not a token or names a framing field or the
+    /// host, or more options naming a field than a head may carry.
+    Nomination,
 }
 
 /// Outcome of [`scan_request`](crate::scan_request).

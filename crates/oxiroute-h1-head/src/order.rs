@@ -5,14 +5,51 @@
 //! the entry (the last entry moves into the hole), `insert` replaces the first value in place and drops the others,
 //! `append` adds a value to the entry or a new entry at the end.
 
+use alloc::boxed::Box;
+
 use crate::class::Class;
 use crate::edit::{Edit, MAX_EDITS, Name};
-use crate::fields::{Header, MAX_HEADERS};
+use crate::fields::{Header, MAX_HEADERS, MAX_RESPONSE_HEADERS};
 
-/// Items are the scanned headers (indices below [`MAX_HEADERS`]) and the values the edits add
-/// (`MAX_HEADERS` plus the index of the edit).
+/// Items of a head with at most [`MAX_HEADERS`] headers: the scanned headers (indices below [`MAX_HEADERS`]) and the
+/// values the edits add (`MAX_HEADERS` plus the index of the edit).
 pub const MAX_ITEMS: usize = MAX_HEADERS + MAX_EDITS;
-const NONE: u8 = u8::MAX;
+const WIDE_ITEMS: usize = MAX_RESPONSE_HEADERS + MAX_EDITS;
+
+/// How an order stores an item index: a byte while the items fit one, which is every head of a request.
+trait Slot: Copy + Eq {
+    const NONE: Self;
+    fn at(item: usize) -> Self;
+    fn item(self) -> usize;
+}
+
+impl Slot for u8 {
+    const NONE: Self = Self::MAX;
+
+    #[inline(always)]
+    fn at(item: usize) -> Self {
+        item as Self
+    }
+
+    #[inline(always)]
+    fn item(self) -> usize {
+        usize::from(self)
+    }
+}
+
+impl Slot for u16 {
+    const NONE: Self = Self::MAX;
+
+    #[inline(always)]
+    fn at(item: usize) -> Self {
+        item as Self
+    }
+
+    #[inline(always)]
+    fn item(self) -> usize {
+        usize::from(self)
+    }
+}
 
 /// The headers and edits the item indices refer to.
 #[derive(Clone, Copy)]
@@ -23,27 +60,33 @@ pub struct Items<'a> {
 }
 
 impl Items<'_> {
-    fn class(&self, item: u8) -> Class {
-        match self.headers.get(usize::from(item)) {
+    /// The item index of the first edit: the headers come before it, at least [`MAX_HEADERS`] items.
+    #[must_use]
+    pub fn edit_base(&self) -> usize {
+        MAX_HEADERS.max(self.headers.len())
+    }
+
+    fn class(&self, item: usize) -> Class {
+        match self.headers.get(item) {
             Some(h) => h.class,
-            None => self.edits[usize::from(item) - MAX_HEADERS].name().class,
+            None => self.edits[item - self.edit_base()].name().class,
         }
     }
 
-    fn name(&self, item: u8) -> &[u8] {
-        match self.headers.get(usize::from(item)) {
+    fn name(&self, item: usize) -> &[u8] {
+        match self.headers.get(item) {
             Some(h) => h.name(self.buf),
-            None => self.edits[usize::from(item) - MAX_HEADERS].name().lower,
+            None => self.edits[item - self.edit_base()].name().lower,
         }
     }
 
-    fn same(&self, a: u8, b: u8) -> bool {
+    fn same(&self, a: usize, b: usize) -> bool {
         let class = self.class(a);
         class == self.class(b)
             && (class != Class::Other || self.name(a).eq_ignore_ascii_case(self.name(b)))
     }
 
-    fn is(&self, item: u8, name: &Name<'_>) -> bool {
+    fn is(&self, item: usize, name: &Name<'_>) -> bool {
         let class = self.class(item);
         class == name.class
             && (class != Class::Other || self.name(item).eq_ignore_ascii_case(name.lower))
@@ -52,32 +95,29 @@ impl Items<'_> {
 
 /// The entries of an emulated `HeaderMap`, each with the chain of its values.
 #[derive(Clone, Debug)]
-pub struct HeaderOrder {
+struct Order<S: Slot, const N: usize> {
     /// First item of each entry, in map order.
-    entries: [u8; MAX_ITEMS],
+    entries: [S; N],
     /// Next item of the same entry, per item.
-    next: [u8; MAX_ITEMS],
+    next: [S; N],
     len: usize,
     /// Known classes that have an entry.
     present: u32,
 }
 
-impl HeaderOrder {
-    /// The order after the scanned headers were appended one by one. `duplicate_names` and `present` are the scanner's
-    /// facts; without duplicates the entries are the headers in arrival order and nothing is compared.
-    #[must_use]
+impl<S: Slot, const N: usize> Order<S, N> {
     #[inline(always)]
-    pub fn new(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
+    fn new(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
         let count = items.headers.len();
         let mut order = Self {
-            entries: core::array::from_fn(|item| item as u8),
-            next: [NONE; MAX_ITEMS],
+            entries: core::array::from_fn(S::at),
+            next: [S::NONE; N],
             len: count,
             present,
         };
         if duplicate_names {
             order.len = 0;
-            for item in 0..count as u8 {
+            for item in 0..count {
                 order.append(items, item);
             }
         }
@@ -90,40 +130,38 @@ impl HeaderOrder {
         }
         self.entries[..self.len]
             .iter()
-            .position(|&entry| items.is(entry, name))
+            .position(|&entry| items.is(entry.item(), name))
     }
 
-    fn push(&mut self, item: u8, class: Class) {
-        self.entries[self.len] = item;
+    fn push(&mut self, item: usize, class: Class) {
+        self.entries[self.len] = S::at(item);
         self.len += 1;
         if class != Class::Other {
             self.present |= class.bit();
         }
     }
 
-    fn chain_to(&mut self, entry: usize, item: u8) {
-        let mut last = self.entries[entry];
-        while self.next[usize::from(last)] != NONE {
-            last = self.next[usize::from(last)];
+    fn chain_to(&mut self, entry: usize, item: usize) {
+        let mut last = self.entries[entry].item();
+        while self.next[last] != S::NONE {
+            last = self.next[last].item();
         }
-        self.next[usize::from(last)] = item;
+        self.next[last] = S::at(item);
     }
 
-    /// `HeaderMap::append` of `item`.
-    fn append(&mut self, items: &Items<'_>, item: u8) {
+    fn append(&mut self, items: &Items<'_>, item: usize) {
         let class = items.class(item);
         let found = self.entries[..self.len]
             .iter()
-            .position(|&entry| items.same(entry, item));
+            .position(|&entry| items.same(entry.item(), item));
         match found {
             Some(entry) => self.chain_to(entry, item),
             None => self.push(item, class),
         }
     }
 
-    /// Applies the edit at `index` of `items.edits`.
-    pub fn apply(&mut self, items: &Items<'_>, index: usize) {
-        let item = (MAX_HEADERS + index) as u8;
+    fn apply(&mut self, items: &Items<'_>, index: usize) {
+        let item = items.edit_base() + index;
         match &items.edits[index] {
             Edit::Remove(name) => {
                 if let Some(entry) = self.find(items, name) {
@@ -135,13 +173,77 @@ impl HeaderOrder {
                 }
             }
             Edit::Set(name, _) => match self.find(items, name) {
-                Some(entry) => self.entries[entry] = item,
+                Some(entry) => self.entries[entry] = S::at(item),
                 None => self.push(item, name.class),
             },
             Edit::Add(name, _) => match self.find(items, name) {
                 Some(entry) => self.chain_to(entry, item),
                 None => self.push(item, name.class),
             },
+        }
+    }
+
+    #[inline(always)]
+    fn for_each(&self, mut visit: impl FnMut(usize)) {
+        for &entry in &self.entries[..self.len] {
+            let mut item = entry;
+            loop {
+                visit(item.item());
+                item = self.next[item.item()];
+                if item == S::NONE {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+type Narrow = Order<u8, MAX_ITEMS>;
+type Wide = Order<u16, WIDE_ITEMS>;
+
+/// The emulated `HeaderMap` of a head: kept in place, with byte indices, for a head of at most [`MAX_HEADERS`]
+/// headers, and on the heap for a response with more.
+#[derive(Clone, Debug)]
+pub struct HeaderOrder {
+    narrow: Narrow,
+    wide: Option<Box<Wide>>,
+}
+
+impl HeaderOrder {
+    /// The order after the scanned headers were appended one by one. `duplicate_names` and `present` are the scanner's
+    /// facts; without duplicates the entries are the headers in arrival order and nothing is compared.
+    #[must_use]
+    #[inline(always)]
+    pub fn new(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
+        if items.headers.len() <= MAX_HEADERS {
+            return Self {
+                narrow: Narrow::new(items, duplicate_names, present),
+                wide: None,
+            };
+        }
+        Self::wide(items, duplicate_names, present)
+    }
+
+    #[inline(never)]
+    fn wide(items: &Items<'_>, duplicate_names: bool, present: u32) -> Self {
+        Self {
+            narrow: Narrow::new(
+                &Items {
+                    headers: &[],
+                    ..*items
+                },
+                false,
+                0,
+            ),
+            wide: Some(Box::new(Wide::new(items, duplicate_names, present))),
+        }
+    }
+
+    /// Applies the edit at `index` of `items.edits`.
+    pub fn apply(&mut self, items: &Items<'_>, index: usize) {
+        match &mut self.wide {
+            Some(order) => order.apply(items, index),
+            None => self.narrow.apply(items, index),
         }
     }
 
@@ -157,17 +259,11 @@ impl HeaderOrder {
     }
 
     /// Visits the items in the order the map iterates them.
-    #[inline]
-    pub fn for_each(&self, mut visit: impl FnMut(u8)) {
-        for &entry in &self.entries[..self.len] {
-            let mut item = entry;
-            loop {
-                visit(item);
-                item = self.next[usize::from(item)];
-                if item == NONE {
-                    break;
-                }
-            }
+    #[inline(always)]
+    pub fn for_each(&self, visit: impl FnMut(usize)) {
+        match &self.wide {
+            Some(order) => order.for_each(visit),
+            None => self.narrow.for_each(visit),
         }
     }
 }

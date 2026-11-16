@@ -47,11 +47,26 @@
 //!
 //! [`scan_response`] answers [`ScanResponse`]: `Partial`, `Head`, or `Slow`, which is not an error: the head is not the
 //! common clean shape (`HTTP/1.0` or `HTTP/1.1`, a 3-digit status of 100 to 599, a reason of tabs, spaces and visible
-//! ASCII, CRLF only, the header strictness of requests, at most [`MAX_HEADERS`] headers, a single digits-only
+//! ASCII, CRLF only, the header strictness of requests, at most [`MAX_RESPONSE_HEADERS`] headers, a single digits-only
 //! `Content-Length`, `Connection` absent, `keep-alive` or `close`) or the scanner is unsure, so the classic parser
 //! decides and may well accept it. `Head` implies the classic client parser reads the same status, version, reason,
 //! header list and facts ([`ResponseFacts`]: framing, `chunked` last, hop-by-hop bitmask including `Connection`,
 //! `Transfer-Encoding` and `Upgrade`, request-id presence, informational).
+//!
+//! # Reading a response the classic client reads
+//!
+//! A server that has no classic parser behind it needs the other half: [`read_response_head`] answers [`HeadRead`]
+//! for every head the classic client parser accepts that this crate can carry, and refuses the rest. The clean shape
+//! is read in place by [`scan_response`]. Anything else is rewritten by [`canonicalize_response`] into the clean shape
+//! (CRLF line ends, a reason phrase of visible ASCII or none, names without the whitespace before the colon, folded
+//! values joined by one space each, empty lines before the status line dropped) and read from the rewrite by
+//! [`scan_response_lenient`], which accepts statuses 100 to 999, takes the framing of the classic client (a
+//! `Content-Length` list of equal values is one value, and is ignored next to `Transfer-Encoding`), and reads
+//! `Connection` like it: the first header decides keep-alive, and every other option, up to [`MAX_NOMINATED`], names a
+//! hop-by-hop field that [`ResponseHead::nominated`] lists for [`Edits::remove_nominated`]. What is refused is what
+//! the classic parser refuses (a bad byte, conflicting lengths, a malformed line) and what this crate does not carry:
+//! more than [`MAX_RESPONSE_HEADERS`] headers, a name over [`MAX_NAME_LEN`] bytes, more nominated fields than
+//! [`MAX_NOMINATED`], a `Connection` that names `Content-Length`, `Transfer-Encoding` or `Host`.
 //!
 //! # Writing
 //!
@@ -95,6 +110,7 @@
 
 extern crate alloc;
 
+mod canonical;
 mod class;
 mod edit;
 mod emit;
@@ -104,9 +120,11 @@ mod order;
 mod request;
 mod response;
 mod tables;
+mod tolerant;
 mod write_request;
 mod write_response;
 
+pub use canonical::{Canonical, HeadRead, canonicalize_response, read_response_head};
 pub use class::{Class, classify};
 pub use class::{
     HOP_BY_HOP_REQUEST, HOP_BY_HOP_RESPONSE, HOP_CONNECTION, HOP_KEEP_ALIVE, HOP_PROXY_AUTHENTICATE,
@@ -117,12 +135,14 @@ pub use class::{
 };
 pub use edit::{Edit, Edits, EditsFull, MAX_EDITS, Name, Value, names};
 pub use fields::{
-    Header, LINE_IS_CLEAN, MAX_HEADERS, MAX_NAME_LEN, NAME_HAS_UNDERSCORE, NAME_HAS_UPPER,
+    Header, LINE_IS_CLEAN, MAX_HEADERS, MAX_NAME_LEN, MAX_RESPONSE_HEADERS, NAME_HAS_UNDERSCORE,
+    NAME_HAS_UPPER,
 };
 pub use miss::{MissReason, Scan, ScanResponse};
 pub use order::{HeaderOrder, Items, MAX_ITEMS};
 pub use request::*;
-pub use response::{ResponseFacts, ResponseHead, scan_response};
+pub use response::{ResponseFacts, ResponseHead, scan_response, scan_response_lenient};
 pub use tables::is_header_value;
+pub use tolerant::MAX_NOMINATED;
 pub use write_request::write_request;
 pub use write_response::{Automatic, write_response};

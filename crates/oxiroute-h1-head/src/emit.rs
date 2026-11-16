@@ -1,7 +1,7 @@
 //! Serialising the headers of a head in the order of a [`HeaderOrder`], byte for byte as the classic writers do.
 
 use crate::edit::Edit;
-use crate::fields::{Header, LINE_IS_CLEAN, MAX_HEADERS, NAME_HAS_UPPER, TAIL_IS_CLEAN};
+use crate::fields::{Header, LINE_IS_CLEAN, NAME_HAS_UPPER, TAIL_IS_CLEAN};
 use crate::order::{HeaderOrder, Items};
 use alloc::vec::Vec;
 
@@ -69,9 +69,9 @@ pub(crate) enum Walk<'a> {
 
 impl Walk<'_> {
     #[inline(always)]
-    fn for_each(self, count: usize, mut visit: impl FnMut(u8)) {
+    fn for_each(self, count: usize, mut visit: impl FnMut(usize)) {
         match self {
-            Self::Arrival => (0..count as u8).for_each(visit),
+            Self::Arrival => (0..count).for_each(visit),
             Self::Map(order) => order.for_each(&mut visit),
         }
     }
@@ -114,17 +114,15 @@ impl Run {
 /// never `Other`). Consecutive scanned lines that are already what the classic writer emits are copied as one run.
 pub(crate) fn emit(out: &mut Vec<u8>, items: &Items<'_>, walk: Walk<'_>, skip: u32) {
     let mut run = Run::EMPTY;
-    walk.for_each(items.headers.len(), |item| {
-        let index = usize::from(item);
-        if index >= MAX_HEADERS {
+    walk.for_each(items.headers.len(), |index| {
+        let Some(h) = items.headers.get(index) else {
             run.flush(out, items.buf);
-            let edit = &items.edits[index - MAX_HEADERS];
+            let edit = &items.edits[index - items.edit_base()];
             if skip & edit.name().class.bit() == 0 {
                 put_added(out, edit);
             }
             return;
-        }
-        let h = &items.headers[index];
+        };
         if skip & h.class.bit() != 0 {
             run.flush(out, items.buf);
         } else if h.flags & LINE_IS_CLEAN != 0 {

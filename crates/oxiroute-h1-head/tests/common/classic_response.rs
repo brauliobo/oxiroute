@@ -1,7 +1,7 @@
 //! The classic response parse, from `vendor/pingora-core/src/protocols/http/v1/client.rs` (`read_response`,
 //! `parse_resp_buffer`, `validate_response`, `ResponseFacts`).
 
-use super::classic_request::{Classic, Facts, buf_to_content_length, is_hop_by_hop};
+use super::classic_request::{Classic, Facts, is_hop_by_hop};
 use http::header::{self, HeaderName, HeaderValue};
 use httparse::Status;
 use pingora_http::ResponseHeader;
@@ -19,6 +19,25 @@ pub struct ClassicResponse {
 
 fn is_header_value(bytes: &[u8]) -> bool {
     bytes.iter().all(|&b| (b >= 32 && b != 127) || b == b'\t')
+}
+
+/// The length the classic path frames the body with when a `Content-Length` is present: every value of every line and
+/// list item is digits only and they are all equal (`content_length_parse_all`).
+pub fn framing_length(headers: &http::HeaderMap) -> Result<Option<u64>, ()> {
+    let mut agreed: Option<u64> = None;
+    for value in headers.get_all(header::CONTENT_LENGTH) {
+        let line = value.to_str().map_err(|_| ())?;
+        for item in line.split(',').map(str::trim) {
+            if item.is_empty() || !item.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(());
+            }
+            let length: u64 = item.parse().map_err(|_| ())?;
+            if *agreed.get_or_insert(length) != length {
+                return Err(());
+            }
+        }
+    }
+    Ok(agreed)
 }
 
 pub fn classic_response(buf: &[u8]) -> Result<ClassicResponse, Classic> {
@@ -48,12 +67,8 @@ pub fn classic_response(buf: &[u8]) -> Result<ClassicResponse, Classic> {
     let mut arrival = Vec::new();
     for h in resp.headers.iter() {
         let name = HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| Classic::Build)?;
-        let value = if h.value.windows(2).any(|w| w == b"\r\n") {
-            let mut folded = h.value.to_vec();
-            while let Some(at) = folded.windows(2).position(|w| w == b"\r\n") {
-                folded[at..at + 2].copy_from_slice(b"  ");
-            }
-            HeaderValue::from_bytes(&folded).map_err(|_| Classic::Build)?
+        let value = if h.value.contains(&b'\n') {
+            pingora_http::header_value_from_slice(h.value)
         } else if is_header_value(h.value) {
             HeaderValue::from_bytes(h.value).map_err(|_| Classic::Build)?
         } else {
@@ -79,17 +94,8 @@ pub fn classic_response(buf: &[u8]) -> Result<ClassicResponse, Classic> {
         header.remove_header(&header::CONTENT_LENGTH);
         facts.content_lengths = 0;
     }
-    if !facts.transfer_encoding && facts.content_lengths > 1 {
+    if facts.content_lengths > 0 && framing_length(&header.headers).is_err() {
         return Err(Classic::Validate);
-    }
-    if facts.content_lengths > 0 {
-        let value = header
-            .headers
-            .get(header::CONTENT_LENGTH)
-            .map(HeaderValue::as_bytes);
-        if value.and_then(buf_to_content_length).is_none() {
-            return Err(Classic::Validate);
-        }
     }
     let reason = resp.reason.unwrap_or("").to_owned();
     Ok(ClassicResponse {
