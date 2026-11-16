@@ -1,6 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    hash::{BuildHasher, RandomState},
+    sync::{
+        Arc, Mutex, MutexGuard, Weak,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -28,7 +32,7 @@ mod store;
 mod types;
 
 pub use config::*;
-use entries::Entries;
+use entries::{Entries, StoredEntry};
 #[allow(clippy::wildcard_imports)]
 use flight::*;
 pub use store::*;

@@ -1,14 +1,17 @@
-//! The cached representations and the two indexes the cache asks them through: the variants of one request (a lookup
-//! and an insertion look at those only) and the order of last use (an eviction takes its head). Every operation costs
-//! the same however many representations the cache holds; a scan over all of them, once per request while holding the
-//! cache mutex, cost a million instructions per miss at the default capacity.
+//! The cached representations of one shard and the two indexes the cache asks them through: the variants of one request
+//! (a lookup and an insertion look at those only) and the order of last use (an eviction takes its head). Every
+//! operation costs the same however many representations the shard holds; a scan over all of them, once per request
+//! while holding the cache mutex, cost a million instructions per miss at the default capacity.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use super::{BaseKey, CacheKey, PreparedEntry};
 
 pub(super) struct StoredEntry {
-    pub(super) entry: PreparedEntry,
+    pub(super) entry: Arc<PreparedEntry>,
     pub(super) last_access: u64,
 }
 
@@ -21,10 +24,6 @@ pub(super) struct Entries {
 }
 
 impl Entries {
-    pub(super) fn len(&self) -> usize {
-        self.by_key.len()
-    }
-
     pub(super) fn get(&self, key: &CacheKey) -> Option<&StoredEntry> {
         self.by_key.get(key)
     }
@@ -38,8 +37,8 @@ impl Entries {
         self.variants.get(base).map_or(&[], Vec::as_slice)
     }
 
-    pub(super) fn least_recently_used(&self) -> Option<&CacheKey> {
-        self.by_access.values().next()
+    pub(super) fn least_recently_used(&self) -> Option<(&u64, &CacheKey)> {
+        self.by_access.iter().next()
     }
 
     /// Stores `entry` as the most recent use. `access` must be newer than every stored sequence number.
@@ -54,7 +53,7 @@ impl Entries {
         self.by_key.insert(
             key,
             StoredEntry {
-                entry,
+                entry: Arc::new(entry),
                 last_access: access,
             },
         );
@@ -79,18 +78,5 @@ impl Entries {
         stored.last_access = access;
         self.by_access.insert(access, key.clone());
         Some(&*stored)
-    }
-
-    /// Numbers the stored representations `1..=len` in their order of use and returns the last number.
-    pub(super) fn renumber(&mut self) -> u64 {
-        let order = std::mem::take(&mut self.by_access);
-        for (index, (_, key)) in order.into_iter().enumerate() {
-            let access = index as u64 + 1;
-            if let Some(stored) = self.by_key.get_mut(&key) {
-                stored.last_access = access;
-            }
-            self.by_access.insert(access, key);
-        }
-        self.by_access.len() as u64
     }
 }
