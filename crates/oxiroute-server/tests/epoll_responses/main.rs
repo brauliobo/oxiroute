@@ -608,13 +608,21 @@ async fn connection_options_and_start_lines_the_tokio_plane_refuses_are_a_bad_ga
             b"HTTP/1.1 200 OK\r\nX-A: a\rb\r\nContent-Length: 2\r\n\r\nok",
             BAD_GATEWAY,
         ),
-        case(
-            "chunk-size-that-is-not-hex",
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nok\r\n0\r\n\r\n",
-            "<EOF>",
-        ),
     ])
     .await;
+}
+
+#[tokio::test]
+async fn a_chunk_size_that_is_not_hex_is_a_bad_gateway_where_the_tokio_plane_closes_the_connection() {
+    let chunked = case(
+        "chunk-size-that-is-not-hex",
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nok\r\n0\r\n\r\n",
+        BAD_GATEWAY,
+    );
+    let (theirs, _) = through(HttpDataPlane::Tokio, std::slice::from_ref(&chunked)).await;
+    let (ours, _) = through(HttpDataPlane::Epoll, std::slice::from_ref(&chunked)).await;
+    assert_eq!(text(&theirs[0]), "<EOF>");
+    assert!(text(&ours[0]).starts_with(BAD_GATEWAY), "{}", text(&ours[0]));
 }
 
 #[tokio::test]

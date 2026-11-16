@@ -410,5 +410,5 @@ async fn choosing_epoll_with_dynamic_scaling_is_served_by_it() {
     .await;
     let response = wire.exchange(GET).await;
     assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
-    assert_eq!(served(wire), expected_on_epoll(1));
+    assert_eq!(served(wire), usize::from(oxiroute_epoll_h1::supported()));
 }

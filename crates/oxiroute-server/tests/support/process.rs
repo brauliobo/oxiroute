@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{HttpDataPlane, ValidatedConfig};
+use oxiroute_config::{ConfigDraft, HttpDataPlane, Protocol, ValidatedConfig};
 use tempfile::TempDir;
 use tokio::{net::TcpStream, time::sleep};
 
@@ -268,8 +268,16 @@ pub fn serves_on_epoll() -> bool {
     suite_data_plane() != Some(HttpDataPlane::Tokio) && oxiroute_epoll_h1::supported()
 }
 
+fn takes_a_data_plane(draft: &ConfigDraft) -> bool {
+    draft.fast_lane_enabled()
+        && draft
+            .listeners
+            .iter()
+            .any(|listener| listener.protocol == Protocol::Http)
+}
+
 fn on_suite_data_plane(config: &ValidatedConfig) -> ValidatedConfig {
-    let Some(plane) = suite_data_plane().filter(|_| config.as_draft().fast_lane_enabled()) else {
+    let Some(plane) = suite_data_plane().filter(|_| takes_a_data_plane(config.as_draft())) else {
         return config.clone();
     };
     let mut draft = config.as_draft().clone();

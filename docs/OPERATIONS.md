@@ -340,7 +340,8 @@ final response awaited; `Connection` options and `Upgrade` on a final response a
 a `Transfer-Encoding` that does not end in `chunked` delimits the body by the close of the origin connection. What the
 tokio path refuses is a `502` there as well: conflicting `Content-Length` values, an invalid header byte, a `101` that
 nobody asked for, more than 256 headers, a head over about 1 MiB. The plane is stricter in one case: a `Connection`
-header that names more than four other fields is a `502`.
+header that names more than four other fields is a `502`, and so is a first chunk whose size is not hexadecimal, where
+the tokio path closes the connection without an answer.
 
 The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or plain proxy route (any body framing, `Expect`, access log) is
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls
