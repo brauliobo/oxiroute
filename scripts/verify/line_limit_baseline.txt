@@ -1,5 +1,4 @@
 1003 benchmarks/r2-data-path/tool/src/load.rs
-1632 crates/oxiroute-cache/tests/cache_core.rs
 3463 crates/oxiroute-config-source/tests/lua_config.rs
 1952 crates/oxiroute-config-source/tests/lua_render.rs
 1002 crates/oxiroute-import/src/apache/lower.rs

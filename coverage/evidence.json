@@ -236,12 +236,12 @@
     {
       "id": "evidence.cache.foundation",
       "tests": [
-        "crates/oxiroute-cache/tests/cache_core.rs#canonical_keys_share_head_and_get_and_normalize_vary_values",
-        "crates/oxiroute-cache/tests/cache_core.rs#unsafe_responses_fail_closed",
-        "crates/oxiroute-cache/tests/cache_core.rs#freshness_stale_windows_and_head_get_semantics_are_enforced",
-        "crates/oxiroute-cache/tests/cache_core.rs#vary_variants_and_bounded_surrogate_purge_are_exact",
-        "crates/oxiroute-cache/tests/cache_core.rs#collapsed_forwarding_wakes_all_followers_after_lock_free_fill",
-        "crates/oxiroute-cache/tests/cache_core.rs#prepared_entries_are_bound_to_shared_cache_identity_before_memory_admission",
+        "crates/oxiroute-cache/tests/cache_core/keys.rs#canonical_keys_share_head_and_get_and_normalize_vary_values",
+        "crates/oxiroute-cache/tests/cache_core/admission.rs#unsafe_responses_fail_closed",
+        "crates/oxiroute-cache/tests/cache_core/freshness.rs#freshness_stale_windows_and_head_get_semantics_are_enforced",
+        "crates/oxiroute-cache/tests/cache_core/keys.rs#vary_variants_and_bounded_surrogate_purge_are_exact",
+        "crates/oxiroute-cache/tests/cache_core/fill.rs#collapsed_forwarding_wakes_all_followers_after_lock_free_fill",
+        "crates/oxiroute-cache/tests/cache_core/capacity.rs#prepared_entries_are_bound_to_shared_cache_identity_before_memory_admission",
         "crates/oxiroute-cache/tests/disk_cache.rs#prepared_entries_are_bound_to_shared_cache_identity_before_disk_admission"
       ]
     },
