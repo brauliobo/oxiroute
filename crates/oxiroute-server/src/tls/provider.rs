@@ -151,6 +151,16 @@ mod tests {
     }
 
     #[test]
+    fn the_config_names_exactly_the_tls12_suites_of_the_rustls_provider() {
+        let mut provider = tls12_names(&aws_lc_provider());
+        let mut config = oxiroute_config::RUSTLS_TLS12_SUITES.to_vec();
+        provider.sort_unstable();
+        config.sort_unstable();
+
+        assert_eq!(provider, config);
+    }
+
+    #[test]
     fn the_cipher_list_orders_the_tls12_suites_and_names_what_the_provider_lacks() {
         let selected = [
             "TLS_AES_256_GCM_SHA384",

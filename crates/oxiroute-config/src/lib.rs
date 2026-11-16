@@ -1,4 +1,5 @@
 mod cache_validation;
+mod cipher_list;
 mod composition;
 mod defaults;
 mod forward_validation;
@@ -9,6 +10,7 @@ mod validated;
 mod validation;
 mod warnings;
 
+pub use cipher_list::{CipherList, RUSTLS_TLS12_SUITES};
 pub use composition::{ConfigCompositionError, compose_validated_configs};
 pub use lexical::{
     LexicalError, canonical_certificate_dns_name, canonical_dns_name, canonical_ip,
