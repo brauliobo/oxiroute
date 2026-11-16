@@ -94,7 +94,7 @@ impl Wire {
         self.reply_to(false)
     }
 
-    pub fn reply_to(&mut self, head_request: bool) -> Reply {
+    pub fn head(&mut self) -> Reply {
         let mut head = String::new();
         loop {
             let line = self.line();
@@ -109,12 +109,17 @@ impl Wire {
             .nth(1)
             .and_then(|code| code.parse().ok())
             .expect("status");
-        let mut reply = Reply {
+        Reply {
             status,
             head,
             body: Vec::new(),
             raw_body: Vec::new(),
-        };
+        }
+    }
+
+    pub fn reply_to(&mut self, head_request: bool) -> Reply {
+        let mut reply = self.head();
+        let status = reply.status;
         let bodiless = head_request || matches!(status, 204 | 304);
         if bodiless {
             return reply;

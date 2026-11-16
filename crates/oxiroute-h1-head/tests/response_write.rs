@@ -282,10 +282,15 @@ const STATUS_LINES: [&str; 6] = [
 ];
 
 fn random_head(rng: &mut Rng) -> Vec<u8> {
-    let lines: Vec<String> = (0..rng.below(14))
+    let count = rng.below(14);
+    random_head_of(rng, count, &NAMES)
+}
+
+fn random_head_of(rng: &mut Rng, count: usize, names: &[&str]) -> Vec<u8> {
+    let lines: Vec<String> = (0..count)
         .map(|_| {
             let (value, tail) = (rng.pick(&VALUES), rng.pick(&TAILS));
-            format!("{}{}{value}{tail}", rng.pick(&NAMES), rng.pick(&SEPARATORS))
+            format!("{}{}{value}{tail}", rng.pick(names), rng.pick(&SEPARATORS))
         })
         .collect();
     let minor = rng.below(2);
@@ -326,4 +331,22 @@ fn random_heads_and_edit_sequences_write_like_classic() {
     }
     eprintln!("{heads} heads written, {with_duplicates} with duplicate names");
     assert!(heads > 30_000 && with_duplicates > 10_000);
+}
+
+#[test]
+fn heads_with_more_headers_than_a_request_may_have_write_like_classic() {
+    let mut rng = Rng(0x7C3B_9A15_E264_D80F);
+    let mut head = ResponseHead::new();
+    let names: Vec<&str> = NAMES
+        .into_iter()
+        .filter(|name| !matches!(*name, "Connection" | "content-length"))
+        .collect();
+    for count in [64, 65, 66, 100, 200, 255, 256] {
+        for _ in 0..40 {
+            let buf = random_head_of(&mut rng, count, &names);
+            assert_eq!(scan_response(&buf, &mut head), ScanResponse::Head);
+            assert_eq!(usize::from(head.count), count);
+            assert_same(&buf, &random_edits(&mut rng));
+        }
+    }
 }

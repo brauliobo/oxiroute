@@ -8,7 +8,7 @@ use std::cell::RefCell;
 
 use bytes::Bytes;
 use http::{HeaderValue, StatusCode};
-use oxiroute_h1_head::{Edit, HeaderOrder, Items, MAX_HEADERS, ResponseHead, Value, names};
+use oxiroute_h1_head::{Edit, HeaderOrder, Items, ResponseHead, Value, names};
 use pingora::protocols::http::date::get_cached_date;
 
 use crate::http::{
@@ -106,14 +106,13 @@ pub(super) fn fields(
     };
     let order = HeaderOrder::after_edits(&items, head.facts.duplicate_names, head.facts.present);
     let mut fields = Fields::take();
+    let base = items.edit_base();
     order.for_each(|item| {
-        let item = usize::from(item);
-        if item < MAX_HEADERS {
+        if item < base {
             let header = &head.headers()[item];
             fields.push(header.name(raw), header.value(raw));
         } else {
-            let (Edit::Set(name, value) | Edit::Add(name, value)) = items.edits[item - MAX_HEADERS]
-            else {
+            let (Edit::Set(name, value) | Edit::Add(name, value)) = items.edits[item - base] else {
                 return;
             };
             fields.push(name.lower(), value.as_bytes());

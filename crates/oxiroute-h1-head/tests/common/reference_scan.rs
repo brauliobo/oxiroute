@@ -4,8 +4,8 @@
 use oxiroute_cpu::{is_target_byte, is_tchar};
 use oxiroute_h1_head::{
     Class, Connection, HOP_BY_HOP_REQUEST, HOP_BY_HOP_RESPONSE, Header, LINE_IS_CLEAN, MAX_HEADERS,
-    MAX_NAME_LEN, MissReason as M, NAME_HAS_UNDERSCORE, NAME_HAS_UPPER, RequestFacts,
-    ResponseFacts, Span, classify,
+    MAX_NAME_LEN, MAX_RESPONSE_HEADERS, MissReason as M, NAME_HAS_UNDERSCORE, NAME_HAS_UPPER,
+    RequestFacts, ResponseFacts, Span, classify,
 };
 
 const TAIL_IS_CLEAN: u8 = 8;
@@ -84,9 +84,9 @@ impl Block {
     }
 
     fn name_flags(&self) -> u8 {
-        self.headers
-            .iter()
-            .fold(0, |flags, h| flags | (h.flags & (NAME_HAS_UPPER | NAME_HAS_UNDERSCORE)))
+        self.headers.iter().fold(0, |flags, h| {
+            flags | (h.flags & (NAME_HAS_UPPER | NAME_HAS_UNDERSCORE))
+        })
     }
 
     fn duplicate_names(&self, buf: &[u8]) -> bool {
@@ -193,7 +193,7 @@ fn field_line(buf: &[u8], i: usize) -> Step<(Header, usize)> {
     Ok((header, end + 2))
 }
 
-fn fields(buf: &[u8], start: usize) -> Step<Block> {
+fn fields(buf: &[u8], start: usize, limit: usize) -> Step<Block> {
     let mut headers: Vec<Header> = Vec::new();
     let mut i = start;
     loop {
@@ -207,7 +207,7 @@ fn fields(buf: &[u8], start: usize) -> Step<Block> {
             Some(_) => {}
         }
         let (header, next) = field_line(buf, i)?;
-        if headers.len() == MAX_HEADERS {
+        if headers.len() == limit {
             return bad(M::TooManyHeaders);
         }
         headers.push(header);
@@ -247,7 +247,8 @@ fn length_of(buf: &[u8], block: &Block) -> Step<Option<u64>> {
     let Some(first) = block.first(Class::ContentLength) else {
         return Ok(None);
     };
-    let length = content_length(first.value(buf)).filter(|_| block.count(Class::ContentLength) == 1);
+    let length =
+        content_length(first.value(buf)).filter(|_| block.count(Class::ContentLength) == 1);
     length.map(Some).ok_or(Stop::Bad(M::ContentLength))
 }
 
@@ -292,7 +293,7 @@ pub fn request(buf: &[u8]) -> Step<Request> {
     }
     let version = target_end + 1;
     let fields_start = version_end(buf, version)?;
-    let block = fields(buf, fields_start)?;
+    let block = fields(buf, fields_start, MAX_HEADERS)?;
     let facts = request_facts(buf, &block)?;
     Ok(Request {
         method: Span {
@@ -392,7 +393,10 @@ fn status_line(buf: &[u8]) -> Step<(u16, u8, Span, usize)> {
         return bad(M::Version);
     }
     let mut end = 13;
-    while buf.get(end).is_some_and(|&c| c == b'\t' || (b' '..=b'~').contains(&c)) {
+    while buf
+        .get(end)
+        .is_some_and(|&c| c == b'\t' || (b' '..=b'~').contains(&c))
+    {
         end += 1;
     }
     match (buf.get(end), buf.get(end + 1)) {
@@ -413,7 +417,7 @@ pub fn response(buf: &[u8]) -> Step<Response> {
         return bad(M::TooLarge);
     }
     let (status, minor, reason, fields_start) = status_line(buf)?;
-    let block = fields(buf, fields_start)?;
+    let block = fields(buf, fields_start, MAX_RESPONSE_HEADERS)?;
     let present = block.present();
     let has = |class: Class| present & class.bit() != 0;
     let mut content = length_of(buf, &block)?;

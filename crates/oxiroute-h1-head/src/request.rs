@@ -362,7 +362,7 @@ fn scan<L: Lanes>(
     out.minor = 1;
     out.line_len = line.fields_start;
     out.head_len = block.head_len;
-    out.count = block.count;
+    out.count = block.count as u8;
     Ok(())
 }
 

@@ -111,10 +111,10 @@ pub fn corpus() -> Vec<Case> {
         slow("name-no-colon", &ok("X")),
         slow("name-256", &ok(&format!("{}: y", "n".repeat(256)))),
     ];
-    for n in [0usize, 1, 2, 63, 64] {
+    for n in [0usize, 1, 2, 63, 64, 65, 66, 128, 255, 256] {
         c.push(head("many-headers", &ok(&numbered(n))));
     }
-    for n in [65usize, 66, 256, 257] {
+    for n in [257usize, 300] {
         c.push(slow("too-many-headers", &ok(&numbered(n))));
     }
     c

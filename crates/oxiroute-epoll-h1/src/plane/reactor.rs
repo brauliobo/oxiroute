@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_h1_head::ResponseHead;
 use rustix::{
     buffer::spare_capacity,
     event::{
@@ -23,6 +22,7 @@ use super::{
     client::Shared,
     clock::{Clock, Moment},
     config::{Config, Timeouts},
+    origin_head::Heads,
     pool::BufferPool,
     service::Service,
     slab::{Body, Slab, Token},
@@ -122,7 +122,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) pool: IdlePool,
     pub(crate) buffers: BufferPool,
     pub(crate) services: Vec<(Shared<S>, Timeouts)>,
-    pub(crate) response: Box<ResponseHead>,
+    pub(crate) response: Heads,
     pub(crate) expired: Vec<u32>,
     pub(crate) clock: Clock,
     pub(crate) now: Instant,
@@ -154,7 +154,7 @@ impl<S: Service> Reactor<S> {
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             buffers: BufferPool::default(),
             services: Vec::with_capacity(listeners.len()),
-            response: Box::new(ResponseHead::new()),
+            response: Heads::new(),
             expired: Vec::new(),
             clock,
             now,

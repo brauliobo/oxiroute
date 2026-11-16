@@ -41,7 +41,7 @@ are unavailable, while detected but broken tooling or a crashing/failed target r
 | `udp_datagram` | Public PROXY v2 datagram-header parsing on bounded datagram inputs | 131,059 B |
 | `tls_client_hello` | Public rustls `ServerConnection` ClientHello parsing and resolver normalization | 64 KiB |
 | `http1` | Public Pingora HTTP/1 request/response parsing, normalization, and body framing | 128 KiB |
-| `h1_head` | Fast-lane HTTP/1 head scanners and writers: `Head` agrees with httparse, prefixes stay partial, written heads scan again | 128 KiB |
+| `h1_head` | Fast-lane HTTP/1 head scanners and writers: `Head` agrees with httparse, prefixes stay partial, written heads scan again, lenient response reading agrees with httparse's classic client options | 128 KiB |
 | `hpack` | HPACK header block decoding of arbitrary bytes and encoder-to-decoder round trips with table size changes | 64 KiB |
 | `h2_frames` | `oxiroute-h2` server connection: frame codec, HPACK, stream state, flow control, abuse limits, and the poll-style stream API | 64 KiB |
 | `h3_qpack` | `oxiroute-h3` QPACK request and trailer sections of arbitrary bytes (static table and literals only), and response encoder-to-decoder round trips | 64 KiB |

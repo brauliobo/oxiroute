@@ -218,6 +218,20 @@ impl<'a> Edits<'a> {
         self.push(Edit::Remove(name))
     }
 
+    /// `HeaderMap::remove` of the field a `Connection` option names: `option` is a token in any case, as
+    /// [`ResponseHead::nominated`](crate::ResponseHead::nominated) gives it; removals do not look at the case.
+    ///
+    /// # Errors
+    /// [`EditsFull`] when [`MAX_EDITS`] edits are queued.
+    pub fn remove_nominated(&mut self, option: &'a [u8]) -> Result<(), EditsFull> {
+        let class = classify(option);
+        self.push(Edit::Remove(Name {
+            lower: option,
+            wire: option,
+            class,
+        }))
+    }
+
     /// # Errors
     /// [`EditsFull`] when [`MAX_EDITS`] edits are queued.
     pub fn set(&mut self, name: Name<'a>, value: Value<'a>) -> Result<(), EditsFull> {

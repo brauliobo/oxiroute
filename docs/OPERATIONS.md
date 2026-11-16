@@ -295,9 +295,15 @@ fails, the generation is marked failed and the supervisor replaces the worker. W
 descriptors, the plane closes the connections it cannot accept and keeps serving the others, instead of stalling.
 
 An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
-server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
-response, a `Connection` header that names other headers, a `Transfer-Encoding` that does not end in `chunked`) is a
-`502` there; `http_data_plane = "tokio"` serves such origins.
+server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once.
+
+The plane reads an origin response the way the tokio path does: a bare line feed, a missing reason phrase, an
+obsolete folded header and whitespace before the colon are accepted; an interim `1xx` response is forwarded and the
+final response awaited; `Connection` options and `Upgrade` on a final response are removed with the fields they name;
+a `Transfer-Encoding` that does not end in `chunked` delimits the body by the close of the origin connection. What the
+tokio path refuses is a `502` there as well: conflicting `Content-Length` values, an invalid header byte, a `101` that
+nobody asked for, more than 256 headers, a head over about 1 MiB. The plane is stricter in one case: a `Connection`
+header that names more than four other fields is a `502`.
 
 The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or plain proxy route (any body framing, `Expect`, access log) is
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls

@@ -5,8 +5,11 @@ use oxiroute_cpu::{Lanes, WIDTH};
 use crate::class::{Class, TITLED, classify, same_name};
 use crate::miss::MissReason;
 
-/// Headers a head may carry before it is a miss (or slow).
+/// Headers a request head may carry before it is a miss.
 pub const MAX_HEADERS: usize = 64;
+
+/// Headers a response head may carry before it is slow: as many as the classic client parser takes.
+pub const MAX_RESPONSE_HEADERS: usize = 256;
 
 /// The longest header name the scanners take.
 pub const MAX_NAME_LEN: usize = 255;
@@ -69,7 +72,7 @@ pub(crate) enum Stop {
 /// What one pass over the header block noted.
 pub(crate) struct Block {
     pub head_len: u32,
-    pub count: u8,
+    pub count: u16,
     /// Classes seen at least once, and at least twice.
     pub seen: u32,
     pub dup: u32,
@@ -191,11 +194,11 @@ fn repeats_other(buf: &[u8], headers: &[Header], index: usize, name: &[u8]) -> b
 
 /// Scans the lines from `start` to the blank line that ends the head, filling `headers` and `block`.
 #[inline(always)]
-pub(crate) fn scan_fields<L: Lanes>(
+pub(crate) fn scan_fields<L: Lanes, const CAPACITY: usize>(
     lanes: L,
     buf: &[u8],
     start: usize,
-    headers: &mut [Header; MAX_HEADERS],
+    headers: &mut [Header; CAPACITY],
     block: &mut Block,
 ) -> Step<()> {
     let mut other_buckets = 0u64;

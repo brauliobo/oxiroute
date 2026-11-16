@@ -4,8 +4,9 @@ mod support;
 
 use libfuzzer_sys::fuzz_target;
 use oxiroute_h1_head::{
-    Automatic, Class, Edits, HOP_BY_HOP_REQUEST, MAX_HEADERS, RequestHead, ResponseHead, Scan,
-    ScanResponse, Value, names, scan_request, scan_response, write_request, write_response,
+    Automatic, Class, Edits, HOP_BY_HOP_REQUEST, HeadRead, MAX_HEADERS, MAX_RESPONSE_HEADERS,
+    RequestHead, ResponseHead, Scan, ScanResponse, Value, names, read_response_head, scan_request,
+    scan_response, write_request, write_response,
 };
 
 const MAX_INPUT_BYTES: usize = 131_072;
@@ -18,10 +19,10 @@ fuzz_target!(|data: &[u8]| {
     let Some((selector, input)) = data.split_first() else {
         return;
     };
-    if selector & 1 == 0 {
-        request(input, usize::from(*selector >> 1));
-    } else {
-        response(input, usize::from(*selector >> 1));
+    match selector & 3 {
+        0 | 2 => request(input, usize::from(*selector >> 2)),
+        1 => response(input, usize::from(*selector >> 2)),
+        _ => lenient_response(input, usize::from(*selector >> 2)),
     }
 });
 
@@ -97,7 +98,7 @@ fn response(input: &[u8], cut: usize) {
     }
     let len = head.head_len as usize;
     assert!(len <= input.len() && head.line_len as usize <= len);
-    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut headers = [httparse::EMPTY_HEADER; MAX_RESPONSE_HEADERS];
     let mut parsed = httparse::Response::new(&mut headers);
     assert_eq!(parsed.parse(input), Ok(httparse::Status::Complete(len)));
     assert_eq!(parsed.code, Some(head.status));
@@ -126,7 +127,7 @@ fn response(input: &[u8], cut: usize) {
     };
     let mut out = Vec::new();
     write_response(&mut out, input, &head, &edits, 1, Some(automatic));
-    if head.headers().len() > MAX_HEADERS - 4 {
+    if head.headers().len() > MAX_RESPONSE_HEADERS - 4 {
         return;
     }
     assert_eq!(scan_response(&out, &mut probe), ScanResponse::Head);
@@ -134,4 +135,46 @@ fn response(input: &[u8], cut: usize) {
     assert_eq!(probe.status, head.status);
     assert_eq!(probe.reason(&out), head.reason(input));
     assert!(probe.facts.present & Class::XRequestId.bit() != 0);
+}
+
+/// A head that is read through the lenient mode is the head httparse reads with the classic client options, at the
+/// same length, and no proper prefix of it is a head.
+fn lenient_response(input: &[u8], cut: usize) {
+    let mut head = ResponseHead::new();
+    let mut probe = ResponseHead::new();
+    let mut canonical = Vec::new();
+    let HeadRead::Head {
+        canonical: rewritten,
+        raw_len,
+    } = read_response_head(input, &mut head, &mut canonical)
+    else {
+        return;
+    };
+    let bytes = if rewritten {
+        &canonical[..]
+    } else {
+        &input[..raw_len]
+    };
+    let mut headers = [httparse::EMPTY_HEADER; MAX_RESPONSE_HEADERS];
+    let mut parsed = httparse::Response::new(&mut headers);
+    let mut config = httparse::ParserConfig::default();
+    config.allow_spaces_after_header_name_in_responses(true);
+    config.allow_obsolete_multiline_headers_in_responses(true);
+    assert_eq!(
+        config.parse_response(&mut parsed, input),
+        Ok(httparse::Status::Complete(raw_len))
+    );
+    assert_eq!(parsed.code, Some(head.status));
+    assert_eq!(parsed.headers.len(), head.headers().len());
+    for (theirs, ours) in parsed.headers.iter().zip(head.headers()) {
+        assert_eq!(theirs.name.as_bytes(), ours.name(bytes));
+        if !theirs.value.contains(&b'\n') {
+            assert_eq!(theirs.value, ours.value(bytes));
+        }
+    }
+    let prefix = &input[..cut.min(raw_len - 1)];
+    assert!(matches!(
+        read_response_head(prefix, &mut probe, &mut canonical),
+        HeadRead::Partial
+    ));
 }
