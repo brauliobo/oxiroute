@@ -312,7 +312,7 @@ The current full local check set is:
 ```sh
 cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
-cargo +1.97.1 test --workspace --locked
+./scripts/test/all.sh
 ./scripts/verify-fuzz.sh
 bash fuzz/smoke.sh
 pnpm --dir ui test
