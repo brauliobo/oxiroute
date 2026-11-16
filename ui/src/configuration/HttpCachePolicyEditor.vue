@@ -164,7 +164,7 @@ fieldset.object-block(:data-field="fieldPath")
         .field-grid
           label.field(:data-field="`${fieldPath}.compression.content_types`")
             span Content types, one per line
-            textarea(:value="cache.compression.content_types.join('\n')" rows="4" @input="setContentTypes")
+            textarea(:value="contentTypeLines(cache.compression)" rows="4" @input="setContentTypes")
           label.field(:data-field="`${fieldPath}.compression.min_length_bytes`")
             span Minimum body bytes
             input(type="number" min="0" step="1" v-model.number="cache.compression.min_length_bytes")
@@ -261,6 +261,10 @@ function toggleCoding(
     compression.codings = compression.codings.filter((offered) => offered !== coding)
     compression.precompress = compression.precompress.filter((offered) => offered !== coding)
   }
+}
+
+function contentTypeLines(compression: CacheCompressionConfig): string {
+  return compression.content_types.join('\n')
 }
 
 function setContentTypes(event: Event): void {
