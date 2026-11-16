@@ -671,7 +671,7 @@ on_both_planes!(the_connect_time_is_logged_when_the_origin_closes_before_answeri
 async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it() {
     let origin = replying_origin(OK).await;
     let proxy = Proxy::start(origin.address, HttpDataPlane::Epoll, |config| {
-        config.log_filter = None
+        config.log_filter = None;
     })
     .await;
     let idle = proxy.descriptors();
