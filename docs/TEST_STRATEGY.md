@@ -23,7 +23,7 @@ partial capabilities to parity:
   Varnish report cases are recorded in `coverage/evidence.json`.
 - RTMP hardening rejects malformed AMF command payloads without panicking, and chunk tests feed
   two fragmented message streams one byte at a time while preserving per-stream state.
-- `crates/oxiroute-server/tests/process_udp_drain.rs` covers UDP reload, existing-session
+- `crates/oxiroute-server/tests/process/udp_drain.rs` covers UDP reload, existing-session
   retention, rejection of new work after drain, deadline cancellation, and listener release.
 - UI contract/component coverage and the desktop/mobile browser suite cover redacted native report
   selection, provenance, preview, read-only GET boundaries, and responsive layout. The browser
