@@ -1,4 +1,8 @@
-use super::*;
+use crate::fixtures::{minimal_config, normalized_round_trip, test_upstream_pools};
+use oxiroute_config::{
+    CircuitBreaker, ConfigError, OutlierDetection, PassiveHealthPolicy, PoolQueueClass,
+    PoolQueuePolicy, PoolResilience, QueueDiscipline, Readmission, ReadmissionProbe,
+};
 
 #[test]
 fn rejects_invalid_passive_health_bounds() {
