@@ -285,9 +285,12 @@ are the lane's own, so a request is accounted identically on either plane. Every
 HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
 ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
 (`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
-cannot run it, with `http_fast_lane = false`, and with `worker_scaling = "dynamic"` or aged connection scheduling
-(`connection_scheduling`, `connection_age_ms`), which only the tokio plane honours: with one of them set and the option
-omitted every listener is served by the tokio plane. The option is an ordinary reload.
+cannot run it and with `http_fast_lane = false`. The plane honours `connection_scheduling = "aged_per_worker"` with
+`connection_age_ms` and `worker_scaling = "dynamic"` on its own threads: a thread serves its ready connections newest
+first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
+connections, and with dynamic scaling the threads that leave the active set stop accepting and hand their idle
+keep-alive connections to an active thread between two requests. The `oxiroute_aged_queue_*` and
+`oxiroute_worker_scaling_*` metrics are the same on both planes. The option is an ordinary reload.
 
 A client that sends requests back to back on one connection without waiting for the answers is served in order by the
 epoll plane; the classic path closes such a connection after the first answer. When a thread of the plane panics or
