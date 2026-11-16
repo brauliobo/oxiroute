@@ -10,7 +10,7 @@ use super::{
     reactor::{DRAINING, Reactor, Step},
     service::{Failure, Service},
     slab::{Body, Token},
-    sys,
+    sys::{self, Accepted},
     upstream::Phase,
 };
 
@@ -23,8 +23,9 @@ impl<S: Service> Reactor<S> {
                 return;
             };
             match sys::accept(fd) {
-                Ok(Some((fd, peer))) => self.admit(fd, peer, index),
-                Ok(None) | Err(_) => return,
+                Accepted::Connection(fd, peer) => self.admit(fd, peer, index),
+                Accepted::Exhausted => self.spare.shed(fd),
+                Accepted::Empty | Accepted::Failed => return,
             }
         }
     }

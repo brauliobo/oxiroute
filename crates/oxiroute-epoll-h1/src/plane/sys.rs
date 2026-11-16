@@ -2,6 +2,7 @@ use std::{io, net::SocketAddr, os::fd::OwnedFd};
 
 use rustix::{
     event::epoll,
+    fs::{self, Mode, OFlags},
     io::{Errno, IoSlice},
     net::{
         self, AddressFamily, RecvFlags, SendAncillaryBuffer, SendFlags, Shutdown, SocketFlags,
@@ -62,15 +63,30 @@ pub(crate) fn shutdown_write(fd: &OwnedFd) {
     let _ = net::shutdown(fd, Shutdown::Write);
 }
 
-pub(crate) fn accept(listener: &OwnedFd) -> io::Result<Option<(OwnedFd, Option<SocketAddr>)>> {
+pub(crate) enum Accepted {
+    Connection(OwnedFd, Option<SocketAddr>),
+    Empty,
+    Exhausted,
+    Failed,
+}
+
+pub(crate) fn accept(listener: &OwnedFd) -> Accepted {
     match net::acceptfrom_with(listener, SocketFlags::NONBLOCK | SocketFlags::CLOEXEC) {
-        Ok((fd, peer)) => Ok(Some((
-            fd,
-            peer.and_then(|peer| SocketAddr::try_from(peer).ok()),
-        ))),
-        Err(Errno::AGAIN) => Ok(None),
-        Err(error) => Err(error.into()),
+        Ok((fd, peer)) => {
+            Accepted::Connection(fd, peer.and_then(|peer| SocketAddr::try_from(peer).ok()))
+        }
+        Err(Errno::AGAIN) => Accepted::Empty,
+        Err(Errno::MFILE | Errno::NFILE) => Accepted::Exhausted,
+        Err(_) => Accepted::Failed,
     }
+}
+
+pub(crate) fn spare_descriptor() -> io::Result<OwnedFd> {
+    Ok(fs::open(
+        "/dev/null",
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?)
 }
 
 pub(crate) struct Connecting {

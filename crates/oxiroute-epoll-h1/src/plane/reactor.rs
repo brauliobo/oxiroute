@@ -26,6 +26,7 @@ use super::{
     pool::BufferPool,
     service::Service,
     slab::{Body, Slab, Token},
+    spare::Spare,
     sys,
     upstream::IdlePool,
     wake::Waker,
@@ -132,6 +133,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) wake: Waker,
     pub(crate) listeners: Vec<Token>,
     pub(crate) armed: bool,
+    pub(crate) spare: Spare,
 }
 
 impl<S: Service> Reactor<S> {
@@ -163,6 +165,7 @@ impl<S: Service> Reactor<S> {
             wake: wake.clone(),
             listeners: Vec::with_capacity(listeners.len()),
             armed: false,
+            spare: Spare::reserve()?,
         };
         reactor.watch_wake(wake)?;
         for (index, listener) in listeners.into_iter().enumerate() {

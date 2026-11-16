@@ -13,6 +13,7 @@ mod relay;
 mod serve;
 mod service;
 mod slab;
+mod spare;
 mod sys;
 mod upstream;
 mod wake;

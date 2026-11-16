@@ -29,7 +29,7 @@ use oxiroute_config::{
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rustix::{
     net::sockopt::set_socket_linger,
-    process::{Resource, Rlimit, getrlimit, setrlimit},
+    process::{Pid, Resource, Rlimit, getrlimit, prlimit, setrlimit},
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -193,6 +193,32 @@ impl Proxy {
 
     async fn connect(&self) -> TcpStream {
         TcpStream::connect(self.address).await.expect("connect")
+    }
+
+    fn descriptors(&self) -> u64 {
+        let open = std::fs::read_dir(format!("/proc/{}/fd", self.server.pid()));
+        open.expect("the descriptors of the server").count() as u64
+    }
+
+    fn limit_descriptors(&self, limit: u64) {
+        let pid = Pid::from_raw(i32::try_from(self.server.pid()).expect("a process id"));
+        let maximum = getrlimit(Resource::Nofile).maximum;
+        let new = Rlimit {
+            current: Some(limit),
+            maximum,
+        };
+        prlimit(pid, Resource::Nofile, new).expect("limit the descriptors of the server");
+    }
+
+    fn cpu_ticks(&self) -> u64 {
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.server.pid()));
+        let stat = stat.expect("the statistics of the server");
+        let fields = stat.rsplit_once(')').expect("a process name").1;
+        let mut times = fields.split_whitespace().skip(11).take(2);
+        times
+            .by_ref()
+            .map(|ticks| ticks.parse::<u64>().expect("ticks"))
+            .sum()
     }
 
     fn engine_threads(&self) -> usize {
@@ -640,3 +666,30 @@ async fn the_connect_time_is_logged_when_the_origin_closes_before_answering(plan
 }
 
 on_both_planes!(the_connect_time_is_logged_when_the_origin_closes_before_answering);
+
+#[tokio::test]
+async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it() {
+    let origin = replying_origin(OK).await;
+    let proxy = Proxy::start(origin.address, HttpDataPlane::Epoll, |config| {
+        config.log_filter = None
+    })
+    .await;
+    let idle = proxy.descriptors();
+    proxy.limit_descriptors(idle + 4);
+    let mut held = Vec::new();
+    for _ in 0..60 {
+        held.push(proxy.connect().await);
+    }
+    let before = proxy.cpu_ticks();
+    sleep(Duration::from_millis(1500)).await;
+    let spent = proxy.cpu_ticks() - before;
+    assert!(
+        spent < 45,
+        "the server spent {spent} ticks of 150 while it could not accept"
+    );
+    drop(held);
+    while proxy.descriptors() > idle {
+        sleep(Duration::from_millis(20)).await;
+    }
+    answer_one_request(&mut proxy.connect().await).await;
+}
