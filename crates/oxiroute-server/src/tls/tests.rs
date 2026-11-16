@@ -75,6 +75,8 @@ mod chain;
 mod file_reconcile;
 #[path = "tests/material.rs"]
 mod material;
+#[path = "tests/nginx/ciphers.rs"]
+mod nginx_ciphers;
 #[path = "tests/profile.rs"]
 mod profile;
 #[path = "tests/publication.rs"]
