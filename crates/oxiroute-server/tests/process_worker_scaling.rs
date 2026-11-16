@@ -33,7 +33,7 @@ const CONNECTIONS: usize = 48;
 fn dynamic(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         worker_scaling: Some(WorkerScaling::Dynamic),
-        scale_down_delay_ms: Some(200),
+        scale_down_delay_ms: Some(2_000),
         ..config(address, Some(WORKERS), AGED)
     }
 }
