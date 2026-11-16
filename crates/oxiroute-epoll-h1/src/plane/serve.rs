@@ -72,8 +72,11 @@ impl<S: Service> Reactor<S> {
     }
 
     fn fill_request(&mut self, token: Token, client: &mut Client<S>) -> Step {
-        let buffers = &mut client.buffers;
-        match client.link.recv(&mut buffers.req[client.req_len..]) {
+        match client
+            .buffers
+            .req
+            .recv(&mut client.link, client.req_len, usize::MAX)
+        {
             Read::Data(count) => {
                 client.req_len += count;
                 if client.stage == Stage::Idle {
@@ -96,7 +99,7 @@ impl<S: Service> Reactor<S> {
             return Step::Handoff;
         }
         let service = Rc::clone(&client.service);
-        let replayable = Self::replayable(head, client.buffers.req.len());
+        let replayable = Self::replayable(head, client.buffers.req.limit());
         let bytes = &client.buffers.req[..client.req_len];
         let request = Request::new(bytes, head, client.peer, (&self.wake, replayable));
         let Routed::Serve(exchange) = service.route(&request, self.now) else {

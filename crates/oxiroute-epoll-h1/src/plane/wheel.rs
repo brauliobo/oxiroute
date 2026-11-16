@@ -69,6 +69,9 @@ impl Wheel {
 
     pub(crate) fn schedule(&mut self, id: u32, deadline: Moment) {
         self.cancel(id);
+        if id as usize >= self.nodes.len() {
+            self.nodes.resize(id as usize + 1, UNARMED);
+        }
         let due = self
             .ceil_tick_of(deadline)
             .clamp(self.cursor, self.cursor + MASK);

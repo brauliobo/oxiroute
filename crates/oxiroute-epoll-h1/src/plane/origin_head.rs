@@ -4,10 +4,10 @@ use oxiroute_h1_head::{Connection, HeadRead, ResponseHead, read_response_head};
 
 use super::{
     chunked::{ChunkScanner, HEADER_ROOM},
-    client::{Buffers, Client, Down, Flow, HEAD_GROWTH, Mode, Relay, Wait, Window},
+    client::{Buffers, Client, Down, Flow, HEAD_INITIAL, Mode, Relay, Wait, Window},
     pipes::Carry,
     reactor::Reactor,
-    relay::{TAIL_ROOM, absorb},
+    relay::absorb,
     service::{Answered, Failure, Framing, Recovery, Response, Service},
     slab::Token,
     sys::{Read, Wrote},
@@ -279,7 +279,6 @@ impl<S: Service> Reactor<S> {
     }
 
     fn fill_head(&mut self, client: &mut Client<S>, upstream: Token) -> Result<Filled, Failure> {
-        let usable = client.buffers.resp.len() - TAIL_ROOM;
         let Client {
             buffers,
             flow,
@@ -287,7 +286,7 @@ impl<S: Service> Reactor<S> {
             ..
         } = client;
         let flow = flow.as_mut().expect("a serving client has a flow");
-        if *resp_len == usable && flow.origin.spill_len() == 0 {
+        if buffers.resp.exhausted(*resp_len) && flow.origin.spill_len() == 0 {
             flow.origin
                 .held()
                 .spill
@@ -303,7 +302,7 @@ impl<S: Service> Reactor<S> {
             return Err(Failure::UpstreamClosed);
         };
         let start = if spilled { HEADER_ROOM } else { *resp_len };
-        match origin.link.recv(&mut buffers.resp[start..usable]) {
+        match buffers.resp.recv(&mut origin.link, start, usize::MAX) {
             Read::Data(count) => {
                 if spilled {
                     flow.origin
@@ -323,7 +322,6 @@ impl<S: Service> Reactor<S> {
 
     fn open_response(&mut self, token: Token, client: &mut Client<S>) -> Result<(), Failure> {
         let service = Rc::clone(&client.service);
-        let head_capacity = self.config.head_limit + HEAD_GROWTH;
         let Client {
             buffers,
             flow,
@@ -368,7 +366,7 @@ impl<S: Service> Reactor<S> {
         let down_head = &mut buffers.down_head;
         down_head.clear();
         if down_head.capacity() > RETAINED_HEAD {
-            *down_head = Vec::with_capacity(head_capacity);
+            *down_head = Vec::with_capacity(HEAD_INITIAL);
         }
         let response = Response {
             bytes,
