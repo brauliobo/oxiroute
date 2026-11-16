@@ -16,7 +16,6 @@
 12 crates/oxiroute-import/tests/nginx
 2 crates/oxiroute-rtmp/src/recording/recording
 3 crates/oxiroute-rtmp/tests/recording
-6 crates/oxiroute-server/src/http/action/static
 2 crates/oxiroute-server/src/observability/operational_event/audit
 2 crates/oxiroute-server/src/observability/status
 2 crates/oxiroute-server/src/rtmp/value

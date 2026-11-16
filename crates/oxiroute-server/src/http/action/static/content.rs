@@ -10,7 +10,7 @@ use rustix::io::ReadWriteFlags;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub(crate) use super::static_kernel::KernelSlice;
+pub(crate) use super::kernel::KernelSlice;
 
 /// Files up to this size are read whole once and served from memory.
 pub(crate) const MEMORY_FILE_BYTES: u64 = 128 * 1024;
@@ -38,12 +38,12 @@ impl StaticContent {
 
     /// Reads a small open file into memory and a medium one into the page cache, if the file system cannot say
     /// whether the pages are there; larger files and files already in memory are returned as they are.
-    pub(super) fn load(self, size: u64) -> Result<Self, StaticServeError> {
+    pub(in crate::http::action) fn load(self, size: u64) -> Result<Self, StaticServeError> {
         let Self::Open { file, .. } = self else {
             return Ok(self);
         };
         if size > MEMORY_FILE_BYTES {
-            if size <= WARM_FILE_BYTES && super::static_kernel::needs_warming(&file) {
+            if size <= WARM_FILE_BYTES && super::kernel::needs_warming(&file) {
                 warm(&file, size).map_err(|_| StaticServeError::Unavailable)?;
                 return Ok(Self::Open { file, warm: true });
             }
