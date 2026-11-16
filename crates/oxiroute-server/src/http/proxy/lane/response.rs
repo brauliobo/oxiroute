@@ -112,18 +112,18 @@ pub(in crate::http::proxy) fn render_head(
     let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
         result.expect("a response head needs few edits");
     };
-    let no_body = is_head || matches!(head.status, 204 | 304);
+    let no_body = facts.informational || is_head || matches!(head.status, 204 | 304);
     let chunked = !no_body && facts.content_length.is_none();
     if chunked {
         edit(edits.set(names::TRANSFER_ENCODING, Value::trusted(b"chunked")));
     }
     let date = get_cached_date_at(Duration::from_millis(wall_ms(now)));
-    let automatic = Automatic {
+    let automatic = (!facts.informational).then(|| Automatic {
         date: date.as_bytes(),
         connection: if keepalive { b"keep-alive" } else { b"close" },
-    };
+    });
     let minor = if chunked { 1 } else { head.minor };
-    write_response(out, raw, head, &edits, minor, Some(automatic));
+    write_response(out, raw, head, &edits, minor, automatic);
     match (no_body, chunked) {
         (true, _) => Framing::Empty,
         (false, true) => Framing::Chunked,
@@ -187,6 +187,9 @@ pub(in crate::http::proxy) fn filtered<'a>(
     };
     if facts.transfer_encoding && head.find(Class::ContentLength).is_some() {
         edit(edits.remove(names::CONTENT_LENGTH));
+    }
+    for option in head.nominated(raw) {
+        edit(edits.remove_nominated(option));
     }
     for (class, name) in RESPONSE_HOP_BY_HOP {
         if facts.present & class.bit() != 0 {
