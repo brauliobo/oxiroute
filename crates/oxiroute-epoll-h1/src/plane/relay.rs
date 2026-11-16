@@ -311,7 +311,11 @@ impl<S: Service> Reactor<S> {
                     let limit = flow.timeouts.map(|timeouts| timeouts.body);
                     self.wait_for(token, client, Wait::Body, limit);
                 }
-                Read::Block => return Ok(progressed),
+                Read::Block => {
+                    let limit = flow.timeouts.map(|timeouts| timeouts.body);
+                    self.wait_for(token, client, Wait::Body, limit);
+                    return Ok(progressed);
+                }
                 Read::Eof | Read::Failed if matches!(relay.mode, Mode::UntilClose) => {
                     buffers.resp[..LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
                     relay.window = Window::new(0, LAST_CHUNK.len());
