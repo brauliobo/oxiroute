@@ -8,6 +8,7 @@ the HTTP listener, and checks the daemon without installing a service.
 | Goal | Guide | Result |
 | --- | --- | --- |
 | Run and verify a local instance | [Getting started](GETTING_STARTED.md) | HTTP `200` through the proxy and readable runtime state |
+| Install a release package | [Install](INSTALL.md) | A verified `.deb`, `.rpm` or tarball installed, with the service left for you to enable |
 | Understand the dashboard | [Dashboard](DASHBOARD.md) | Distinguish live traffic, configured objects, and stale samples |
 | Reload or operate the daemon | [Operations](OPERATING.md) | Check readiness, apply a generation, and inspect drains |
 | Add, remove, or evacuate workers | [Runbook](RUNBOOK.md) | Perform pool changes and recover from failures |

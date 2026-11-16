@@ -137,9 +137,10 @@ Remove `/tmp/oxiroute-local.kdl` if you created the copy and no longer need it.
 
 ## Install a package or continue
 
-The repository includes an Arch Linux package recipe. It installs the daemon, importer, management
-client, systemd metadata, examples, and `oxr` alias. It does not start or enable the service.
-Review [packaging instructions](../../packaging/arch/README.md) before installing or enabling it.
+Releases attach Debian and RPM packages and binary tarballs ([install a release package](INSTALL.md)), and the
+repository includes an Arch Linux package recipe. They install the daemon, importer, management client, systemd
+metadata and the `oxr` alias, and do not start or enable the service. Review
+[packaging instructions](../../packaging/arch/README.md) before installing the Arch package.
 
 - [Operations](OPERATING.md): health, reloads, generations, and drains.
 - [Dashboard](DASHBOARD.md): live telemetry and configuration state.

@@ -9,6 +9,7 @@ and failure behavior. Use the
 | You want to | Start with | Then |
 | --- | --- | --- |
 | Evaluate a local proxy | [Getting started](user/GETTING_STARTED.md) | [Dashboard](user/DASHBOARD.md), [operations](user/OPERATING.md) |
+| Install a release package | [Install](user/INSTALL.md) | [Getting started](user/GETTING_STARTED.md), [security](user/SECURITY.md) |
 | Operate a deployment | [User guides](user/README.md) | [Runbook](user/RUNBOOK.md), [security](user/SECURITY.md), [troubleshooting](user/TROUBLESHOOTING.md) |
 | Migrate another proxy | [Migration](user/MIGRATION.md) | [Compatibility](COMPATIBILITY.md), [import contract](IMPORT_SPEC.md) |
 | Publish or record media | [RTMP guide](user/RTMP.md) | [RTMP contract](RTMP_SPEC.md) |
