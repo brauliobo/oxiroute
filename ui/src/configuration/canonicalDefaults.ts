@@ -1,4 +1,6 @@
 import type {
+  CacheCompressionConfig,
+  CacheCompressionCoding,
   CacheStaleTrigger,
   CacheStoreConfig,
   ForwardHttpVersion,
@@ -57,6 +59,29 @@ export function defaultCacheStore(type: CacheStoreConfig['type']): CacheStoreCon
       }
 }
 
+export const CACHE_COMPRESSION_CODINGS: CacheCompressionCoding[] = ['zstd', 'br', 'gzip']
+
+export function defaultCacheCompression(): CacheCompressionConfig {
+  return {
+    codings: [...CACHE_COMPRESSION_CODINGS],
+    precompress: [],
+    content_types: [
+      'text/html',
+      'text/plain',
+      'text/css',
+      'text/javascript',
+      'application/javascript',
+      'application/json',
+      'application/xml',
+      'image/svg+xml',
+    ],
+    min_length_bytes: 256,
+    gzip_level: 6,
+    brotli_level: 5,
+    zstd_level: 7,
+  }
+}
+
 export function defaultHttpCachePolicy(store = ''): HttpCachePolicyConfig {
   return {
     store,
@@ -78,6 +103,7 @@ export function defaultHttpCachePolicy(store = ''): HttpCachePolicyConfig {
     vary_policy: 'respect',
     surrogate_tags: null,
     purge_authorization: null,
+    compression: null,
   }
 }
 

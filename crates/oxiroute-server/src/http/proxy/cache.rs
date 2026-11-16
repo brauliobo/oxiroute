@@ -248,12 +248,15 @@ pub(super) async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
         return;
     }
     let tag_refs = tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
-    let prepared =
-        transaction.prepare_response(status, &headers, Bytes::from(body), timing, &tag_refs);
-    let Ok(entry) = prepared else {
+    let body = Bytes::from(body);
+    let prepared = transaction.prepare_response(status, &headers, body.clone(), timing, &tag_refs);
+    let Ok(mut entry) = prepared else {
         transaction.complete_without_store();
         return;
     };
+    transaction
+        .precompress(&mut entry, status, &headers, &body)
+        .await;
     let _ = transaction.admit(entry).await;
 }
 

@@ -615,6 +615,7 @@ fn config_source_schema() -> syn::File {
     let mut schema = syn::parse_file("").expect("parse empty configuration schema");
     for path in [
         "crates/oxiroute-config/src/model/cache_store.rs",
+        "crates/oxiroute-config/src/model/compression.rs",
         "crates/oxiroute-config/src/model/core.rs",
         "crates/oxiroute-config/src/model/http.rs",
         "crates/oxiroute-config/src/model/rtmp.rs",

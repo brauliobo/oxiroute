@@ -12,6 +12,7 @@ use super::{BaseKey, CacheKey, PreparedEntry};
 
 pub(super) struct StoredEntry {
     pub(super) entry: Arc<PreparedEntry>,
+    pub(super) charge: usize,
     pub(super) last_access: u64,
 }
 
@@ -26,6 +27,10 @@ pub(super) struct Entries {
 impl Entries {
     pub(super) fn get(&self, key: &CacheKey) -> Option<&StoredEntry> {
         self.by_key.get(key)
+    }
+
+    pub(super) fn get_mut(&mut self, key: &CacheKey) -> Option<&mut StoredEntry> {
+        self.by_key.get_mut(key)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&CacheKey, &StoredEntry)> {
@@ -44,6 +49,7 @@ impl Entries {
     /// Stores `entry` as the most recent use. `access` must be newer than every stored sequence number.
     pub(super) fn insert(&mut self, entry: PreparedEntry, access: u64) {
         let key = entry.key.clone();
+        let charge = entry.charge;
         self.remove(&key);
         self.variants
             .entry(key.base().clone())
@@ -54,6 +60,7 @@ impl Entries {
             key,
             StoredEntry {
                 entry: Arc::new(entry),
+                charge,
                 last_access: access,
             },
         );

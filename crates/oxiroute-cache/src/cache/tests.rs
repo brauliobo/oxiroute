@@ -274,7 +274,7 @@ fn charged(cache: &Cache) -> (usize, usize) {
             let held = state
                 .entries
                 .iter()
-                .map(|(_, stored)| stored.entry.charge)
+                .map(|(_, stored)| stored.charge)
                 .collect::<Vec<_>>();
             (count + held.len(), bytes + held.iter().sum::<usize>())
         })

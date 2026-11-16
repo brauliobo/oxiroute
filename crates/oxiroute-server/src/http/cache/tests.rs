@@ -59,6 +59,7 @@ impl Fixture {
             surrogate_header: None,
             surrogate_limits: None,
             purge_access: None,
+            compression: None,
         });
         Self {
             clock,

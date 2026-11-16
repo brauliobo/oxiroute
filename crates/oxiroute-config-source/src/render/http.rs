@@ -657,6 +657,11 @@ impl Renderer {
             cache.surrogate_tags.as_ref(),
             Self::cache_surrogate_tags,
         );
+        if let Some(compression) = &cache.compression {
+            self.begin_table_field("compression");
+            self.cache_compression(compression);
+            self.end_table();
+        }
         match &cache.purge_authorization {
             Some(CachePurgeAuthorization::BearerTokenFile { token_file_path }) => {
                 self.begin_table_field("purge_authorization");
@@ -715,6 +720,19 @@ impl Renderer {
         self.string_field("response_header", &tags.response_header);
         self.integer_field("max_tags", tags.max_tags);
         self.integer_field("max_tag_bytes", tags.max_tag_bytes);
+    }
+
+    fn cache_compression(&mut self, compression: &HttpCacheCompression) {
+        let tokens = |codings: &[CacheCompressionCoding]| {
+            codings.iter().map(|coding| coding.token()).collect::<Vec<_>>()
+        };
+        self.string_list_field("codings", &tokens(&compression.codings));
+        self.string_list_or_nil_field("precompress", &tokens(&compression.precompress));
+        self.string_list_field("content_types", &compression.content_types);
+        self.integer_field("min_length_bytes", compression.min_length_bytes);
+        self.integer_field("gzip_level", compression.gzip_level);
+        self.integer_field("brotli_level", compression.brotli_level);
+        self.integer_field("zstd_level", compression.zstd_level);
     }
 
     fn http_upstream_host(&mut self, policy: &HttpUpstreamHost) {

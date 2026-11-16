@@ -295,6 +295,7 @@ impl Lowerer<'_> {
                 vary_policy: oxiroute_config::CacheVaryPolicy::default(),
                 surrogate_tags: None,
                 purge_authorization: None,
+                compression: None,
             }))
         } else {
             None

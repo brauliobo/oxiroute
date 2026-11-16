@@ -144,19 +144,59 @@ fieldset.object-block(:data-field="fieldPath")
           span Token file path
           input(type="text" v-model="cache.purge_authorization.token_file_path" autocomplete="off")
           small Authenticated configuration only; this path is suppressed from topology views.
+
+    fieldset.object-block(:data-field="`${fieldPath}.compression`")
+      legend Compressed variants
+      label.enable-row
+        input(type="checkbox" :checked="!!cache.compression" @change="toggleCompression")
+        span Store one compressed copy of each compressible response per negotiated coding
+      template(v-if="cache.compression")
+        fieldset.retry-triggers(:data-field="`${fieldPath}.compression.codings`")
+          legend Offered codings, most preferred first
+          label.enable-row(v-for="coding in CACHE_COMPRESSION_CODINGS" :key="coding")
+            input(type="checkbox" :checked="cache.compression.codings.includes(coding)" @change="toggleCoding(cache.compression, coding, $event)")
+            span {{ coding }}
+        fieldset.retry-triggers(:data-field="`${fieldPath}.compression.precompress`")
+          legend Compress when the response is stored
+          label.enable-row(v-for="coding in cache.compression.codings" :key="coding")
+            input(type="checkbox" :checked="cache.compression.precompress.includes(coding)" @change="toggleValue(cache.compression.precompress, coding, $event)")
+            span {{ coding }}
+        .field-grid
+          label.field(:data-field="`${fieldPath}.compression.content_types`")
+            span Content types, one per line
+            textarea(:value="cache.compression.content_types.join('\n')" rows="4" @input="setContentTypes")
+          label.field(:data-field="`${fieldPath}.compression.min_length_bytes`")
+            span Minimum body bytes
+            input(type="number" min="0" step="1" v-model.number="cache.compression.min_length_bytes")
+          label.field(:data-field="`${fieldPath}.compression.gzip_level`")
+            span Gzip level
+            input(type="number" min="1" max="12" step="1" v-model.number="cache.compression.gzip_level")
+          label.field(:data-field="`${fieldPath}.compression.brotli_level`")
+            span Brotli level
+            input(type="number" min="0" max="11" step="1" v-model.number="cache.compression.brotli_level")
+          label.field(:data-field="`${fieldPath}.compression.zstd_level`")
+            span Zstandard level
+            input(type="number" min="-7" max="19" step="1" v-model.number="cache.compression.zstd_level")
 </template>
 
 <script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type {
+  CacheCompressionConfig,
+  CacheCompressionCoding,
   CacheKeyComponentConfig,
   CachePredicateConfig,
   CacheStaleTrigger,
   HttpCachePolicyConfig,
 } from '../config'
 import CachePredicateRows from './CachePredicateRows.vue'
-import { CACHE_STALE_TRIGGERS, defaultHttpCachePolicy } from './canonicalDefaults'
+import {
+  CACHE_COMPRESSION_CODINGS,
+  CACHE_STALE_TRIGGERS,
+  defaultCacheCompression,
+  defaultHttpCachePolicy,
+} from './canonicalDefaults'
 
 const props = defineProps<{
   modelValue: HttpCachePolicyConfig | null | undefined
@@ -201,6 +241,35 @@ function toggleSurrogateTags(event: Event): void {
   props.modelValue.surrogate_tags = (event.target as HTMLInputElement).checked
     ? { response_header: 'surrogate-key', max_tags: 64, max_tag_bytes: 256 }
     : null
+}
+
+function toggleCompression(event: Event): void {
+  if (!props.modelValue) return
+  props.modelValue.compression = (event.target as HTMLInputElement).checked
+    ? defaultCacheCompression()
+    : null
+}
+
+function toggleCoding(
+  compression: CacheCompressionConfig,
+  coding: CacheCompressionCoding,
+  event: Event,
+): void {
+  if ((event.target as HTMLInputElement).checked) {
+    if (!compression.codings.includes(coding)) compression.codings.push(coding)
+  } else if (compression.codings.length > 1) {
+    compression.codings = compression.codings.filter((offered) => offered !== coding)
+    compression.precompress = compression.precompress.filter((offered) => offered !== coding)
+  }
+}
+
+function setContentTypes(event: Event): void {
+  const compression = props.modelValue?.compression
+  if (!compression) return
+  compression.content_types = (event.target as HTMLTextAreaElement).value
+    .split('\n')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
 }
 
 function togglePurgeAuthorization(event: Event): void {

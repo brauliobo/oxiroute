@@ -16,6 +16,7 @@ use crate::{
         StaticFilesBlueprint,
     },
     service_plan::ListenerPlane,
+    http::cache::CompressionPolicy,
 };
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub(crate) struct CachePolicyBlueprint {
     pub(crate) surrogate_header: Option<HeaderName>,
     pub(crate) surrogate_limits: Option<(usize, usize)>,
     pub(crate) purge_authorization: Option<CachePurgeAuthorization>,
+    pub(crate) compression: Option<CompressionPolicy>,
 }
 
 #[derive(Clone)]

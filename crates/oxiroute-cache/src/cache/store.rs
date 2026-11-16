@@ -216,6 +216,7 @@ impl Cache {
             validators,
             response_received: timing.response_received,
             charge,
+            variants: Variants::default(),
         })
     }
 
@@ -510,11 +511,12 @@ impl Cache {
             validators: entry.validators,
             response_received: entry.response_received,
             charge: entry.charge,
+            variants: Variants::default(),
         };
         let mut state = self.shared.shard(entry.key.base()).lock();
         let mut delta = state.insert_entry(entry);
         drop(state);
-        self.shared.evict_to_bounds(&mut delta);
+        self.shared.evict_to_bounds(&mut delta, None);
         delta
     }
 

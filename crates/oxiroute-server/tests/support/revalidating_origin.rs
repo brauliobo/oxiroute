@@ -149,5 +149,6 @@ pub fn memory_cache_policy() -> HttpCachePolicy {
         vary_policy: CacheVaryPolicy::default(),
         surrogate_tags: None,
         purge_authorization: None,
+        compression: None,
     }
 }

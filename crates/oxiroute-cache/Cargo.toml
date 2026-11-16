@@ -13,6 +13,7 @@ crc32fast = "1.5.4"
 http.workspace = true
 httpdate.workspace = true
 oxiroute-cpu = { path = "../oxiroute-cpu", features = ["std"] }
+oxiroute-compress = { path = "../oxiroute-compress" }
 rustix.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }

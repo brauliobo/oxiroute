@@ -88,6 +88,7 @@ import type {
   CacheStaleTrigger,
   CachePredicateConfig,
   CacheSurrogateTagsConfig,
+  CacheCompressionConfig,
   CachePurgeAuthorizationConfig,
   HttpCachePolicyConfig,
   HttpLiteralHeaderConfig,
@@ -522,7 +523,17 @@ function isHttpCachePolicy(value: unknown): value is HttpCachePolicyConfig {
       safeInteger(value.surrogate_tags.max_tags) && safeInteger(value.surrogate_tags.max_tag_bytes))) &&
     (value.purge_authorization === null || (isRecord(value.purge_authorization) &&
       value.purge_authorization.type === 'bearer_token_file' &&
-      typeof value.purge_authorization.token_file_path === 'string'))
+      typeof value.purge_authorization.token_file_path === 'string')) &&
+    (value.compression === undefined || value.compression === null || isCacheCompression(value.compression))
+}
+
+function isCacheCompression(value: unknown): value is CacheCompressionConfig {
+  const codings = ['zstd', 'br', 'gzip']
+  return isRecord(value) && arrayOf(value.codings, (entry) => codings.includes(String(entry))) &&
+    arrayOf(value.precompress, (entry) => codings.includes(String(entry))) &&
+    arrayOf(value.content_types, isString) && safeInteger(value.min_length_bytes) &&
+    integerInRange(value.gzip_level, 1, 12) && integerInRange(value.brotli_level, 0, 11) &&
+    integerInRange(value.zstd_level, -7, 19)
 }
 
 function isCacheKeyComponent(value: unknown): value is CacheKeyComponentConfig {

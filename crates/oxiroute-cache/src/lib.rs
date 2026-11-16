@@ -11,7 +11,7 @@ mod policy;
 pub use cache::{
     Cache, CacheConfig, CacheError, CacheResponse, CacheStats, CachedResponse, FillGuard, FillJoin,
     FillOutcome, FillWaiter, FreshHit, Lookup, LookupStatus, PreparedEntry, PurgeResult,
-    StoreOutcome,
+    StoreOutcome, Variants,
 };
 pub use clock::{Clock, MonoTime, SystemClock};
 pub use disk::{

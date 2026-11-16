@@ -675,6 +675,7 @@ fn cache_policy(purge_token: PathBuf) -> HttpProxyPolicy {
             purge_authorization: Some(CachePurgeAuthorization::BearerTokenFile {
                 token_file_path: purge_token,
             }),
+            compression: None,
         })),
         ..HttpProxyPolicy::default()
     }

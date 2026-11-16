@@ -30,6 +30,7 @@ mod entries;
 mod flight;
 mod store;
 mod types;
+mod variants;
 
 pub use config::*;
 use entries::{Entries, StoredEntry};
@@ -37,6 +38,7 @@ use entries::{Entries, StoredEntry};
 use flight::*;
 pub use store::*;
 pub use types::*;
+pub use variants::Variants;
 
 #[cfg(test)]
 mod tests;

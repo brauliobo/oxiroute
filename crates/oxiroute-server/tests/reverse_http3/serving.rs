@@ -327,6 +327,7 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
             vary_policy: oxiroute_config::CacheVaryPolicy::default(),
             surrogate_tags: None,
             purge_authorization: None,
+            compression: None,
         })),
         ..HttpProxyPolicy::default()
     };

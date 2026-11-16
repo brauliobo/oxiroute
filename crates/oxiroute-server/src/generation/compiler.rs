@@ -16,6 +16,7 @@ use crate::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },
+    http::cache::CompressionPolicy,
     rtmp::value_plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
     service_plan::DataPlanePolicy,
@@ -137,6 +138,7 @@ fn compile_forward_blueprints(
                 .cache
                 .as_deref()
                 .map(|policy| {
+                    reject_forward_compression(policy)?;
                     compile_cache_policy_values(config, &service.name, 0, false, false, &[], policy)
                 })
                 .transpose()?;
@@ -447,6 +449,17 @@ fn compile_http_route_blueprint(
     })
 }
 
+fn reject_forward_compression(
+    policy: &oxiroute_config::HttpCachePolicy,
+) -> Result<(), ServicePlanError> {
+    if policy.compression.is_some() {
+        return Err(ServicePlanError::RuntimePolicyUnavailable {
+            policy: "forward_proxy_services[].header_policy.cache.compression",
+        });
+    }
+    Ok(())
+}
+
 fn compile_cache_policy_blueprint(
     config: &oxiroute_config::ConfigDraft,
     service: &oxiroute_config::HttpService,
@@ -555,6 +568,12 @@ fn compile_cache_policy_values(
             service: service.to_owned(),
             route: route_index,
         })?;
+    if policy.compression.is_some() && matches!(config.cache_stores[store], CacheStore::Disk { .. })
+    {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.compression_on_disk_store",
+        ));
+    }
     let timeline = CacheTimeline::new(
         policy.use_origin_cache_control,
         Duration::from_millis(policy.default_ttl_ms),
@@ -594,6 +613,7 @@ fn compile_cache_policy_values(
         surrogate_header,
         surrogate_limits,
         purge_authorization: policy.purge_authorization.clone(),
+        compression: policy.compression.as_ref().map(CompressionPolicy::compile),
     })
 }
 

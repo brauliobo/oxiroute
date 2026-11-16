@@ -51,7 +51,7 @@ impl FillGuard {
             flight.signal.send_replace(FillOutcome::Stored);
         }
         drop(state);
-        shared.evict_to_bounds(&mut delta);
+        shared.evict_to_bounds(&mut delta, None);
         self.active = false;
         ClaimedStoreOutcome::Stored(delta)
     }
@@ -124,19 +124,21 @@ impl Shared {
         &self.shards[usize::from(hash.to_le_bytes()[0]) & (SHARDS - 1)]
     }
 
-    /// Evicts the least recently used representations of the whole cache until its bounds hold again. The victim is the
-    /// head of the shard whose head is oldest; no shard is locked while another is.
-    pub(super) fn evict_to_bounds(&self, delta: &mut InsertionDelta) {
+    /// Evicts the least recently used representations of the whole cache, except `keep`, until its bounds hold again,
+    /// which is whether they do. The victim is the head of the shard whose head is oldest; no shard is locked while
+    /// another is.
+    pub(super) fn evict_to_bounds(&self, delta: &mut InsertionDelta, keep: Option<&CacheKey>) -> bool {
         while self.usage.exceeds(&self.config) {
             let Some(victim) = self.shards.iter().min_by_key(|shard| shard.oldest_access()) else {
-                return;
+                return false;
             };
-            let Some(key) = victim.lock().evict_oldest() else {
-                return;
+            let Some(key) = victim.lock().evict_oldest(keep) else {
+                return false;
             };
             delta.removed.push(key);
             delta.evicted += 1;
         }
+        true
     }
 }
 
@@ -192,7 +194,7 @@ impl State {
         let stored = self.entries.remove(key)?;
         self.usage
             .bytes
-            .fetch_sub(stored.entry.charge, Ordering::Relaxed);
+            .fetch_sub(stored.charge, Ordering::Relaxed);
         self.usage.entries.fetch_sub(1, Ordering::Relaxed);
         Some(stored)
     }
@@ -231,8 +233,11 @@ impl State {
             .collect()
     }
 
-    fn evict_oldest(&mut self) -> Option<CacheKey> {
+    fn evict_oldest(&mut self, keep: Option<&CacheKey>) -> Option<CacheKey> {
         let key = self.entries.least_recently_used()?.1.clone();
+        if keep == Some(&key) {
+            return None;
+        }
         self.remove_entry(&key);
         self.stats.evictions = self.stats.evictions.saturating_add(1);
         Some(key)
@@ -455,6 +460,7 @@ pub(super) fn response_snapshot(entry: &PreparedEntry, age: Duration) -> CachedR
         headers,
         body: entry.body.clone(),
         age,
+        variants: entry.variants.clone(),
     }
 }
 

@@ -14,6 +14,7 @@ pub struct PreparedEntry {
     pub(crate) validators: Validators,
     pub(crate) response_received: MonoTime,
     pub(crate) charge: usize,
+    pub(crate) variants: Variants,
 }
 
 pub(crate) struct RecoveredEntry {
@@ -57,6 +58,7 @@ pub struct CachedResponse {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub age: Duration,
+    pub variants: Variants,
 }
 
 /// The stored representation that answers a request while fresh, shared with the cache: reading it copies nothing.
@@ -237,7 +239,7 @@ impl PurgeResult {
     pub(super) fn remove(&mut self, state: &mut State, key: &CacheKey) {
         if let Some(stored) = state.remove_entry(key) {
             self.entries += 1;
-            self.bytes = self.bytes.saturating_add(stored.entry.charge);
+            self.bytes = self.bytes.saturating_add(stored.charge);
         }
     }
 

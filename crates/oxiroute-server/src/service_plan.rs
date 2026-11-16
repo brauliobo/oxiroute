@@ -18,7 +18,9 @@ use crate::{
         AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, PoolSelectPlan, ProxyActionPlan,
         ProxyPolicyPlan, RouteAccess, StaticFilesPlan,
     },
-    http::cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
+    http::cache::{
+        CacheCompression, CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan,
+    },
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };
