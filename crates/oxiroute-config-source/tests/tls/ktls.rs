@@ -1,3 +1,4 @@
+#[path = "../lua_support/mod.rs"]
 mod lua_support;
 
 use std::path::Path;

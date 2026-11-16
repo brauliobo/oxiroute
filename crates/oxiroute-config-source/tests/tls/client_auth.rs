@@ -1,3 +1,4 @@
+#[path = "../lua_support/mod.rs"]
 mod lua_support;
 
 use lua_support::{load_lua, render_lua};

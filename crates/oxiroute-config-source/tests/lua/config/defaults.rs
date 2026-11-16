@@ -123,7 +123,7 @@ fn rejects_an_unbounded_udp_policy() {
 
 #[test]
 fn loads_the_distributed_example_configuration() {
-    let config = load_lua(include_str!("../../../../oxiroute.example.lua"))
+    let config = load_lua(include_str!("../../../../../oxiroute.example.lua"))
         .expect("distributed example must remain valid");
 
     assert_eq!(config.listeners.len(), 3);

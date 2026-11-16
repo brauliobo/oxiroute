@@ -20,5 +20,49 @@ thiserror.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+[[test]]
+name = "listener_h2_windows_formats"
+path = "tests/listener/h2_windows_formats.rs"
+
+[[test]]
+name = "listener_ipv6_only_formats"
+path = "tests/listener/ipv6_only_formats.rs"
+
+[[test]]
+name = "listener_workers_formats"
+path = "tests/listener/workers_formats.rs"
+
+[[test]]
+name = "lua_config"
+path = "tests/lua/config/main.rs"
+
+[[test]]
+name = "lua_diagnostics"
+path = "tests/lua/diagnostics.rs"
+
+[[test]]
+name = "lua_errors"
+path = "tests/lua/errors.rs"
+
+[[test]]
+name = "lua_render"
+path = "tests/lua/render/main.rs"
+
+[[test]]
+name = "tls_backend_formats"
+path = "tests/tls/backend_formats.rs"
+
+[[test]]
+name = "tls_client_auth"
+path = "tests/tls/client_auth.rs"
+
+[[test]]
+name = "tls_key_exchange_formats"
+path = "tests/tls/key_exchange_formats.rs"
+
+[[test]]
+name = "tls_ktls"
+path = "tests/tls/ktls.rs"
+
 [lints]
 workspace = true

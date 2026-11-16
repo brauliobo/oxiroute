@@ -1,6 +1,6 @@
+#[path = "../../lua_support/mod.rs"]
 mod lua_support;
 
-#[path = "lua_render/pool_bounds.rs"]
 mod pool_bounds;
 
 use std::{net::SocketAddr, path::PathBuf};

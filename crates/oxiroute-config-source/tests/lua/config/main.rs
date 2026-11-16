@@ -2,7 +2,7 @@ mod certificates;
 mod common;
 mod defaults;
 mod endpoints;
-#[path = "../lua_support/mod.rs"]
+#[path = "../../lua_support/mod.rs"]
 mod lua_support;
 mod routes;
 mod schema;
