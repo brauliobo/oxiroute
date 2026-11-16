@@ -1,4 +1,4 @@
-//! The read-only status page JSON: one place assembles it, `status_check` decides how bad it is.
+//! The read-only status page JSON: one place assembles it, `check` decides how bad it is.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use crate::{
     ApiResponse, GenerationManager, GenerationStatus, PoolHealthSnapshot, RuntimeMetrics,
     RuntimeSnapshot,
     http::inflight::{InflightTotals, PoolInflight, registry},
-    observability::status_check::Thresholds,
+    observability::status::check::Thresholds,
     registry::service::{RegistrationStatus, RegistrationView, RegistryService, RegistryStatus},
     routing::{CanaryResult, CanarySnapshot},
     rtmp::api::dto::ReadinessResponse,

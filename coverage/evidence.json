@@ -229,8 +229,8 @@
         "crates/oxiroute-import/tests/squid/peers.rs#cache_peer_credentials_become_typed_secret_facts",
         "crates/oxiroute-import/tests/squid/semantics.rs#cache_policy_and_storage_are_classified_without_placeholders",
         "crates/oxiroute-server/tests/cli_import.rs#import_previews_default_to_kdl_and_round_trip_every_format",
-        "crates/oxiroute-server/tests/forward_proxy_h1.rs#imported_squid_candidate_serves_authenticated_http_over_daemon",
-        "crates/oxiroute-server/tests/forward_proxy_h1.rs#imported_squid_authentication_rejects_missing_credentials"
+        "crates/oxiroute-server/tests/forward_proxy_h1/squid.rs#imported_squid_candidate_serves_authenticated_http_over_daemon",
+        "crates/oxiroute-server/tests/forward_proxy_h1/squid.rs#imported_squid_authentication_rejects_missing_credentials"
       ]
     },
     {
@@ -274,7 +274,7 @@
       "tests": [
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_absolute_form_crosses_a_real_http_connection",
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_connect_ipv6_authority_crosses_a_real_http_connection",
-        "crates/oxiroute-server/tests/forward_proxy_h1.rs#basic_authenticated_absolute_form_and_connect_cross_the_runtime_listener",
+        "crates/oxiroute-server/tests/forward_proxy_h1/basic_auth.rs#basic_authenticated_absolute_form_and_connect_cross_the_runtime_listener",
         "crates/oxiroute-forward-proxy/tests/h2_wire.rs#h2_forward_and_connect_cross_real_frames",
         "crates/oxiroute-server/tests/forward_proxy_h2.rs#daemon_accepts_tls_h2_connect_and_relays_stream_data",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#h3_absolute_target_crosses_quic_tls_and_h3_frames",

@@ -31,7 +31,7 @@ if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then
   exit 1
 fi
 
-"${package_dir}/test-service.sh"
+"${package_dir}/test/service.sh"
 
 mkdir -p -- "${source_dir}" "${work_dir}/build" "${work_dir}/packages"
 cached_archive="${source_dir}/${archive_name}"

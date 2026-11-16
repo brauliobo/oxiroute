@@ -44,9 +44,15 @@ fieldset.route-list(v-if="config.stats" data-field="stats.pages")
       label.field(data-field="stats.pages[].max_connections")
         span Maximum connections
         input(type="number" min="1" step="1" :value="page.max_connections ?? ''" placeholder="Unbounded" @input="page.max_connections = nullableIntegerInput($event)")
-      label.field(v-for="timeout in TIMEOUTS" :key="timeout.field" :data-field="`stats.pages[].downstream_timeouts.${timeout.field}`")
-        span {{ timeout.label }}
-        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts[timeout.field] ?? ''" :placeholder="timeout.placeholder" @input="page.downstream_timeouts[timeout.field] = nullableIntegerInput($event)")
+      label.field(data-field="stats.pages[].downstream_timeouts.client_timeout_ms")
+        span Client timeout (milliseconds)
+        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.client_timeout_ms ?? ''" placeholder="No timeout" @input="page.downstream_timeouts.client_timeout_ms = nullableIntegerInput($event)")
+      label.field(data-field="stats.pages[].downstream_timeouts.request_timeout_ms")
+        span Request-header timeout (milliseconds)
+        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.request_timeout_ms ?? ''" placeholder="Inherit client timeout" @input="page.downstream_timeouts.request_timeout_ms = nullableIntegerInput($event)")
+      label.field(data-field="stats.pages[].downstream_timeouts.keepalive_timeout_ms")
+        span Keep-alive timeout (milliseconds)
+        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.keepalive_timeout_ms ?? ''" placeholder="Runtime default" @input="page.downstream_timeouts.keepalive_timeout_ms = nullableIntegerInput($event)")
     small The page is public and adds no routes beyond its URI prefix. Localhost administration accepts only same-origin loopback requests.
 </template>
 
@@ -55,14 +61,7 @@ import type { CanonicalConfig } from '../../config'
 import { nullableInput, nullableIntegerInput } from './inputValues'
 import SectionHeading from './SectionHeading.vue'
 
-type StatsPage = NonNullable<CanonicalConfig['stats']>['pages'][number]
-
 const MAX_BINDS_AND_PAGES = 8
-const TIMEOUTS: Array<{ field: keyof StatsPage['downstream_timeouts']; label: string; placeholder: string }> = [
-  { field: 'client_timeout_ms', label: 'Client timeout (milliseconds)', placeholder: 'No timeout' },
-  { field: 'request_timeout_ms', label: 'Request-header timeout (milliseconds)', placeholder: 'Inherit client timeout' },
-  { field: 'keepalive_timeout_ms', label: 'Keep-alive timeout (milliseconds)', placeholder: 'Runtime default' },
-]
 
 const props = defineProps<{ config: CanonicalConfig }>()
 

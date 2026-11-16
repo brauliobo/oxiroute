@@ -26,7 +26,7 @@ pub(crate) struct StaticFile {
 
 impl StaticFile {
     /// Reads a small file into memory so that serving it needs no further file access.
-    pub(super) fn load(self) -> Result<Self, StaticServeError> {
+    pub(in crate::http::action) fn load(self) -> Result<Self, StaticServeError> {
         Ok(Self {
             content: self.content.load(self.size)?,
             ..self
@@ -44,7 +44,7 @@ pub(crate) enum StaticTarget {
 }
 
 impl StaticTarget {
-    pub(super) fn load(self) -> Result<Self, StaticServeError> {
+    pub(in crate::http::action) fn load(self) -> Result<Self, StaticServeError> {
         match self {
             Self::File(file) => file.load().map(Self::File),
             other => Ok(other),
@@ -84,7 +84,9 @@ pub(crate) enum StaticServeError {
     Unavailable,
 }
 
-pub(super) fn open_pinned_directory(path: &Path) -> Result<OwnedFd, rustix::io::Errno> {
+pub(in crate::http::action) fn open_pinned_directory(
+    path: &Path,
+) -> Result<OwnedFd, rustix::io::Errno> {
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
     let mut directory = rustix_fs::open(Path::new("/"), flags, Mode::empty())?;
     for component in path.components() {
@@ -99,7 +101,7 @@ pub(super) fn open_pinned_directory(path: &Path) -> Result<OwnedFd, rustix::io::
     Ok(directory)
 }
 
-pub(super) fn read_static_target(
+pub(in crate::http::action) fn read_static_target(
     root: &OwnedFd,
     components: &[OsString],
     policy: &StaticDirectoryPolicy,
@@ -213,7 +215,7 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
     })
 }
 
-pub(super) fn nginx_static_etag(modified: i64, size: u64) -> HeaderValue {
+pub(in crate::http::action) fn nginx_static_etag(modified: i64, size: u64) -> HeaderValue {
     HeaderValue::from_str(&format!("\"{modified:x}-{size:x}\""))
         .expect("stat fields produce a valid ETag")
 }
@@ -341,7 +343,7 @@ fn same_file_snapshot(first: &rustix_fs::Stat, second: &rustix_fs::Stat) -> bool
         && first.st_ctime_nsec == second.st_ctime_nsec
 }
 
-pub(super) fn read_secret_file(
+pub(in crate::http::action) fn read_secret_file(
     path: &Path,
     max_bytes: usize,
 ) -> Result<Zeroizing<Vec<u8>>, AccessPreflightError> {
@@ -374,7 +376,9 @@ pub(super) fn read_secret_file(
     Ok(bytes)
 }
 
-pub(super) fn request_components(path: &str) -> Result<Vec<OsString>, StaticServeError> {
+pub(in crate::http::action) fn request_components(
+    path: &str,
+) -> Result<Vec<OsString>, StaticServeError> {
     path.trim_start_matches('/')
         .split('/')
         .filter(|component| !component.is_empty())
@@ -394,7 +398,7 @@ pub(super) fn request_components(path: &str) -> Result<Vec<OsString>, StaticServ
         .collect()
 }
 
-pub(super) fn path_components(path: &Path) -> Result<Vec<OsString>, ()> {
+pub(in crate::http::action) fn path_components(path: &Path) -> Result<Vec<OsString>, ()> {
     let mut components = Vec::new();
     for component in path.components() {
         match component {

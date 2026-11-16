@@ -15,11 +15,8 @@ use zeroize::Zeroizing;
 
 mod acme;
 mod certbot;
-mod certbot_reconcile;
-mod certbot_watcher;
 mod certificate;
-mod file_reconcile;
-mod file_watcher;
+mod file;
 mod tls_alpn;
 mod upstream;
 mod watcher_engine;
@@ -28,24 +25,24 @@ pub use acme::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
     AcmeManagedReconciler, AcmeManagedStatus,
 };
-pub use certbot::{CertbotCandidate, CertbotLineage};
-pub use certbot_reconcile::{
+pub use certbot::reconcile::{
     CertbotActivationDirection, CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler,
     CertbotReconcilerStatus,
 };
-pub use certbot_watcher::{
+pub use certbot::watcher::{
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherStatus,
     CertbotWatcherSupervisor,
 };
+pub use certbot::{CertbotCandidate, CertbotLineage};
 pub(crate) use certificate::CompiledTlsProfilePolicy;
 pub use certificate::{
     ActiveCertificateGeneration, CertificateGeneration, CertificateMetadata,
     CertificatePublishError, CertificateValidity, TlsProfilePlan,
 };
-pub use file_reconcile::{
+pub use file::reconcile::{
     FileReconcileError, FileReconcileOutcome, FileReconciler, FileReconcilerStatus,
 };
-pub use file_watcher::{
+pub use file::watcher::{
     FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
     FileWatcherSupervisor,
 };

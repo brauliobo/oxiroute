@@ -3,19 +3,19 @@ use super::*;
 
 #[derive(Debug)]
 pub(crate) struct StaticFilesPlan {
-    pub(super) root: Arc<OwnedFd>,
-    pub(super) directory_policy: StaticDirectoryPolicy,
-    pub(super) fallback: Option<Box<[OsString]>>,
-    pub(super) mapping: HttpStaticPathMapping,
-    pub(super) mount_path: String,
-    pub(super) directory_redirects: bool,
-    pub(super) try_files: Box<[StaticTryFilePlan]>,
-    pub(super) etag: bool,
-    pub(super) mime: HashMap<String, HeaderValue>,
-    pub(super) default_type: Option<HeaderValue>,
-    pub(super) headers: Box<[(HeaderName, HeaderValue, bool)]>,
-    pub(super) error_responses: HashMap<u16, StaticErrorResponsePlan>,
-    pub(super) cache: StaticCache,
+    pub(in crate::http::action) root: Arc<OwnedFd>,
+    pub(in crate::http::action) directory_policy: StaticDirectoryPolicy,
+    pub(in crate::http::action) fallback: Option<Box<[OsString]>>,
+    pub(in crate::http::action) mapping: HttpStaticPathMapping,
+    pub(in crate::http::action) mount_path: String,
+    pub(in crate::http::action) directory_redirects: bool,
+    pub(in crate::http::action) try_files: Box<[StaticTryFilePlan]>,
+    pub(in crate::http::action) etag: bool,
+    pub(in crate::http::action) mime: HashMap<String, HeaderValue>,
+    pub(in crate::http::action) default_type: Option<HeaderValue>,
+    pub(in crate::http::action) headers: Box<[(HeaderName, HeaderValue, bool)]>,
+    pub(in crate::http::action) error_responses: HashMap<u16, StaticErrorResponsePlan>,
+    pub(in crate::http::action) cache: StaticCache,
 }
 
 #[derive(Clone, Debug)]
@@ -48,15 +48,15 @@ pub(crate) enum StaticRequestDecision {
     reason = "directory listing, timestamp, size, and nginx index behavior are independent policies"
 )]
 pub(crate) struct StaticDirectoryPolicy {
-    pub(super) indexes: Box<[OsString]>,
-    pub(super) autoindex: bool,
-    pub(super) exact_size: bool,
-    pub(super) local_time: bool,
-    pub(super) internal_index_redirects: bool,
+    pub(in crate::http::action) indexes: Box<[OsString]>,
+    pub(in crate::http::action) autoindex: bool,
+    pub(in crate::http::action) exact_size: bool,
+    pub(in crate::http::action) local_time: bool,
+    pub(in crate::http::action) internal_index_redirects: bool,
 }
 
 impl StaticDirectoryPolicy {
-    pub(super) fn disabled() -> Self {
+    pub(in crate::http::action) fn disabled() -> Self {
         Self {
             indexes: Box::new([]),
             autoindex: false,

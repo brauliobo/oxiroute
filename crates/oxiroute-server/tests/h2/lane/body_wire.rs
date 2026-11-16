@@ -1,20 +1,9 @@
-#![cfg(unix)]
-#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 //! Requests with a body on the HTTP/2 lane against the classic path: the same uploads go over TLS to two real
 //! `oxiroute` processes, one with the lane (the default) and one with `http_fast_lane` off, in front of origins that
 //! record what they receive. What a client or an origin can observe must be identical: the response, the request head
 //! and every body byte the origin got, whether the origin connection was reused, and how an upload that ends badly
 //! (an early answer, a client reset, a length that does not match) ends. The lane process also says which streams it
 //! served, so a case cannot pass because both sides took the classic path.
-
-#[path = "support/config.rs"]
-mod config_support;
-#[path = "support/fixtures.rs"]
-mod fixture_support;
-#[path = "support/process.rs"]
-mod process_support;
-#[path = "support/mod.rs"]
-mod wire_support;
 
 use std::{
     future::poll_fn,
@@ -26,17 +15,20 @@ use std::{
     time::Duration,
 };
 
+use crate::wire_support::{PROXY_SERVER_NAME, tls_connect};
+use crate::{
+    process_support::{ServerProcess, reserve_tcp_address},
+    wire_support,
+};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{AlpnProtocol, ConfigDraft, HttpVersionPolicy};
-use process_support::{ServerProcess, reserve_tcp_address};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
     task::JoinHandle,
     time::{sleep, timeout},
 };
-use wire_support::{PROXY_SERVER_NAME, tls_connect};
 
 const STEP: Duration = Duration::from_secs(10);
 const SERVED: &str = "served by the HTTP/2 lane";

@@ -6,6 +6,5 @@ pub(crate) mod operational_event;
 pub(crate) mod prometheus;
 pub(crate) mod stats;
 pub(crate) mod stats_page;
-pub(crate) mod status_check;
-pub(crate) mod status_summary;
+pub(crate) mod status;
 pub(crate) mod upstream_stats;

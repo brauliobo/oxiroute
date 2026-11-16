@@ -8,7 +8,7 @@ use std::{
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{
+use crate::tls::{
     FileReconciler,
     certificate::PublicationGate,
     watcher_engine::{
@@ -17,7 +17,7 @@ use super::{
     },
 };
 
-pub use super::certbot_watcher::CertbotWatcherConfig as FileWatcherConfig;
+pub use crate::tls::certbot::watcher::CertbotWatcherConfig as FileWatcherConfig;
 
 const MAX_RECONCILERS: usize = 256;
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(1);

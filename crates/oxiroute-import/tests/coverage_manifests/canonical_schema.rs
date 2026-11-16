@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashSet},
     fs,
+    path::{Path, PathBuf},
 };
 
 use syn::{Attribute, Fields, GenericArgument, Item, PathArguments, Type};
@@ -434,14 +435,8 @@ fn ui_registry_fields() -> BTreeSet<String> {
 
 fn ui_control_fields() -> BTreeSet<String> {
     let mut paths = vec![workspace_path("ui/src/ConfigurationWorkspace.vue")];
-    let mut editors = fs::read_dir(workspace_path("ui/src/configuration"))
-        .expect("read modular configuration editors")
-        .map(|entry| entry.expect("read configuration editor entry").path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("vue"))
-        })
-        .collect::<Vec<_>>();
+    let mut editors = Vec::new();
+    collect_vue_sources(&workspace_path("ui/src/configuration"), &mut editors);
     editors.sort();
     paths.extend(editors);
     let sources = paths
@@ -493,6 +488,20 @@ fn ui_control_fields() -> BTreeSet<String> {
         }
     }
     controls
+}
+
+fn collect_vue_sources(directory: &Path, found: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(directory).expect("read modular configuration editors") {
+        let path = entry.expect("read configuration editor entry").path();
+        if path.is_dir() {
+            collect_vue_sources(&path, found);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("vue"))
+        {
+            found.push(path);
+        }
+    }
 }
 
 fn component_field_paths(source: &str, component: &str) -> Vec<String> {

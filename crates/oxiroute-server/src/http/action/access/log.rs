@@ -3,6 +3,9 @@ use super::*;
 
 mod sink;
 
+#[cfg(test)]
+mod tests;
+
 use crate::label::Label;
 pub(super) use sink::QUEUE_CAPACITY_LINES as ACCESS_LOG_QUEUE_CAPACITY;
 use sink::Rejected;

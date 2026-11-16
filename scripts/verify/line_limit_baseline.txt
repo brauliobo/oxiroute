@@ -2,7 +2,6 @@
 2481 crates/oxiroute-import/tests/nginx_lower.rs
 1092 crates/oxiroute-import/tests/nginx_rtmp.rs
 1039 crates/oxiroute-server/src/http/proxy/lane/proxy.rs
-1711 crates/oxiroute-server/tests/forward_proxy_h1.rs
 7918 crates/oxiroute-server/tests/http_proxy_routing.rs
 2104 crates/oxiroute-server/tests/process_management.rs
 1627 crates/oxiroute-server/tests/service_plan.rs

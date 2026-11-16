@@ -53,7 +53,7 @@ pub(super) fn handle(
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
         Route::StatusJson => {
-            crate::observability::status_summary::status_json_response(metrics, generations)
+            crate::observability::status::summary::status_json_response(metrics, generations)
         }
         Route::Capabilities => capabilities_response(metrics),
     }
