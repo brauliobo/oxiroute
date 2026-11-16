@@ -1,7 +1,6 @@
 import { computed, type Ref } from 'vue'
 
 import {
-  DEFAULT_TLS_BACKEND,
   type CacheStoreConfig,
   type CanonicalConfig,
   type ListenerConfig,
@@ -202,7 +201,7 @@ export function useConfigurationNavigation(
             session_timeout_seconds: null,
             session_tickets: false,
             prefer_server_ciphers: true,
-            backend: DEFAULT_TLS_BACKEND,
+            backend: null,
             ktls: 'auto',
           },
         })

@@ -451,13 +451,11 @@ impl Renderer {
         }
         self.boolean_field("session_tickets", policy.session_tickets);
         self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
-        self.string_field(
-            "backend",
-            match policy.backend {
-                oxiroute_config::TlsBackend::Openssl => "openssl",
-                oxiroute_config::TlsBackend::Rustls => "rustls",
-            },
-        );
+        match policy.backend {
+            Some(oxiroute_config::TlsBackend::Openssl) => self.string_field("backend", "openssl"),
+            Some(oxiroute_config::TlsBackend::Rustls) => self.string_field("backend", "rustls"),
+            None => self.nil_field("backend"),
+        }
         if let Some(groups) = &policy.key_exchange_groups {
             let names = groups.iter().map(|group| group.name()).collect::<Vec<_>>();
             self.string_list_field("key_exchange_groups", &names);

@@ -133,15 +133,12 @@ export interface TlsPolicyConfig {
   session_timeout_seconds: number | null
   session_tickets: boolean
   prefer_server_ciphers: boolean
-  backend: TlsBackend
+  backend?: TlsBackend | null
   key_exchange_groups?: string[] | null
   ktls: KtlsMode
 }
 
 export type TlsBackend = 'openssl' | 'rustls'
-
-/** The backend of a new TLS profile; the server's `TlsBackend::default()` is the same value. */
-export const DEFAULT_TLS_BACKEND: TlsBackend = 'openssl'
 
 export type KtlsMode = 'off' | 'auto'
 

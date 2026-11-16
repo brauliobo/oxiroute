@@ -43,7 +43,7 @@ async fn with_listener<T>(
         None,
         HttpVersionPolicy::default(),
     );
-    config.tls_profiles[0].policy.backend = backend;
+    config.tls_profiles[0].policy.backend = Some(backend);
     policy(&mut config.tls_profiles[0].policy);
     let proxy = ProxyHarness::start(&config.validate(), reserved);
     let result = test(&proxy).await;
@@ -79,7 +79,7 @@ async fn a_cipher_list_picks_the_same_tls12_suite_on_both_backends() {
         for cipher_list in [
             "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384",
             "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256",
-            "DHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384",
+            "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256",
             "HIGH:!aNULL:!MD5",
             "ECDHE+AESGCM:!kRSA",
             "ECDHE-ECDSA-CHACHA20-POLY1305:HIGH:@STRENGTH",

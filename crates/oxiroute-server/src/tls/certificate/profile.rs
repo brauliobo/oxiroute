@@ -1,6 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod backend;
 mod rustls_backend;
 
 /// The TLS 1.3 tickets sent per full handshake when something can redeem them. Browsers use a ticket once and get a
@@ -20,6 +21,7 @@ pub(crate) struct CompiledTlsProfilePolicy {
     session_tickets: bool,
     prefer_server_ciphers: bool,
     ktls: KtlsMode,
+    backend: TlsBackend,
     pub(super) selector: CompiledCertificateSelector,
     source_policy: TlsPolicy,
 }
@@ -141,6 +143,7 @@ impl CompiledTlsProfilePolicy {
             session_tickets: profile.policy.session_tickets,
             prefer_server_ciphers: profile.policy.prefer_server_ciphers,
             ktls: profile.policy.ktls,
+            backend: backend::select_backend(profile)?,
             selector: CompiledCertificateSelector {
                 exact_names,
                 wildcard_suffixes,
@@ -240,12 +243,8 @@ impl TlsProfilePlan {
             session_timeout: policy.session_timeout,
             session_tickets: policy.session_tickets,
             prefer_server_ciphers: policy.prefer_server_ciphers,
-            backend: policy.source_policy.backend,
-            kernel_tx: kernel_tx_available(
-                &blueprint.name,
-                policy.ktls,
-                policy.source_policy.backend,
-            ),
+            backend: policy.backend,
+            kernel_tx: kernel_tx_available(&blueprint.name, policy.ktls, policy.backend),
             tls_alpn_challenge_store,
             selector,
             rustls_sessions: OnceLock::new(),

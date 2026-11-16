@@ -56,9 +56,9 @@ impl ProxyConfig {
 /// `OXIROUTE_INTERNAL_TEST_TLS_BACKEND` names one (`scripts/test-tls-backends.sh` runs both).
 pub fn test_tls_policy() -> oxiroute_config::TlsPolicy {
     let backend = match std::env::var("OXIROUTE_INTERNAL_TEST_TLS_BACKEND").as_deref() {
-        Ok("rustls") => oxiroute_config::TlsBackend::Rustls,
-        Ok("openssl") => oxiroute_config::TlsBackend::Openssl,
-        _ => oxiroute_config::TlsBackend::default(),
+        Ok("rustls") => Some(oxiroute_config::TlsBackend::Rustls),
+        Ok("openssl") => Some(oxiroute_config::TlsBackend::Openssl),
+        _ => None,
     };
     oxiroute_config::TlsPolicy {
         backend,

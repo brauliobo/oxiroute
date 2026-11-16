@@ -885,6 +885,7 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.backend"] select').setValue('rustls')
+    await wrapper.get('[data-field="tls_profiles[].policy.backend"] select').setValue(null)
     await wrapper.get('[data-field="tls_profiles[].policy.backend"] select').setValue('openssl')
     await wrapper.get('[data-field="tls_profiles[].policy.key_exchange_groups"] input').setValue('x25519mlkem768, x25519')
     await wrapper.get('[data-field="tls_profiles[].policy.ktls"] select').setValue('auto')

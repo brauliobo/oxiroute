@@ -40,7 +40,7 @@ use support::{
 };
 
 fn rustls_backend() -> bool {
-    support::test_tls_policy().backend == oxiroute_config::TlsBackend::Rustls
+    support::test_tls_policy().backend.unwrap_or_default() == oxiroute_config::TlsBackend::Rustls
 }
 
 const TENANT_SNI_SERVER_NAME: &str = "tenant.sni.example.test";

@@ -113,8 +113,8 @@ pub struct TlsPolicy {
     pub session_tickets: bool,
     #[serde(default = "default_true")]
     pub prefer_server_ciphers: bool,
-    #[serde(default)]
-    pub backend: TlsBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<TlsBackend>,
     /// Key-exchange groups in server preference order; absent keeps the backend default list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_exchange_groups: Option<Vec<TlsKeyExchangeGroup>>,
@@ -132,7 +132,7 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
-            backend: TlsBackend::default(),
+            backend: None,
             key_exchange_groups: None,
             ktls: KtlsMode::default(),
         }
@@ -171,8 +171,8 @@ impl TlsKeyExchangeGroup {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsBackend {
-    #[default]
     Openssl,
+    #[default]
     Rustls,
 }
 

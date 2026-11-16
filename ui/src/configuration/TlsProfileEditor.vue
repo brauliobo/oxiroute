@@ -58,8 +58,9 @@ header.form-heading
   label.field(data-field="tls_profiles[].policy.backend")
     span TLS library
     select(v-model="profile.policy.backend")
+      option(:value="null") Default (rustls; OpenSSL when DH parameters or a DHE cipher list need it)
+      option(value="rustls") rustls (no DH parameters, no DHE cipher suites)
       option(value="openssl") OpenSSL
-      option(value="rustls") rustls (no cipher list or DH parameters)
   label.field(data-field="tls_profiles[].policy.key_exchange_groups")
     span Key exchange groups, in preference order (x25519, secp256r1, secp384r1, x25519mlkem768; empty keeps the default list)
     input(type="text" :value="(profile.policy.key_exchange_groups ?? []).join(', ')" @input="setKeyExchangeGroups")

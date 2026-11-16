@@ -34,7 +34,7 @@ async fn negotiated(
         None,
         HttpVersionPolicy::default(),
     );
-    config.tls_profiles[0].policy.backend = backend;
+    config.tls_profiles[0].policy.backend = Some(backend);
     config.tls_profiles[0].policy.key_exchange_groups = groups;
     let proxy = ProxyHarness::start(&config.validate(), reserved);
 
@@ -173,7 +173,7 @@ async fn browser_hello_negotiates_x25519(
         None,
         HttpVersionPolicy::default(),
     );
-    config.tls_profiles[0].policy.backend = backend;
+    config.tls_profiles[0].policy.backend = Some(backend);
     config.tls_profiles[0].policy.key_exchange_groups = groups;
     let proxy = ProxyHarness::start(&config.validate(), reserved);
     let address = proxy.address;

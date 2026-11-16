@@ -43,7 +43,7 @@ async fn with_listener<T>(
         None,
         HttpVersionPolicy::default(),
     );
-    config.tls_profiles[0].policy.backend = backend;
+    config.tls_profiles[0].policy.backend = Some(backend);
     configure(&mut config.tls_profiles[0]);
     let proxy = ProxyHarness::start(&config.validate(), reserved);
     let result = test(proxy.address.port()).await;

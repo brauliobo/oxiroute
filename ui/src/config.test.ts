@@ -488,6 +488,10 @@ describe('canonical field registry', () => {
     expect(isCanonicalConfig(config)).toBe(true)
     policy.backend = 'boringssl' as typeof policy.backend
     expect(isCanonicalConfig(config)).toBe(false)
+    policy.backend = null
+    expect(isCanonicalConfig(config)).toBe(true)
+    delete policy.backend
+    expect(isCanonicalConfig(config)).toBe(true)
     policy.backend = 'openssl'
     policy.key_exchange_groups = [1] as unknown as string[]
     expect(isCanonicalConfig(config)).toBe(false)

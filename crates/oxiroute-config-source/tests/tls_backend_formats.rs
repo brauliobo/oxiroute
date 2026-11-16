@@ -58,7 +58,7 @@ fn the_rustls_backend_and_the_policy_it_shares_with_openssl_round_trip_through_e
     }));
     assert_eq!(
         written.as_draft().tls_profiles[0].policy.backend,
-        TlsBackend::Rustls
+        Some(TlsBackend::Rustls)
     );
     for format in FORMATS {
         assert_eq!(round_trip(&written, format), written, "{format:?}");
@@ -66,17 +66,16 @@ fn the_rustls_backend_and_the_policy_it_shares_with_openssl_round_trip_through_e
 }
 
 #[test]
-fn a_profile_without_a_backend_renders_the_default_and_reads_it_back() {
+fn a_profile_without_a_backend_renders_none_and_reads_it_back() {
     let written = config(&json!({}));
     for format in FORMATS {
         let rendered = render_config(format, &written).expect("render");
-        assert!(rendered.contains("backend"), "{format:?}: {rendered}");
         assert_eq!(
             round_trip(&written, format).as_draft().tls_profiles[0]
                 .policy
                 .backend,
-            TlsBackend::default(),
-            "{format:?}"
+            None,
+            "{format:?}: {rendered}"
         );
     }
 }

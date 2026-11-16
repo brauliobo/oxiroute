@@ -80,7 +80,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
         session_timeout_seconds: Some(86_400),
         session_tickets: false,
         prefer_server_ciphers: false,
-        backend: oxiroute_config::TlsBackend::Openssl,
+        backend: Some(oxiroute_config::TlsBackend::Openssl),
         key_exchange_groups: None,
         ktls: oxiroute_config::KtlsMode::Off,
     };
@@ -236,56 +236,187 @@ fn generates_explicit_development_certificate_with_exact_sans_and_redacted_debug
     assert!(!debug.contains("private_key"));
 }
 
-fn rustls_settings_result(
-    cipher_list: Option<&str>,
-    dh_parameters: bool,
-    min_version: TlsVersion,
-) -> Result<(), TlsBuildError> {
+type PolicyEdit = Box<dyn FnOnce(&mut TlsPolicy, &std::path::Path)>;
+
+fn prepare_with(min_version: TlsVersion, edit: PolicyEdit) -> Result<PreparedTls, TlsBuildError> {
     let temp = TempDir::new().unwrap();
     let files = write_identity(temp.path(), "primary", "www.example.test", false);
     let mut config = config_with_identity(&files);
     config.tls_profiles[0].min_version = min_version;
-    config.tls_profiles[0].policy.backend = oxiroute_config::TlsBackend::Rustls;
-    config.tls_profiles[0].policy.cipher_list = cipher_list.map(Into::into);
-    if dh_parameters {
-        let path = temp.path().join("dhparam.pem");
+    edit(&mut config.tls_profiles[0].policy, temp.path());
+    prepare_tls(&config.validate().expect("valid TLS test config"))
+}
+
+fn selected_backend(
+    min_version: TlsVersion,
+    edit: PolicyEdit,
+) -> Result<TlsBackend, TlsBuildError> {
+    prepare_with(min_version, edit)
+        .map(|prepared| prepared.profiles().get("public").unwrap().backend())
+}
+
+fn nothing() -> PolicyEdit {
+    Box::new(|_, _| {})
+}
+
+fn dh_parameters() -> PolicyEdit {
+    Box::new(|policy, directory| {
+        let path = directory.join("dhparam.pem");
         fs::write(&path, Dh::get_2048_256().unwrap().params_to_pem().unwrap()).unwrap();
-        config.tls_profiles[0].policy.dh_parameters_path = Some(path);
+        policy.dh_parameters_path = Some(path);
+    })
+}
+
+fn cipher_list(list: &'static str) -> PolicyEdit {
+    Box::new(move |policy, _| policy.cipher_list = Some(list.into()))
+}
+
+fn explicit(backend: TlsBackend, edit: PolicyEdit) -> PolicyEdit {
+    Box::new(move |policy, directory| {
+        policy.backend = Some(backend);
+        edit(policy, directory);
+    })
+}
+
+const ECDHE_LIST: &str = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256";
+const EXPLICIT_DHE_LIST: &str = "ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+const LEGACY_DHE_LIST: &str = "EDH-RSA-DES-CBC3-SHA:ECDHE-RSA-AES128-GCM-SHA256";
+const CBC_ONLY_LIST: &str = "AES128-SHA:AES256-SHA";
+
+#[test]
+fn a_profile_without_a_backend_selects_rustls_and_an_automatic_ktls_does_not_change_that() {
+    let backend = selected_backend(
+        TlsVersion::Tls12,
+        Box::new(|policy, _| {
+            assert_eq!(policy.ktls, KtlsMode::Auto);
+            assert_eq!(policy.backend, None);
+        }),
+    );
+
+    assert_eq!(backend.unwrap(), TlsBackend::Rustls);
+    for list in [ECDHE_LIST, "HIGH:!aNULL:!MD5"] {
+        assert_eq!(
+            selected_backend(TlsVersion::Tls12, cipher_list(list)).unwrap(),
+            TlsBackend::Rustls,
+            "{list}"
+        );
     }
-    let prepared = prepare_tls(&config.validate().expect("valid TLS test config")).unwrap();
-    prepared
-        .profiles()
-        .get("public")
-        .unwrap()
-        .rustls_settings(0)
-        .map(drop)
 }
 
 #[test]
-fn the_rustls_backend_follows_a_cipher_list_with_dhe_suites_and_ignores_the_dh_parameters() {
-    let nginx_style =
-        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
-
-    assert!(rustls_settings_result(Some(nginx_style), true, TlsVersion::Tls12).is_ok());
-    assert!(rustls_settings_result(Some("HIGH:!aNULL:!MD5"), false, TlsVersion::Tls12).is_ok());
+fn a_profile_without_a_backend_selects_openssl_for_dh_parameters() {
+    assert_eq!(
+        selected_backend(TlsVersion::Tls12, dh_parameters()).unwrap(),
+        TlsBackend::Openssl
+    );
 }
 
 #[test]
-fn a_cipher_list_without_a_tls12_suite_the_rustls_backend_implements_stops_the_profile_unless_tls12_is_off()
- {
-    let dhe_only = "DHE-RSA-AES128-GCM-SHA256:AES128-SHA";
-
-    assert!(matches!(
-        rustls_settings_result(Some(dhe_only), false, TlsVersion::Tls12),
-        Err(TlsBuildError::RustlsSettings { .. })
-    ));
-    assert!(rustls_settings_result(Some(dhe_only), false, TlsVersion::Tls13).is_ok());
+fn a_profile_without_a_backend_selects_openssl_for_a_cipher_list_rustls_cannot_serve() {
+    for list in [EXPLICIT_DHE_LIST, LEGACY_DHE_LIST, CBC_ONLY_LIST] {
+        assert_eq!(
+            selected_backend(TlsVersion::Tls12, cipher_list(list)).unwrap(),
+            TlsBackend::Openssl,
+            "{list}"
+        );
+    }
 }
 
 #[test]
-fn a_cipher_list_openssl_rejects_stops_the_rustls_profile_too() {
-    assert!(matches!(
-        rustls_settings_result(Some("NO-SUCH-CIPHER"), false, TlsVersion::Tls12),
-        Err(TlsBuildError::RustlsSettings { .. })
-    ));
+fn a_tls13_minimum_leaves_the_cipher_list_out_of_the_backend_selection() {
+    for list in [EXPLICIT_DHE_LIST, CBC_ONLY_LIST] {
+        assert_eq!(
+            selected_backend(TlsVersion::Tls13, cipher_list(list)).unwrap(),
+            TlsBackend::Rustls,
+            "{list}"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_openssl_backend_is_always_selected() {
+    for (min_version, edit) in [
+        (TlsVersion::Tls12, nothing()),
+        (TlsVersion::Tls13, cipher_list(ECDHE_LIST)),
+        (TlsVersion::Tls12, dh_parameters()),
+    ] {
+        let backend = selected_backend(min_version, explicit(TlsBackend::Openssl, edit));
+        assert_eq!(backend.unwrap(), TlsBackend::Openssl);
+    }
+}
+
+#[test]
+fn an_explicit_rustls_backend_with_dh_parameters_is_an_error_naming_the_setting() {
+    let result = selected_backend(
+        TlsVersion::Tls12,
+        explicit(TlsBackend::Rustls, dh_parameters()),
+    );
+
+    let error = result.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            TlsBuildError::BackendNeedsOpenssl {
+                setting: "policy.dh_parameters_path",
+                ..
+            }
+        ),
+        "{error}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("`public`") && message.contains("`openssl`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_explicit_rustls_backend_with_a_cipher_list_it_cannot_serve_is_an_error_naming_the_setting() {
+    for list in [EXPLICIT_DHE_LIST, LEGACY_DHE_LIST, CBC_ONLY_LIST] {
+        let result = selected_backend(
+            TlsVersion::Tls12,
+            explicit(TlsBackend::Rustls, cipher_list(list)),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(TlsBuildError::BackendNeedsOpenssl {
+                    setting: "policy.cipher_list",
+                    ..
+                })
+            ),
+            "{list}"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_rustls_backend_follows_a_cipher_list_that_leaves_suites_out() {
+    for list in [ECDHE_LIST, "HIGH:!aNULL:!MD5"] {
+        let prepared = prepare_with(
+            TlsVersion::Tls12,
+            explicit(TlsBackend::Rustls, cipher_list(list)),
+        )
+        .unwrap();
+        let profile = prepared.profiles().get("public").unwrap();
+        assert_eq!(profile.backend(), TlsBackend::Rustls, "{list}");
+        assert!(profile.rustls_settings(0).is_ok(), "{list}");
+    }
+}
+
+#[test]
+fn a_cipher_list_openssl_rejects_stops_the_profile_whatever_the_backend() {
+    for backend in [None, Some(TlsBackend::Rustls)] {
+        let result = prepare_with(
+            TlsVersion::Tls12,
+            Box::new(move |policy, _| {
+                policy.backend = backend;
+                policy.cipher_list = Some("NO-SUCH-CIPHER".into());
+            }),
+        );
+        assert!(
+            matches!(result, Err(TlsBuildError::TlsProfileSettings { .. })),
+            "{backend:?}"
+        );
+    }
 }
