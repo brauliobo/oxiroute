@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rustix::net::Shutdown;
+
 use super::Ring;
 use crate::{
     event::Released,
@@ -14,7 +16,7 @@ impl Ring {
     /// allowed to finish for at most `Config::flush`; the descriptor closes once nothing uses it. Late
     /// completions of the socket are absorbed here and never reach the caller.
     pub fn close(&mut self, handle: Handle) {
-        if !self.retire(handle) {
+        if !self.retire(handle, Some(Shutdown::Both)) {
             return;
         }
         let flushing = self
@@ -27,15 +29,16 @@ impl Ring {
         self.finalize(handle);
     }
 
-    fn retire(&mut self, handle: Handle) -> bool {
+    fn retire(&mut self, handle: Handle, hangup: Option<Shutdown>) -> bool {
         let Some(slot) = self.slot(handle).filter(|slot| !slot.closing) else {
             return false;
         };
         slot.closing = true;
+        let sending = matches!(slot.writer, Writer::Flying { .. });
         let mut targets = Vec::new();
         targets.extend(slot.poll);
-        if let Reader::Armed(key) = slot.reader {
-            targets.push(key);
+        if let (Reader::Armed(key), None) = (&slot.reader, hangup) {
+            targets.push(*key);
         }
         if let Connect::Flying(key) = slot.connect {
             targets.push(key);
@@ -49,6 +52,9 @@ impl Ring {
         };
         for key in targets {
             let _ = self.queue.cancel(key);
+        }
+        if let Some(how) = hangup {
+            self.hang_up(handle, if sending { Shutdown::Read } else { how });
         }
         self.cancel_accepts(handle);
         if let Some(chunk) = parked {
@@ -81,7 +87,7 @@ impl Ring {
     /// the release and closes the socket.
     pub fn release(&mut self, handle: Handle) -> io::Result<Released> {
         let unread = self.take_parked(handle);
-        if !self.retire(handle) {
+        if !self.retire(handle, None) {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
         if let Some(slot) = self.slot(handle) {
@@ -123,13 +129,16 @@ impl Ring {
     }
 
     fn abandon(&mut self, handle: Handle) {
-        let key = self.slot(handle).and_then(|slot| match slot.writer {
-            Writer::Flying { key, .. } => Some(key),
-            _ => None,
-        });
-        if let Some(key) = key {
-            let _ = self.queue.cancel(key);
+        let Some(slot) = self.slot_any(handle) else {
+            return;
+        };
+        let Writer::Flying { key } = slot.writer else {
+            return;
+        };
+        if let Some(fd) = slot.fd.as_ref() {
+            let _ = rustix::net::sockopt::set_socket_linger(fd, Some(Duration::ZERO));
         }
+        let _ = self.queue.cancel(key);
     }
 
     pub(crate) fn bounded(&self, timeout: Option<Duration>) -> Option<Duration> {

@@ -124,6 +124,10 @@ impl Harness {
     }
 }
 
+pub fn shrink_send_buffer(stream: &TcpStream) {
+    rustix::net::sockopt::set_socket_recv_buffer_size(stream, 65536).expect("receive buffer");
+}
+
 pub fn client(address: SocketAddr) -> TcpStream {
     let stream = TcpStream::connect(address).expect("connect");
     stream

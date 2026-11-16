@@ -130,6 +130,35 @@ fn a_client_that_never_reads_does_not_slow_the_others_and_is_cut_at_the_write_de
 }
 
 #[test]
+fn a_slow_client_receives_the_whole_last_response_before_the_connection_closes() {
+    const SIZE: usize = 24_000_000;
+    let fixture = Fixture::with(on_uring(64), Timeouts::default(), recorded());
+    let mut wire = fixture.wire();
+    wire.send(
+        format!("GET /size/{SIZE} HTTP/1.1\r\nHost: test.example\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    );
+    thread::sleep(Duration::from_millis(1500));
+    let mut answer = Vec::new();
+    wire.stream
+        .read_to_end(&mut answer)
+        .expect("a clean end of the stream");
+    let head = answer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("a head")
+        + 4;
+    assert_eq!(answer.len() - head, SIZE);
+    eventually("the exchange completed", || fixture.outcomes().len() == 1);
+    assert!(
+        fixture
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.failure.is_none())
+    );
+}
+
+#[test]
 fn several_threads_each_with_a_ring_serve_connections_together() {
     let config = Config {
         threads: 3,

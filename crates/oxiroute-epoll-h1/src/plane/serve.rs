@@ -5,6 +5,7 @@ use oxiroute_uring::Released;
 
 use super::{
     client::{Buffers, Client, Down, Flow, Stage, Window},
+    link::Delivery,
     origin_head::OriginHead,
     reactor::{Reactor, Step},
     service::{Handoff, Request, Reuse, Routed, Service},
@@ -195,7 +196,10 @@ impl<S: Service> Reactor<S> {
             .as_mut()
             .expect("an answering client has a flow");
         let pending = &client.buffers.down_head[flow.head_pos..];
-        match client.link.send(pending, &[]) {
+        match client
+            .link
+            .send((pending, &[]), Delivery::of(flow.keepalive))
+        {
             Wrote::Bytes(count) => {
                 flow.head_pos += count;
                 if flow.head_pos < client.buffers.down_head.len() {

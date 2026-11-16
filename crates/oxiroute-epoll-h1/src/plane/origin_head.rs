@@ -5,6 +5,7 @@ use oxiroute_h1_head::{Connection, HeadRead, ResponseHead, read_response_head};
 use super::{
     chunked::{ChunkScanner, HEADER_ROOM},
     client::{Buffers, Client, Down, Flow, HEAD_GROWTH, Mode, Relay, Wait, Window},
+    link::Delivery,
     reactor::Reactor,
     relay::{TAIL_ROOM, absorb},
     service::{Answered, Failure, Framing, Recovery, Response, Service},
@@ -253,7 +254,10 @@ impl<S: Service> Reactor<S> {
         else {
             return Ok(true);
         };
-        match client.link.send(&held.interim[held.sent..], &[]) {
+        match client
+            .link
+            .send((&held.interim[held.sent..], &[]), Delivery::Batched)
+        {
             Wrote::Bytes(count) => held.sent += count,
             Wrote::Block => {}
             Wrote::Failed => return Err(Failure::ClientGone),

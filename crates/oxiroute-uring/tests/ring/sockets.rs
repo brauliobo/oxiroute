@@ -1,6 +1,6 @@
 use std::{net::TcpListener, os::fd::OwnedFd, time::Duration};
 
-use crate::support::{Harness, client, read_all, small, write_all};
+use crate::support::{Harness, client, read_all, shrink_send_buffer, small, write_all};
 use oxiroute_uring::{Config, Event, Read, Sent, Taskrun};
 use rustix::{
     event::{EventfdFlags, eventfd},
@@ -71,19 +71,74 @@ fn the_peer_closing_is_reported_after_the_bytes_it_sent() {
 
 #[test]
 fn a_second_send_waits_for_the_first_and_is_announced_when_it_may_go() {
-    let mut harness = Harness::new(small());
+    let config = Config {
+        send_limit: 4 * 1024 * 1024,
+        ..small()
+    };
+    let mut harness = Harness::new(config);
     let (_listener, address) = harness.listener();
     let peer = client(address);
-    let (handle, _) = harness.accept(5);
-    assert_eq!(harness.ring.send(handle, b"one", b""), Sent::Queued(3));
+    shrink_send_buffer(&peer);
+    let (handle, _) = harness.accept_with(5, Some(65536));
+    harness.pump(10);
+    harness.events.clear();
+    let first = vec![1_u8; 4 * 1024 * 1024];
+    assert_eq!(
+        harness.ring.send(handle, &first, b""),
+        Sent::Queued(first.len())
+    );
     assert_eq!(harness.ring.send(handle, b"two", b""), Sent::Busy);
+    let reader = std::thread::spawn(move || read_all(&peer));
     harness.until("writable", |event| {
         matches!(event, Event::Writable { tag: 5 })
     });
     assert_eq!(harness.ring.send(handle, b"two", b""), Sent::Queued(3));
     harness.ring.close(handle);
     harness.settle();
-    assert_eq!(read_all(&peer), b"onetwo");
+    let received = reader.join().expect("the peer reads to the end");
+    assert_eq!(received.len(), first.len() + 3);
+    assert_eq!(&received[first.len()..], b"two");
+}
+
+#[test]
+fn an_immediate_send_and_the_close_behind_it_reach_the_peer_without_waiting_on_the_ring() {
+    let mut harness = Harness::new(small());
+    let (_listener, address) = harness.listener();
+    let peer = client(address);
+    let (handle, _) = harness.accept(5);
+    assert_eq!(
+        harness.ring.send_now(handle, b"one", b"two"),
+        Sent::Queued(6)
+    );
+    assert_eq!(
+        harness.ring.send_now(handle, b"three", b""),
+        Sent::Queued(5)
+    );
+    harness.ring.close(handle);
+    assert_eq!(read_all(&peer), b"onetwothree");
+    harness.settle();
+}
+
+#[test]
+fn an_immediate_send_the_socket_cannot_take_whole_is_finished_by_the_ring() {
+    let config = Config {
+        send_limit: 4 * 1024 * 1024,
+        ..small()
+    };
+    let mut harness = Harness::new(config);
+    let (_listener, address) = harness.listener();
+    let peer = client(address);
+    shrink_send_buffer(&peer);
+    let (handle, _) = harness.accept_with(5, Some(65536));
+    let payload = vec![3_u8; 4 * 1024 * 1024];
+    assert_eq!(
+        harness.ring.send_now(handle, &payload, b""),
+        Sent::Queued(payload.len())
+    );
+    let reader = std::thread::spawn(move || read_all(&peer));
+    harness.ring.close(handle);
+    harness.settle();
+    assert!(reader.join().expect("the peer reads to the end") == payload);
 }
 
 #[test]

@@ -4,13 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::support::{Harness, client, read_all, small, write_all};
+use crate::support::{Harness, client, read_all, shrink_send_buffer, small, write_all};
 use oxiroute_uring::{Config, Event, Read, Released, Sent};
-use rustix::net::sockopt;
-
-fn shrink_send_buffer(stream: &TcpStream) {
-    sockopt::set_socket_recv_buffer_size(stream, 65536).expect("receive buffer");
-}
 
 #[test]
 fn closing_a_socket_with_a_receive_in_flight_cancels_it_and_the_peer_sees_the_end() {
@@ -55,6 +50,31 @@ fn a_completion_that_lands_after_the_close_gives_its_buffer_back() {
 }
 
 #[test]
+fn a_peer_slower_than_the_old_one_second_flush_still_gets_every_byte_after_the_close() {
+    let mut harness = Harness::new(Config {
+        send_limit: 8 * 1024 * 1024,
+        ..Config::default()
+    });
+    let (_listener, address) = harness.listener();
+    let peer = client(address);
+    shrink_send_buffer(&peer);
+    let (handle, _) = harness.accept_with(1, Some(65536));
+    let payload = vec![9_u8; 8 * 1024 * 1024];
+    assert_eq!(
+        harness.ring.send(handle, &[], &payload),
+        Sent::Queued(payload.len())
+    );
+    harness.pump(10);
+    harness.ring.close(handle);
+    let reader = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        read_all(&peer)
+    });
+    harness.settle();
+    assert!(reader.join().expect("the peer reads to the end") == payload);
+}
+
+#[test]
 fn bytes_the_ring_accepted_are_flushed_before_the_close_takes_the_connection() {
     let mut harness = Harness::new(Config {
         send_limit: 4 * 1024 * 1024,
@@ -84,7 +104,7 @@ fn bytes_the_ring_accepted_are_flushed_before_the_close_takes_the_connection() {
 }
 
 #[test]
-fn a_flush_that_the_peer_never_drains_is_cancelled_when_its_time_is_up() {
+fn a_send_the_peer_never_drains_resets_the_connection_when_its_time_is_up() {
     let mut harness = Harness::new(Config {
         send_limit: 8 * 1024 * 1024,
         flush: Duration::from_millis(300),
@@ -108,17 +128,18 @@ fn a_flush_that_the_peer_never_drains_is_cancelled_when_its_time_is_up() {
         .expect("timeout");
     let mut received = 0;
     let mut buffer = vec![0_u8; 65536];
-    loop {
+    let reset = loop {
         match (&peer).read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => break false,
             Ok(count) => received += count,
-            Err(error) if error.kind() == ErrorKind::ConnectionReset => break,
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => break true,
             Err(error) => panic!("unexpected read error: {error}"),
         }
-    }
+    };
+    assert!(received < payload.len(), "the abandoned send stopped short");
     assert!(
-        received < payload.len(),
-        "the cancelled flush stopped short"
+        reset,
+        "the peer must see a reset, not a clean end of stream"
     );
 }
 

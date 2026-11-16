@@ -1,7 +1,7 @@
 use super::{
     chunked::{HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
     client::{Buffers, Client, Down, Flow, Mode, Relay, Wait, Window},
-    link::Link,
+    link::{Delivery, Link},
     reactor::Reactor,
     service::{Failure, Service},
     slab::Token,
@@ -73,7 +73,7 @@ impl<S: Service> Reactor<S> {
             let Some(target) = self.slab.upstream_mut(upstream) else {
                 return Err(Failure::UpstreamClosed);
             };
-            match target.link.send(head, body) {
+            match target.link.send((head, body), Delivery::Batched) {
                 Wrote::Bytes(sent) => {
                     let from_head = sent.min(head.len());
                     flow.head_pos += from_head;
@@ -142,6 +142,7 @@ impl<S: Service> Reactor<S> {
                 ..
             } = &mut *client;
             let flow = flow.as_mut().expect("a serving client has a flow");
+            let delivery = Delivery::of(flow.keepalive);
             let Down::Relaying(relay) = &mut flow.down else {
                 return Ok(progressed);
             };
@@ -149,7 +150,7 @@ impl<S: Service> Reactor<S> {
             if pending {
                 let head = &buffers.down_head[relay.head_pos..];
                 let body = &buffers.resp[relay.window.start..relay.window.end];
-                match link.send(head, body) {
+                match link.send((head, body), delivery) {
                     Wrote::Bytes(sent) => {
                         let from_head = sent.min(head.len());
                         relay.head_pos += from_head;

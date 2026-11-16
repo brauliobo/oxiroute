@@ -26,6 +26,22 @@ impl Ready {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Delivery {
+    Batched,
+    Immediate,
+}
+
+impl Delivery {
+    pub(crate) const fn of(keepalive: bool) -> Self {
+        if keepalive {
+            Self::Batched
+        } else {
+            Self::Immediate
+        }
+    }
+}
+
 pub(crate) enum Io {
     Fd(OwnedFd),
     Ring(RingSocket),
@@ -68,13 +84,13 @@ impl Link {
         read
     }
 
-    pub(crate) fn send(&mut self, head: &[u8], body: &[u8]) -> Wrote {
+    pub(crate) fn send(&mut self, (head, body): (&[u8], &[u8]), delivery: Delivery) -> Wrote {
         if !self.ready.write {
             return Wrote::Block;
         }
         let wrote = match &mut self.io {
             Io::Fd(fd) => sys::write(fd, head, body),
-            Io::Ring(socket) => socket.write(head, body),
+            Io::Ring(socket) => socket.write(head, body, delivery),
         };
         match wrote {
             Wrote::Bytes(count) if count == head.len() + body.len() => {}

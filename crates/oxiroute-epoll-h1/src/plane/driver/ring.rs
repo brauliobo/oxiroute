@@ -6,7 +6,7 @@ use rustix::event::epoll::EventFlags;
 use super::Polled;
 use crate::plane::{
     config::Config,
-    link::{Io, Link},
+    link::{Delivery, Io, Link},
     slab::Token,
     sys::{self, Read, Wrote},
 };
@@ -36,8 +36,13 @@ impl RingSocket {
         }
     }
 
-    pub(crate) fn write(&self, head: &[u8], body: &[u8]) -> Wrote {
-        match self.ring.borrow_mut().send(self.handle, head, body) {
+    pub(crate) fn write(&self, head: &[u8], body: &[u8], delivery: Delivery) -> Wrote {
+        let mut ring = self.ring.borrow_mut();
+        let sent = match delivery {
+            Delivery::Batched => ring.send(self.handle, head, body),
+            Delivery::Immediate => ring.send_now(self.handle, head, body),
+        };
+        match sent {
             Sent::Queued(count) => Wrote::Bytes(count),
             Sent::Busy => Wrote::Block,
             Sent::Failed => Wrote::Failed,
