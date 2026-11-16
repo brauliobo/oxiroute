@@ -4,7 +4,7 @@ use super::*;
 /// In-memory bounded shared cache.
 #[derive(Clone)]
 pub struct Cache {
-    shared: Arc<Shared>,
+    pub(super) shared: Arc<Shared>,
 }
 
 pub(super) struct Shared {
@@ -188,6 +188,7 @@ impl Cache {
             validators,
             response_received: timing.response_received,
             charge,
+            variants: Variants::default(),
         })
     }
 
@@ -535,6 +536,7 @@ impl Cache {
             validators: entry.validators,
             response_received: entry.response_received,
             charge: entry.charge,
+            variants: Variants::default(),
         };
         let mut state = self.shared.lock();
         insert_entry(&self.shared.config, &mut state, entry)

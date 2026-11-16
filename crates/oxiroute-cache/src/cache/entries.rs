@@ -29,6 +29,12 @@ impl Entries {
         self.by_key.get(key)
     }
 
+    pub(super) fn add_charge(&mut self, key: &CacheKey, bytes: usize) {
+        if let Some(stored) = self.by_key.get_mut(key) {
+            stored.entry.charge = stored.entry.charge.saturating_add(bytes);
+        }
+    }
+
     pub(super) fn iter(&self) -> impl Iterator<Item = (&CacheKey, &StoredEntry)> {
         self.by_key.iter()
     }

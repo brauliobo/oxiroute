@@ -242,6 +242,7 @@ pub(super) fn response_snapshot(entry: &PreparedEntry, age: Duration) -> CachedR
         headers,
         body: entry.body.clone(),
         age,
+        variants: entry.variants.clone(),
     }
 }
 

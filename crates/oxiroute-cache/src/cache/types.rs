@@ -14,6 +14,7 @@ pub struct PreparedEntry {
     pub(crate) validators: Validators,
     pub(crate) response_received: MonoTime,
     pub(crate) charge: usize,
+    pub(crate) variants: Variants,
 }
 
 pub(crate) struct RecoveredEntry {
@@ -57,6 +58,7 @@ pub struct CachedResponse {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub age: Duration,
+    pub variants: Variants,
 }
 
 /// Cache lookup result and wire-facing cache status.
