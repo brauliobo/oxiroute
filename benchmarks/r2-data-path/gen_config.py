@@ -262,7 +262,7 @@ def build(args):
             "source": {"type": "self_signed_development", "key_type": key_type},
         }]
         tls_policy = {"session_tickets": on("tls_tickets")}
-        if not args.baseline:
+        if not args.baseline and args.tls_backend != "default":
             tls_policy["backend"] = args.tls_backend
         if on("tls_kx"):
             tls_policy["key_exchange_groups"] = ["x25519", "secp256r1"]
@@ -331,8 +331,8 @@ def main():
     parser.add_argument("--classic", action="store_true", help="http_fast_lane = false (the classic request path)")
     parser.add_argument("--tls-handshake-threads", type=int, default=-1,
                         help="tls_handshake_threads (-1 leaves the setting out: automatic, 0: inline handshakes)")
-    parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
-                        help="policy.backend of the TLS profile")
+    parser.add_argument("--tls-backend", choices=["default", "openssl", "rustls"], default="default",
+                        help="policy.backend of the TLS profile (default leaves it out)")
     parser.add_argument("--baseline", action="store_true",
                         help="the binary is an older release: leave out options it does not know (backend, ktls)")
     parser.add_argument("--run-dir", default="/tmp")

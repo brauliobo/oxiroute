@@ -394,6 +394,13 @@ pub enum TlsBuildError {
     TlsAlpnSelectionIndex { detail: String },
     #[error("failed to build the rustls settings of TLS profile `{profile}`: {detail}")]
     RustlsSettings { profile: String, detail: String },
+    #[error(
+        "TLS profile `{profile}` selects backend `rustls`, which cannot provide `{setting}`: remove the setting or select backend `openssl`"
+    )]
+    BackendNeedsOpenssl {
+        profile: String,
+        setting: &'static str,
+    },
     #[error("failed to apply OpenSSL settings for TLS profile `{profile}`")]
     TlsProfileSettings {
         profile: String,

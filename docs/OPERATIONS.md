@@ -190,18 +190,52 @@ sudo modprobe tls                                   # now
 grep -E 'TlsTxSw|TlsCurrTxSw|TlsDecryptError' /proc/net/tls_stat   # converted since boot, alive now
 ```
 
-Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend, `"auto"` behaves exactly as
+Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend (the default backend, see below), `"auto"` behaves exactly as
 `"off"`; the log of the profile says once (info) whether kernel TLS is active or why not. Set `ktls = "off"` to keep
 all TLS in user space. A converted connection that then serves small responses costs 1% to 4% more instructions per
 request; the break-even is one large file per 200 small requests.
 
 ## TLS backend
 
-`tls_profiles[].policy.backend` is `"openssl"` by default; `"rustls"` runs the handshakes and records of the profile's
-listeners with rustls and aws-lc-rs. It offers only the TLS 1.3 and ECDHE AEAD suites (a `cipher_list` is followed with
-OpenSSL's semantics and the DHE, CBC and RSA key exchange suites it selects are left out, with a warning at start;
-`dh_parameters_path` is ignored), and has no kernel TLS. Switch one profile at a time (a reload applies it to new
-connections) and compare the handshake and error counters before moving more.
+A TLS profile runs on rustls with aws-lc-rs unless it needs OpenSSL. `tls_profiles[].policy.backend` is normally left
+out: the profile then gets `"rustls"`, or `"openssl"` when it sets `dh_parameters_path`, lists a `DHE-RSA-` suite in
+`cipher_list`, or uses a `cipher_list` that leaves rustls no TLS 1.2 suite; the log says once, at `info`, which setting
+selected OpenSSL. `backend = "openssl"` always selects OpenSSL, and `backend = "rustls"` with one of those settings
+stops the start or reload with an error naming the setting. A connection never changes library. rustls costs about 60%
+fewer instructions per full handshake and 3% to 14% fewer per keep-alive or HTTP/2 request, and about half the memory of
+an idle TLS connection.
+
+rustls offers the TLS 1.3 and ECDHE AEAD suites only and has no kernel TLS (`ktls = "auto"` stays in user space), no
+FIPS module and no finite-field DHE. A profile that used the OpenSSL default list therefore no longer offers its
+DHE-RSA suites once it runs on rustls; clients that connect with
+only those fail the handshake.
+
+### Serving legacy clients
+
+Give the legacy clients their own listener and profile on OpenSSL, and keep the main profile on rustls:
+
+```lua
+tls_profiles = {
+  {
+    name = "public",
+    certificates = { "example" },
+    default_certificate = "example",
+  },
+  {
+    name = "legacy",
+    certificates = { "example" },
+    default_certificate = "example",
+    policy = {
+      backend = "openssl",
+      cipher_list = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-GCM-SHA256",
+    },
+  },
+}
+```
+
+Bind the `legacy` profile to its own listener address. Operators who want a single profile on OpenSSL, as before, set
+`backend = "openssl"` on it; a reload applies a change to new connections, so compare the handshake and error counters
+before moving more profiles.
 
 ## Shutdown
 

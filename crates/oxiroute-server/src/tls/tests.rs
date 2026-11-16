@@ -35,8 +35,8 @@ use openssl::{
 };
 use oxiroute_config::{
     AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, ConfigDraft,
-    HttpVersion, HttpVersionPolicy, SelfSignedKeyType, TlsClientAuthMode, TlsClientAuthPolicy,
-    TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
+    HttpVersion, HttpVersionPolicy, KtlsMode, SelfSignedKeyType, TlsBackend, TlsClientAuthMode,
+    TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
     UpstreamPool, UpstreamTls, ValidatedConfig,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
@@ -49,7 +49,7 @@ use tls::{
     CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
     FileReconcileError, FileReconcileOutcome, FileWatcherConfig, FileWatcherSupervisor,
     MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES,
-    MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
+    MAX_PRIVATE_KEY_BYTES, PreparedTls, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
     prepare_tls as prepare_validated_tls, prepare_upstream_tls,
 };
 

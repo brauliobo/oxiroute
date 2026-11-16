@@ -6,7 +6,7 @@ use std::sync::Arc;
 use oxiroute_tls_rustls::RustlsAcceptor;
 use pingora::listeners::{CustomTlsSettings, tls::cipher_list_names};
 use rustls::{
-    ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
+    ServerConfig, SupportedProtocolVersion,
     crypto::{CryptoProvider, aws_lc_rs::Ticketer},
     server::{NoServerSessionStorage, ProducesTickets, StoresServerSessions},
     version,
@@ -46,12 +46,6 @@ impl TlsProfilePlan {
             if let Err(detail) = active.snapshot().certified_key() {
                 return Err(self.rustls_error(format!("certificate `{name}`: {detail}")));
             }
-        }
-        if self.dh_parameters.is_some() {
-            log::warn!(
-                "TLS profile `{}`: dh_parameters_path is not used by the rustls backend, which offers no finite-field DHE suites",
-                self.name
-            );
         }
         let protocols = alpn_protocols(&self.alpn);
         let provider = self.rustls_provider()?;
@@ -119,16 +113,6 @@ impl TlsProfilePlan {
                     ""
                 }
             );
-        }
-        let tls12 = provider
-            .cipher_suites
-            .iter()
-            .any(|suite| matches!(suite, SupportedCipherSuite::Tls12(_)));
-        if self.min_version == TlsVersion::Tls12 && !tls12 {
-            return Err(self.rustls_error(
-                "cipher_list selects no TLS 1.2 suite the rustls backend implements (ECDHE with AES-GCM or ChaCha20-Poly1305)"
-                    .into(),
-            ));
         }
         Ok(provider)
     }

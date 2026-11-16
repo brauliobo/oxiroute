@@ -42,7 +42,7 @@ impl Listener {
             HttpVersionPolicy::default(),
         );
         config.tls_profiles[0].min_version = min_version;
-        config.tls_profiles[0].policy.backend = backend;
+        config.tls_profiles[0].policy.backend = Some(backend);
         policy(&mut config.tls_profiles[0].policy);
         let proxy = ProxyHarness::start(&config.validate(), reserved);
         Self { proxy, origin }
