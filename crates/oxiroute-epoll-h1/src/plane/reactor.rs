@@ -148,7 +148,7 @@ impl<S: Service> Reactor<S> {
             config: config.clone(),
             epoll,
             slab: Slab::new(capacity),
-            wheel: Wheel::new(config.tick, capacity),
+            wheel: Wheel::new(config.tick),
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             buffers: BufferPool::default(),
             services: Vec::with_capacity(listeners.len()),
