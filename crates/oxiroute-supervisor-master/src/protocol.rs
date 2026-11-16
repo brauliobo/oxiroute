@@ -203,15 +203,20 @@ impl WorkerControl {
         self.endpoint.try_receive()?.map(decode_request).transpose()
     }
 
-    /// Blocks until the master sent a request or closed the channel, or `timeout` elapsed.
+    /// Blocks until the master sent a request or closed the channel, `wake` became readable, or `timeout` elapsed;
+    /// without a `timeout` it blocks until one of the first two happens.
     ///
     /// Returns whether the channel is readable; it consumes nothing, so [`Self::try_receive`] follows.
     ///
     /// # Errors
     ///
     /// Returns an error when polling fails.
-    pub fn wait_readable(&self, timeout: Duration) -> std::io::Result<bool> {
-        self.endpoint.wait_readable(timeout)
+    pub fn wait_readable(
+        &self,
+        wake: std::os::fd::BorrowedFd<'_>,
+        timeout: Option<Duration>,
+    ) -> std::io::Result<bool> {
+        self.endpoint.wait_readable(wake, timeout)
     }
 
     /// Acknowledges a request using its exact correlation identity and phase.

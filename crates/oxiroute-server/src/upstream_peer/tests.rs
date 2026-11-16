@@ -169,6 +169,53 @@ fn pool_connect_server_timeouts_and_never_reuse_are_independent() {
     );
 }
 
+#[tokio::test]
+async fn a_pool_that_never_waits_selects_at_once_what_awaiting_selects() {
+    let addresses = [
+        SocketAddr::from(([127, 0, 0, 1], 3000)),
+        SocketAddr::from(([127, 0, 0, 1], 3001)),
+    ];
+    for reuse in [
+        UpstreamConnectionReuse::Safe,
+        UpstreamConnectionReuse::Never,
+    ] {
+        let plan = || {
+            UpstreamPlan::with_policy(
+                Arc::new(RoundRobinPool::new(addresses).expect("selector")),
+                None,
+                None,
+                None,
+                reuse,
+            )
+        };
+        let (at_once, awaited) = (plan(), plan());
+        assert!(at_once.selects_at_once());
+        let mut excluded = Vec::new();
+        for step in 0..3 {
+            let now = crate::routing::now_unix_ms();
+            let quick = at_once.select_endpoint_at_once(&excluded, now);
+            let slow = awaited
+                .select_endpoint_at(&excluded, QueueTag::default(), now)
+                .await;
+            let names = |selected: &pingora::Result<SelectedEndpoint>| {
+                selected
+                    .as_ref()
+                    .ok()
+                    .map(|selected| selected.server_label().to_string())
+            };
+            assert_eq!(names(&quick), names(&slow), "{reuse:?} step {step}");
+            assert_eq!(quick.is_err(), step == 2, "{reuse:?} step {step}");
+            excluded.extend(quick.ok().map(|selected| selected.server_label().clone()));
+        }
+        let unavailable =
+            |plan: &UpstreamPlan| plan.selector().health_snapshot().unavailable_selections;
+        assert_eq!(unavailable(&at_once), unavailable(&awaited));
+        let first = excluded[0].to_string();
+        assert!(at_once.select_server_endpoint_at_once(&first).is_ok());
+        assert!(at_once.select_server_endpoint_at_once("absent").is_err());
+    }
+}
+
 #[test]
 fn h2_only_policy_rejects_downgrade_before_upstream_write() {
     let tls = upstream_tls_plan(

@@ -2806,6 +2806,7 @@ dependencies = [
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-cpu",
+ "oxiroute-epoll-h1",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
  "oxiroute-h3",
@@ -2925,6 +2926,14 @@ name = "oxiroute-cpu"
 version = "6.5.2"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "oxiroute-epoll-h1"
+version = "6.5.2"
+dependencies = [
+ "oxiroute-h1-head",
+ "rustix",
 ]
 
 [[package]]

@@ -49,6 +49,17 @@ fn jemalloc_reports_the_embedded_thread_cache_sizes() {
     assert_eq!(option::<usize>(b"opt.tcache_max\0"), 1 << 17);
 }
 
+#[test]
+fn jemalloc_does_not_ask_for_transparent_huge_pages() {
+    assert!(
+        std::env::var_os("_RJEM_MALLOC_CONF").is_none(),
+        "the run-time override would hide the embedded value"
+    );
+    let policy = ptr::with_exposed_provenance::<std::ffi::c_char>(option(b"opt.thp\0"));
+    // SAFETY: jemalloc answers `opt.thp` with a pointer to a static NUL-terminated string.
+    assert_eq!(unsafe { std::ffi::CStr::from_ptr(policy) }, c"never");
+}
+
 fn resident_bytes() -> usize {
     let statm = std::fs::read_to_string("/proc/self/statm").expect("statm");
     let pages: usize = statm

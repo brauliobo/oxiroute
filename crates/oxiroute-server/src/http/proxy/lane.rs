@@ -62,7 +62,9 @@ use local::{Exchange, Local};
 
 /// The route a request is served by, the authority it was selected for and, for a static route, the file the cache
 /// holds for it.
-type Selected = (Arc<HttpRoutePlan>, Authority, Option<Arc<CachedFile>>);
+pub(in crate::http::proxy) type Selected = (Arc<HttpRoutePlan>, Authority, Option<Arc<CachedFile>>);
+
+const PINGORA_READ_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// The downstream timeouts of the listener, as the classic path applies them to a session.
 #[derive(Clone, Copy, Debug, Default)]
@@ -97,6 +99,20 @@ pub(crate) struct LaneFront {
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
     pub(in crate::http::proxy) write_budget: Duration,
+}
+
+/// The id a request goes on with: the client's, when it is a valid one, else `generated`. A generated id is owned once
+/// and shared by the clones the request context makes of it.
+pub(in crate::http::proxy) fn request_id(
+    buffer: &[u8],
+    request: &head::Request,
+    generated: [u8; 24],
+) -> HeaderValue {
+    match request.client_id {
+        Some(span) => HeaderValue::from_bytes(span.of(buffer)),
+        None => HeaderValue::from_maybe_shared(Bytes::from_owner(generated)),
+    }
+    .expect("request ids are visible ASCII")
 }
 
 /// Ends a connection after its last response. TLS says goodbye; a plain socket only flushes, because the close that
@@ -174,13 +190,29 @@ impl LaneFront {
         })
     }
 
+    /// The downstream timeouts of a connection the epoll data plane serves, as the lane applies them to its own.
+    #[cfg(target_os = "linux")]
+    pub(in crate::http::proxy) fn engine_timeouts(&self) -> oxiroute_epoll_h1::Timeouts {
+        oxiroute_epoll_h1::Timeouts {
+            first_request: self.timeouts.request.or_else(|| {
+                self.timeouts
+                    .keepalive
+                    .is_none()
+                    .then_some(PINGORA_READ_TIMEOUT)
+            }),
+            keepalive: self.timeouts.keepalive,
+            request: Some(self.timeouts.request.unwrap_or(PINGORA_READ_TIMEOUT)),
+            write: self.timeouts.session_write(),
+        }
+    }
+
     /// How long a wait for the first byte of a request may last: what `read_request` of a session would allow.
     fn idle_timeout(&self, connection: &Http1Connection, stopping: bool) -> Option<Duration> {
         if connection.is_reused() {
             return self.timeouts.keepalive;
         }
         self.timeouts.request.or_else(|| {
-            (self.timeouts.keepalive.is_none() && !stopping).then_some(Duration::from_mins(1))
+            (self.timeouts.keepalive.is_none() && !stopping).then_some(PINGORA_READ_TIMEOUT)
         })
     }
 
@@ -230,6 +262,37 @@ impl LaneFront {
         }
     }
 
+    /// The authority the request names, when the lane may serve the request at all: not a challenge of the certificate
+    /// authority, and an authority that is one.
+    fn authority_of(&self, target: &head::Target<'_>) -> Option<Authority> {
+        let authority = head::authority(target.host)?;
+        if authority.as_str().contains('@') {
+            return None;
+        }
+        if self
+            .challenge
+            .as_ref()
+            .is_some_and(|store| store.holds(target.path))
+        {
+            return None;
+        }
+        Some(authority)
+    }
+
+    fn pick(
+        &self,
+        method: &Method,
+        authority: &Authority,
+        path: &str,
+    ) -> Option<(Arc<HttpRoutePlan>, Option<Arc<CachedFile>>)> {
+        let route = self
+            .service
+            .select_route_path(Some(authority.as_str()), path, method)
+            .filter(|route| route.lane != LaneRoute::Classic)?;
+        let file = peek::cached_file(route, path, method).ok()?;
+        Some((Arc::clone(route), file))
+    }
+
     /// The route the request is served by, when the lane may serve it, and the authority it was selected for. The
     /// route chosen from the first lines stands when the scanned head has the host it was chosen for.
     fn select_route(
@@ -238,35 +301,34 @@ impl LaneFront {
         request: &head::Request,
         early: peek::Early<'_>,
     ) -> Option<Selected> {
-        let path = request.path(buffer);
-        let authority = head::authority(request.host(buffer)?)?;
-        if authority.as_str().contains('@') {
-            return None;
-        }
-        if self
-            .challenge
-            .as_ref()
-            .is_some_and(|store| store.holds(path))
-        {
-            return None;
-        }
+        let target = request.target(buffer)?;
+        let authority = self.authority_of(&target)?;
         let (route, file) = if let Some(selected) = early.route(buffer, request) {
             selected
         } else {
             let method = Method::from_bytes(request.method(buffer)).ok()?;
-            let route = self
-                .service
-                .select_route_path(Some(authority.as_str()), path, &method)
-                .filter(|route| route.lane != LaneRoute::Classic)?;
-            let file = peek::cached_file(route, path, &method).ok()?;
-            (Arc::clone(route), file)
+            self.pick(&method, &authority, target.path)?
         };
+        Some((route, authority, file))
+    }
+
+    /// The route a request is served by, selected from its scanned head alone.
+    pub(in crate::http::proxy) fn resolve(
+        &self,
+        method: &Method,
+        target: &head::Target<'_>,
+    ) -> Option<Selected> {
+        let authority = self.authority_of(target)?;
+        let (route, file) = self.pick(method, &authority, target.path)?;
         Some((route, authority, file))
     }
 
     /// Whether the lane forwards the body of the request to its route: only a proxied route does, and a length over
     /// the route's limit is the classic path's `413`.
-    fn takes_body(route: &HttpRoutePlan, request: &head::Request) -> bool {
+    pub(in crate::http::proxy) fn takes_body(
+        route: &HttpRoutePlan,
+        request: &head::Request,
+    ) -> bool {
         route.lane == LaneRoute::Proxy && !route.policy.exceeds_body_limit(request.body_len as u64)
     }
 
@@ -339,12 +401,7 @@ impl LaneFront {
         }
         let generated = generated_request_id_bytes();
         if route.lane == LaneRoute::Proxy {
-            // A generated id is owned once and shared by the clones the request context makes of it.
-            let id = match request.client_id {
-                Some(span) => HeaderValue::from_bytes(span.of(buffer)),
-                None => HeaderValue::from_maybe_shared(Bytes::from_owner(generated)),
-            }
-            .expect("request ids are visible ASCII");
+            let id = request_id(buffer, &request, generated);
             let method = Method::from_bytes(request.method(buffer))
                 .expect("the route was selected for this method");
             let forward = proxy::Forward {

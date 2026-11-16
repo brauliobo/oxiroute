@@ -6,6 +6,7 @@
 pub mod classic_request;
 pub mod classic_response;
 pub mod classic_write;
+pub mod reference_scan;
 pub mod request_corpus;
 pub mod response_corpus;
 

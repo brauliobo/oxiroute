@@ -47,6 +47,10 @@ caches can retain memory after requests finish without leaking it.
 Set `SYSTEM_ALLOCATOR_BINARY` to also verify a built System server executable. Keep its symbol table: stripped or
 unreadable executables fail this check because their allocator linkage cannot be verified.
 
+The embedded configuration sets `thp:never`: on hosts where transparent huge pages are enabled for every mapping,
+jemalloc's 2 MiB extents otherwise become huge pages and an idle process holds tens of MiB it never touched. Remove it
+for a single run with `_RJEM_MALLOC_CONF=thp:default`.
+
 For lower memory usage with jemalloc, operators can reduce the small-object cache limits at startup:
 
 ```sh

@@ -54,6 +54,20 @@ impl Request {
             .ok()
             .filter(|host| host.is_ascii())
     }
+
+    pub(in crate::http::proxy) fn target<'a>(&self, buf: &'a [u8]) -> Option<Target<'a>> {
+        Some(Target {
+            host: self.host(buf)?,
+            path: self.path(buf),
+        })
+    }
+}
+
+/// The host and the path a request names, read from its bytes once.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::http::proxy) struct Target<'a> {
+    pub(in crate::http::proxy) host: &'a str,
+    pub(in crate::http::proxy) path: &'a str,
 }
 
 /// Whether the request carries a header that makes the response of a file depend on more than the file: a range or one
@@ -128,12 +142,7 @@ impl Line {
 /// `None` when the request line is partial or refused: the classic path reads the request.
 pub(in crate::http::proxy) fn line(buf: &[u8]) -> Option<Line> {
     let line = scan_request_line(buf).ok()?;
-    let target = line.target;
-    let query = target.of(buf).iter().position(|byte| *byte == b'?');
-    let path = Span {
-        start: target.start,
-        len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
-    };
+    let path = path_of(line.target, buf);
     Some(Line { line, path })
 }
 
@@ -166,6 +175,23 @@ fn scan_with(
     if scan_request_fields(buf, line.line, head) != Scan::Head {
         return None;
     }
+    describe(buf, line.path, head, expect_is_plain)
+}
+
+/// [`scan`] for a head that was scanned already, by a reader that serves the same shapes the lane does.
+pub(in crate::http::proxy) fn adopt(buf: &[u8], head: &RequestHead) -> Option<Request> {
+    describe(buf, path_of(head.target, buf), head, false)
+}
+
+fn path_of(target: Span, buf: &[u8]) -> Span {
+    let query = target.of(buf).iter().position(|byte| *byte == b'?');
+    Span {
+        start: target.start,
+        len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
+    }
+}
+
+fn describe(buf: &[u8], path: Span, head: &RequestHead, expect_is_plain: bool) -> Option<Request> {
     let facts = head.facts;
     // The scanner reads no length when there is a `Transfer-Encoding`: a chunked body is the classic path's.
     if facts.transfer_encoding {
@@ -188,7 +214,7 @@ fn scan_with(
         .filter(|span| std::str::from_utf8(span.of(buf)).is_ok_and(valid_correlation_id));
     Some(Request {
         method: head.method,
-        path: line.path,
+        path,
         host: value_span(&head.headers()[usize::from(facts.host)]),
         client_id,
         id_stamped: client_id.is_some() && facts.request_id_count == 1,
@@ -248,6 +274,18 @@ mod tests {
                 "{refused:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_target_is_the_host_and_the_path_without_the_query() {
+        let request = "GET /a/b?x=1 HTTP/1.1\r\nHost: a.test:8080\r\n\r\n";
+        let buffer = request.as_bytes();
+        let mut head = RequestHead::new();
+        let scanned = scan(buffer, line(buffer).expect("line"), &mut head).expect("a head");
+        let target = scanned.target(buffer).expect("a target");
+        assert_eq!((target.host, target.path), ("a.test:8080", "/a/b"));
+        assert_eq!(Some(target.host), scanned.host(buffer));
+        assert_eq!(target.path, scanned.path(buffer));
     }
 
     fn conditional(request: &str) -> bool {

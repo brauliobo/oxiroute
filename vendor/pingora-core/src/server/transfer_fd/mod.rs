@@ -52,6 +52,14 @@ impl Fds {
         self.map.get(bind)
     }
 
+    /// Takes the descriptor bound at `bind` out of the container, which hands its ownership to the caller.
+    #[cfg(target_os = "linux")]
+    pub fn take_owned(&mut self, bind: &str) -> Option<OwnedFd> {
+        self.map
+            .remove(bind)
+            .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }

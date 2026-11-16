@@ -15,6 +15,7 @@ use crate::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },
+    service_plan::ListenerPlane,
 };
 
 #[derive(Clone)]
@@ -61,6 +62,7 @@ pub(crate) struct ListenerBlueprint {
     pub(crate) max_connections: Option<u64>,
     pub(crate) downstream_timeouts: DownstreamTimeoutPolicy,
     pub(crate) h2_windows: oxiroute_config::H2Windows,
+    pub(crate) plane: ListenerPlane,
 }
 
 #[derive(Clone)]

@@ -61,6 +61,7 @@ fn typed_configs_render_in_every_supported_format() {
     let config = oxiroute_config::ConfigDraft {
         listener_workers: Some(4),
         http_fast_lane: None,
+        http_data_plane: None,
         connection_scheduling: Some(oxiroute_config::ConnectionScheduling::AgedPerWorker),
         connection_age_ms: None,
         worker_scaling: Some(oxiroute_config::WorkerScaling::Dynamic),

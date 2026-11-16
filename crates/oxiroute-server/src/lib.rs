@@ -2,6 +2,7 @@ mod capsule;
 pub mod cli;
 mod clock;
 pub mod config;
+mod doorbell;
 mod encoding;
 mod forward_proxy;
 mod generation;
@@ -31,6 +32,7 @@ mod wire;
 mod test_ports;
 
 pub use config::coordinator as config_coordinator;
+pub use doorbell::Doorbell;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
@@ -50,6 +52,8 @@ pub use generation::{
 pub use health::{HealthBuildError, HealthSupervisor};
 pub use http::evacuation::{EvacuationReport, LeftRunning};
 pub use http::inflight::live_requests;
+#[cfg(target_os = "linux")]
+pub use http::proxy::engine::{EpollHttpService, EpollLane};
 pub use http::proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http::server_app::{
     HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp, with_h2_windows,
@@ -98,8 +102,9 @@ pub use routing::{
 };
 pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
 pub use service_plan::{
-    HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
-    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
+    DataPlane, HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError,
+    ServiceSpec, runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
+    validate_runtime_plan,
 };
 pub use tls::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,

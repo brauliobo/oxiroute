@@ -38,7 +38,14 @@ async fn a_moved_attempt_is_neither_a_try_nor_a_retry() {
     assert_eq!(error.etype(), &EVACUATED);
     assert_eq!(context.attempt_count(), 0);
     assert!(context.has_attempted());
-    assert_eq!(context.attempted_upstreams, ["node-a"]);
+    assert_eq!(
+        context
+            .attempted_upstreams
+            .iter()
+            .map(|label| &**label)
+            .collect::<Vec<_>>(),
+        ["node-a"]
+    );
     assert_eq!(context.evacuations, 1);
     assert!(context.selected.is_none());
     assert!(context.retry_server.is_none() && !context.retry_delay_pending);
@@ -105,7 +112,7 @@ async fn an_attempt_nobody_cancelled_is_left_alone() {
 async fn only_final_responses_commit_the_request() {
     let (session, mut context, _client) = tracked().await;
     after_first_attempt(&mut context, &session);
-    let handle = Arc::clone(context.evacuation().expect("handle"));
+    let handle = context.evacuation().expect("handle");
     handle.evacuate(false, true);
 
     assert!(context.commit_response(StatusCode::CONTINUE).is_ok());

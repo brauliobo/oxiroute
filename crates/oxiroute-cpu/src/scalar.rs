@@ -1,7 +1,5 @@
 //! The portable scanners: the fallback of every level and the tail of the vector ones.
 
-use crate::TokenRun;
-
 const LO: u64 = 0x0101_0101_0101_0101;
 const HI: u64 = 0x8080_8080_8080_8080;
 
@@ -20,24 +18,4 @@ pub(crate) fn control_at(buf: &[u8], mut i: usize) -> usize {
         i += 1;
     }
     i
-}
-
-static TCHAR: [bool; 256] = {
-    let mut table = [false; 256];
-    let mut i = 0;
-    while i < 256 {
-        table[i] = crate::is_tchar(i as u8);
-        i += 1;
-    }
-    table
-};
-
-pub(crate) fn token_run(buf: &[u8]) -> TokenRun {
-    let len = buf.iter().take_while(|&&b| TCHAR[usize::from(b)]).count();
-    let run = &buf[..len];
-    TokenRun {
-        len,
-        upper: run.iter().any(u8::is_ascii_uppercase),
-        underscore: run.contains(&b'_'),
-    }
 }

@@ -27,7 +27,10 @@ use tokio::{
 
 use h1_wire::{Captured, Origin, STEP, Wire, find, read_request, status};
 
-const SERVED: &str = "served by the HTTP/1 lane";
+const SERVED: [&str; 2] = [
+    "served by the HTTP/1 lane",
+    "served by the epoll data plane",
+];
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 
 fn patterned(length: usize) -> Vec<u8> {
@@ -42,13 +45,16 @@ fn post(length: usize) -> String {
 
 fn big_bodies(config: &mut oxiroute_config::ConfigDraft) {
     config.http_services[0].max_request_body_bytes = Some(64 * 1024 * 1024);
-    config.log_filter = Some("oxiroute::lane=debug".into());
+    config.log_filter = Some("oxiroute::lane=debug,oxiroute::epoll=debug".into());
 }
 
 /// Stops the proxy; the number of requests it served by the lane.
 fn served(wire: Wire) -> usize {
     let output = wire.server.shutdown_output();
-    output.lines().filter(|line| line.contains(SERVED)).count()
+    output
+        .lines()
+        .filter(|line| SERVED.iter().any(|served| line.contains(served)))
+        .count()
 }
 
 async fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {

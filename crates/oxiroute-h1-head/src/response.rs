@@ -1,5 +1,7 @@
 //! The response scanner: the common clean shape of an upstream response head, or "ask the classic parser".
 
+use oxiroute_cpu::{Job, Lanes, dispatch};
+
 use crate::class::{Class, HOP_BY_HOP_RESPONSE};
 use crate::fields::{Block, Header, MAX_HEADERS, Stop, scan_fields};
 use crate::miss::{MissReason, ScanResponse};
@@ -115,33 +117,43 @@ fn bad<T>(reason: MissReason) -> Result<T, Stop> {
     Err(Stop::Bad(reason))
 }
 
-const STATUS_LINE_START: &[u8; 9] = b"HTTP/1.1 ";
+/// The byte of `HTTP/1.<0|1> <3 digits> ` a status line has at `index`.
+fn status_byte_fits(index: usize, byte: u8) -> bool {
+    match index {
+        0..=6 => byte == b"HTTP/1."[index],
+        7 => matches!(byte, b'0' | b'1'),
+        9..=11 => byte.is_ascii_digit(),
+        _ => byte == b' ',
+    }
+}
+
+/// Where a status line that is shorter than its fixed part stops: `Partial` unless a byte it has already is wrong.
+fn short_status(buf: &[u8]) -> Stop {
+    if buf.iter().enumerate().all(|(i, &c)| status_byte_fits(i, c)) {
+        Stop::Partial
+    } else {
+        Stop::Bad(MissReason::Version)
+    }
+}
 
 /// The status, the minor version and the reason span of the status line, and the offset after it.
+#[inline(always)]
 fn status_line(buf: &[u8]) -> Result<(u16, u8, Span, usize), Stop> {
-    for (i, &c) in buf.iter().take(9).enumerate() {
-        let expected = if i == 7 {
-            c == b'0' || c == b'1'
-        } else {
-            c == STATUS_LINE_START[i]
-        };
-        if !expected {
-            return bad(MissReason::Version);
-        }
+    let Some(fixed) = buf.first_chunk::<13>() else {
+        return Err(short_status(buf));
+    };
+    let digits = &fixed[9..12];
+    let fits = fixed[..7] == *b"HTTP/1."
+        && matches!(fixed[7], b'0' | b'1')
+        && fixed[8] == b' '
+        && digits.iter().all(u8::is_ascii_digit)
+        && fixed[12] == b' ';
+    if !fits {
+        return bad(MissReason::Version);
     }
-    let mut status = 0u16;
-    for i in 9..12 {
-        match buf.get(i) {
-            Some(c @ b'0'..=b'9') => status = status * 10 + u16::from(c - b'0'),
-            Some(_) => return bad(MissReason::Version),
-            None => return Err(Stop::Partial),
-        }
-    }
-    match buf.get(12) {
-        Some(b' ') => {}
-        Some(_) => return bad(MissReason::Version),
-        None => return Err(Stop::Partial),
-    }
+    let status = digits
+        .iter()
+        .fold(0, |status, c| status * 10 + u16::from(c - b'0'));
     if !(100..=599).contains(&status) {
         return bad(MissReason::Version);
     }
@@ -156,7 +168,7 @@ fn status_line(buf: &[u8]) -> Result<(u16, u8, Span, usize), Stop> {
     }
     Ok((
         status,
-        buf[7] - b'0',
+        fixed[7] - b'0',
         Span {
             start: 13,
             len: (end - 13) as u32,
@@ -165,10 +177,11 @@ fn status_line(buf: &[u8]) -> Result<(u16, u8, Span, usize), Stop> {
     ))
 }
 
-fn scan(buf: &[u8], out: &mut ResponseHead) -> Result<(), Stop> {
+#[inline(always)]
+fn scan<L: Lanes>(lanes: L, buf: &[u8], out: &mut ResponseHead) -> Result<(), Stop> {
     let (status, minor, reason, fields_start) = status_line(buf)?;
     let mut block = Block::new();
-    scan_fields(buf, fields_start, &mut out.headers, &mut block)?;
+    scan_fields(lanes, buf, fields_start, &mut out.headers, &mut block)?;
     let facts = &mut out.facts;
     let has = |class: Class| block.seen & class.bit() != 0;
     let duplicated = |class: Class| block.dup & class.bit() != 0;
@@ -213,6 +226,20 @@ fn scan(buf: &[u8], out: &mut ResponseHead) -> Result<(), Stop> {
     Ok(())
 }
 
+struct ScanHead<'a> {
+    buf: &'a [u8],
+    out: &'a mut ResponseHead,
+}
+
+impl Job for ScanHead<'_> {
+    type Out = Result<(), Stop>;
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) -> Self::Out {
+        scan(lanes, self.buf, self.out)
+    }
+}
+
 /// Scans the response head at the start of `buf`.
 ///
 /// `Head` is only the common clean shape; `Slow` means "not that, or unsure": the classic parser decides, and it may
@@ -222,7 +249,7 @@ pub fn scan_response(buf: &[u8], out: &mut ResponseHead) -> ScanResponse {
     if u32::try_from(buf.len()).is_err() {
         return ScanResponse::Slow;
     }
-    match scan(buf, out) {
+    match dispatch(ScanHead { buf, out }) {
         Ok(()) => ScanResponse::Head,
         Err(Stop::Partial) => ScanResponse::Partial,
         Err(Stop::Bad(_)) => ScanResponse::Slow,

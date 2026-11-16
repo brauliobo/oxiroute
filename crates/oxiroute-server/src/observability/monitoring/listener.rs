@@ -50,6 +50,7 @@ impl ListenerMetrics {
         self.state
             .runtime_state
             .store(ListenerRuntimeState::Listening as u8, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     /// Marks a listener that completed an orderly runtime shutdown.
@@ -57,6 +58,7 @@ impl ListenerMetrics {
         self.state
             .runtime_state
             .store(ListenerRuntimeState::Stopped as u8, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     /// Marks a listener whose runtime terminated unexpectedly.
@@ -64,6 +66,7 @@ impl ListenerMetrics {
         self.state
             .runtime_state
             .store(ListenerRuntimeState::Failed as u8, Ordering::Release);
+        Doorbell::process().ring();
     }
 
     /// Accounts for a newly accepted connection.
@@ -90,8 +93,17 @@ impl ListenerMetrics {
         self.begin_connection_for_plane(true)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn begin_connection_for_plane(&self, control: bool) -> Result<ConnectionGuard, MetricsError> {
+        let from_idle = self.process.is_idle();
+        let admitted = self.admit_connection(control);
+        if from_idle {
+            Doorbell::process().ring();
+        }
+        admitted
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn admit_connection(&self, control: bool) -> Result<ConnectionGuard, MetricsError> {
         let started_at = Instant::now();
         if AdministrativeState::from_u8(
             self.state
@@ -494,6 +506,10 @@ impl ProcessAdmissionState {
             rescues: Mutex::new(BTreeMap::new()),
             pool_selections: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub(super) fn is_idle(&self) -> bool {
+        self.active.load(Ordering::Acquire) == 0
     }
 
     pub(super) fn rescue_snapshots(&self) -> Vec<RescueSnapshot> {

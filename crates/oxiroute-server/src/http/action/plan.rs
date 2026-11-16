@@ -10,6 +10,8 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
     pub(crate) lane: LaneRoute,
+    /// Whether the epoll data plane serves requests of the route; the tokio path serves the others.
+    pub(crate) engine: bool,
     /// What the fast lane edits on a proxied route: compiled with the route.
     pub(crate) edits: RouteEdits,
     pub(crate) policy: RoutePolicyPlan,

@@ -97,8 +97,7 @@ fn write_access_line(
         return;
     };
     let request = lane_log::Proxied {
-        buffer: &wire.text,
-        head: &wire.head,
+        idempotency: lane_log::idempotency_of(ctx, &wire.text, &wire.head),
         id: &plan.id,
         id_generated: plan.id_generated,
         method: &plan.method,
@@ -373,7 +372,7 @@ async fn open(
         };
     let status = head.status();
     let end = plan.is_head() || matches!(status.as_u16(), 204 | 304) || session.is_body_done();
-    ctx.remaining_at(now, true)?;
+    ctx.ensure_open_at(now, true)?;
     let retries_on_status = refused || proxy_policy(ctx).retries_on_status(status.as_u16());
     if retries_on_status && status_retry_possible(ctx, refused, false) && ctx.spend_retry_budget() {
         // The origin keeps what it has not sent: its connection is not used again.

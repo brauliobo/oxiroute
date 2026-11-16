@@ -126,7 +126,7 @@ pub struct HttpRequestContext {
     observed_received: u64,
     observed_sent: u64,
     authority: Option<Authority>,
-    attempted_upstreams: Vec<String>,
+    attempted_upstreams: Vec<crate::label::Label>,
     pool: Option<Arc<UpstreamPlan>>,
     route: Option<Arc<HttpRoutePlan>>,
     selected: Option<SelectedEndpoint>,
@@ -138,7 +138,7 @@ pub struct HttpRequestContext {
     evacuation_pin: Option<LeftRunning>,
     evacuations: usize,
     evacuated_from: Vec<Arc<ServerStats>>,
-    retry_server: Option<String>,
+    retry_server: Option<crate::label::Label>,
     queue_tag: QueueTag,
     retry_delay_pending: bool,
     prior_attempts: usize,
@@ -154,6 +154,8 @@ pub struct HttpRequestContext {
     total_deadline: Instant,
     client_deadline: Option<Instant>,
     deadline: Instant,
+    /// `deadline` as a length of time from `started_at`.
+    budget: Duration,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
     generation: Option<Arc<RuntimeGeneration>>,
@@ -218,6 +220,7 @@ impl HttpRequestContext {
         started_at: Instant,
         io_timeout: Duration,
     ) -> Self {
+        let deadline = started_at + io_timeout;
         Self {
             listener,
             observed_received: 0,
@@ -246,9 +249,10 @@ impl HttpRequestContext {
             started_at,
             request_facts: RequestFacts::default(),
             now: started_at,
-            total_deadline: started_at + io_timeout,
+            total_deadline: deadline,
             client_deadline: None,
-            deadline: started_at + io_timeout,
+            deadline,
+            budget: io_timeout,
             operation_result: None,
             websocket_reference: None,
             generation,
@@ -332,7 +336,7 @@ impl HttpRequestContext {
             path,
             client_ip,
             started: self.started_at,
-            deadline: self.deadline.saturating_duration_since(self.started_at),
+            deadline: self.budget,
             access_log: access_log.cloned(),
         }
     }
@@ -556,8 +560,9 @@ impl HttpRequestContext {
         self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
             client.min(self.total_deadline)
         });
+        self.budget = self.deadline.saturating_duration_since(self.started_at);
         if let Some(inflight) = &self.inflight {
-            inflight.set_deadline(self.deadline.saturating_duration_since(self.started_at));
+            inflight.set_deadline(self.budget);
         }
     }
 
@@ -583,15 +588,20 @@ impl HttpRequestContext {
     }
 
     fn remaining_at(&self, now: Instant, upstream: bool) -> pingora::Result<Duration> {
-        let remaining = self.deadline.saturating_duration_since(now);
-        if remaining.is_zero() {
+        self.ensure_open_at(now, upstream)?;
+        Ok(self.deadline.saturating_duration_since(now))
+    }
+
+    /// Fails when the deadline has passed as of `now`, without working out how long is left.
+    fn ensure_open_at(&self, now: Instant, upstream: bool) -> pingora::Result<()> {
+        if now >= self.deadline {
             return Err(if upstream {
                 Error::new_up(ErrorType::ReadTimedout)
             } else {
                 Error::new_down(ErrorType::ReadTimedout)
             });
         }
-        Ok(remaining)
+        Ok(())
     }
 
     fn allow_downstream_drain(&self, session: &mut Session) {
@@ -642,6 +652,7 @@ mod attempt;
 mod cache;
 mod compression;
 mod departure;
+pub(crate) mod engine;
 mod evacuation;
 mod h2lane;
 pub(crate) mod lane;

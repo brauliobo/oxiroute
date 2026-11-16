@@ -28,6 +28,13 @@ fn runtime_server(name: &str, port: u16, max_connections: Option<u64>) -> Runtim
     }
 }
 
+fn labels(names: &[String]) -> Vec<Label> {
+    names
+        .iter()
+        .map(|name| Label::from(name.as_str()))
+        .collect()
+}
+
 fn connection_lifetime(pool: &EndpointPool, name: &str) -> Arc<EndpointLeaseInner> {
     let lease = pool
         .select_server_connection_target(name)

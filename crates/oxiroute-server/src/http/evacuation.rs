@@ -9,14 +9,14 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
 
 use futures_util::task::AtomicWaker;
-use pingora::{Error, ErrorType, proxy::UpstreamCancellation};
+use pingora::{Error, ErrorType};
 
 mod report;
 #[cfg(test)]
@@ -90,6 +90,9 @@ pub(crate) struct Evacuation {
     redispatched: AtomicUsize,
     /// The proxy task waiting on the cancellation, at most one at a time.
     waker: AtomicWaker,
+    /// The epoll thread serving the request, which has no task to wake.
+    #[cfg(target_os = "linux")]
+    engine: OnceLock<oxiroute_epoll_h1::Waker>,
 }
 
 impl Evacuation {
@@ -98,6 +101,25 @@ impl Evacuation {
             state: AtomicU8::new(State::Idle.encode()),
             redispatched: AtomicUsize::new(0),
             waker: AtomicWaker::new(),
+            #[cfg(target_os = "linux")]
+            engine: OnceLock::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_engine(&self, waker: &oxiroute_epoll_h1::Waker) {
+        let _ = self.engine.set(waker.clone());
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.load().cancelled()
+    }
+
+    fn interrupt(&self) {
+        self.waker.wake();
+        #[cfg(target_os = "linux")]
+        if let Some(engine) = self.engine.get() {
+            engine.wake();
         }
     }
 
@@ -167,27 +189,32 @@ impl Evacuation {
                 State::Pinned(reason) => return Some(Fate::LeftRunning(reason)),
             };
             if self.transition(state, next).is_ok() {
-                self.waker.wake();
+                self.interrupt();
                 return Some(fate);
             }
         }
     }
+}
 
-    /// Resolves once the operator cancelled the attempt.
-    pub(crate) fn cancellation(self: &Arc<Self>) -> UpstreamCancellation {
-        Box::pin(self.cancelled())
-    }
+/// What owns an `Evacuation`, so the future of its cancellation keeps the owner alive and not a copy of the state.
+pub(crate) trait Evacuable: Send + Sync {
+    fn evacuation(&self) -> &Evacuation;
+}
 
-    /// [`Self::cancellation`] as a plain future, for the callers that await it where it is made.
-    pub(crate) fn cancelled(self: &Arc<Self>) -> Cancelled {
-        Cancelled(Some(Arc::clone(self)))
+impl Evacuable for Evacuation {
+    fn evacuation(&self) -> &Evacuation {
+        self
     }
 }
 
 /// Resolves once the operator cancelled the attempt; never when there is nothing to cancel.
-pub(crate) struct Cancelled(Option<Arc<Evacuation>>);
+pub(crate) struct Cancelled(Option<Arc<dyn Evacuable>>);
 
 impl Cancelled {
+    pub(crate) fn of(owner: Arc<impl Evacuable + 'static>) -> Self {
+        Self(Some(owner))
+    }
+
     /// A wait for a request that cannot be cancelled.
     pub(crate) const fn never() -> Self {
         Self(None)
@@ -198,13 +225,14 @@ impl Future for Cancelled {
     type Output = Box<Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Box<Error>> {
-        let Some(handle) = &self.0 else {
+        let Some(owner) = &self.0 else {
             return Poll::Pending;
         };
-        if !handle.load().cancelled() {
+        let handle = owner.evacuation();
+        if !handle.cancelled() {
             handle.waker.register(context.waker());
         }
-        if handle.load().cancelled() {
+        if handle.cancelled() {
             Poll::Ready(Error::new_in(EVACUATED))
         } else {
             Poll::Pending

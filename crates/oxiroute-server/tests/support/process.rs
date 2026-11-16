@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::ValidatedConfig;
+use oxiroute_config::{ConfigDraft, HttpDataPlane, ValidatedConfig};
 use tempfile::TempDir;
 use tokio::{net::TcpStream, time::sleep};
 
@@ -250,11 +250,46 @@ fn pending_accepts(address: SocketAddr) -> Option<u64> {
     })
 }
 
+const DATA_PLANE_ENV: &str = "OXIROUTE_TEST_HTTP_DATA_PLANE";
+
+/// The HTTP data plane a whole suite runs on, from the test variable: `epoll` or `tokio`. Omitted leaves each
+/// configuration to its own choice, which defaults to epoll where the platform supports it.
+pub fn suite_data_plane() -> Option<HttpDataPlane> {
+    match std::env::var(DATA_PLANE_ENV).ok()?.as_str() {
+        "epoll" => Some(HttpDataPlane::Epoll),
+        "tokio" => Some(HttpDataPlane::Tokio),
+        other => panic!("{DATA_PLANE_ENV} is `epoll` or `tokio`, not `{other}`"),
+    }
+}
+
+/// Whether the plain HTTP listeners of the configurations of the suite are served by the epoll data plane.
+#[allow(dead_code)]
+pub fn serves_on_epoll() -> bool {
+    suite_data_plane() != Some(HttpDataPlane::Tokio) && oxiroute_epoll_h1::supported()
+}
+
+fn runs_on(plane: HttpDataPlane, config: &ConfigDraft) -> bool {
+    config.fast_lane_enabled()
+        && (plane == HttpDataPlane::Tokio
+            || !config.aged_per_worker() && !config.dynamic_worker_scaling())
+}
+
+fn on_suite_data_plane(config: &ValidatedConfig) -> ValidatedConfig {
+    let Some(plane) = suite_data_plane().filter(|plane| runs_on(*plane, config.as_draft())) else {
+        return config.clone();
+    };
+    let mut draft = config.as_draft().clone();
+    draft.http_data_plane.get_or_insert(plane);
+    draft
+        .validate()
+        .expect("the configuration validates on the suite's data plane")
+}
+
 pub fn write_config(path: &Path, config: &ValidatedConfig) {
     let temporary = path.with_extension("tmp");
     fs::write(
         &temporary,
-        render_lua(config).expect("render process config"),
+        render_lua(&on_suite_data_plane(config)).expect("render process config"),
     )
     .expect("write process config");
     fs::rename(temporary, path).expect("install process config");

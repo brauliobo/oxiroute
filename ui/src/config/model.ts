@@ -1029,6 +1029,8 @@ export interface UdpPolicyConfig {
   max_queue_bytes: number
 }
 
+export type HttpDataPlane = 'epoll' | 'tokio'
+
 export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker' | 'auto'
 
 export type WorkerScaling = 'static' | 'dynamic'
@@ -1052,6 +1054,7 @@ export interface CanonicalConfig {
   max_connections: number | null
   listener_workers?: number
   http_fast_lane?: boolean
+  http_data_plane?: HttpDataPlane
   connection_scheduling?: ConnectionScheduling
   connection_age_ms?: number
   worker_scaling?: WorkerScaling

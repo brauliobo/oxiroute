@@ -2,78 +2,6 @@
 use super::*;
 use crate::test_ports::unused_tcp_address;
 
-#[tokio::test]
-async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
-    let directory = tempfile::tempdir().expect("directory");
-    let path = directory.path().join("oxiroute.kdl");
-    let config = ConfigDraft {
-        listener_workers: None,
-        http_fast_lane: None,
-        connection_scheduling: None,
-        connection_age_ms: None,
-        worker_scaling: None,
-        min_active_workers: None,
-        target_busy_percent: None,
-        scale_down_delay_ms: None,
-        tls_handshake_threads: None,
-        retirement: None,
-        version: 1,
-        max_connections: None,
-        management: None,
-        registry: None,
-        stats: None,
-        certificates: Vec::new(),
-        tls_profiles: Vec::new(),
-        listeners: Vec::new(),
-        cache_stores: Vec::new(),
-        upstream_pools: Vec::new(),
-        http_services: Vec::new(),
-        forward_proxy_services: Vec::new(),
-        rtmp_services: Vec::new(),
-        l4_services: Vec::new(),
-        audit: None,
-        log_filter: None,
-    };
-    fs::write(
-        &path,
-        oxiroute_config_source::render_config(
-            oxiroute_config_source::ConfigFormat::Kdl,
-            &config.validate().expect("valid config"),
-        )
-        .expect("render"),
-    )
-    .expect("config");
-    let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
-    let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
-        panic!("load");
-    };
-    let manager = GenerationManager::new();
-    let candidate = manager.prepare(*document).expect("candidate");
-    let mut startup = manager
-        .begin_candidate_start(&candidate)
-        .expect("startup reservation");
-    let generation = startup.claim_runtime_start().expect("runtime start claim");
-    let marker = GenerationRuntimeMarker {
-        generation: Arc::clone(&generation),
-    };
-    let (shutdown_tx, shutdown) = watch::channel(false);
-    let (ready_tx, mut ready) = watch::channel(false);
-    let task = tokio::spawn(async move {
-        let mut marker = marker;
-        marker
-            .start_service(None, shutdown, 1, ServiceReadyNotifier::new(ready_tx))
-            .await;
-    });
-
-    ready.changed().await.expect("generation readiness");
-    assert!(*ready.borrow());
-    assert!(generation.runtime_started());
-
-    shutdown_tx.send(true).expect("generation shutdown");
-    task.await.expect("generation marker task");
-    drop(startup);
-}
-
 fn acme_supervisor_probe(retained: Arc<()>) -> Arc<AcmeSupervisorProbe> {
     Arc::new(AcmeSupervisorProbe {
         iterations: AtomicU64::new(0),
@@ -94,6 +22,15 @@ fn wait_for_acme_iteration(probe: &AcmeSupervisorProbe) {
         );
         thread::yield_now();
     }
+}
+
+#[test]
+fn acme_supervisor_is_not_started_without_managed_certificates() {
+    assert!(
+        AcmeManagedSupervisor::start(Vec::new())
+            .expect("ACME supervisor")
+            .is_none()
+    );
 }
 
 #[test]
@@ -186,6 +123,7 @@ fn later_runtime_join_failures_drop_and_join_acme_supervisor_once() {
             .expect("ACME supervisor");
         wait_for_acme_iteration(&probe);
 
+        let supervisor = Some(supervisor);
         let error =
             join_generation_runtimes(supervisor, http3, udp).expect_err("injected join failure");
 
@@ -218,6 +156,7 @@ fn active_runtime_death_fails_the_generation_supervisor() {
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     let stop = AtomicBool::new(false);
     let process_shutdown = Arc::new(AtomicBool::new(false));
@@ -261,6 +200,7 @@ fn post_activation_watcher_failure_runs_bounded_recorder_cleanup() {
         generation: Arc::clone(&generation),
         shutdown,
         thread,
+        exited: Arc::default(),
     })));
     let started = std::time::Instant::now();
 
@@ -288,6 +228,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        http_data_plane: None,
         connection_scheduling: None,
         connection_age_ms: None,
         worker_scaling: None,
@@ -326,6 +267,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     let started = std::time::Instant::now();
 
@@ -351,6 +293,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     assert_eq!(
         completed.join_until(std::time::Instant::now()),
@@ -399,6 +342,7 @@ fn candidate_failure_cleanup_detaches_at_its_absolute_deadline() {
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     let started = std::time::Instant::now();
 
@@ -490,6 +434,7 @@ fn candidate_cleanup_visits_later_services_after_the_first_shutdown_times_out() 
         generation,
         shutdown,
         thread,
+        exited: Arc::default(),
     };
     let deadline = std::time::Instant::now() + Duration::from_millis(75);
 

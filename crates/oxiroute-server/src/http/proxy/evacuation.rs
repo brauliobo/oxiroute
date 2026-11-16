@@ -3,18 +3,38 @@ use super::*;
 use crate::http::evacuation::Evacuation;
 
 impl HttpRequestContext {
-    pub(super) fn evacuation(&self) -> Option<&Arc<Evacuation>> {
+    pub(super) fn evacuation(&self) -> Option<&Evacuation> {
         self.inflight.as_ref().map(InflightGuard::evacuation)
     }
 
     /// Lets the operator move or kill the attempt about to run, until it commits to a response.
     pub(super) fn arm_evacuation(&self, session: &Session) -> Option<UpstreamCancellation> {
-        let evacuation = self.evacuation()?;
-        let unmovable = self.evacuation_pin.or_else(|| {
-            (!request_body_replayable(session)).then_some(LeftRunning::BodyNotReplayable)
-        });
-        evacuation.begin_attempt(unmovable);
-        Some(evacuation.cancellation())
+        let inflight = self.inflight.as_ref()?;
+        inflight
+            .evacuation()
+            .begin_attempt(self.unmovable(request_body_replayable(session)));
+        Some(Box::pin(inflight.cancelled()))
+    }
+
+    /// Lets the operator move or kill the attempt of the epoll data plane about to run; the engine thread that
+    /// serves the request is woken when the operator acts.
+    #[cfg(target_os = "linux")]
+    pub(super) fn arm_evacuation_for_engine(&self, body_replayable: bool) {
+        if let Some(evacuation) = self.evacuation() {
+            evacuation.begin_attempt(self.unmovable(body_replayable));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn bind_evacuation_to_engine(&self, waker: &oxiroute_epoll_h1::Waker) {
+        if let Some(evacuation) = self.evacuation() {
+            evacuation.bind_engine(waker);
+        }
+    }
+
+    fn unmovable(&self, body_replayable: bool) -> Option<LeftRunning> {
+        self.evacuation_pin
+            .or_else(|| (!body_replayable).then_some(LeftRunning::BodyNotReplayable))
     }
 
     /// The upstream response is about to reach the client. Fails when the operator took the request

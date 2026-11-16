@@ -18,6 +18,7 @@ use crate::{
     },
     rtmp::value_plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
+    service_plan::DataPlanePolicy,
     service_plan::errors::{ServicePlanError, rtmp_preparation_error},
     service_plan::types::{
         CachePolicyBlueprint, CacheStoreBlueprint, EndpointBlueprint, HttpActionBlueprint,
@@ -629,9 +630,32 @@ fn compile_l4_blueprints(
         .collect()
 }
 
+fn refuse_tls_profile(
+    listener: &oxiroute_config::Listener,
+    tls_profile: Option<usize>,
+) -> Result<(), ServicePlanError> {
+    let without_tls = matches!(
+        listener.protocol,
+        Protocol::Tcp | Protocol::Udp | Protocol::Rtmp
+    );
+    match listener
+        .tls_profile
+        .clone()
+        .filter(|_| without_tls && tls_profile.is_some())
+    {
+        Some(profile) => Err(ServicePlanError::UnexpectedListenerTlsProfile {
+            listener: listener.name.clone(),
+            protocol: listener.protocol,
+            profile,
+        }),
+        None => Ok(()),
+    }
+}
+
 fn compile_listener_blueprints(
     config: &oxiroute_config::ConfigDraft,
 ) -> Result<Box<[ListenerBlueprint]>, ServicePlanError> {
+    let data_plane = DataPlanePolicy::of(config)?;
     config
         .listeners
         .iter()
@@ -708,17 +732,7 @@ fn compile_listener_blueprints(
                         })
                 })
                 .transpose()?;
-            if matches!(
-                listener.protocol,
-                Protocol::Tcp | Protocol::Udp | Protocol::Rtmp
-            ) && tls_profile.is_some()
-            {
-                return Err(ServicePlanError::UnexpectedListenerTlsProfile {
-                    listener: listener.name.clone(),
-                    protocol: listener.protocol,
-                    profile: listener.tls_profile.clone().expect("present"),
-                });
-            }
+            refuse_tls_profile(listener, tls_profile)?;
             Ok(ListenerBlueprint {
                 name: listener.name.clone(),
                 bind: listener.bind.clone(),
@@ -729,6 +743,11 @@ fn compile_listener_blueprints(
                 max_connections: listener.max_connections,
                 downstream_timeouts: listener.downstream_timeouts,
                 h2_windows: listener.effective_h2_windows(),
+                plane: data_plane.listener(
+                    listener.protocol,
+                    &listener.bind,
+                    tls_profile.is_some(),
+                ),
             })
         })
         .collect()

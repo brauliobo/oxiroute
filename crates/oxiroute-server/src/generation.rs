@@ -19,6 +19,7 @@ use oxiroute_supervision_unix::DescriptorSet;
 use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
+use crate::Doorbell;
 use crate::generation::resources::GenerationResources;
 use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,

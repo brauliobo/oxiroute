@@ -10,6 +10,10 @@ fn armed(unmovable: Option<LeftRunning>) -> Arc<Evacuation> {
     evacuation
 }
 
+fn cancelled(evacuation: &Arc<Evacuation>) -> Cancelled {
+    Cancelled::of(Arc::clone(evacuation))
+}
+
 #[test]
 fn a_request_without_an_attempt_is_not_a_candidate() {
     let evacuation = Evacuation::new();
@@ -196,7 +200,7 @@ fn concurrent_operators_move_a_request_once() {
 #[test]
 fn the_cancellation_resolves_with_the_evacuation_error_once_the_operator_acts() {
     let evacuation = armed(None);
-    let mut cancellation = evacuation.cancellation();
+    let mut cancellation = Box::pin(cancelled(&evacuation));
     assert!(cancellation.as_mut().now_or_never().is_none());
     evacuation.evacuate(false, true);
     let error = cancellation.now_or_never().expect("cancelled");
@@ -208,7 +212,7 @@ fn the_cancellation_resolves_with_the_evacuation_error_once_the_operator_acts() 
 fn a_cancellation_requested_before_the_future_runs_is_not_lost() {
     let evacuation = armed(None);
     evacuation.evacuate(true, true);
-    assert!(evacuation.cancellation().now_or_never().is_some());
+    assert!(cancelled(&evacuation).now_or_never().is_some());
 }
 
 #[test]
@@ -217,7 +221,7 @@ fn a_stale_wakeup_does_not_cancel_the_next_attempt() {
     evacuation.evacuate(false, true);
     assert_eq!(evacuation.settle(), Some(Cancellation::Move));
     evacuation.begin_attempt(None);
-    assert!(evacuation.cancellation().now_or_never().is_none());
+    assert!(cancelled(&evacuation).now_or_never().is_none());
 }
 
 #[test]
@@ -274,10 +278,10 @@ fn every_state_survives_its_encoding() {
 #[test]
 fn an_unboxed_cancellation_resolves_like_the_boxed_one_and_waits_when_the_request_cannot_move() {
     let evacuation = armed(None);
-    let mut cancelled = std::pin::pin!(evacuation.cancelled());
-    assert!(cancelled.as_mut().now_or_never().is_none());
+    let mut waiting = std::pin::pin!(cancelled(&evacuation));
+    assert!(waiting.as_mut().now_or_never().is_none());
     assert_eq!(evacuation.evacuate(false, true), Some(Fate::Redispatched));
-    let error = cancelled.now_or_never().expect("cancelled");
+    let error = waiting.now_or_never().expect("cancelled");
     assert!(is_evacuated(&error));
     assert!(Cancelled::never().now_or_never().is_none());
 }

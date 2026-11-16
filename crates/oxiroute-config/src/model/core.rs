@@ -17,6 +17,10 @@ pub struct ConfigDraft {
     /// Omitted means on; `false` sends every request through the classic path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_fast_lane: Option<bool>,
+    /// Which data plane serves plain HTTP/1.1 reverse-proxy listeners: `epoll` or `tokio`. Omitted selects the
+    /// default, resolved by the server when it prepares the generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_data_plane: Option<HttpDataPlane>,
     /// How each listener worker orders the connections that are ready: `work_stealing` (the default) shares them
     /// between the workers of a listener; `aged_per_worker` gives every worker its own queue, served newest first
     /// and oldest first once a connection has waited `connection_age_ms`, by default a few passes over the ready connections;
@@ -104,6 +108,12 @@ impl ConfigDraft {
         self.http_fast_lane.unwrap_or(true)
     }
 
+    /// The configured data plane; `None` leaves the choice to the server's default.
+    #[must_use]
+    pub fn http_data_plane_choice(&self) -> Option<HttpDataPlane> {
+        self.http_data_plane
+    }
+
     /// The handshake threads for a host with `cpus` CPUs: the configured count, or one per 8 CPUs between 1 and 4.
     #[must_use]
     pub fn effective_tls_handshake_threads(&self, cpus: usize) -> usize {
@@ -153,6 +163,23 @@ impl ConfigDraft {
     pub fn effective_scale_down_delay_ms(&self) -> u64 {
         self.scale_down_delay_ms
             .unwrap_or(Self::DEFAULT_SCALE_DOWN_DELAY_MS)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpDataPlane {
+    Epoll,
+    Tokio,
+}
+
+impl HttpDataPlane {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Epoll => "epoll",
+            Self::Tokio => "tokio",
+        }
     }
 }
 

@@ -9,7 +9,7 @@ use std::{
 use oxiroute_supervision::{LifecycleControl, LifecycleOperation, LifecycleRequest};
 
 use crate::{
-    AdministrativeState, GenerationError, GenerationManager, GenerationStatus,
+    AdministrativeState, Doorbell, GenerationError, GenerationManager, GenerationStatus,
     RuntimeReferenceKind,
     config::coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigLoadRejection, EffectiveRevision,
@@ -135,6 +135,7 @@ impl DirectLifecycleControl {
             .metrics()
             .set_process_administrative_state(AdministrativeState::Drain);
         shutdown.store(true, Ordering::Release);
+        Doorbell::process().ring();
         crate::observability::operational_event::emit("process_shutdown", "requested", None);
         Ok(LifecycleOutcome::ShutdownRequested)
     }

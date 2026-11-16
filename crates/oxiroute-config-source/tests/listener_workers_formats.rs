@@ -34,3 +34,28 @@ fn listener_workers_round_trip_through_every_source_format() {
         }
     }
 }
+
+#[test]
+fn http_data_plane_round_trips_through_every_source_format() {
+    for plane in ["epoll", "tokio"] {
+        let config = serde_json::from_value::<ConfigDraft>(
+            json!({"version": 1, "listeners": [], "http_data_plane": plane}),
+        )
+        .expect("authored configuration")
+        .validate()
+        .expect("valid configuration");
+        for format in [
+            ConfigFormat::Kdl,
+            ConfigFormat::Lua,
+            ConfigFormat::Uci,
+            ConfigFormat::Hocon,
+        ] {
+            let rendered = render_config(format, &config).expect("render");
+            assert!(rendered.contains(plane), "{plane} {format:?}");
+            let resolved =
+                resolve_source_with_format(Path::new("config"), rendered.as_bytes(), format)
+                    .unwrap_or_else(|error| panic!("{plane} {format:?}: {error}"));
+            assert_eq!(resolved.config, config, "{plane} {format:?}");
+        }
+    }
+}

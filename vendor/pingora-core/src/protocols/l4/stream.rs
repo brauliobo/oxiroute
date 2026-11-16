@@ -470,6 +470,28 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// The stream of a connection another acceptor took from its listener: the socket moves to the I/O driver of the
+    /// calling runtime, `bytes` are the bytes the acceptor already read from it, and the peer is the address it
+    /// accepted the connection from.
+    #[cfg(unix)]
+    pub fn adopt(
+        socket: std::net::TcpStream,
+        peer: std::net::SocketAddr,
+        bytes: &[u8],
+    ) -> io::Result<Self> {
+        socket.set_nonblocking(true)?;
+        let mut stream: Self = TcpStream::from_std(socket)?.into();
+        let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
+        digest
+            .peer_addr
+            .set(Some(peer.into()))
+            .expect("newly created OnceCell must be empty");
+        stream.set_socket_digest(digest);
+        stream.set_buffer(L4BufferSettings::default(), false)?;
+        stream.rewind(bytes);
+        Ok(stream)
+    }
+
     /// Ties application admission state to this connection: it is released right before the
     /// socket closes, so a client that reconnects on seeing the close is never rejected by it.
     pub fn hold_admission(&mut self, admission: Box<dyn Any + Send + Sync>) {

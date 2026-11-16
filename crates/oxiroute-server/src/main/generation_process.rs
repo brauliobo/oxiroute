@@ -6,6 +6,19 @@ pub(super) struct GenerationProcess {
     pub(super) retirement: CandidateRtmpRetirementHandle,
     pub(super) shutdown: tokio::sync::watch::Sender<bool>,
     pub(super) thread: JoinHandle<()>,
+    pub(super) exited: Arc<AtomicBool>,
+}
+
+struct RuntimeExit {
+    exited: Arc<AtomicBool>,
+    doorbell: &'static Doorbell,
+}
+
+impl Drop for RuntimeExit {
+    fn drop(&mut self) {
+        self.exited.store(true, Ordering::Release);
+        self.doorbell.ring();
+    }
 }
 
 #[derive(Clone)]
@@ -34,6 +47,7 @@ impl CandidateRtmpRetirementHandle {
 const ACME_RENEWAL_SCAN_INTERVAL: Duration = Duration::from_hours(12);
 const ACME_RENEWAL_OPERATION_TIMEOUT: Duration = Duration::from_mins(10);
 const GENERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const MUTATION_RETRY: Duration = Duration::from_millis(20);
 
 pub(super) struct AcmeManagedSupervisor {
     pub(super) stop: Option<mpsc::Sender<()>>,
@@ -44,8 +58,11 @@ pub(super) struct AcmeManagedSupervisor {
 }
 
 impl AcmeManagedSupervisor {
-    pub(super) fn start(reconcilers: Vec<Arc<AcmeManagedReconciler>>) -> io::Result<Self> {
-        Self::start_internal(reconcilers, None)
+    pub(super) fn start(reconcilers: Vec<Arc<AcmeManagedReconciler>>) -> io::Result<Option<Self>> {
+        if reconcilers.is_empty() {
+            return Ok(None);
+        }
+        Self::start_internal(reconcilers, None).map(Some)
     }
 
     pub(super) fn start_internal(
@@ -194,7 +211,7 @@ impl GenerationRuntimeJoin for UdpRuntime {
 }
 
 pub(super) fn join_generation_runtimes<H, U>(
-    _acme_supervisor: AcmeManagedSupervisor,
+    _acme_supervisor: Option<AcmeManagedSupervisor>,
     http3_runtimes: Vec<H>,
     udp_runtimes: Vec<U>,
 ) -> io::Result<()>
@@ -250,12 +267,18 @@ impl GenerationProcess {
         let thread_generation = Arc::clone(&generation);
         let thread_process_shutdown = Arc::clone(process_shutdown);
         let thread_manager = manager.clone();
+        let exited = Arc::new(AtomicBool::new(false));
+        let exit = RuntimeExit {
+            exited: Arc::clone(&exited),
+            doorbell: Doorbell::process(),
+        };
         let thread = match thread::Builder::new()
             .name(format!(
                 "oxiroute-generation-{}",
                 &generation.revision().candidate.as_str()[..12]
             ))
             .spawn(move || {
+                let _exit = exit;
                 if let Err(error) = serve_generation(
                     &thread_generation,
                     &coordinator,
@@ -274,14 +297,15 @@ impl GenerationProcess {
                 return Err(error.into());
             }
         };
+        let process = Self {
+            generation,
+            retirement,
+            shutdown: shutdown_tx,
+            thread,
+            exited,
+        };
         loop {
             if process_shutdown.load(Ordering::Acquire) {
-                let process = Self {
-                    generation: Arc::clone(&generation),
-                    retirement,
-                    shutdown: shutdown_tx,
-                    thread,
-                };
                 let _ = finish_candidate_generation_process(manager, process, deadline);
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
@@ -290,43 +314,18 @@ impl GenerationProcess {
                 .into());
             }
             match setup_rx.recv_timeout(Duration::from_millis(20)) {
-                Ok(Ok(())) => {
-                    return Ok(Self {
-                        generation,
-                        retirement,
-                        shutdown: shutdown_tx,
-                        thread,
-                    });
-                }
+                Ok(Ok(())) => return Ok(process),
                 Ok(Err(error)) => {
-                    let process = Self {
-                        generation: Arc::clone(&generation),
-                        retirement,
-                        shutdown: shutdown_tx,
-                        thread,
-                    };
                     let _ = finish_candidate_generation_process(manager, process, deadline);
                     return Err(io::Error::other(error).into());
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let process = Self {
-                        generation: Arc::clone(&generation),
-                        retirement,
-                        shutdown: shutdown_tx,
-                        thread,
-                    };
                     let _ = finish_candidate_generation_process(manager, process, deadline);
                     return Err(
                         io::Error::other("generation setup terminated without readiness").into(),
                     );
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) if std::time::Instant::now() >= deadline => {
-                    let process = Self {
-                        generation: Arc::clone(&generation),
-                        retirement,
-                        shutdown: shutdown_tx,
-                        thread,
-                    };
                     let _ = finish_candidate_generation_process(manager, process, deadline);
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
@@ -345,7 +344,7 @@ impl GenerationProcess {
     }
 
     pub(super) fn is_finished(&self) -> bool {
-        self.thread.is_finished()
+        self.exited.load(Ordering::Acquire) || self.thread.is_finished()
     }
 
     pub(super) fn join_until(self, deadline: std::time::Instant) -> GenerationJoinOutcome {
@@ -507,27 +506,33 @@ pub(super) fn supervise_generations(
 ) -> bool {
     let mut retired = Vec::<GenerationProcess>::new();
     let mut successful = true;
-    while !stop.load(Ordering::Acquire) {
+    let doorbell = Doorbell::process();
+    loop {
+        let heard = doorbell.rung();
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
         if current.is_finished() || current.generation.runtime_failed() {
             error!("active generation runtime terminated unexpectedly");
             process_shutdown.store(true, Ordering::Release);
+            doorbell.ring();
             successful = false;
             break;
         }
         successful &= reap_retired(manager, &mut retired);
         let Some(candidate) = manager.candidate() else {
-            thread::sleep(Duration::from_millis(20));
+            doorbell.sleep_after(heard, manager.next_retirement_due());
             continue;
         };
         if manager.defer_for_retired_cap(&candidate) {
-            thread::sleep(Duration::from_millis(20));
+            doorbell.sleep_after(heard, manager.next_retirement_due());
             continue;
         }
         let startup_deadline = std::time::Instant::now() + GENERATION_STARTUP_TIMEOUT;
         let mut startup = match manager.begin_candidate_start(&candidate) {
             Ok(startup) => startup,
             Err(oxiroute_server::GenerationError::MutationInProgress) => {
-                thread::sleep(Duration::from_millis(20));
+                doorbell.sleep_after(heard, Some(std::time::Instant::now() + MUTATION_RETRY));
                 continue;
             }
             Err(_) => continue,

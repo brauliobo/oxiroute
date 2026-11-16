@@ -99,6 +99,7 @@ impl GenerationManager {
                 );
                 self.counters.prepares.fetch_add(1, Ordering::Relaxed);
                 state.candidate = Some(candidate.clone());
+                Doorbell::process().ring();
                 state.quarantined_revision = None;
                 state.last_failure = None;
                 Ok(candidate)
@@ -215,6 +216,7 @@ impl GenerationManager {
                 );
                 self.counters.prepares.fetch_add(1, Ordering::Relaxed);
                 state.candidate = Some(candidate.clone());
+                Doorbell::process().ring();
                 state.quarantined_revision = None;
                 state.last_failure = None;
                 Ok(candidate)

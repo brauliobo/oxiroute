@@ -100,6 +100,17 @@ pub(super) fn add_plain_listener<A>(
     }
 }
 
+/// The text a socket listener's descriptor is registered under, as the tokio path registers it.
+#[cfg(target_os = "linux")]
+pub(super) fn epoll_bind(bind: &ListenerBind) -> String {
+    match bind {
+        ListenerBind::Socket { address, .. } => address.to_string(),
+        ListenerBind::Udp { .. } | ListenerBind::Unix { .. } => {
+            unreachable!("the data plane plan gives the epoll data plane socket listeners only")
+        }
+    }
+}
+
 pub(super) struct RuntimeListenerService<S> {
     generation: Option<Arc<RuntimeGeneration>>,
     inner: S,
@@ -212,10 +223,6 @@ where
     }
 }
 
-pub(super) struct GenerationRuntimeMarker {
-    pub(super) generation: Arc<RuntimeGeneration>,
-}
-
 pub(super) struct GenerationBackgroundService<S> {
     pub(super) _generation: Arc<RuntimeGeneration>,
     pub(super) inner: S,
@@ -234,27 +241,6 @@ where
         self.inner
             .start_with_ready_notifier(shutdown, ready_notifier)
             .await;
-    }
-}
-
-#[async_trait]
-impl ServiceWithDependents for GenerationRuntimeMarker {
-    async fn start_service(
-        &mut self,
-        #[cfg(unix)] _fds: Option<pingora::server::ListenFds>,
-        mut shutdown: ShutdownWatch,
-        _listeners_per_fd: usize,
-        ready_notifier: ServiceReadyNotifier,
-    ) {
-        if !self.generation.mark_runtime_started() {
-            return;
-        }
-        ready_notifier.notify_ready();
-        while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
-    }
-
-    fn name(&self) -> &'static str {
-        "OxiRoute generation runtime marker"
     }
 }
 

@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
+    thread::{self, Thread},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,7 +24,7 @@ use serde::Serialize;
 use crate::{
     http::{
         action::AccessLog,
-        evacuation::{Evacuation, EvacuationReport, Fate},
+        evacuation::{Cancelled, Evacuable, Evacuation, EvacuationReport, Fate},
     },
     label::Label,
     observability::access_record::{Correlation, Count, Safe, SafeId, StuckAccess},
@@ -33,7 +34,6 @@ use crate::{
 pub(crate) const MAX_PATH_BYTES: usize = 128;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_mins(1);
-const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,33 +89,40 @@ struct Place {
 
 /// The request id, host and path of an arrival in one allocation. Each is bounded by `MAX_PATH_BYTES`.
 struct Texts {
-    all: Box<str>,
+    all: String,
     id_end: u16,
     host_end: Option<u16>,
 }
 
 impl Texts {
     fn new(request_id: &str, host: Option<&str>, path: &str) -> Self {
+        let mut texts = Self {
+            all: String::new(),
+            id_end: 0,
+            host_end: None,
+        };
+        texts.fill(request_id, host, path);
+        texts
+    }
+
+    fn fill(&mut self, request_id: &str, host: Option<&str>, path: &str) {
         let (id, host, path) = (
             bounded_text(request_id),
             host.map(bounded_text),
             bounded_path(path),
         );
-        let mut all = String::with_capacity(id.len() + host.map_or(0, str::len) + path.len());
-        all.push_str(id);
-        let id_end = all.len();
-        if let Some(host) = host {
-            all.push_str(host);
-        }
-        let host_end = host.map(|_| all.len());
-        all.push_str(path);
         let bound =
             |end: usize| u16::try_from(end).expect("each text is bounded by MAX_PATH_BYTES");
-        Self {
-            all: all.into_boxed_str(),
-            id_end: bound(id_end),
-            host_end: host_end.map(bound),
+        self.all.clear();
+        self.all
+            .reserve(id.len() + host.map_or(0, str::len) + path.len());
+        self.all.push_str(id);
+        self.id_end = bound(self.all.len());
+        if let Some(host) = host {
+            self.all.push_str(host);
         }
+        self.host_end = host.map(|_| bound(self.all.len()));
+        self.all.push_str(path);
     }
 
     fn request_id(&self) -> &str {
@@ -145,11 +152,17 @@ pub(crate) struct InflightEntry {
     progress_ms: AtomicU64,
     attempts: AtomicU32,
     deadline_ms: AtomicU64,
-    queue_position: Arc<AtomicU64>,
+    queue_position: OnceLock<Arc<AtomicU64>>,
     stuck_reported: AtomicBool,
     place: Mutex<Place>,
-    evacuation: Arc<Evacuation>,
+    evacuation: Evacuation,
     access_log: Option<Arc<AccessLog>>,
+}
+
+impl Evacuable for InflightEntry {
+    fn evacuation(&self) -> &Evacuation {
+        &self.evacuation
+    }
 }
 
 /// What the request looks like on arrival; everything else is learned while it is routed.
@@ -186,6 +199,77 @@ fn elapsed_ms(since: Instant) -> u64 {
 }
 
 impl InflightEntry {
+    fn new(key: u64, arrival: InflightArrival<'_>, place: Place) -> Self {
+        Self {
+            key,
+            texts: Texts::new(arrival.request_id, arrival.host, arrival.path),
+            listener: arrival.listener,
+            method: arrival.method,
+            client_ip: arrival.client_ip,
+            started: arrival.started,
+            phase: AtomicU8::new(Phase::Routed as u8),
+            phase_since_ms: AtomicU64::new(0),
+            progress_ms: AtomicU64::new(0),
+            attempts: AtomicU32::new(0),
+            deadline_ms: AtomicU64::new(duration_ms(arrival.deadline)),
+            queue_position: OnceLock::new(),
+            stuck_reported: AtomicBool::new(false),
+            place: Mutex::new(place),
+            evacuation: Evacuation::new(),
+            access_log: arrival.access_log,
+        }
+    }
+
+    /// Makes an entry that nobody holds the entry of a new arrival, as [`Self::new`] would have made it.
+    fn renew(&mut self, key: u64, arrival: InflightArrival<'_>, place: Place) {
+        let Self {
+            key: slot,
+            texts,
+            listener,
+            method,
+            client_ip,
+            started,
+            phase,
+            phase_since_ms,
+            progress_ms,
+            attempts,
+            deadline_ms,
+            queue_position,
+            stuck_reported,
+            place: placed,
+            evacuation,
+            access_log,
+        } = self;
+        *slot = key;
+        texts.fill(arrival.request_id, arrival.host, arrival.path);
+        *listener = arrival.listener;
+        *method = arrival.method;
+        *client_ip = arrival.client_ip;
+        *started = arrival.started;
+        *phase.get_mut() = Phase::Routed as u8;
+        *phase_since_ms.get_mut() = 0;
+        *progress_ms.get_mut() = 0;
+        *attempts.get_mut() = 0;
+        *deadline_ms.get_mut() = duration_ms(arrival.deadline);
+        queue_position.take();
+        *stuck_reported.get_mut() = false;
+        *placed
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = place;
+        *evacuation = Evacuation::new();
+        *access_log = arrival.access_log;
+    }
+
+    /// Lets go of what a spare entry would keep alive: the plans' names, the access log and the queue cell.
+    fn release(&mut self) {
+        self.queue_position.take();
+        self.access_log = None;
+        *self
+            .place
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Place::default();
+    }
+
     fn age_ms(&self) -> u64 {
         elapsed_ms(self.started)
     }
@@ -193,9 +277,15 @@ impl InflightEntry {
     /// A request holding a lease that waits for capacity is queued, whatever step the proxy is in.
     fn phase(&self) -> Phase {
         match Phase::from_u8(self.phase.load(Ordering::Relaxed)) {
-            Phase::Connecting if self.queue_position.load(Ordering::Relaxed) > 0 => Phase::Queued,
+            Phase::Connecting if self.queue_position() > 0 => Phase::Queued,
             phase => phase,
         }
+    }
+
+    fn queue_position(&self) -> u64 {
+        self.queue_position
+            .get()
+            .map_or(0, |cell| cell.load(Ordering::Relaxed))
     }
 
     /// Only the task that serves the request counts its attempts, one after the other.
@@ -281,7 +371,7 @@ impl InflightEntry {
             age_ms,
             waited_ms: (phase == Phase::Queued)
                 .then(|| age_ms.saturating_sub(self.phase_since_ms.load(Ordering::Relaxed))),
-            queue_position: Some(self.queue_position.load(Ordering::Relaxed)).filter(|p| *p > 0),
+            queue_position: Some(self.queue_position()).filter(|position| *position > 0),
             attempts: self.attempts.load(Ordering::Relaxed),
             overdue: self.overdue(),
         }
@@ -402,7 +492,46 @@ impl Hasher for KeyHasher {
     }
 }
 
-type Entries = HashMap<u64, Arc<InflightEntry>, BuildHasherDefault<KeyHasher>>;
+/// Entries a shard keeps for the next arrivals instead of freeing them: a worker serves one request after another.
+const SPARE_ENTRIES: usize = 256;
+
+#[derive(Default)]
+struct Entries {
+    live: HashMap<u64, Arc<InflightEntry>, BuildHasherDefault<KeyHasher>>,
+    spare: Vec<Arc<InflightEntry>>,
+}
+
+impl Entries {
+    fn admit(
+        &mut self,
+        key: u64,
+        arrival: InflightArrival<'_>,
+        place: Place,
+    ) -> Arc<InflightEntry> {
+        let entry = match self.spare.pop() {
+            Some(mut spare) => {
+                Arc::get_mut(&mut spare)
+                    .expect("a spare entry is held by no one else")
+                    .renew(key, arrival, place);
+                spare
+            }
+            None => Arc::new(InflightEntry::new(key, arrival, place)),
+        };
+        self.live.insert(key, Arc::clone(&entry));
+        entry
+    }
+
+    /// Takes the entry out; it becomes a spare when no scan of the registry still holds it.
+    fn retire(&mut self, entry: &mut Arc<InflightEntry>) {
+        self.live.remove(&entry.key);
+        if self.spare.len() < SPARE_ENTRIES
+            && let Some(unshared) = Arc::get_mut(entry)
+        {
+            unshared.release();
+            self.spare.push(Arc::clone(entry));
+        }
+    }
+}
 
 /// The requests one worker thread registered, and how many it has numbered.
 #[derive(Default)]
@@ -416,6 +545,8 @@ pub(crate) struct InflightRegistry {
     /// shard number is the low bits of its key and the guard removes it from the same shard.
     shards: Sharded<Shard>,
     stuck: Mutex<BTreeMap<(String, &'static str), u64>>,
+    watchdog: OnceLock<Thread>,
+    watchdog_parked: AtomicBool,
 }
 
 pub(crate) struct InflightGuard {
@@ -440,14 +571,9 @@ pub(crate) fn registry() -> &'static InflightRegistry {
     static WATCHDOG: OnceLock<()> = OnceLock::new();
     let registry = REGISTRY.get_or_init(InflightRegistry::new);
     WATCHDOG.get_or_init(|| {
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name("oxiroute-inflight".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(WATCHDOG_TICK);
-                    registry.report_stuck(DEFAULT_STUCK_AFTER);
-                }
-            })
+            .spawn(move || registry.watch())
             .expect("spawn in-flight watchdog");
     });
     registry
@@ -458,6 +584,32 @@ impl InflightRegistry {
         Self {
             shards: Sharded::new(Shard::default),
             stuck: Mutex::new(BTreeMap::new()),
+            watchdog: OnceLock::new(),
+            watchdog_parked: AtomicBool::new(false),
+        }
+    }
+
+    fn watch(&self) -> ! {
+        self.watchdog.get_or_init(thread::current);
+        loop {
+            match self.sweep(DEFAULT_STUCK_AFTER).1 {
+                Some(wait) => thread::park_timeout(wait),
+                None => self.park_until_registered(),
+            }
+        }
+    }
+
+    fn park_until_registered(&self) {
+        self.watchdog_parked.store(true, Ordering::SeqCst);
+        if self.sweep(DEFAULT_STUCK_AFTER).1.is_none() {
+            thread::park();
+        }
+        self.watchdog_parked.store(false, Ordering::SeqCst);
+    }
+
+    fn wake_watchdog(&self) {
+        if self.watchdog_parked.load(Ordering::SeqCst) {
+            self.watchdog.get().inspect(|watchdog| watchdog.unpark());
         }
     }
 
@@ -493,25 +645,8 @@ impl InflightRegistry {
         let index = sharded::local_index();
         let number = sharded::next(&self.shards.get(index).registered);
         let key = number * SHARDS as u64 + index as u64;
-        let entry = Arc::new(InflightEntry {
-            key,
-            texts: Texts::new(arrival.request_id, arrival.host, arrival.path),
-            listener: arrival.listener,
-            method: arrival.method,
-            client_ip: arrival.client_ip,
-            started: arrival.started,
-            phase: AtomicU8::new(Phase::Routed as u8),
-            phase_since_ms: AtomicU64::new(0),
-            progress_ms: AtomicU64::new(0),
-            attempts: AtomicU32::new(0),
-            deadline_ms: AtomicU64::new(duration_ms(arrival.deadline)),
-            queue_position: Arc::new(AtomicU64::new(0)),
-            stuck_reported: AtomicBool::new(false),
-            place: Mutex::new(place),
-            evacuation: Arc::new(Evacuation::new()),
-            access_log: arrival.access_log,
-        });
-        self.lock(index).insert(key, Arc::clone(&entry));
+        let entry = self.lock(index).admit(key, arrival, place);
+        self.wake_watchdog();
         InflightGuard {
             entry,
             registry: self,
@@ -520,7 +655,7 @@ impl InflightRegistry {
 
     fn entries(&self) -> Vec<Arc<InflightEntry>> {
         (0..SHARDS)
-            .flat_map(|index| self.lock(index).values().cloned().collect::<Vec<_>>())
+            .flat_map(|index| self.lock(index).live.values().cloned().collect::<Vec<_>>())
             .collect()
     }
 
@@ -584,34 +719,46 @@ impl InflightRegistry {
         totals
     }
 
-    /// Counts and logs each stuck request once; the arrival line is what a completion log cannot give.
-    pub(crate) fn report_stuck(&self, stuck_after: Duration) -> Vec<InflightView> {
+    /// Counts and logs each stuck request once; the arrival line is what a completion log cannot give. Says how
+    /// long until the next request not reported yet could go quiet.
+    pub(crate) fn sweep(&self, stuck_after: Duration) -> (Vec<InflightView>, Option<Duration>) {
         let limit = duration_ms(stuck_after);
         let mut reported = Vec::new();
+        let mut next = None::<u64>;
         for entry in self.entries() {
-            if entry.silent_ms() <= limit || entry.stuck_reported.swap(true, Ordering::Relaxed) {
+            if entry.stuck_reported.load(Ordering::Relaxed) {
                 continue;
             }
-            let view = entry.view();
-            let pool = view.pool.clone().unwrap_or_default();
-            *self
-                .stuck
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry((pool, view.phase.as_str()))
-                .or_default() += 1;
-            log::warn!(
-                "request {} stuck in {} for {} ms (pool {:?}, server {:?})",
-                view.request_id,
-                view.phase.as_str(),
-                view.age_ms,
-                view.pool,
-                view.server
-            );
-            entry.write_stuck_line(&view);
-            reported.push(view);
+            let silent = entry.silent_ms();
+            if silent <= limit {
+                let due = limit - silent + 1;
+                next = Some(next.map_or(due, |next| next.min(due)));
+            } else if !entry.stuck_reported.swap(true, Ordering::Relaxed) {
+                reported.push(self.report(&entry));
+            }
         }
-        reported
+        (reported, next.map(Duration::from_millis))
+    }
+
+    fn report(&self, entry: &InflightEntry) -> InflightView {
+        let view = entry.view();
+        let pool = view.pool.clone().unwrap_or_default();
+        *self
+            .stuck
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((pool, view.phase.as_str()))
+            .or_default() += 1;
+        log::warn!(
+            "request {} stuck in {} for {} ms (pool {:?}, server {:?})",
+            view.request_id,
+            view.phase.as_str(),
+            view.age_ms,
+            view.pool,
+            view.server
+        );
+        entry.write_stuck_line(&view);
+        view
     }
 }
 
@@ -619,15 +766,26 @@ impl InflightGuard {
     /// `now` is the caller's reading of the clock for this step, so a phase change reads no clock of its own.
     pub(crate) fn set_phase(&self, phase: Phase, now: Instant) {
         let entry = &self.entry;
-        let age = duration_ms(now.saturating_duration_since(entry.started));
         entry.phase.store(phase as u8, Ordering::Relaxed);
-        entry.phase_since_ms.store(age, Ordering::Relaxed);
-        entry.progress_ms.store(age, Ordering::Relaxed);
+        match phase {
+            Phase::Queued | Phase::Connecting => entry
+                .phase_since_ms
+                .store(self.age_ms_at(now), Ordering::Relaxed),
+            Phase::Streaming => entry
+                .progress_ms
+                .store(self.age_ms_at(now), Ordering::Relaxed),
+            Phase::Routed | Phase::AwaitingHeaders | Phase::RetryWait => {}
+        }
+    }
+
+    fn age_ms_at(&self, now: Instant) -> u64 {
+        duration_ms(now.saturating_duration_since(self.entry.started))
     }
 
     pub(crate) fn progress(&self, now: Instant) {
-        let age = duration_ms(now.saturating_duration_since(self.entry.started));
-        self.entry.progress_ms.store(age, Ordering::Relaxed);
+        self.entry
+            .progress_ms
+            .store(self.age_ms_at(now), Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -671,23 +829,28 @@ impl InflightGuard {
     }
 
     /// Where a lease reports its place in the pool queue, 0 when it is not waiting.
-    pub(crate) fn queue_cell(&self) -> &Arc<AtomicU64> {
-        &self.entry.queue_position
+    pub(crate) fn queue_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(self.entry.queue_position.get_or_init(Arc::default))
     }
 
     pub(crate) fn stuck(&self) -> bool {
         self.entry.stuck_reported.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn evacuation(&self) -> &Arc<Evacuation> {
+    pub(crate) fn evacuation(&self) -> &Evacuation {
         &self.entry.evacuation
+    }
+
+    /// Resolves once the operator cancelled the attempt of this request.
+    pub(crate) fn cancelled(&self) -> Cancelled {
+        Cancelled::of(Arc::clone(&self.entry))
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         let index = usize::try_from(self.entry.key % SHARDS as u64).expect("shard index");
-        self.registry.lock(index).remove(&self.entry.key);
+        self.registry.lock(index).retire(&mut self.entry);
     }
 }
 

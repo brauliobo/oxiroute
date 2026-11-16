@@ -33,7 +33,7 @@ impl EndpointPool {
     /// that has capacity, after `after`. Reads the ranking in place; a request holds no list of it.
     fn next_fail_open(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         after: Option<FailOpenKey>,
     ) -> Option<(FailOpenKey, Arc<PoolEndpoint>)> {
         self.read_health(|members| {
@@ -44,7 +44,7 @@ impl EndpointPool {
                 .filter(|(_, server)| {
                     server.fail_open_eligible()
                         && server.has_capacity()
-                        && !excluded.contains(&server.name)
+                        && !lists(excluded, &server.name)
                 })
                 .map(|(index, server)| ((server.fail_open_rank(), index), server))
                 .filter(|(key, _)| after.is_none_or(|after| *key > after))
@@ -54,16 +54,16 @@ impl EndpointPool {
     }
 
     /// Whether any server could serve a failing-open pool once it has capacity.
-    fn fail_open_candidates_exist(&self, excluded: &[String]) -> bool {
+    fn fail_open_candidates_exist(&self, excluded: &[Label]) -> bool {
         self.read_health(|members| {
             members
                 .endpoints
                 .iter()
-                .any(|server| server.fail_open_eligible() && !excluded.contains(&server.name))
+                .any(|server| server.fail_open_eligible() && !lists(excluded, &server.name))
         })
     }
 
-    fn select_fail_open(&self, excluded: &[String]) -> SelectionAttempt {
+    fn select_fail_open(&self, excluded: &[Label]) -> SelectionAttempt {
         let now_unix_ms = now_unix_ms();
         let mut after = None;
         while let Some((key, server)) = self.next_fail_open(excluded, after) {
@@ -86,10 +86,7 @@ impl EndpointPool {
         }
     }
 
-    pub(in super::super) fn select_server_excluding(
-        &self,
-        excluded: &[String],
-    ) -> SelectionAttempt {
+    pub(in super::super) fn select_server_excluding(&self, excluded: &[Label]) -> SelectionAttempt {
         self.select_attempt(excluded, false)
     }
 
@@ -138,7 +135,7 @@ impl EndpointPool {
     /// Acquires a permit of the best server. With `reuse_idle`, a server whose pooled connection
     /// is idle also qualifies and gets a pending lease, since the connection serves the request
     /// without a new permit.
-    fn select_attempt(&self, excluded: &[String], reuse_idle: bool) -> SelectionAttempt {
+    fn select_attempt(&self, excluded: &[Label], reuse_idle: bool) -> SelectionAttempt {
         let now_unix_ms = now_unix_ms();
         match self.choose(excluded, reuse_idle, now_unix_ms) {
             Chosen::FailOpen if reuse_idle => SelectionAttempt {
@@ -160,7 +157,7 @@ impl EndpointPool {
     }
 
     /// The selection proper, under the selection lock; leases are built after it is released.
-    fn choose(&self, excluded: &[String], reuse_idle: bool, now_unix_ms: u64) -> Chosen {
+    fn choose(&self, excluded: &[Label], reuse_idle: bool, now_unix_ms: u64) -> Chosen {
         let mut selection = self.lock_selection();
         let members = self.health.members.load();
         let view = self.health.selectable_view(&members, now_unix_ms);
@@ -183,12 +180,14 @@ impl EndpointPool {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn select_connection_target_excluding(
+    /// What [`Self::select_connection_target_waiting_at`] gives a pool that never makes a request wait: the first
+    /// selection is the only one.
+    pub(crate) fn select_connection_target_at_once(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
+        now_unix_ms: u64,
     ) -> Option<EndpointLease> {
-        let (lease, _) = self.connection_target(excluded, now_unix_ms());
+        let (lease, _) = self.connection_target(excluded, now_unix_ms);
         if lease.is_none() {
             self.note_unavailable_selection();
         }
@@ -196,9 +195,35 @@ impl EndpointPool {
     }
 
     #[cfg(test)]
+    pub(crate) fn select_connection_target_excluding(
+        &self,
+        excluded: &[Label],
+    ) -> Option<EndpointLease> {
+        self.select_connection_target_at_once(excluded, now_unix_ms())
+    }
+
+    /// What [`Self::select_wait_excluding`] gives a pool that never makes a request wait.
+    pub(crate) fn select_excluding_at_once(&self, excluded: &[Label]) -> Option<EndpointLease> {
+        let attempt = self.select_server_excluding(excluded);
+        if attempt.lease.is_none() && !attempt.pool_available {
+            self.note_unavailable_selection();
+        }
+        attempt.lease
+    }
+
+    /// What [`Self::select_server_wait`] gives a pool that never makes a request wait.
+    pub(crate) fn select_named_at_once(&self, name: &str) -> Option<EndpointLease> {
+        let attempt = self.select_named_server(name);
+        if attempt.lease.is_none() && !attempt.pool_available {
+            self.note_unavailable_selection();
+        }
+        attempt.lease
+    }
+
+    #[cfg(test)]
     pub(crate) async fn select_connection_target_waiting(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         tag: QueueTag,
     ) -> Option<EndpointLease> {
         self.select_connection_target_waiting_at(excluded, tag, now_unix_ms())
@@ -212,7 +237,7 @@ impl EndpointPool {
     /// of the first selection.
     pub(crate) async fn select_connection_target_waiting_at(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         tag: QueueTag,
         at_unix_ms: u64,
     ) -> Option<EndpointLease> {
@@ -238,7 +263,7 @@ impl EndpointPool {
     /// A connection target, and whether any server was selectable.
     fn connection_target(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         now_unix_ms: u64,
     ) -> (Option<EndpointLease>, bool) {
         let chosen = {
@@ -273,16 +298,14 @@ impl EndpointPool {
         }
     }
 
-    fn fail_open_connection_target(&self, excluded: &[String]) -> Option<EndpointLease> {
+    fn fail_open_connection_target(&self, excluded: &[Label]) -> Option<EndpointLease> {
         let server = match self.next_fail_open(excluded, None) {
             Some((_, server)) => server,
             None => self.read_health(|members| {
                 members
                     .endpoints
                     .iter()
-                    .filter(|server| {
-                        server.fail_open_eligible() && !excluded.contains(&server.name)
-                    })
+                    .filter(|server| server.fail_open_eligible() && !lists(excluded, &server.name))
                     .min_by_key(|server| server.fail_open_rank())
                     .map(Arc::clone)
             })?,
@@ -315,14 +338,10 @@ impl EndpointPool {
                 .endpoints
                 .iter()
                 .filter(|server| excluded.contains(&server.endpoint))
-                .map(|server| server.name.clone())
+                .map(|server| server.label.clone())
                 .collect()
         };
-        let attempt = self.select_server_excluding(&names);
-        if attempt.lease.is_none() && !attempt.pool_available {
-            self.note_unavailable_selection();
-        }
-        attempt.lease
+        self.select_excluding_at_once(&names)
     }
 
     pub async fn select_wait(&self) -> Option<EndpointLease> {
@@ -331,7 +350,7 @@ impl EndpointPool {
 
     pub(crate) async fn select_wait_excluding(
         &self,
-        excluded: &[String],
+        excluded: &[Label],
         tag: QueueTag,
     ) -> Option<EndpointLease> {
         self.select_wait_with(tag, || self.select_server_excluding(excluded))
@@ -345,6 +364,23 @@ impl EndpointPool {
     ) -> Option<EndpointLease> {
         self.select_wait_with(tag, || self.select_named_server(name))
             .await
+    }
+
+    /// Whether a selection is answered at once, whatever the load and the health of the servers: no queue to wait in
+    /// and no recovery to wait for.
+    pub(crate) fn selects_at_once(&self) -> bool {
+        self.queue_timeout.is_none() && self.resilience.unavailable_wait.is_none()
+    }
+
+    /// Whether every server of the pool is reached at one fixed socket address, so that a connection to it needs no
+    /// lookup.
+    pub(crate) fn reaches_fixed_addresses(&self) -> bool {
+        self.read_health(|members| {
+            members
+                .endpoints
+                .iter()
+                .all(|server| server.reuse_peer().is_some())
+        })
     }
 
     /// Whether requests queue by class or tenant, which needs the headers of the request to place.

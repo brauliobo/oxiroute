@@ -112,15 +112,20 @@ unchanged.
 
 ## Idle behaviour
 
-An instance with no traffic does almost no work and takes almost no wakeups. The supervising master sleeps
+An instance with no traffic does no periodic work and takes no wakeups of its own. The supervising master sleeps
 until a worker sends a frame, a worker exits, a signal or a configuration file event arrives, or the next
 deadline falls due (the 30-second configuration reconciliation, a pending replacement phase, the
-once-per-second report of a draining worker). The worker sleeps on its control channel; it checks its
-runtime and sends its status every second while nothing changes, every 250 ms while counters or events
-change or a retired generation drains, and sends nothing when the status is unchanged. A request from the
-master is served at once. The status carries traffic and listener counters only; process, host, pool and
-certificate sampling happens when the management API or `/metrics` asks for it. The shared Pingora timer
-thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
+once-per-second report of a draining worker). The worker sleeps on its control channel and on a process
+doorbell that whatever can change its status rings: a connection arriving at an idle worker, a listener or
+administrative state change, an operational event, a closed accept gate, a failed or finished runtime. It sends
+its status when one of them changed it, every 250 ms while counters or events change or a retired generation
+drains, and every second only while connections are open or a UDP listener counts datagrams. A request from the
+master is served at once. The direct runtime sleeps on the same doorbell for signals, reload requests, candidate
+generations and retiring ones. The status carries traffic and listener counters only; process, host, pool and
+certificate sampling happens when the management API or `/metrics` asks for it. The ACME renewal thread exists
+only when a certificate is managed by ACME, the in-flight request watchdog sleeps until the earliest request
+that could go quiet (and while none is registered), and the shared Pingora timer thread sleeps until its
+earliest armed timer (and while none is armed).
 
 ## TLS handshake threads
 
@@ -269,6 +274,30 @@ path. Proxy routes may have header rules, retries of `GET` and `HEAD`, queue cla
 service access log, and a request body that arrives with its head. Rescue pools, cache, affinity, path and cookie
 rewrites, buffering, gzip, streamed or chunked bodies and `Expect` take the classic path from the first byte. The root option `http_fast_lane = false` sends every request through the classic path (for a comparison
 or to rule the lane out); it is an ordinary reload, applied to the new connections of the new generation.
+
+### HTTP/1.1 epoll data plane
+
+On Linux, a plain-HTTP (non-TLS) listener serves proxy routes that the fast lane serves from a thread-per-core epoll
+event loop instead of the tokio runtime. A route qualifies when every attempt can be started without waiting: its
+servers are fixed socket addresses reached over plain HTTP, the pool never queues a request, and retries have no
+delay. Selection, retries, health signals, connection limits, the access log, request ids, header rules and metrics
+are the lane's own, so a request is accounted identically on either plane. Every other connection (TLS, HTTP/2 and
+HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
+ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
+(`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
+cannot run it, with `http_fast_lane = false`, and with `worker_scaling = "dynamic"` or aged connection scheduling
+(`connection_scheduling`, `connection_age_ms`), which only the tokio plane honours: with one of them set and the option
+omitted every listener is served by the tokio plane. The option is an ordinary reload.
+
+A client that sends requests back to back on one connection without waiting for the answers is served in order by the
+epoll plane; the classic path closes such a connection after the first answer. When a thread of the plane panics or
+fails, the generation is marked failed and the supervisor replaces the worker. When the process runs out of file
+descriptors, the plane closes the connections it cannot accept and keeps serving the others, instead of stalling.
+
+An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
+server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
+response, a `Connection` header that names other headers, a `Transfer-Encoding` that does not end in `chunked`) is a
+`502` there; `http_data_plane = "tokio"` serves such origins.
 
 The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or plain proxy route (any body framing, `Expect`, access log) is
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls

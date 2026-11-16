@@ -25,13 +25,13 @@ impl Capacity {
 /// The servers a selection may pick: not excluded by name, not already tried, with the capacity.
 #[derive(Clone, Copy)]
 pub(super) struct Eligibility<'a> {
-    pub(super) excluded: &'a [String],
+    pub(super) excluded: &'a [Label],
     pub(super) tried: &'a [usize],
     pub(super) capacity: Capacity,
 }
 
 impl<'a> Eligibility<'a> {
-    pub(super) fn new(excluded: &'a [String], capacity: Capacity) -> Self {
+    pub(super) fn new(excluded: &'a [Label], capacity: Capacity) -> Self {
         Self {
             excluded,
             tried: &[],
@@ -45,7 +45,7 @@ impl<'a> Eligibility<'a> {
 
     #[inline(always)]
     fn names(&self, server: &PoolEndpoint, index: usize) -> bool {
-        (self.excluded.is_empty() || !self.excluded.contains(&server.name))
+        (self.excluded.is_empty() || !lists(self.excluded, &server.name))
             && !self.tried.contains(&index)
     }
 

@@ -195,7 +195,7 @@ async fn requests_with_forwarding_rules_pass_the_plain_corpus_on_both_paths() {
 async fn responses_with_header_rules_are_identical_on_both_paths() {
     let mut differences = Vec::new();
     for (name, reply, closes) in corpus::replies() {
-        if name == super::SWITCHING_PROTOCOLS {
+        if super::skips_reply(name) {
             continue;
         }
         let pair = Pair::configured(reply, closes, false, preserved_host).await;
@@ -243,7 +243,7 @@ async fn requests_to_a_tls_origin_are_identical_on_both_paths() {
 async fn replies_from_a_tls_origin_are_identical_on_both_paths() {
     let mut differences = Vec::new();
     for (name, reply, closes) in corpus::replies() {
-        if name == super::SWITCHING_PROTOCOLS {
+        if super::skips_reply(name) {
             continue;
         }
         let pair = Pair::configured(reply, closes, true, tls_origin).await;

@@ -95,6 +95,7 @@ impl GenerationManager {
             return Err(error);
         }
         state.candidate = Some(candidate.clone());
+        Doorbell::process().ring();
         state.quarantined_revision = None;
         state.last_failure = None;
         self.counters.rollbacks.fetch_add(1, Ordering::Relaxed);
