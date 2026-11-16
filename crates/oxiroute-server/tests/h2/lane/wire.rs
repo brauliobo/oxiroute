@@ -1,19 +1,8 @@
-#![cfg(unix)]
-#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 //! The HTTP/2 lane against the classic path: the same requests go over TLS to two real `oxiroute` processes, one
 //! with the lane (the default) and one with `http_fast_lane` off, in front of identical origins. What a client or
 //! an origin can observe must be identical (dates and generated ids masked): the response status, fields in their
 //! order and body, and the request head the origin received. The lane process also says which streams it served,
 //! so a case cannot pass because both sides took the classic path.
-
-#[path = "support/config.rs"]
-mod config_support;
-#[path = "support/fixtures.rs"]
-mod fixture_support;
-#[path = "support/process.rs"]
-mod process_support;
-#[path = "support/mod.rs"]
-mod wire_support;
 
 use std::{
     net::SocketAddr,
@@ -21,6 +10,11 @@ use std::{
     time::Duration,
 };
 
+use crate::wire_support::{H2Client, PROXY_SERVER_NAME, tls_connect};
+use crate::{
+    process_support::{ServerProcess, reserve_tcp_address},
+    wire_support,
+};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{
@@ -28,14 +22,12 @@ use oxiroute_config::{
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpUpstreamHost, HttpVersionPolicy,
 };
-use process_support::{ServerProcess, reserve_tcp_address};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
     task::JoinHandle,
     time::timeout,
 };
-use wire_support::{H2Client, PROXY_SERVER_NAME, tls_connect};
 
 const STEP: Duration = Duration::from_secs(10);
 const SERVED: &str = "served by the HTTP/2 lane";

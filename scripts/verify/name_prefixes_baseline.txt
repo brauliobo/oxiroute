@@ -22,7 +22,6 @@
 3 crates/oxiroute-server/src/tls/tests/certbot
 2 crates/oxiroute-server/tests/cli
 3 crates/oxiroute-server/tests/forward
-2 crates/oxiroute-server/tests/h2
 2 crates/oxiroute-server/tests/http
 3 crates/oxiroute-server/tests/lane
 18 crates/oxiroute-server/tests/process
