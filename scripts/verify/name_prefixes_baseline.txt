@@ -9,9 +9,6 @@
 2 crates/oxiroute-h1-head/tests/request
 4 crates/oxiroute-h2/tests/hpack
 2 crates/oxiroute-h2/tests/raw
-3 crates/oxiroute-import/src/nginx/rtmp
-2 crates/oxiroute-import/src/nginx/stream
-7 crates/oxiroute-import/tests/haproxy
 12 crates/oxiroute-import/tests/nginx
 2 crates/oxiroute-rtmp/src/recording/recording
 3 crates/oxiroute-rtmp/tests/recording

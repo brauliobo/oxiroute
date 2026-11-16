@@ -194,7 +194,7 @@ fn reports_truthful_key_and_form_statuses() {
 
 #[test]
 fn registry_uses_the_characterized_form_inventory() {
-    let source = include_str!("../src/nginx/rtmp_directives/forms.rs");
+    let source = include_str!("../src/nginx/rtmp/directives/forms.rs");
     let form_arrays = source
         .lines()
         .filter(|line| line.starts_with("pub(super) const ") && line.contains("_FORMS:"))

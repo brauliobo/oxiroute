@@ -8,17 +8,11 @@ mod lower;
 mod parser;
 #[cfg(unix)]
 mod root;
-mod rtmp_directives;
-#[cfg(unix)]
-mod rtmp_lower;
-#[cfg(unix)]
-mod rtmp_semantic;
+mod rtmp;
 #[cfg(unix)]
 mod semantic;
 #[cfg(unix)]
-mod stream_lower;
-#[cfg(unix)]
-mod stream_semantic;
+mod stream;
 
 use crate::DiagnosticCode;
 
@@ -39,17 +33,17 @@ pub use root::{
     NginxUpstreamTlsOverlay, RootOccurrenceDecision, RootOccurrenceDisposition, import_root,
     import_root_with_options,
 };
-pub use rtmp_directives::{
+pub use rtmp::directives::{
     DirectiveCompatibilityReport, DirectiveContext, DirectiveError, DirectiveForm, DirectiveSpec,
     DirectiveStatus, DirectiveStatusCounts, RelayKind, RuntimeSupport, ValueKind,
     directive_compatibility_report, directive_specs, validate_directive,
 };
 #[cfg(unix)]
-pub use rtmp_lower::{
+pub use rtmp::lower::{
     BlockedRtmpService, RtmpImportReport, import_rtmp, import_rtmp_with_timezone,
 };
 #[cfg(unix)]
-pub use rtmp_semantic::{
+pub use rtmp::semantic::{
     EffectiveRtmp, EffectiveRtmpApplication, EffectiveRtmpExecProfile, EffectiveRtmpListen,
     EffectiveRtmpPolicy, EffectiveRtmpPushTarget, EffectiveRtmpRecorder, EffectiveRtmpServer,
     RtmpRecordMode, RtmpResolution, resolve_rtmp,
@@ -64,9 +58,9 @@ pub use semantic::{
     UpstreamReference, resolve_http_fragment,
 };
 #[cfg(unix)]
-pub use stream_lower::{BlockedStreamService, StreamImportReport, import_stream_fragment};
+pub use stream::lower::{BlockedStreamService, StreamImportReport, import_stream_fragment};
 #[cfg(unix)]
-pub use stream_semantic::{
+pub use stream::semantic::{
     EffectiveStream, EffectiveStreamListen, EffectiveStreamProxyPass, EffectiveStreamServer,
     EffectiveStreamUpstream, EffectiveStreamUpstreamServer, StreamDeclaration, StreamDestination,
     StreamResolution, resolve_stream_fragment,

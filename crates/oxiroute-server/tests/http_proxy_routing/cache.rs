@@ -1,5 +1,39 @@
 use super::*;
 
+fn cached_route(host: Option<&str>, path: &str, pool: &str) -> HttpRoute {
+    let mut route = route(host, path, &["GET", "HEAD"], pool);
+    let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+        unreachable!("cached route is a proxy route");
+    };
+    policy.cache = Some(Box::new(oxiroute_config::HttpCachePolicy {
+        store: "memory".into(),
+        methods: vec!["GET".into(), "HEAD".into()],
+        key_components: vec![
+            CacheKeyComponent::Scheme,
+            CacheKeyComponent::NormalizedHost,
+            CacheKeyComponent::PathAndQuery,
+        ],
+        use_origin_cache_control: true,
+        default_ttl_ms: 60_000,
+        status_ttls: Vec::new(),
+        grace_ms: 30_000,
+        keep_ms: 300_000,
+        revalidate: true,
+        collapsed_forwarding: true,
+        stale_on: Vec::new(),
+        bypass_request: Vec::new(),
+        no_store_request: Vec::new(),
+        no_store_response: Vec::new(),
+        set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
+        authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
+        vary_policy: oxiroute_config::CacheVaryPolicy::default(),
+        surrogate_tags: None,
+        purge_authorization: None,
+        compression: None,
+    }));
+    route
+}
+
 #[tokio::test]
 async fn memory_cache_reuses_get_and_head_responses() {
     timeout(TEST_TIMEOUT, async {
