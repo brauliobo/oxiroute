@@ -1,0 +1,13 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: oxiroute
+Source: https://github.com/brauliobo/oxiroute
+
+Files: *
+Copyright: OxiRoute contributors
+License: Apache-2.0
+
+License: Apache-2.0
+ On Debian systems the full text of the Apache License 2.0 is in
+ /usr/share/common-licenses/Apache-2.0 and in /usr/share/doc/oxiroute/LICENSE.
+ The binaries link third-party Rust crates statically; their licenses are the
+ ones of the crates locked in Cargo.lock of the source archive.
