@@ -80,7 +80,7 @@ fn a_head_over_the_limit_is_handed_off_with_everything_read() {
 }
 
 #[test]
-fn a_connection_that_served_requests_is_handed_off_with_its_history_and_its_admission() {
+fn a_connection_that_served_requests_is_handed_off_with_its_admission() {
     let fixture = Fixture::start();
     let mut wire = fixture.wire();
     wire.get("/size/4");
@@ -89,7 +89,6 @@ fn a_connection_that_served_requests_is_handed_off_with_its_history_and_its_admi
     assert_eq!(wire.reply().body.len(), 4);
     wire.send(b"GET /handoff HTTP/1.1\r\nHost: test.example\r\n\r\n");
     let mut handoff = handed_off(&fixture);
-    assert_eq!(handoff.requests_served, 2);
     assert_eq!(
         fixture
             .service

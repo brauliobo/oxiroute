@@ -44,7 +44,6 @@ impl<S: Service> Reactor<S> {
             listener: index,
             peer,
             admission,
-            served: 0,
             stage: Stage::Idle,
             deadline: None,
             buffers: Leased::none(),

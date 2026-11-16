@@ -170,7 +170,6 @@ impl<S: Service> Reactor<S> {
             peer,
             admission,
             listener,
-            served,
             ..
         } = client;
         sys::unwatch(&self.epoll, &link.fd);
@@ -180,7 +179,6 @@ impl<S: Service> Reactor<S> {
             peer,
             listener,
             admission,
-            requests_served: served,
         });
     }
 

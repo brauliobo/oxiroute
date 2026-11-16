@@ -222,7 +222,6 @@ pub struct Handoff<A> {
     pub peer: SocketAddr,
     pub listener: usize,
     pub admission: A,
-    pub requests_served: u32,
 }
 
 pub trait Service: Send + Sync + 'static {

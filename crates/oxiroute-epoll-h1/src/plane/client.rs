@@ -194,7 +194,6 @@ pub(crate) struct Client<S: Service> {
     pub(crate) listener: usize,
     pub(crate) peer: SocketAddr,
     pub(crate) admission: S::Admission,
-    pub(crate) served: u32,
     pub(crate) stage: Stage,
     pub(crate) deadline: Option<Moment>,
     pub(crate) buffers: Leased,

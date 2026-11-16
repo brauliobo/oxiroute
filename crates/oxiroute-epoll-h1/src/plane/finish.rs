@@ -21,7 +21,6 @@ impl<S: Service> Reactor<S> {
         );
         self.release_upstream(upstream, reusable);
         self.end_exchange(client, failure);
-        client.served += 1;
         if keepalive {
             self.next_request(token, client, request_end)
         } else {
