@@ -5,7 +5,6 @@
 1002 crates/oxiroute-import/src/apache/lower.rs
 2481 crates/oxiroute-import/tests/nginx_lower.rs
 1092 crates/oxiroute-import/tests/nginx_rtmp.rs
-1343 crates/oxiroute-import/tests/squid.rs
 1152 crates/oxiroute-rtmp/tests/recording_worker.rs
 1039 crates/oxiroute-server/src/http/proxy/lane/proxy.rs
 1711 crates/oxiroute-server/tests/forward_proxy_h1.rs
