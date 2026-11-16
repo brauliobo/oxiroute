@@ -53,7 +53,7 @@ impl ProxyConfig {
 }
 
 /// The default policy of the wire tests: the backend a profile gets without `backend`, unless
-/// `OXIROUTE_INTERNAL_TEST_TLS_BACKEND` names one (`scripts/test-tls-backends.sh` runs both).
+/// `OXIROUTE_INTERNAL_TEST_TLS_BACKEND` names one (`scripts/test/tls.sh` runs both).
 pub fn test_tls_policy() -> oxiroute_config::TlsPolicy {
     let backend = match std::env::var("OXIROUTE_INTERNAL_TEST_TLS_BACKEND").as_deref() {
         Ok("rustls") => Some(oxiroute_config::TlsBackend::Rustls),
