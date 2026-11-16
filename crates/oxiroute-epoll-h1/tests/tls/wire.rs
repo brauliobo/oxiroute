@@ -1,11 +1,7 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{io::Write, sync::atomic::Ordering, thread, time::Duration};
 
+use crate::support::{ClientSettings, Rig, Settings, eventually};
 use rustls::{ProtocolVersion, version};
-use support::{ClientSettings, Rig, Settings, eventually};
 
 const VERSIONS: [(&[&rustls::SupportedProtocolVersion], ProtocolVersion); 2] = [
     (&[&version::TLS12], ProtocolVersion::TLSv1_2),

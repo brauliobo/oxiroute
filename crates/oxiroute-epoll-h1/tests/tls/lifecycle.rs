@@ -1,7 +1,3 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -9,9 +5,9 @@ use std::{
     time::Duration,
 };
 
+use crate::support::{ClientSettings, Rig, Settings, eventually};
 use oxiroute_epoll_h1::Timeouts;
 use rustls::{HandshakeKind, version};
-use support::{ClientSettings, Rig, Settings, eventually};
 
 const TLS12: &[&rustls::SupportedProtocolVersion] = &[&version::TLS12];
 const TLS13: &[&rustls::SupportedProtocolVersion] = &[&version::TLS13];
@@ -20,7 +16,7 @@ fn default_rig() -> Rig {
     Rig::start(&Settings::default(), ClientSettings::default())
 }
 
-fn at_end(wire: &mut support::Wire<support::Tls>) -> bool {
+fn at_end(wire: &mut crate::support::Wire<crate::support::Tls>) -> bool {
     let mut byte = [0_u8; 1];
     matches!(wire.stream.read(&mut byte), Ok(0))
 }

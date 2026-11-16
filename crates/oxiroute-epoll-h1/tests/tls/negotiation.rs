@@ -1,15 +1,11 @@
-#![allow(clippy::pedantic)]
-
-mod support;
-
 use std::{
     io::{Read, Write},
     time::Duration,
 };
 
+use crate::support::{ClientSettings, Guard, Identity, Rig, Settings, Wire};
 use oxiroute_epoll_h1::Handoff;
 use rustls::{ServerConnection, StreamOwned};
-use support::{ClientSettings, Guard, Identity, Rig, Settings, Wire};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -161,7 +157,8 @@ fn a_required_client_certificate_is_enforced() {
     let mut wire = rig.wire();
     wire.get("/size/4");
     assert_eq!(wire.reply().body.len(), 4);
-    let anonymous = support::Client::new(rig.fixture.addr, &rig.server, ClientSettings::default());
+    let anonymous =
+        crate::support::Client::new(rig.fixture.addr, &rig.server, ClientSettings::default());
     let refused = anonymous.connect("a.example").and_then(|mut wire| {
         wire.stream
             .write_all(b"GET /size/4 HTTP/1.1\r\nHost: test.example\r\n\r\n")?;
@@ -171,7 +168,7 @@ fn a_required_client_certificate_is_enforced() {
     assert!(refused.is_err());
 }
 
-fn read_exactly_io(wire: &mut Wire<support::Tls>) -> std::io::Result<()> {
+fn read_exactly_io(wire: &mut Wire<crate::support::Tls>) -> std::io::Result<()> {
     let mut byte = [0_u8; 1];
     wire.stream.read_exact(&mut byte)
 }
