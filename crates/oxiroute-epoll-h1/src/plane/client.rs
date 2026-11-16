@@ -207,4 +207,10 @@ impl<S: Service> Client<S> {
     pub(crate) fn flow(&mut self) -> &mut Flow<S> {
         self.flow.as_mut().expect("a serving client has a flow")
     }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        let exchange = self.flow.as_ref().and_then(|flow| flow.exchange.as_ref());
+        self.stage == Stage::Serving
+            && exchange.is_some_and(|exchange| self.service.cancelled(exchange))
+    }
 }

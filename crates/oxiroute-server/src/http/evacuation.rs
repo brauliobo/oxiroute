@@ -9,7 +9,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
@@ -90,6 +90,9 @@ pub(crate) struct Evacuation {
     redispatched: AtomicUsize,
     /// The proxy task waiting on the cancellation, at most one at a time.
     waker: AtomicWaker,
+    /// The epoll thread serving the request, which has no task to wake.
+    #[cfg(target_os = "linux")]
+    engine: OnceLock<oxiroute_epoll_h1::Waker>,
 }
 
 impl Evacuation {
@@ -98,6 +101,25 @@ impl Evacuation {
             state: AtomicU8::new(State::Idle.encode()),
             redispatched: AtomicUsize::new(0),
             waker: AtomicWaker::new(),
+            #[cfg(target_os = "linux")]
+            engine: OnceLock::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_engine(&self, waker: &oxiroute_epoll_h1::Waker) {
+        let _ = self.engine.set(waker.clone());
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.load().cancelled()
+    }
+
+    fn interrupt(&self) {
+        self.waker.wake();
+        #[cfg(target_os = "linux")]
+        if let Some(engine) = self.engine.get() {
+            engine.wake();
         }
     }
 
@@ -162,15 +184,12 @@ impl Evacuation {
             let (next, fate) = match state {
                 State::Idle | State::Moving | State::Killing => return None,
                 State::Movable if has_destination => (State::Moving, Fate::Redispatched),
-                State::Pinned(LeftRunning::DataPlane) => {
-                    return Some(Fate::LeftRunning(LeftRunning::DataPlane));
-                }
                 State::Movable | State::Pinned(_) if force => (State::Killing, Fate::Forced),
                 State::Movable => return Some(Fate::LeftRunning(LeftRunning::NoDestination)),
                 State::Pinned(reason) => return Some(Fate::LeftRunning(reason)),
             };
             if self.transition(state, next).is_ok() {
-                self.waker.wake();
+                self.interrupt();
                 return Some(fate);
             }
         }
@@ -210,10 +229,10 @@ impl Future for Cancelled {
             return Poll::Pending;
         };
         let handle = owner.evacuation();
-        if !handle.load().cancelled() {
+        if !handle.cancelled() {
             handle.waker.register(context.waker());
         }
-        if handle.load().cancelled() {
+        if handle.cancelled() {
             Poll::Ready(Error::new_in(EVACUATED))
         } else {
             Poll::Pending

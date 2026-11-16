@@ -78,6 +78,10 @@ impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
         exchange.answer(failure, request_is_head, out)
     }
 
+    fn cancelled(&self, exchange: &Exchange) -> bool {
+        exchange.cancelled()
+    }
+
     fn finish(&self, exchange: Exchange, outcome: &Outcome) {
         exchange.finish(&self.lane, outcome);
     }

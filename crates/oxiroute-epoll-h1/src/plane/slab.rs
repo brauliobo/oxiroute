@@ -1,6 +1,6 @@
 use std::os::fd::OwnedFd;
 
-use super::{client::Client, service::Service, upstream::Upstream};
+use super::{client::Client, service::Service, upstream::Upstream, wake::Waker};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Token {
@@ -25,7 +25,7 @@ pub(crate) enum Body<S: Service> {
     Free,
     Busy,
     Listener { fd: OwnedFd, index: usize },
-    Wake(OwnedFd),
+    Wake(Waker),
     Client(Box<Client<S>>),
     Upstream(Upstream<S>),
 }
@@ -85,8 +85,13 @@ impl<S: Service> Slab<S> {
         })
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) fn tokens(&self) -> usize {
         self.slots.len()
+    }
+
+    pub(crate) fn token_at(&self, position: usize) -> Option<Token> {
+        let index = u32::try_from(position).ok()?;
+        self.live(index)
     }
 
     fn slot(&self, token: Token) -> Option<&Slot<S>> {

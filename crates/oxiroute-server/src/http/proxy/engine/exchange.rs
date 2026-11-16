@@ -41,6 +41,7 @@ pub(super) struct Exchange {
     pub(super) idempotency: Option<Box<[u8]>>,
     pub(super) host: HostEdit,
     pub(super) connection_close: bool,
+    pub(super) replayable: bool,
     pub(super) reasoned: bool,
     pub(super) pending: Option<Pending>,
     pub(super) error: Option<Box<Error>>,
@@ -78,6 +79,7 @@ impl Exchange {
             &target,
         );
         let idempotency = front.idempotency_of(&ctx, buffer, head).map(Box::from);
+        ctx.bind_evacuation_to_engine(request.waker());
         Some(Self {
             ctx,
             route,
@@ -89,11 +91,18 @@ impl Exchange {
             idempotency,
             host: HostEdit::AsSent,
             connection_close: false,
+            replayable: request.replayable(),
             reasoned: false,
             pending: None,
             error: None,
             answered_body: 0,
         })
+    }
+
+    pub(super) fn cancelled(&self) -> bool {
+        self.ctx
+            .evacuation()
+            .is_some_and(crate::http::evacuation::Evacuation::cancelled)
     }
 
     pub(super) fn forward<'a>(&'a self, buffer: &'a [u8], head: &'a RequestHead) -> Forward<'a> {
@@ -119,7 +128,7 @@ impl Exchange {
             }
         }
         self.error = None;
-        self.ctx.pin_to_data_plane();
+        self.ctx.arm_evacuation_for_engine(self.replayable);
         let first = !self.ctx.has_attempted();
         match self.ctx.next_attempt_now(upstream_host) {
             Err(error) => self.refuse(error),

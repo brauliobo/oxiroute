@@ -71,6 +71,7 @@ fn error_of(failure: Failure) -> Box<Error> {
             Error::new_up(ErrorType::InvalidHTTPHeader)
         }
         Failure::RequestHeadTooLarge => Error::new_down(ErrorType::InvalidHTTPHeader),
+        Failure::Cancelled => Error::new_up(ErrorType::ConnectionClosed),
         Failure::ClientGone | Failure::Shutdown => Error::new_down(ErrorType::ConnectionClosed),
         Failure::ClientTimeout => Error::new_down(ErrorType::ReadTimedout),
     }

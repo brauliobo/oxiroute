@@ -22,12 +22,15 @@ use std::{
 };
 
 use http_support::http_request;
-use oxiroute_config::{ConfigDraft, HttpDataPlane, Management};
+use oxiroute_config::{
+    ConfigDraft, DnsResolutionPolicy, HttpDataPlane, Management, UpstreamAlgorithm, UpstreamServer,
+};
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rustix::{
     net::sockopt::set_socket_linger,
     process::{Resource, Rlimit, getrlimit, setrlimit},
 };
+use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
@@ -142,6 +145,35 @@ impl Proxy {
             .as_str()
             .expect("active revision")
             .to_owned()
+    }
+
+    async fn post(&self, path: &str, mut body: Value) -> Value {
+        body["expectedActiveRevision"] = json!(self.revision().await);
+        let authorization = format!("Bearer {TOKEN}");
+        let response = http_request(
+            self.management,
+            "POST",
+            path,
+            &[
+                ("Authorization", &authorization),
+                ("Content-Type", "application/json"),
+            ],
+            &serde_json::to_vec(&body).expect("body"),
+        )
+        .await;
+        assert_eq!(response.status, 200, "{}", response.text());
+        response.json()
+    }
+
+    async fn evacuate(&self, force: bool) -> Value {
+        let targets = [json!({ "pool": "origin", "server": "origin" })];
+        let body = json!({ "targets": targets, "force": force });
+        self.post("/api/v1/servers/evacuate", body).await
+    }
+
+    async fn evacuate_pool(&self, force: bool) -> Value {
+        let body = json!({ "pools": ["origin"], "force": force });
+        self.post("/api/v1/pools/evacuate", body).await
     }
 
     async fn reload(&mut self) {
@@ -362,3 +394,174 @@ async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataP
 }
 
 on_both_planes!(more_idle_connections_than_a_thread_cap_are_all_served);
+
+const FROM_A: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfrom-a";
+const FROM_B: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfrom-b";
+const STARTED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfrom";
+
+#[derive(Clone, Default)]
+struct Held {
+    arrived: Arc<Notify>,
+    dropped: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl Held {
+    async fn origin(&self, first: &'static [u8], rest: &'static [u8]) -> Scripted {
+        let held = self.clone();
+        Scripted::start(move |mut stream| {
+            let held = held.clone();
+            async move {
+                read_head(&mut stream).await;
+                stream.write_all(first).await.expect("origin first bytes");
+                held.arrived.notify_one();
+                let mut probe = [0_u8; 1];
+                tokio::select! {
+                    () = held.release.notified() => {
+                        stream.write_all(rest).await.expect("origin rest");
+                    }
+                    _ = stream.read(&mut probe) => held.dropped.notify_one(),
+                }
+            }
+        })
+        .await
+    }
+
+    async fn arrived(&self) {
+        timeout(STEP, self.arrived.notified())
+            .await
+            .expect("the request reached the held origin");
+    }
+
+    async fn dropped(&self) {
+        timeout(STEP, self.dropped.notified())
+            .await
+            .expect("the proxy closed the held origin connection");
+    }
+}
+
+async fn replying_origin(reply: &'static [u8]) -> Scripted {
+    Scripted::start(move |mut stream| async move {
+        while !read_head(&mut stream).await.is_empty() {
+            stream.write_all(reply).await.expect("origin answer");
+        }
+    })
+    .await
+}
+
+async fn proxy_over_two_origins(
+    plane: HttpDataPlane,
+    first: &Scripted,
+    second: &Scripted,
+) -> Proxy {
+    let second = second.address;
+    Proxy::start(first.address, plane, move |config| {
+        config.upstream_pools[0].algorithm = UpstreamAlgorithm::First;
+        config.upstream_pools[0].servers.push(UpstreamServer {
+            name: "origin-b".into(),
+            endpoint: config_support::socket_endpoint(second),
+            max_connections: None,
+            dns_resolution: DnsResolutionPolicy::OnConnect,
+        });
+    })
+    .await
+}
+
+fn evacuation_report(forced: bool, moved: u64, cut: u64, left: &Value) -> Value {
+    json!({
+        "outcome": "evacuated",
+        "force": forced,
+        "cancelledAndRedispatched": moved,
+        "forced": cut,
+        "leftRunning": left,
+    })
+}
+
+async fn a_request_waiting_on_an_evacuated_server_is_sent_to_another(plane: HttpDataPlane) {
+    let held = Held::default();
+    let (first, second) = (
+        held.origin(b"", FROM_A).await,
+        replying_origin(FROM_B).await,
+    );
+    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    held.arrived().await;
+    let report = proxy.evacuate(false).await;
+    assert_eq!(report, evacuation_report(false, 1, 0, &json!({})));
+    held.dropped().await;
+    let answer = read_until(&mut client, "from-").await;
+    assert!(answer.ends_with("from-b"), "{answer}");
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+async fn forcing_an_evacuation_cuts_a_request_waiting_on_it(plane: HttpDataPlane) {
+    let held = Held::default();
+    let (first, second) = (
+        held.origin(b"", FROM_A).await,
+        replying_origin(FROM_B).await,
+    );
+    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    held.arrived().await;
+    let report = proxy.evacuate_pool(true).await;
+    assert_eq!(report, evacuation_report(true, 0, 1, &json!({})));
+    held.dropped().await;
+    let answer = read_to_end(&mut client).await;
+    assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+    assert!(
+        answer
+            .to_ascii_lowercase()
+            .contains("x-oxiroute-reason: evacuated"),
+        "{answer}"
+    );
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+async fn a_response_that_started_is_left_running_by_an_evacuation(plane: HttpDataPlane) {
+    let held = Held::default();
+    let (first, second) = (
+        held.origin(STARTED, b"-a").await,
+        replying_origin(FROM_B).await,
+    );
+    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    read_until(&mut client, "from").await;
+    held.arrived().await;
+    let report = proxy.evacuate(false).await;
+    let left = json!({ "response_started": 1 });
+    assert_eq!(report, evacuation_report(false, 0, 0, &left));
+    held.release.notify_one();
+    let rest = read_until(&mut client, "-a").await;
+    assert!(rest.ends_with("-a"), "{rest}");
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+async fn forcing_an_evacuation_resets_a_response_that_started(plane: HttpDataPlane) {
+    let held = Held::default();
+    let (first, second) = (
+        held.origin(STARTED, b"-a").await,
+        replying_origin(FROM_B).await,
+    );
+    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    read_until(&mut client, "from").await;
+    held.arrived().await;
+    let report = proxy.evacuate(true).await;
+    assert_eq!(report, evacuation_report(true, 0, 1, &json!({})));
+    held.dropped().await;
+    let rest = read_to_end(&mut client).await;
+    assert!(!rest.contains("-a"), "{rest}");
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+on_both_planes!(a_request_waiting_on_an_evacuated_server_is_sent_to_another);
+on_both_planes!(forcing_an_evacuation_cuts_a_request_waiting_on_it);
+on_both_planes!(a_response_that_started_is_left_running_by_an_evacuation);
+#[tokio::test]
+async fn forcing_an_evacuation_resets_a_response_that_started_at_once_on_epoll() {
+    forcing_an_evacuation_resets_a_response_that_started(HttpDataPlane::Epoll).await;
+}

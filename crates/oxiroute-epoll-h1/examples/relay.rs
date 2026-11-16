@@ -128,6 +128,10 @@ impl Service for Relay {
         self.inner.answer(exchange, failure, head, out)
     }
 
+    fn cancelled(&self, exchange: &Self::Exchange) -> bool {
+        self.inner.cancelled(exchange)
+    }
+
     fn finish(&self, exchange: Self::Exchange, outcome: &Outcome) {
         account(outcome);
         self.inner.finish(exchange, outcome);

@@ -10,18 +10,31 @@ impl HttpRequestContext {
     /// Lets the operator move or kill the attempt about to run, until it commits to a response.
     pub(super) fn arm_evacuation(&self, session: &Session) -> Option<UpstreamCancellation> {
         let inflight = self.inflight.as_ref()?;
-        let unmovable = self.evacuation_pin.or_else(|| {
-            (!request_body_replayable(session)).then_some(LeftRunning::BodyNotReplayable)
-        });
-        inflight.evacuation().begin_attempt(unmovable);
+        inflight
+            .evacuation()
+            .begin_attempt(self.unmovable(request_body_replayable(session)));
         Some(Box::pin(inflight.cancelled()))
     }
 
-    /// The attempt about to run is served by the epoll data plane, which the operator cannot move or kill.
-    pub(super) fn pin_to_data_plane(&self) {
+    /// Lets the operator move or kill the attempt of the epoll data plane about to run; the engine thread that
+    /// serves the request is woken when the operator acts.
+    #[cfg(target_os = "linux")]
+    pub(super) fn arm_evacuation_for_engine(&self, body_replayable: bool) {
         if let Some(evacuation) = self.evacuation() {
-            evacuation.begin_attempt(Some(LeftRunning::DataPlane));
+            evacuation.begin_attempt(self.unmovable(body_replayable));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn bind_evacuation_to_engine(&self, waker: &oxiroute_epoll_h1::Waker) {
+        if let Some(evacuation) = self.evacuation() {
+            evacuation.bind_engine(waker);
+        }
+    }
+
+    fn unmovable(&self, body_replayable: bool) -> Option<LeftRunning> {
+        self.evacuation_pin
+            .or_else(|| (!body_replayable).then_some(LeftRunning::BodyNotReplayable))
     }
 
     /// The upstream response is about to reach the client. Fails when the operator took the request

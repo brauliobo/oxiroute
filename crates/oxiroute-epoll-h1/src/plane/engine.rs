@@ -6,16 +6,14 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use rustix::{
-    event::{EventfdFlags, eventfd},
-    net::getsockname,
-};
+use rustix::net::getsockname;
 
 use super::{
     config::{Config, Timeouts},
     reactor::{Control, DRAINING, ListenerFd, Reactor, STOPPING},
     service::Service,
     sys,
+    wake::Waker,
 };
 
 pub struct Listener<S: Service> {
@@ -67,7 +65,7 @@ impl<S: Service> Listener<S> {
 
 pub struct Engine {
     control: Arc<Control>,
-    wakers: Vec<OwnedFd>,
+    wakers: Vec<Waker>,
     threads: Vec<JoinHandle<io::Result<()>>>,
 }
 
@@ -109,8 +107,8 @@ impl Engine {
             threads: Vec::new(),
         };
         for (index, fds) in per_thread.into_iter().enumerate() {
-            let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
-            engine.wakers.push(wake.try_clone()?);
+            let wake = Waker::new()?;
+            engine.wakers.push(wake.clone());
             let (config, control, ready) = (config.clone(), Arc::clone(&control), ready_tx.clone());
             let handle = thread::Builder::new()
                 .name(format!("epoll-h1-{index}"))
@@ -163,9 +161,7 @@ impl Engine {
     }
 
     fn wake(&self) {
-        for wake in &self.wakers {
-            let _ = rustix::io::write(wake, &1_u64.to_ne_bytes());
-        }
+        self.wakers.iter().for_each(Waker::wake);
     }
 
     pub fn join(self) -> io::Result<()> {

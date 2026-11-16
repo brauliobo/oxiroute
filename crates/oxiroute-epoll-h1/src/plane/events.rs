@@ -218,16 +218,13 @@ impl<S: Service> Reactor<S> {
         } else {
             self.now
         });
-        for index in 0..self.slab.len() {
-            self.close_if_unserved(index);
+        for position in 0..self.slab.tokens() {
+            self.close_if_unserved(position);
         }
     }
 
-    fn close_if_unserved(&mut self, index: usize) {
-        let Some(token) = u32::try_from(index)
-            .ok()
-            .and_then(|index| self.slab.live(index))
-        else {
+    fn close_if_unserved(&mut self, position: usize) {
+        let Some(token) = self.slab.token_at(position) else {
             return;
         };
         match self.slab.body(token) {
@@ -245,11 +242,8 @@ impl<S: Service> Reactor<S> {
 
     pub(crate) fn abort_all(&mut self) {
         self.begin_drain();
-        for index in 0..self.slab.len() {
-            let Some(token) = u32::try_from(index)
-                .ok()
-                .and_then(|index| self.slab.live(index))
-            else {
+        for position in 0..self.slab.tokens() {
+            let Some(token) = self.slab.token_at(position) else {
                 continue;
             };
             if let Some(mut client) = self.slab.take_client(token) {
@@ -263,6 +257,25 @@ impl<S: Service> Reactor<S> {
 }
 
 impl<S: Service> Reactor<S> {
+    pub(crate) fn cancel_requested(&mut self) {
+        for position in 0..self.slab.tokens() {
+            let Some(token) = self.slab.token_at(position) else {
+                continue;
+            };
+            if matches!(self.slab.body(token), Some(Body::Client(client)) if client.cancelled()) {
+                self.cancel(token);
+            }
+        }
+    }
+
+    fn cancel(&mut self, token: Token) {
+        let Some(mut client) = self.slab.take_client(token) else {
+            return;
+        };
+        let step = self.fail(token, &mut client, Failure::Cancelled);
+        self.resume(token, client, step);
+    }
+
     fn sync_level(&mut self, token: Token, client: &mut Client<S>) {
         let reading = match client.stage {
             Stage::Idle | Stage::Head | Stage::Lingering => true,

@@ -28,6 +28,7 @@ use super::{
     slab::{Body, Slab, Token},
     sys,
     upstream::IdlePool,
+    wake::Waker,
     wheel::Wheel,
 };
 
@@ -128,7 +129,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) live: usize,
     pub(crate) control: Arc<Control>,
     pub(crate) drain_deadline: Option<Instant>,
-    pub(crate) wake: OwnedFd,
+    pub(crate) wake: Waker,
     pub(crate) listeners: Vec<Token>,
     pub(crate) armed: bool,
 }
@@ -137,7 +138,7 @@ impl<S: Service> Reactor<S> {
     pub(crate) fn new(
         config: &Config,
         listeners: Vec<ListenerFd<S>>,
-        wake: OwnedFd,
+        wake: Waker,
         control: Arc<Control>,
     ) -> io::Result<Self> {
         let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
@@ -159,7 +160,7 @@ impl<S: Service> Reactor<S> {
             live: 0,
             control,
             drain_deadline: None,
-            wake: wake.try_clone()?,
+            wake: wake.clone(),
             listeners: Vec::with_capacity(listeners.len()),
             armed: false,
         };
@@ -171,12 +172,12 @@ impl<S: Service> Reactor<S> {
         Ok(reactor)
     }
 
-    fn watch_wake(&mut self, wake: OwnedFd) -> io::Result<()> {
+    fn watch_wake(&mut self, wake: Waker) -> io::Result<()> {
         let token = self.slab.insert(Body::Wake(wake));
-        let Some(Body::Wake(fd)) = self.slab.body(token) else {
+        let Some(Body::Wake(wake)) = self.slab.body(token) else {
             unreachable!("just inserted")
         };
-        sys::watch(&self.epoll, fd, token.to_u64(), EventFlags::IN)
+        sys::watch(&self.epoll, wake.fd(), token.to_u64(), EventFlags::IN)
     }
 
     fn add_listener(&mut self, index: usize, listener: ListenerFd<S>) -> io::Result<()> {
@@ -284,13 +285,13 @@ impl<S: Service> Reactor<S> {
     }
 
     fn woken(&mut self) {
-        let mut counter = [0_u8; 8];
-        let _ = rustix::io::read(&self.wake, &mut counter);
+        self.wake.settle();
         match self.control.state() {
             DRAINING | STOPPING => self.begin_drain(),
             _ if self.set_armed(self.control.accepting()).is_err() => self.control.raise(STOPPING),
             _ => {}
         }
+        self.cancel_requested();
     }
 }
 

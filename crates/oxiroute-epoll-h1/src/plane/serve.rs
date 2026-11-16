@@ -94,22 +94,29 @@ impl<S: Service> Reactor<S> {
             return Step::Handoff;
         }
         let service = Rc::clone(&client.service);
-        let request = Request::new(&client.buffers.req[..client.req_len], head, client.peer);
+        let replayable = Self::replayable(head, client.buffers.req.len());
+        let bytes = &client.buffers.req[..client.req_len];
+        let request = Request::new(bytes, head, client.peer, (&self.wake, replayable));
         let Routed::Serve(exchange) = service.route(&request, self.now) else {
             return Step::Handoff;
         };
         let keepalive = !request.close() && self.drain_deadline.is_none();
-        let flow = self.flow(&request, exchange, client.buffers.req.len(), keepalive);
+        let flow = self.flow(&request, exchange, replayable, keepalive);
         client.flow = Some(flow);
         client.stage = Stage::Serving;
         Step::Again
+    }
+
+    fn replayable(head: &RequestHead, capacity: usize) -> bool {
+        let body_len = head.facts.content_length.unwrap_or(0);
+        u64::from(head.head_len) + body_len <= capacity as u64
     }
 
     fn flow(
         &self,
         request: &Request<'_>,
         exchange: S::Exchange,
-        capacity: usize,
+        replayable: bool,
         keepalive: bool,
     ) -> Flow<S> {
         let head_len = request.head().head_len as usize;
@@ -124,7 +131,7 @@ impl<S: Service> Reactor<S> {
             window: Window::new(head_len, head_len + in_buffer),
             head_pos: 0,
             request_end: head_len + in_buffer,
-            replayable: (head_len as u64 + body_len) <= capacity as u64,
+            replayable,
             is_head: request.is_head(),
             client_keepalive: keepalive,
             keepalive,

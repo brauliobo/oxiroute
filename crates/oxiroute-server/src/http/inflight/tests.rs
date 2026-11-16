@@ -93,7 +93,7 @@ fn an_entry_that_served_a_request_starts_the_next_one_as_a_new_arrival() {
         "first",
         "farm",
         "gpu-1",
-        Some(LeftRunning::DataPlane),
+        Some(LeftRunning::NotReplayable),
     );
     first.set_phase(Phase::Streaming, Instant::now());
     first.place_route("api".into());

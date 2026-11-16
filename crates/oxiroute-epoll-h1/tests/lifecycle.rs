@@ -11,7 +11,7 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{Failure, Timeouts};
-use support::{Fixture, Knobs, Wire, eventually, test_config};
+use support::{Fixture, KILL, Knobs, MOVE, Wire, eventually, test_config};
 
 fn recorded() -> Knobs {
     Knobs {
@@ -286,4 +286,77 @@ fn an_engine_started_paused_accepts_nothing_until_it_resumes() {
     assert!(queued.silent_for(Duration::from_millis(300)));
     fixture.engine().resume();
     assert_eq!(queued.reply().status, 200);
+}
+
+fn request_at_the_origin(fixture: &Fixture, requests: usize) {
+    eventually("the request reached the origin", || {
+        fixture.origin.heads.lock().expect("heads").len() == requests
+    });
+}
+
+#[test]
+fn a_cancelled_request_waiting_on_its_origin_is_sent_again() {
+    let fixture = Fixture::with(test_config(), Timeouts::default(), recorded());
+    let mut wire = fixture.wire();
+    wire.get("/delay/800");
+    request_at_the_origin(&fixture, 1);
+    fixture.service.cancel(MOVE);
+    request_at_the_origin(&fixture, 2);
+    let reply = wire.reply();
+    assert_eq!((reply.status, reply.text().as_str()), (200, "late"));
+    eventually("the outcome", || fixture.outcomes().len() == 1);
+    assert_eq!(fixture.outcomes()[0].attempts, 2);
+    assert_eq!(fixture.outcomes()[0].failure, None);
+    assert_eq!(fixture.origin.accepted(), 2);
+}
+
+#[test]
+fn a_killed_request_waiting_on_its_origin_is_answered_and_its_origin_connection_closed() {
+    let fixture = Fixture::with(test_config(), Timeouts::default(), recorded());
+    let mut wire = fixture.wire();
+    wire.get("/delay/3000");
+    request_at_the_origin(&fixture, 1);
+    fixture.service.cancel(KILL);
+    assert_eq!(wire.reply().status, 502);
+    assert!(wire.ended());
+    eventually("the outcome", || {
+        failures(&fixture) == [Some(Failure::Cancelled)]
+    });
+    eventually("every upstream lease released", || {
+        fixture.service.counters.live_leases.load(Ordering::SeqCst) == 0
+    });
+}
+
+#[test]
+fn a_killed_request_whose_response_started_ends_its_client_connection() {
+    let fixture = Fixture::with(test_config(), Timeouts::default(), recorded());
+    let mut wire = fixture.wire();
+    wire.get("/stall");
+    let mut seen = Vec::new();
+    while !seen.ends_with(b"0123456789") {
+        let mut chunk = [0_u8; 256];
+        let count = wire
+            .stream
+            .read(&mut chunk)
+            .expect("the head and the first bytes");
+        assert_ne!(count, 0, "closed before the response started");
+        seen.extend_from_slice(&chunk[..count]);
+    }
+    fixture.service.cancel(KILL);
+    let mut rest = Vec::new();
+    wire.stream
+        .read_to_end(&mut rest)
+        .expect("the engine ends the connection");
+    assert!(rest.is_empty());
+    eventually("the outcome", || {
+        failures(&fixture) == [Some(Failure::Cancelled)]
+    });
+}
+
+fn failures(fixture: &Fixture) -> Vec<Option<Failure>> {
+    fixture
+        .outcomes()
+        .iter()
+        .map(|outcome| outcome.failure)
+        .collect()
 }

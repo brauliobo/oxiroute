@@ -287,8 +287,8 @@ ready) is handed to the tokio path with the bytes already read. The root option 
 (`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
 cannot run it. The option is an ordinary reload.
 
-An operator evacuation reports a request served by the epoll plane as `left running` (`data_plane`): it finishes where
-it is. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
+An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
+server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
 response, a `Connection` header that names other headers, a `Transfer-Encoding` that does not end in `chunked`) is a
 `502` there; `http_data_plane = "tokio"` serves such origins.
 

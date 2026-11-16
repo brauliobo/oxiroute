@@ -5,15 +5,40 @@ use std::{
 
 use oxiroute_h1_head::{Connection, RequestHead, ResponseHead};
 
+use super::wake::Waker;
+
 pub struct Request<'a> {
     bytes: &'a [u8],
     head: &'a RequestHead,
     peer: SocketAddr,
+    waker: &'a Waker,
+    replayable: bool,
 }
 
 impl<'a> Request<'a> {
-    pub(crate) const fn new(bytes: &'a [u8], head: &'a RequestHead, peer: SocketAddr) -> Self {
-        Self { bytes, head, peer }
+    pub(crate) const fn new(
+        bytes: &'a [u8],
+        head: &'a RequestHead,
+        peer: SocketAddr,
+        (waker, replayable): (&'a Waker, bool),
+    ) -> Self {
+        Self {
+            bytes,
+            head,
+            peer,
+            waker,
+            replayable,
+        }
+    }
+
+    #[must_use]
+    pub const fn waker(&self) -> &'a Waker {
+        self.waker
+    }
+
+    #[must_use]
+    pub const fn replayable(&self) -> bool {
+        self.replayable
     }
 
     #[must_use]
@@ -102,6 +127,7 @@ pub enum Failure {
     ClientTimeout,
     Shutdown,
     NoCapacity,
+    Cancelled,
 }
 
 impl Failure {
@@ -124,6 +150,7 @@ impl Failure {
             Self::ClientTimeout => "client_timeout",
             Self::Shutdown => "shutdown",
             Self::NoCapacity => "no_capacity",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -229,6 +256,8 @@ pub trait Service: Send + Sync + 'static {
         request_is_head: bool,
         out: &mut Vec<u8>,
     ) -> Option<u16>;
+
+    fn cancelled(&self, exchange: &Self::Exchange) -> bool;
 
     fn finish(&self, exchange: Self::Exchange, outcome: &Outcome);
 

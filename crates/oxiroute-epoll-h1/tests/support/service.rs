@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc::Sender,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -11,7 +11,7 @@ use std::{
 
 use oxiroute_epoll_h1::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
-    Response, Reuse, Routed, Selected, Service, Target,
+    Response, Reuse, Routed, Selected, Service, Target, Waker,
 };
 use oxiroute_h1_head::{
     Automatic, Class, Edits, Name, Value, names, write_request, write_response,
@@ -111,9 +111,14 @@ pub struct Exchange {
     tries: u8,
 }
 
+pub const MOVE: u8 = 1;
+pub const KILL: u8 = 2;
+
 pub struct Reference {
     routes: Vec<Route>,
     knobs: Knobs,
+    cancel: AtomicU8,
+    waker: Mutex<Option<Waker>>,
     pub counters: Counters,
     pub outcomes: Mutex<Vec<Outcome>>,
     handoffs: Mutex<Sender<Handoff<Guard>>>,
@@ -130,12 +135,20 @@ impl Reference {
         Self {
             routes,
             knobs,
+            cancel: AtomicU8::new(0),
+            waker: Mutex::new(None),
             counters: Counters::default(),
             outcomes: Mutex::new(Vec::new()),
             handoffs: Mutex::new(handoffs),
             paused: Mutex::new(paused),
             clock: (Instant::now(), SystemTime::now()),
         }
+    }
+
+    pub fn cancel(&self, mode: u8) {
+        self.cancel.store(mode, Ordering::SeqCst);
+        let waker = self.waker.lock().expect("waker").clone();
+        waker.expect("a request was routed").wake();
     }
 
     fn date(&self, now: Instant) -> [u8; 29] {
@@ -196,6 +209,7 @@ impl Service for Reference {
             let _ = self.paused.lock().expect("paused").send(());
             std::thread::sleep(pause);
         }
+        *self.waker.lock().expect("waker") = Some(request.waker().clone());
         match self.route_of(request) {
             Some(route) => Routed::Serve(Exchange {
                 id: hex_id(),
@@ -282,7 +296,14 @@ impl Service for Reference {
         Recovery::Answer
     }
 
-    fn recover(&self, exchange: &mut Exchange, _failure: Failure, _now: Instant) -> Recovery {
+    fn recover(&self, exchange: &mut Exchange, failure: Failure, _now: Instant) -> Recovery {
+        if failure == Failure::Cancelled {
+            return if self.cancel.swap(0, Ordering::SeqCst) == MOVE {
+                Recovery::Retry
+            } else {
+                Recovery::Answer
+            };
+        }
         if exchange.tries < self.knobs.retries {
             exchange.tries += 1;
             return Recovery::Retry;
@@ -311,6 +332,10 @@ impl Service for Reference {
             "HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\nX-Request-Id: {id}\r\n\r\n"
         );
         Some(status)
+    }
+
+    fn cancelled(&self, _exchange: &Exchange) -> bool {
+        self.cancel.load(Ordering::SeqCst) != 0
     }
 
     fn finish(&self, _exchange: Exchange, outcome: &Outcome) {

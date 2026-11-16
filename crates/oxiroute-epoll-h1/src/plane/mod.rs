@@ -15,6 +15,7 @@ mod service;
 mod slab;
 mod sys;
 mod upstream;
+mod wake;
 mod wheel;
 
 pub use config::{Config, Timeouts, Trigger};
@@ -23,3 +24,4 @@ pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
     Response, Reuse, Routed, Selected, Service, Target,
 };
+pub use wake::Waker;
