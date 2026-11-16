@@ -12,7 +12,13 @@ mod process_support;
 #[path = "../support/revalidating_origin.rs"]
 mod revalidating_origin;
 
-use std::{io::Read as _, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    fmt::Write as _,
+    io::Read as _,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
+};
 
 use h1_wire::{Origin, Wire, find};
 use origin::{BODY_BYTES, CompressionOrigin, hex_text, html, noise};
@@ -54,7 +60,7 @@ impl Reply {
     fn decoded(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self.encoding() {
-            None => out = self.body.clone(),
+            None => out.clone_from(&self.body),
             Some("gzip") => {
                 flate2::read::GzDecoder::new(&self.body[..])
                     .read_to_end(&mut out)
@@ -76,7 +82,7 @@ async fn send(proxy: SocketAddr, method: &str, path: &str, headers: &[(&str, &st
     let mut request =
         format!("{method} {path} HTTP/1.1\r\nHost: cache.test\r\nConnection: close\r\n");
     for (name, value) in headers {
-        request.push_str(&format!("{name}: {value}\r\n"));
+        let _ = write!(request, "{name}: {value}\r\n");
     }
     request.push_str("\r\n");
     let mut stream = TcpStream::connect(proxy).await.expect("connect");

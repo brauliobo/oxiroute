@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
 use std::{
+    fmt::Write as _,
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
@@ -18,10 +19,11 @@ pub fn html() -> Vec<u8> {
     let mut page = String::new();
     let mut row = 0_u32;
     while page.len() < BODY_BYTES {
-        page.push_str(&format!(
-            "<tr class=\"row\"><td>{row}</td><td>item-{}</td></tr>\n",
+        let _ = writeln!(
+            page,
+            "<tr class=\"row\"><td>{row}</td><td>item-{}</td></tr>",
             row * 7 % 13
-        ));
+        );
         row += 1;
     }
     page.truncate(BODY_BYTES);
