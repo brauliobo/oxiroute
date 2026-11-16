@@ -15,6 +15,7 @@
 //! `sendfile(2)` from a file to a non-blocking TCP socket.
 
 use std::fs::File;
+use std::future::poll_fn;
 use std::io;
 
 use tokio::io::Interest;
@@ -30,14 +31,19 @@ pub fn plain_tcp_socket(stream: &AnyStream) -> Option<&TcpStream> {
 }
 
 /// [`send_file`] to `stream`, which must have no bytes waiting in its write buffer (flush the response head first).
-/// Returns `Ok(None)` without sending anything when `stream` is not a plain TCP connection.
+/// A TLS connection that offers kernel TLS is converted first (see [`crate::protocols::Ssl::poll_kernel_tx`]).
+/// Returns `Ok(None)` without sending anything when `stream` is neither a plain TCP connection nor a TLS connection
+/// whose records the kernel encrypts.
 pub async fn send_file_to_stream(
-    stream: &AnyStream,
+    stream: &mut AnyStream,
     file: &File,
     offset: u64,
     length: usize,
 ) -> io::Result<Option<usize>> {
-    match plain_tcp_socket(stream) {
+    if plain_tcp_socket(stream).is_none() && !poll_fn(|cx| stream.poll_kernel_tx(cx)).await {
+        return Ok(None);
+    }
+    match plain_tcp_socket(stream).or_else(|| stream.kernel_tx_socket()) {
         Some(socket) => send_file(socket, file, offset, length).await.map(Some),
         None => Ok(None),
     }
@@ -124,9 +130,9 @@ mod tests {
     async fn a_plain_tcp_stream_takes_a_file_and_any_other_stream_gets_none() {
         let file = file_with(&[3; 5000]);
         let (client, server) = pair().await;
-        let plain: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(server));
+        let mut plain: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(server));
         assert_eq!(
-            send_file_to_stream(&plain, &file, 1000, 4000)
+            send_file_to_stream(&mut plain, &file, 1000, 4000)
                 .await
                 .unwrap(),
             Some(4000)
@@ -137,9 +143,9 @@ mod tests {
         assert_eq!(received, vec![3; 4000]);
 
         let (_client, other) = tokio::net::UnixStream::pair().unwrap();
-        let other: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(other));
+        let mut other: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(other));
         assert_eq!(
-            send_file_to_stream(&other, &file, 0, 10).await.unwrap(),
+            send_file_to_stream(&mut other, &file, 0, 10).await.unwrap(),
             None
         );
     }

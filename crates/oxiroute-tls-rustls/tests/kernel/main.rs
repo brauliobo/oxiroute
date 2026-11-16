@@ -8,7 +8,10 @@
 use std::{future::poll_fn, io::Write, sync::Arc, time::Duration};
 
 use oxiroute_tls_rustls::{KernelTls, RustlsAcceptor, probe};
-use pingora::protocols::{Stream, l4::sendfile::send_file};
+use pingora::protocols::{
+    Stream,
+    l4::sendfile::{send_file, send_file_to_stream},
+};
 use rustls::{
     HandshakeKind, SupportedCipherSuite, SupportedProtocolVersion,
     crypto::{CryptoProvider, aws_lc_rs},
@@ -215,6 +218,38 @@ async fn a_file_sent_with_sendfile_arrives_intact_between_ordinary_writes() {
         );
         push(&mut server, &mut client, b"tail").await;
         push(&mut client, &mut server, b"next request").await;
+    }
+}
+
+#[tokio::test]
+async fn a_bare_stream_sends_a_file_by_converting_to_kernel_tls() {
+    let Some(kernel) = kernel() else { return };
+    let body = pattern(BODY);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&body).unwrap();
+    let (mut server, mut client) = serve(&tls13_aes(), true, Some(kernel)).await;
+    talk_in_user_space(&mut server, &mut client).await;
+
+    let mut received = vec![0; body.len()];
+    let (sent, read) = tokio::join!(
+        send_file_to_stream(&mut server, &file, 0, body.len()),
+        timeout(TIMEOUT, client.read_exact(&mut received))
+    );
+    assert_eq!(sent.unwrap(), Some(body.len()));
+    read.unwrap().unwrap();
+    assert!(received == body, "the file changed on the way");
+    assert!(server.kernel_tx_socket().is_some());
+    push(&mut client, &mut server, b"next request").await;
+}
+
+#[tokio::test]
+async fn a_bare_stream_that_cannot_convert_is_given_no_file() {
+    let file = tempfile::tempfile().unwrap();
+    for (offered, extraction) in [(None, true), (kernel(), false)] {
+        let (mut server, mut client) = serve(&tls13_aes(), extraction, offered).await;
+        talk_in_user_space(&mut server, &mut client).await;
+        let sent = send_file_to_stream(&mut server, &file, 0, 1).await;
+        assert_eq!(sent.unwrap(), None);
     }
 }
 
