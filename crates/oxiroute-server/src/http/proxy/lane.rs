@@ -7,6 +7,7 @@
 //! superset of what the classic parser refuses.
 
 pub(in crate::http::proxy) mod buffers;
+mod cached;
 mod direct;
 pub(in crate::http::proxy) mod head;
 mod local;
@@ -311,6 +312,19 @@ impl LaneFront {
         let Some((route, authority, file)) = self.select_route(buffer, &request, early) else {
             return Served::Handoff;
         };
+        if route.lane == LaneRoute::Cached {
+            let cached = cached::Cached {
+                route: &route,
+                buffer,
+                head: scanned,
+                request: &request,
+                authority: &authority,
+                https: stream.get_ssl().is_some(),
+            };
+            return self
+                .serve_cached(stream, connection, (stopping, client_ip), cached)
+                .await;
+        }
         if file.is_some() && head::is_conditional(scanned, buffer) {
             return Served::Handoff;
         }

@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use http::uri::Authority;
+use http::{HeaderMap, HeaderName, HeaderValue, uri::Authority};
 use oxiroute_h1_head::{
     Class, Connection, Header, RequestHead, RequestLine, Scan, Span, scan_request_fields,
     scan_request_line,
@@ -16,6 +16,8 @@ use crate::observability::logging::valid_correlation_id;
 pub(in crate::http::proxy) struct Request {
     pub(in crate::http::proxy) method: Span,
     pub(in crate::http::proxy) path: Span,
+    /// The query of the target, without its `?`; present when the target has the `?`, whatever follows it.
+    pub(in crate::http::proxy) query: Option<Span>,
     pub(in crate::http::proxy) host: Span,
     /// The first `X-Request-Id`, when it is a valid id: the one the request goes on with.
     pub(in crate::http::proxy) client_id: Option<Span>,
@@ -47,6 +49,11 @@ impl Request {
     /// The path of the target, which is ASCII (the scanner refuses the rest).
     pub(in crate::http::proxy) fn path<'a>(&self, buf: &'a [u8]) -> &'a str {
         std::str::from_utf8(self.path.of(buf)).unwrap_or_default()
+    }
+
+    pub(in crate::http::proxy) fn query<'a>(&self, buf: &'a [u8]) -> Option<&'a str> {
+        self.query
+            .map(|query| std::str::from_utf8(query.of(buf)).unwrap_or_default())
     }
 
     pub(in crate::http::proxy) fn host<'a>(&self, buf: &'a [u8]) -> Option<&'a str> {
@@ -108,6 +115,7 @@ pub(in crate::http::proxy) fn authority(host: &str) -> Option<Authority> {
 pub(in crate::http::proxy) struct Line {
     line: RequestLine,
     path: Span,
+    query: Option<Span>,
 }
 
 impl Line {
@@ -129,12 +137,17 @@ impl Line {
 pub(in crate::http::proxy) fn line(buf: &[u8]) -> Option<Line> {
     let line = scan_request_line(buf).ok()?;
     let target = line.target;
-    let query = target.of(buf).iter().position(|byte| *byte == b'?');
+    let question = target.of(buf).iter().position(|byte| *byte == b'?');
+    let path_len = question.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len));
     let path = Span {
         start: target.start,
-        len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
+        len: path_len,
     };
-    Some(Line { line, path })
+    let query = question.map(|_| Span {
+        start: target.start + path_len + 1,
+        len: target.len - path_len - 1,
+    });
+    Some(Line { line, path, query })
 }
 
 /// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape. `head`
@@ -189,6 +202,7 @@ fn scan_with(
     Some(Request {
         method: head.method,
         path: line.path,
+        query: line.query,
         host: value_span(&head.headers()[usize::from(facts.host)]),
         client_id,
         id_stamped: client_id.is_some() && facts.request_id_count == 1,
@@ -197,6 +211,17 @@ fn scan_with(
         is_head: head.method(buf) == b"HEAD",
         body_len,
     })
+}
+
+/// The fields of a scanned head as a header map, for a decision that reads them by name; `None` when a field is not
+/// one the map holds, and the classic path reads the request.
+pub(in crate::http::proxy) fn header_map(head: &RequestHead, buf: &[u8]) -> Option<HeaderMap> {
+    let mut map = HeaderMap::with_capacity(head.headers().len());
+    for header in head.headers() {
+        let name = HeaderName::from_bytes(header.name(buf)).ok()?;
+        map.append(name, HeaderValue::from_bytes(header.value(buf)).ok()?);
+    }
+    Some(map)
 }
 
 fn value_span(header: &Header) -> Span {
@@ -307,6 +332,7 @@ mod tests {
         let request = |body_len| Request {
             method: Span { start: 0, len: 4 },
             path: Span { start: 5, len: 2 },
+            query: None,
             host: Span { start: 0, len: 0 },
             client_id: None,
             id_stamped: false,
