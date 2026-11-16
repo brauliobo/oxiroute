@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::pedantic)]
+#![allow(dead_code, unused_imports, clippy::pedantic)]
 
 mod date;
 mod origin;
@@ -16,7 +16,7 @@ use std::{
 
 use oxiroute_epoll_h1::{Config, Engine, Handoff, Listener, Timeouts};
 
-pub use origin::Origin;
+pub use origin::{Origin, sized};
 pub use service::{Guard, Knobs, Reference, Route};
 pub use wire::Wire;
 
