@@ -9,7 +9,6 @@ pub enum Trigger {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub threads: usize,
-    pub max_clients: usize,
     pub max_idle_upstreams: usize,
     pub max_idle_per_target: usize,
     pub head_limit: usize,
@@ -27,7 +26,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             threads: 1,
-            max_clients: 16_384,
             max_idle_upstreams: 4_096,
             max_idle_per_target: 1_024,
             head_limit: 8 * 1024,
@@ -59,11 +57,5 @@ impl Default for Timeouts {
             request: Some(Duration::from_mins(1)),
             write: Some(Duration::from_mins(1)),
         }
-    }
-}
-
-impl Config {
-    pub(crate) const fn slab_capacity(&self, listeners: usize) -> usize {
-        self.max_clients + self.max_clients + self.max_idle_upstreams + listeners + 1
     }
 }

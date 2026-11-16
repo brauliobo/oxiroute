@@ -31,13 +31,13 @@ pub(crate) struct Wheel {
 }
 
 impl Wheel {
-    pub(crate) fn new(tick: Duration, capacity: usize) -> Self {
+    pub(crate) fn new(tick: Duration) -> Self {
         Self {
             tick_ns: u64::try_from(tick.as_nanos()).unwrap_or(u64::MAX).max(1),
             cursor: 0,
             heads: Box::new([NONE; BUCKETS]),
             occupied: [0; WORDS],
-            nodes: vec![UNARMED; capacity],
+            nodes: Vec::new(),
         }
     }
 
@@ -54,7 +54,7 @@ impl Wheel {
     }
 
     pub(crate) fn armed_due(&self, id: u32) -> Option<u64> {
-        let node = self.nodes[id as usize];
+        let node = self.nodes.get(id as usize)?;
         node.armed.then_some(node.due)
     }
 
@@ -74,6 +74,9 @@ impl Wheel {
             .clamp(self.cursor, self.cursor + MASK);
         let bucket = (due & MASK) as usize;
         let head = self.heads[bucket];
+        if self.nodes.len() <= id as usize {
+            self.nodes.resize(id as usize + 1, UNARMED);
+        }
         self.nodes[id as usize] = Node {
             next: head,
             prev: NONE,
@@ -88,10 +91,14 @@ impl Wheel {
     }
 
     pub(crate) fn cancel(&mut self, id: u32) {
-        let node = self.nodes[id as usize];
-        if !node.armed {
+        let Some(node) = self
+            .nodes
+            .get(id as usize)
+            .copied()
+            .filter(|node| node.armed)
+        else {
             return;
-        }
+        };
         let bucket = (node.due & MASK) as usize;
         if node.prev == NONE {
             self.heads[bucket] = node.next;
@@ -168,7 +175,7 @@ mod tests {
     }
 
     fn wheel() -> Wheel {
-        Wheel::new(TICK, 8)
+        Wheel::new(TICK)
     }
 
     fn fired(wheel: &mut Wheel, at: Moment) -> Vec<u32> {

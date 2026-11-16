@@ -52,6 +52,7 @@ pub struct Knobs {
     pub record: bool,
     pub idle_upstream: Duration,
     pub pause_in_route: Option<Duration>,
+    pub admit_limit: Option<usize>,
 }
 
 impl Default for Knobs {
@@ -67,6 +68,7 @@ impl Default for Knobs {
             record: false,
             idle_upstream: Duration::from_secs(30),
             pause_in_route: None,
+            admit_limit: None,
         }
     }
 }
@@ -174,6 +176,10 @@ impl Service for Reference {
     type Lease = Guard;
 
     fn admit(&self, _peer: SocketAddr) -> Option<Guard> {
+        let live = self.counters.live_admissions.load(Ordering::SeqCst);
+        if self.knobs.admit_limit.is_some_and(|limit| live >= limit) {
+            return None;
+        }
         self.counters.admitted.fetch_add(1, Ordering::Relaxed);
         Some(Guard::new(&self.counters.live_admissions))
     }

@@ -127,13 +127,12 @@ fn many_connections_over_several_threads_are_all_served() {
 }
 
 #[test]
-fn a_connection_beyond_the_capacity_is_closed_and_the_others_go_on() {
-    let config = oxiroute_epoll_h1::Config {
-        max_clients: 4,
-        max_idle_upstreams: 4,
-        ..test_config()
+fn a_connection_the_service_does_not_admit_is_closed_and_the_others_go_on() {
+    let knobs = Knobs {
+        admit_limit: Some(4),
+        ..Knobs::default()
     };
-    let fixture = Fixture::with(config, Timeouts::default(), Knobs::default());
+    let fixture = Fixture::with(test_config(), Timeouts::default(), knobs);
     let mut wires: Vec<Wire> = (0..4).map(|_| fixture.wire()).collect();
     for wire in &mut wires {
         wire.get("/size/1");

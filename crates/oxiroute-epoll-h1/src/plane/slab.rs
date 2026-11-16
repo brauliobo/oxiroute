@@ -35,41 +35,39 @@ struct Slot<S: Service> {
     body: Body<S>,
 }
 
+const INITIAL_SLOTS: usize = 1024;
+
 pub(crate) struct Slab<S: Service> {
     slots: Vec<Slot<S>>,
     free: Vec<u32>,
-    limit: usize,
 }
 
 impl<S: Service> Slab<S> {
-    pub(crate) fn new(limit: usize) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            slots: Vec::with_capacity(limit),
-            free: Vec::with_capacity(limit),
-            limit,
+            slots: Vec::with_capacity(INITIAL_SLOTS),
+            free: Vec::with_capacity(INITIAL_SLOTS),
         }
     }
 
-    pub(crate) fn insert(&mut self, body: Body<S>) -> Option<Token> {
+    pub(crate) fn insert(&mut self, body: Body<S>) -> Token {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             slot.body = body;
-            return Some(Token {
+            return Token {
                 index,
                 generation: slot.generation,
-            });
+            };
         }
-        if self.slots.len() == self.limit {
-            return None;
-        }
+        let index = u32::try_from(self.slots.len()).expect("a slab holds fewer than 2^32 slots");
         self.slots.push(Slot {
             generation: 0,
             body,
         });
-        Some(Token {
-            index: u32::try_from(self.slots.len() - 1).ok()?,
+        Token {
+            index,
             generation: 0,
-        })
+        }
     }
 
     pub(crate) fn remove(&mut self, token: Token) -> Body<S> {

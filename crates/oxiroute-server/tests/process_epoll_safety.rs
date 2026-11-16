@@ -24,7 +24,10 @@ use std::{
 use http_support::http_request;
 use oxiroute_config::{ConfigDraft, HttpDataPlane, Management};
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
-use rustix::net::sockopt::set_socket_linger;
+use rustix::{
+    net::sockopt::set_socket_linger,
+    process::{Resource, Rlimit, getrlimit, setrlimit},
+};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
@@ -33,6 +36,7 @@ use tokio::{
     time::timeout,
 };
 
+const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
 const SERVED_ON_EPOLL: &str = "served by the epoll data plane";
 const STEP: Duration = Duration::from_secs(10);
@@ -158,6 +162,16 @@ impl Proxy {
         TcpStream::connect(self.address).await.expect("connect")
     }
 
+    fn engine_threads(&self) -> usize {
+        let tasks = std::fs::read_dir(format!("/proc/{}/task", self.server.pid()))
+            .expect("the threads of the server");
+        tasks
+            .flatten()
+            .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
+            .filter(|name| name.starts_with("epoll-h1"))
+            .count()
+    }
+
     fn served_on_epoll(self) -> usize {
         self.server
             .shutdown_output()
@@ -178,9 +192,9 @@ fn expected_on_epoll(plane: HttpDataPlane, requests: usize) -> usize {
 async fn read_head(stream: &mut TcpStream) -> Vec<u8> {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
-        let mut byte = [0_u8; 1];
-        match stream.read(&mut byte).await {
-            Ok(1) => head.push(byte[0]),
+        let mut chunk = [0_u8; 1024];
+        match stream.read(&mut chunk).await {
+            Ok(count) if count > 0 => head.extend_from_slice(&chunk[..count]),
             _ => break,
         }
     }
@@ -302,3 +316,49 @@ async fn a_partial_request_head_is_closed_at_the_default_read_limit(plane: HttpD
 }
 
 on_both_planes!(a_partial_request_head_is_closed_at_the_default_read_limit);
+
+fn raise_descriptor_limit(needed: u64) {
+    let Rlimit { current, maximum } = getrlimit(Resource::Nofile);
+    assert!(
+        maximum.is_none_or(|maximum| maximum >= needed),
+        "the test needs a hard descriptor limit of {needed}"
+    );
+    if current.is_some_and(|current| current < needed) {
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(needed),
+                maximum,
+            },
+        )
+        .expect("raise the soft descriptor limit");
+    }
+}
+
+async fn answer_one_request(client: &mut TcpStream) {
+    client.write_all(GET).await.unwrap();
+    read_until(client, "ok").await;
+}
+
+async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataPlane) {
+    const CLIENTS: usize = 17_000;
+    raise_descriptor_limit(100_000);
+    let origin = Scripted::start(|mut stream| async move {
+        while !read_head(&mut stream).await.is_empty() {
+            stream.write_all(OK).await.expect("origin answer");
+        }
+    })
+    .await;
+    let proxy = Proxy::start(origin.address, plane, |config| config.log_filter = None).await;
+    let mut clients = Vec::with_capacity(CLIENTS);
+    for _ in 0..CLIENTS {
+        let mut client = proxy.connect().await;
+        answer_one_request(&mut client).await;
+        clients.push(client);
+    }
+    answer_one_request(&mut clients[0]).await;
+    answer_one_request(&mut clients[CLIENTS - 1]).await;
+    assert_eq!(proxy.engine_threads(), expected_on_epoll(plane, 1));
+}
+
+on_both_planes!(more_idle_connections_than_a_thread_cap_are_all_served);

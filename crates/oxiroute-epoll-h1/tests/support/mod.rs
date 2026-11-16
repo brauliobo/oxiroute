@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::pedantic)]
+#![allow(dead_code, unused_imports, clippy::pedantic)]
 
 mod date;
 mod origin;
@@ -31,7 +31,6 @@ pub struct Fixture {
 
 pub fn test_config() -> Config {
     Config {
-        max_clients: 2048,
         max_idle_upstreams: 512,
         max_idle_per_target: 256,
         tick: Duration::from_millis(5),

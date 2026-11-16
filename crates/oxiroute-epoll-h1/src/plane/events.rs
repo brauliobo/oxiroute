@@ -30,8 +30,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn admit(&mut self, fd: OwnedFd, peer: Option<SocketAddr>, index: usize) {
-        let open = self.drain_deadline.is_none() && self.live < self.config.max_clients;
-        let Some(peer) = peer.filter(|_| open) else {
+        let Some(peer) = peer.filter(|_| self.drain_deadline.is_none()) else {
             return;
         };
         let (service, timeouts) = (Rc::clone(&self.services[index].0), self.services[index].1);
@@ -53,9 +52,7 @@ impl<S: Service> Reactor<S> {
             resp_len: 0,
             flow: None,
         });
-        let Some(token) = self.slab.insert(Body::Client(client)) else {
-            return;
-        };
+        let token = self.slab.insert(Body::Client(client));
         let Some(Body::Client(client)) = self.slab.body(token) else {
             return;
         };

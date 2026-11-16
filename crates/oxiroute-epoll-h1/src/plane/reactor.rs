@@ -141,19 +141,18 @@ impl<S: Service> Reactor<S> {
         control: Arc<Control>,
     ) -> io::Result<Self> {
         let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
-        let capacity = config.slab_capacity(listeners.len());
         let clock = Clock::start();
         let now = Instant::now();
         let mut reactor = Self {
             config: config.clone(),
             epoll,
-            slab: Slab::new(capacity),
-            wheel: Wheel::new(config.tick, capacity),
+            slab: Slab::new(),
+            wheel: Wheel::new(config.tick),
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             buffers: BufferPool::default(),
             services: Vec::with_capacity(listeners.len()),
             response: Box::new(ResponseHead::new()),
-            expired: Vec::with_capacity(capacity),
+            expired: Vec::new(),
             clock,
             now,
             moment: clock.moment(now),
@@ -173,7 +172,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn watch_wake(&mut self, wake: OwnedFd) -> io::Result<()> {
-        let token = self.slab.insert(Body::Wake(wake)).ok_or(Errno::NOSPC)?;
+        let token = self.slab.insert(Body::Wake(wake));
         let Some(Body::Wake(fd)) = self.slab.body(token) else {
             unreachable!("just inserted")
         };
@@ -184,13 +183,10 @@ impl<S: Service> Reactor<S> {
         sys::prepare_listener(&listener.fd)?;
         self.services
             .push((Rc::new(listener.service), listener.timeouts));
-        let token = self
-            .slab
-            .insert(Body::Listener {
-                fd: listener.fd,
-                index,
-            })
-            .ok_or(Errno::NOSPC)?;
+        let token = self.slab.insert(Body::Listener {
+            fd: listener.fd,
+            index,
+        });
         self.listeners.push(token);
         Ok(())
     }

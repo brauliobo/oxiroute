@@ -123,9 +123,7 @@ impl<S: Service> Reactor<S> {
             lease,
             idle,
         };
-        let Some(upstream_token) = self.slab.insert(Body::Upstream(upstream)) else {
-            return self.fail(token, client, Failure::Connect);
-        };
+        let upstream_token = self.slab.insert(Body::Upstream(upstream));
         let watched = match self.slab.body(upstream_token) {
             Some(Body::Upstream(upstream)) => sys::watch(
                 &self.epoll,
