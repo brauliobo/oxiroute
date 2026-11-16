@@ -12,6 +12,8 @@ use rustls::{
     CipherSuite, ConnectionTrafficSecrets, ExtractedSecrets, ProtocolVersion, ServerConnection,
 };
 
+pub(crate) mod socket;
+
 const NONCE_LEN: usize = 12;
 const GCM_SALT_LEN: usize = 4;
 

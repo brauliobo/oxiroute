@@ -13,8 +13,8 @@ use tokio::{
 };
 
 use crate::{
+    kernel::socket::{Failure, KernelIo},
     kernel::{self, KernelTls, Suite},
-    kernel_io::{Failure, KernelIo},
     pump::Pump,
 };
 

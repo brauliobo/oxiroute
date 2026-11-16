@@ -19,6 +19,7 @@ use tokio::{
     time::timeout,
 };
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use common::{Fixed, Pair, connect_with, pair_with};

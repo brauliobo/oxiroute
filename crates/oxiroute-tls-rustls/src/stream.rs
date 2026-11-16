@@ -22,8 +22,8 @@ use tokio::{
 
 use crate::{
     digest::{selected_alpn, ssl_digest},
+    kernel::socket::{Failure, KernelIo},
     kernel::{self, KernelTls},
-    kernel_io::{Failure, KernelIo},
     pump::Pump,
     user_tls::UserTls,
 };

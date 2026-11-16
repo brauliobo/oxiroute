@@ -14,7 +14,6 @@
 mod acceptor;
 mod digest;
 mod kernel;
-mod kernel_io;
 mod pump;
 mod records;
 mod stream;
