@@ -6,8 +6,6 @@
 
 use std::{
     collections::BTreeMap,
-    collections::HashMap,
-    hash::{BuildHasherDefault, Hasher},
     net::IpAddr,
     sync::{
         Arc, Mutex, OnceLock,
@@ -30,6 +28,10 @@ use crate::{
     observability::access_record::{Correlation, Count, Safe, SafeId, StuckAccess},
     sharded::{self, SHARDS, Sharded},
 };
+
+use entries::Entries;
+
+mod entries;
 
 pub(crate) const MAX_PATH_BYTES: usize = 128;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
@@ -141,7 +143,8 @@ impl Texts {
 }
 
 pub(crate) struct InflightEntry {
-    key: u64,
+    shard: usize,
+    slot: usize,
     texts: Texts,
     listener: Arc<str>,
     method: Method,
@@ -182,6 +185,9 @@ pub(crate) struct InflightArrival<'a> {
 
 /// `text` cut at `MAX_PATH_BYTES` on a character boundary.
 pub(crate) fn bounded_text(text: &str) -> &str {
+    if text.len() <= MAX_PATH_BYTES {
+        return text;
+    }
     let end = (0..=MAX_PATH_BYTES.min(text.len()))
         .rev()
         .find(|index| text.is_char_boundary(*index))
@@ -199,9 +205,10 @@ fn elapsed_ms(since: Instant) -> u64 {
 }
 
 impl InflightEntry {
-    fn new(key: u64, arrival: InflightArrival<'_>, place: Place) -> Self {
+    fn new((shard, slot): (usize, usize), arrival: InflightArrival<'_>, place: Place) -> Self {
         Self {
-            key,
+            shard,
+            slot,
             texts: Texts::new(arrival.request_id, arrival.host, arrival.path),
             listener: arrival.listener,
             method: arrival.method,
@@ -221,9 +228,10 @@ impl InflightEntry {
     }
 
     /// Makes an entry that nobody holds the entry of a new arrival, as [`Self::new`] would have made it.
-    fn renew(&mut self, key: u64, arrival: InflightArrival<'_>, place: Place) {
+    fn renew(&mut self, at: (usize, usize), arrival: InflightArrival<'_>, place: Place) {
         let Self {
-            key: slot,
+            shard,
+            slot,
             texts,
             listener,
             method,
@@ -240,7 +248,7 @@ impl InflightEntry {
             evacuation,
             access_log,
         } = self;
-        *slot = key;
+        (*shard, *slot) = at;
         texts.fill(arrival.request_id, arrival.host, arrival.path);
         *listener = arrival.listener;
         *method = arrival.method;
@@ -268,6 +276,10 @@ impl InflightEntry {
             .place
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Place::default();
+    }
+
+    fn slot(&self) -> usize {
+        self.slot
     }
 
     fn age_ms(&self) -> u64 {
@@ -472,77 +484,15 @@ pub(crate) struct InflightTotals {
     pub(crate) stuck: BTreeMap<(String, &'static str), u64>,
 }
 
-/// Spreads the sequential request numbers; they are not attacker chosen, so a keyed hash would only cost.
-#[derive(Default)]
-struct KeyHasher(u64);
-
-impl Hasher for KeyHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.write_u64(u64::from(*byte));
-        }
-    }
-
-    fn write_u64(&mut self, number: u64) {
-        self.0 = (self.0 ^ number).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-/// Entries a shard keeps for the next arrivals instead of freeing them: a worker serves one request after another.
-const SPARE_ENTRIES: usize = 256;
-
-#[derive(Default)]
-struct Entries {
-    live: HashMap<u64, Arc<InflightEntry>, BuildHasherDefault<KeyHasher>>,
-    spare: Vec<Arc<InflightEntry>>,
-}
-
-impl Entries {
-    fn admit(
-        &mut self,
-        key: u64,
-        arrival: InflightArrival<'_>,
-        place: Place,
-    ) -> Arc<InflightEntry> {
-        let entry = match self.spare.pop() {
-            Some(mut spare) => {
-                Arc::get_mut(&mut spare)
-                    .expect("a spare entry is held by no one else")
-                    .renew(key, arrival, place);
-                spare
-            }
-            None => Arc::new(InflightEntry::new(key, arrival, place)),
-        };
-        self.live.insert(key, Arc::clone(&entry));
-        entry
-    }
-
-    /// Takes the entry out; it becomes a spare when no scan of the registry still holds it.
-    fn retire(&mut self, entry: &mut Arc<InflightEntry>) {
-        self.live.remove(&entry.key);
-        if self.spare.len() < SPARE_ENTRIES
-            && let Some(unshared) = Arc::get_mut(entry)
-        {
-            unshared.release();
-            self.spare.push(Arc::clone(entry));
-        }
-    }
-}
-
-/// The requests one worker thread registered, and how many it has numbered.
+/// The requests one worker thread registered.
 #[derive(Default)]
 struct Shard {
     entries: Mutex<Entries>,
-    registered: AtomicU64,
 }
 
 pub(crate) struct InflightRegistry {
-    /// A request registers in the shard of the thread that received it, so workers do not contend; the
-    /// shard number is the low bits of its key and the guard removes it from the same shard.
+    /// A request registers in the shard of the thread that received it, so workers do not contend; the entry
+    /// knows its shard and the guard removes it from the same one.
     shards: Sharded<Shard>,
     stuck: Mutex<BTreeMap<(String, &'static str), u64>>,
     watchdog: OnceLock<Thread>,
@@ -643,9 +593,7 @@ impl InflightRegistry {
 
     fn insert(&'static self, arrival: InflightArrival<'_>, place: Place) -> InflightGuard {
         let index = sharded::local_index();
-        let number = sharded::next(&self.shards.get(index).registered);
-        let key = number * SHARDS as u64 + index as u64;
-        let entry = self.lock(index).admit(key, arrival, place);
+        let entry = self.lock(index).admit(index, arrival, place);
         self.wake_watchdog();
         InflightGuard {
             entry,
@@ -655,7 +603,7 @@ impl InflightRegistry {
 
     fn entries(&self) -> Vec<Arc<InflightEntry>> {
         (0..SHARDS)
-            .flat_map(|index| self.lock(index).live.values().cloned().collect::<Vec<_>>())
+            .flat_map(|index| self.lock(index).live().cloned().collect::<Vec<_>>())
             .collect()
     }
 
@@ -779,7 +727,7 @@ impl InflightGuard {
     }
 
     fn age_ms_at(&self, now: Instant) -> u64 {
-        duration_ms(now.saturating_duration_since(self.entry.started))
+        duration_ms(crate::clock::since(now, self.entry.started))
     }
 
     pub(crate) fn progress(&self, now: Instant) {
@@ -849,10 +797,11 @@ impl InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        let index = usize::try_from(self.entry.key % SHARDS as u64).expect("shard index");
-        self.registry.lock(index).retire(&mut self.entry);
+        self.registry.lock(self.entry.shard).retire(&mut self.entry);
     }
 }
 
+#[cfg(test)]
+mod slots;
 #[cfg(test)]
 mod tests;
