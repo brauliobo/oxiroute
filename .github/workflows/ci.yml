@@ -34,6 +34,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Test and verify the source file size limit
+        run: |
+          ./scripts/test-verify-file-size.sh
+          ./scripts/verify-file-size.sh
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:

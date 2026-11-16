@@ -11,6 +11,7 @@ cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 cargo +1.97.1 test --workspace --locked --jobs 4
 ./scripts/verify-control-plane-contract.sh
 ./scripts/verify-fuzz.sh
+./scripts/verify-file-size.sh
 pnpm --dir ui test
 pnpm --dir ui build
 pnpm --dir ui verify:bundle
