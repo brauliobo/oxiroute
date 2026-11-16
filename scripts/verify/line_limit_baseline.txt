@@ -3,8 +3,6 @@
 3463 crates/oxiroute-config-source/tests/lua_config.rs
 1952 crates/oxiroute-config-source/tests/lua_render.rs
 1002 crates/oxiroute-import/src/apache/lower.rs
-2942 crates/oxiroute-import/tests/haproxy_lower.rs
-1006 crates/oxiroute-import/tests/haproxy_resolver.rs
 2481 crates/oxiroute-import/tests/nginx_lower.rs
 1092 crates/oxiroute-import/tests/nginx_rtmp.rs
 1343 crates/oxiroute-import/tests/squid.rs
