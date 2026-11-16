@@ -10,7 +10,6 @@
 1343 crates/oxiroute-import/tests/squid.rs
 1152 crates/oxiroute-rtmp/tests/recording_worker.rs
 1039 crates/oxiroute-server/src/http/proxy/lane/proxy.rs
-1711 crates/oxiroute-server/tests/forward_proxy_h1.rs
 8611 crates/oxiroute-server/tests/http_proxy_routing.rs
 2340 crates/oxiroute-server/tests/process_management.rs
 1129 crates/oxiroute-server/tests/process_rtmp_runtime.rs
