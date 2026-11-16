@@ -17,7 +17,7 @@ use crate::{
         StaticFilesBlueprint,
     },
     http::cache::CompressionPolicy,
-    rtmp::value_plan::compile_rtmp_value_plans_from_draft,
+    rtmp::value::plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
     service_plan::DataPlanePolicy,
     service_plan::errors::{ServicePlanError, rtmp_preparation_error},

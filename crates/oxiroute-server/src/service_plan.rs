@@ -53,9 +53,12 @@ impl From<ServicePlanError> for RuntimeAcquisitionError {
     }
 }
 
+#[path = "service_plan/compile/http.rs"]
 mod compile_http;
+#[path = "service_plan/compile/services.rs"]
 mod compile_services;
 mod data_plane;
+#[path = "service_plan/disk/registry.rs"]
 mod disk_registry;
 pub(crate) mod errors;
 mod runtime_plan;
@@ -73,6 +76,7 @@ pub use runtime_plan::*;
 pub use spec::*;
 
 #[cfg(test)]
+#[path = "service_plan/disk/registry_tests.rs"]
 mod disk_registry_tests;
 
 #[cfg(test)]

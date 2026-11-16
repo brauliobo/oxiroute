@@ -63,11 +63,11 @@ fn prepare_tls(config: &ValidatedConfig) -> Result<tls::PreparedTls, TlsBuildErr
     prepare_validated_tls(config)
 }
 
-#[path = "tests/certbot_load.rs"]
+#[path = "tests/certbot/load.rs"]
 mod certbot_load;
-#[path = "tests/certbot_reconcile.rs"]
+#[path = "tests/certbot/reconcile.rs"]
 mod certbot_reconcile;
-#[path = "tests/certbot_watcher.rs"]
+#[path = "tests/certbot/watcher.rs"]
 mod certbot_watcher;
 #[path = "tests/chain.rs"]
 mod chain;
