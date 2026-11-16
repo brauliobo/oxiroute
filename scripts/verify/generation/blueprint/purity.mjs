@@ -7,29 +7,36 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const sourceRoot = path.join(root, 'crates/oxiroute-server/src')
 const compilerModules = new Set([
-  'generation_compiler.rs',
-  'planning_errors.rs',
-  'rtmp_value_plan.rs',
+  'generation/compiler.rs',
+  'service_plan/errors.rs',
+  'service_plan/types.rs',
+  'service_plan/data_plane.rs',
+  'service_plan/data_plane/chain.rs',
+  'service_plan/data_plane/selection.rs',
+  'service_plan/compile/http.rs',
+  'service_plan/compile/services.rs',
+  'rtmp/value/plan.rs',
+  'rtmp/value/mapping.rs',
   'runtime_policy.rs',
   'forward_proxy.rs',
   'health.rs',
-  'http_action.rs',
-  'listener_inventory.rs',
+  'http/action.rs',
+  'listener/inventory.rs',
+  'registry/host.rs',
   'routing.rs',
-  'rtmp_value_mapping.rs',
   'service_plan.rs',
   'tls/mod.rs',
   'tls/upstream.rs',
   'topology.rs',
 ])
-const roots = ['generation_compiler.rs::GenerationCompiler::compile']
+const roots = ['generation/compiler.rs::GenerationCompiler::compile']
 const acquisitionNames = /(^|::)(acquire|open|load|read|write|bind|connect|resolve|spawn|prepare_tls|to_socket_addrs)$/
 const forbiddenImports = /^(std::(fs|net::ToSocketAddrs|thread)|openssl|pingora|oxiroute_cache::(Cache|DiskCache)|crate::(http_cache|secure_bearer))($|::|\{)/
 const mixedModuleImports = new Map([
   ['health.rs', new Set([
     'pingora::{ ErrorType, http::RequestHeader, lb::{ Backend, health_check::{HealthCheck, HttpHealthCheck, TcpHealthCheck}, }, server::ShutdownWatch, services::{ServiceReadyNotifier, background::BackgroundService}, }',
   ])],
-  ['http_action.rs', new Set([
+  ['http/action.rs', new Set([
     'openssl::{ hash::{Hasher, MessageDigest}, memcmp, sha::sha256, }',
   ])],
 ])
@@ -95,7 +102,7 @@ const reviewedValueMethods = new Map([
   'with_window_ack_size', 'profile', 'config', 'transport', 'application', 'stream_name',
   'with_segment_policy', 'with_extensions',
   'port', 'is_absolute', 'to_str', 'from_pathname',
-  'set_version', 'append_header',
+  'set_version', 'append_header', 'effective_h2_windows',
   'parse',
 ].map((name) => [name, 'reviewed std/external immutable or local value operation']))
 
@@ -442,7 +449,7 @@ function mustPass(label, mutate) {
 }
 
 const injection = 'let config = validated.as_draft();'
-const mutateRoot = (mutate) => (candidate) => candidate.set('generation_compiler.rs', mutate(candidate.get('generation_compiler.rs')))
+const mutateRoot = (mutate) => (candidate) => candidate.set('generation/compiler.rs', mutate(candidate.get('generation/compiler.rs')))
 mustFail('direct acquisition', mutateRoot((source) => source.replace(injection, `${injection} std::fs::read("secret").unwrap();`)))
 mustFail('From function item acquisition', mutateRoot((source) => source.replace(injection, `${injection} let f = Impure::from; f(config);`).concat('\nstruct Impure; impl Impure { fn from(_: &oxiroute_config::ConfigDraft) { std::fs::read("secret").unwrap(); } }\n')))
 mustFail('lowercase function item acquisition', mutateRoot((source) => source.replace(injection, `${injection} let f = impure_helper; f();`).concat('\nfn impure_helper() { std::fs::read("secret").unwrap(); }\n')))
