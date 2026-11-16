@@ -17,6 +17,7 @@ mod serve;
 mod service;
 mod slab;
 mod spare;
+mod starts;
 mod sys;
 mod upstream;
 mod wake;

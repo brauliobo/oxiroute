@@ -200,6 +200,7 @@ pub(crate) struct Client<S: Service> {
     pub(crate) peer: SocketAddr,
     pub(crate) admission: S::Admission,
     pub(crate) stage: Stage,
+    pub(crate) queued: bool,
     pub(crate) deadline: Option<Moment>,
     pub(crate) buffers: Leased,
     pub(crate) req_len: usize,

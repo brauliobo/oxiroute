@@ -93,3 +93,60 @@ fn a_connection_streaming_a_large_body_does_not_hold_back_the_others() {
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(bulk.reply().body.len(), 16_000_000);
 }
+
+fn paced(starts_per_pass: usize) -> Fixture {
+    fixture(Config {
+        starts_per_pass,
+        ..test_config()
+    })
+}
+
+#[test]
+fn a_burst_is_served_in_full_when_a_pass_starts_one_exchange() {
+    let fixture = paced(1);
+    let mut wires: Vec<Wire> = (0..CONNECTIONS).map(|_| fixture.wire()).collect();
+    for _ in 0..3 {
+        serve_round(&mut wires, "/size/200", 200);
+    }
+    eventually("every exchange completed", || {
+        fixture.service.counters.completed.load(Ordering::SeqCst) == 3 * CONNECTIONS
+    });
+}
+
+#[test]
+fn slow_exchanges_do_not_hold_back_the_starts_of_other_connections() {
+    let fixture = paced(1);
+    let mut slow: Vec<Wire> = (0..100).map(|_| fixture.wire()).collect();
+    for wire in &mut slow {
+        wire.get("/delay/600");
+    }
+    eventually("every slow exchange started and none ended", || {
+        let counters = &fixture.service.counters;
+        counters.live_leases.load(Ordering::SeqCst) == slow.len()
+            && counters.completed.load(Ordering::SeqCst) == 0
+    });
+    let mut quick = fixture.wire();
+    quick.get("/size/10");
+    assert_eq!(quick.reply().body.len(), 10);
+    for wire in &mut slow {
+        assert_eq!(wire.reply().body.len(), 4);
+    }
+}
+
+#[test]
+fn connections_waiting_to_start_are_released_when_they_close() {
+    let fixture = paced(1);
+    let mut wires: Vec<Wire> = (0..CONNECTIONS).map(|_| fixture.wire()).collect();
+    for wire in &mut wires {
+        wire.get("/size/20");
+    }
+    wires.truncate(CONNECTIONS / 2);
+    for wire in &mut wires {
+        assert_eq!(wire.reply().body.len(), 20);
+    }
+    drop(wires);
+    let counters = &fixture.service.counters;
+    eventually("every connection was released", || {
+        counters.live_admissions.load(Ordering::SeqCst) == 0
+    });
+}
