@@ -1,0 +1,138 @@
+.stream-section {
+  padding: clamp(38px, 7vw, 74px) 0;
+}
+
+.stream-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 18px;
+}
+
+.stream-card,
+.empty-state {
+  border: 1px solid #3a4034;
+  background: rgb(23 26 21 / 88%);
+  box-shadow: 0 20px 80px rgb(0 0 0 / 18%);
+}
+
+.stream-card {
+  padding: 20px;
+}
+
+.stream-header {
+  align-items: start;
+}
+
+.stream-header h3 {
+  margin: 4px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.8rem;
+  font-weight: 400;
+}
+
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid #536544;
+  color: #cde8a5;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.live-pill.dormant {
+  border-color: #555b4e;
+  color: #959b8e;
+}
+
+.live-pill.dormant .dot {
+  background: #73796d;
+  box-shadow: none;
+}
+
+.stream-facts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 22px 0;
+  border-block: 1px solid #34392f;
+}
+
+.fact {
+  display: grid;
+  gap: 7px;
+  padding: 15px 12px 15px 0;
+}
+
+.fact + .fact {
+  padding-left: 12px;
+  border-left: 1px solid #34392f;
+}
+
+.fact strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.track-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.track {
+  display: grid;
+  gap: 7px;
+  padding: 13px;
+  background: #10130e;
+}
+
+.track-heading strong {
+  color: #b6ff51;
+  font-size: 0.9rem;
+}
+
+.track-bytes,
+.track-time {
+  color: #878f7e;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.7rem;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: clamp(24px, 5vw, 52px);
+}
+
+.empty-mark {
+  color: #b6ff51;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 4rem;
+}
+
+.empty-state h3 {
+  margin-bottom: 6px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.5rem;
+  font-weight: 400;
+}
+
+.empty-state p {
+  margin-bottom: 0;
+  color: #8f9788;
+}
+
+@media (max-width: 680px) {
+  .stream-facts,
+  .track-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .fact + .fact {
+    padding-left: 0;
+    border-top: 1px solid #34392f;
+    border-left: 0;
+  }
+}
