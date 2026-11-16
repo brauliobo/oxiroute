@@ -230,6 +230,7 @@ impl<S: Service> Reactor<S> {
         let replayable = flow.replayable
             && flow.status.is_none()
             && matches!(flow.down, Down::Awaiting)
+            && !flow.origin.forwarded()
             && flow.attempts < self.config.max_attempts;
         if client_side || !replayable {
             return false;
@@ -253,7 +254,7 @@ impl<S: Service> Reactor<S> {
             failure,
             Failure::ClientGone | Failure::ClientTimeout | Failure::Shutdown
         );
-        if client_side || flow.status.is_some() {
+        if client_side || flow.status.is_some() || flow.origin.torn() {
             return Step::Close;
         }
         let down_head = &mut client.buffers.down_head;
@@ -285,6 +286,7 @@ impl<S: Service> Flow<S> {
         timeouts: super::service::AttemptTimeouts,
     ) {
         self.contacted = true;
+        self.origin.restart();
         self.total = total;
         self.key = key;
         self.reuse = reuse;

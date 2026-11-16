@@ -4,6 +4,7 @@ use oxiroute_h1_head::{Connection, RequestHead, Scan, scan_request};
 
 use super::{
     client::{Buffers, Client, Down, Flow, Stage, Window},
+    origin_head::OriginHead,
     reactor::{Reactor, Step},
     service::{Handoff, Request, Reuse, Routed, Service},
     slab::Token,
@@ -141,6 +142,7 @@ impl<S: Service> Reactor<S> {
             connected_at: None,
             first_byte_at: None,
             down: Down::Awaiting,
+            origin: OriginHead::default(),
             status: None,
             failure: None,
             received: 0,

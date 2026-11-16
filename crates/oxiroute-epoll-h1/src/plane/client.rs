@@ -13,6 +13,7 @@ use super::{
     clock::Moment,
     config::{Config, Timeouts},
     link::Link,
+    origin_head::OriginHead,
     service::{AttemptTimeouts, Failure, Reuse, Service},
     slab::Token,
 };
@@ -177,6 +178,7 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) connected_at: Option<Moment>,
     pub(crate) first_byte_at: Option<Moment>,
     pub(crate) down: Down,
+    pub(crate) origin: OriginHead,
     pub(crate) status: Option<u16>,
     pub(crate) failure: Option<Failure>,
     pub(crate) received: u64,

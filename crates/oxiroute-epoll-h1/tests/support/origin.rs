@@ -145,6 +145,16 @@ fn write(stream: &mut TcpStream, bytes: &[u8]) -> bool {
     stream.write_all(bytes).is_ok()
 }
 
+const EARLY_HINTS: &[u8] = b"HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n";
+const FINAL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+fn big_head(value_len: usize) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nX-Big: {}\r\nContent-Length: 0\r\n\r\n",
+        "b".repeat(value_len)
+    )
+}
+
 fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> bool {
     let path = request.path.as_str();
     let segment = path.rsplit('/').next().unwrap_or("");
@@ -182,6 +192,24 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
             format!("HTTP/1.1 {number} Status\r\nContent-Length: 0\r\n\r\n").as_bytes(),
         ),
         "head" => write(stream, b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"),
+        "interim" => write(stream, &[EARLY_HINTS, FINAL].concat()),
+        "interim-late" => {
+            let _ = write(stream, EARLY_HINTS);
+            thread::sleep(Duration::from_millis(number as u64));
+            write(stream, FINAL)
+        }
+        "interim-only" => {
+            let _ = write(stream, EARLY_HINTS);
+            false
+        }
+        "switch" => write(
+            stream,
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        ),
+        "lenient" => write(
+            stream,
+            b"HTTP/1.1 200\nX-A: one\n  two\nX-B : b\nUpgrade: h2c\nConnection: Upgrade, x-c\nX-C: c\nContent-Length: 2\n\nok",
+        ),
         "delay" => {
             thread::sleep(Duration::from_millis(number as u64));
             write(stream, &ok(b"late", ""))
@@ -203,13 +231,8 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
         }
         "closed" => false,
         "garbage" => write(stream, b"HTTP/1.1 20x Broken\r\n\r\n") && false,
-        "hugehead" => {
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nX-Big: {}\r\nContent-Length: 0\r\n\r\n",
-                "b".repeat(30_000)
-            );
-            write(stream, head.as_bytes())
-        }
+        "hugehead" => write(stream, big_head(1_200_000).as_bytes()),
+        "largehead" => write(stream, big_head(30_000).as_bytes()),
         "flaky" => {
             let failing = flaky
                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {

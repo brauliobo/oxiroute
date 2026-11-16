@@ -1,18 +1,14 @@
-use std::rc::Rc;
-
-use oxiroute_h1_head::{Connection, ScanResponse, scan_response};
-
 use super::{
-    chunked::{ChunkScanner, HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
+    chunked::{HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
     client::{Buffers, Client, Down, Flow, Mode, Relay, Wait, Window},
     link::Link,
     reactor::Reactor,
-    service::{Answered, Failure, Framing, Recovery, Response, Service},
+    service::{Failure, Service},
     slab::Token,
     sys::{Read, Wrote},
 };
 
-const TAIL_ROOM: usize = 2;
+pub(crate) const TAIL_ROOM: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Moved {
@@ -131,112 +127,6 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    fn await_head(
-        &mut self,
-        token: Token,
-        client: &mut Client<S>,
-        upstream: Token,
-    ) -> Result<bool, Failure> {
-        let mut progressed = false;
-        loop {
-            let usable = client.buffers.resp.len() - TAIL_ROOM;
-            if client.resp_len == usable {
-                return Err(Failure::ResponseHeadTooLarge);
-            }
-            let Some(origin) = self.slab.upstream_mut(upstream) else {
-                return Err(Failure::UpstreamClosed);
-            };
-            match origin
-                .link
-                .recv(&mut client.buffers.resp[client.resp_len..usable])
-            {
-                Read::Data(count) => {
-                    client.resp_len += count;
-                    client.flow().first_byte_at.get_or_insert(self.moment);
-                    progressed = true;
-                }
-                Read::Block => return Ok(progressed),
-                Read::Eof | Read::Failed => return Err(client.flow().closed_before_head()),
-            }
-            match scan_response(&client.buffers.resp[..client.resp_len], &mut self.response) {
-                ScanResponse::Partial => {}
-                ScanResponse::Slow => return Err(Failure::BadResponse),
-                ScanResponse::Head => return self.open_response(token, client).map(|()| true),
-            }
-        }
-    }
-
-    fn open_response(&mut self, token: Token, client: &mut Client<S>) -> Result<(), Failure> {
-        let service = Rc::clone(&client.service);
-        let head = &*self.response;
-        let facts = head.facts;
-        if facts.informational
-            || facts.upgrade
-            || facts.connection == Connection::Other
-            || facts.transfer_encoding && !facts.chunked_final
-        {
-            return Err(Failure::BadResponse);
-        }
-        let flow = client.flow.as_mut().expect("a serving client has a flow");
-        let exchange = flow.exchange.as_mut().expect("an exchange is served once");
-        let retryable = flow.replayable && flow.attempts < self.config.max_attempts;
-        let answered = Answered {
-            bytes: &client.buffers.resp[..head.head_len as usize],
-            head,
-            connected: flow.connected_at.map(|at| self.clock.instant(at)),
-            now: self.now,
-        };
-        if service.judge(exchange, &answered) == Recovery::Retry && retryable {
-            return Err(Failure::UnexpectedStatus);
-        }
-        let no_body = flow.is_head || matches!(head.status, 204 | 304);
-        let (framing, mode) = match facts.content_length {
-            _ if no_body => (Framing::Empty, Mode::Empty),
-            Some(length) => (Framing::Length, Mode::Length(length)),
-            None if facts.transfer_encoding => {
-                (Framing::Chunked, Mode::Chunked(ChunkScanner::new()))
-            }
-            None => (Framing::Chunked, Mode::UntilClose),
-        };
-        flow.keepalive = flow.client_keepalive && flow.upload_done && self.drain_deadline.is_none();
-        let origin_keepalive = match facts.connection {
-            Connection::Close => false,
-            Connection::KeepAlive => true,
-            _ => head.minor == 1,
-        };
-        let reusable = origin_keepalive && !matches!(mode, Mode::UntilClose);
-        let buffers: &mut Buffers = &mut client.buffers;
-        let down_head = &mut buffers.down_head;
-        down_head.clear();
-        let response = Response {
-            bytes: &buffers.resp[..head.head_len as usize],
-            head,
-            framing,
-            keepalive: flow.keepalive,
-            request_is_head: flow.is_head,
-        };
-        service.render_response(exchange, &response, self.now, down_head);
-        flow.status = Some(head.status);
-        let leftover = Window::new(head.head_len as usize, client.resp_len);
-        let mut relay = Relay {
-            mode,
-            window: Window::default(),
-            head_pos: 0,
-            complete: false,
-            reusable,
-        };
-        absorb(
-            &mut relay,
-            &mut client.buffers.resp,
-            leftover,
-            &mut flow.sent,
-        )?;
-        flow.down = Down::Relaying(relay);
-        let limit = flow.timeouts.map(|timeouts| timeouts.body);
-        self.wait_for(token, client, Wait::Body, limit);
-        Ok(())
-    }
-
     fn relay(
         &mut self,
         token: Token,
@@ -328,16 +218,6 @@ impl<S: Service> Reactor<S> {
     }
 }
 
-impl<S: Service> Flow<S> {
-    fn closed_before_head(&self) -> Failure {
-        if self.upload_failed {
-            Failure::UpstreamWrite
-        } else {
-            Failure::UpstreamClosed
-        }
-    }
-}
-
 fn usable(buffers: &Buffers) -> usize {
     buffers.resp.len() - TAIL_ROOM
 }
@@ -367,7 +247,12 @@ fn read_body<S: Service>(
     read
 }
 
-fn absorb(relay: &mut Relay, resp: &mut [u8], data: Window, sent: &mut u64) -> Result<(), Failure> {
+pub(crate) fn absorb(
+    relay: &mut Relay,
+    resp: &mut [u8],
+    data: Window,
+    sent: &mut u64,
+) -> Result<(), Failure> {
     let count = data.end - data.start;
     match &mut relay.mode {
         Mode::Empty => {
