@@ -170,6 +170,7 @@ impl ConfigDraft {
 #[serde(rename_all = "snake_case")]
 pub enum HttpDataPlane {
     Epoll,
+    IoUring,
     Tokio,
 }
 
@@ -178,6 +179,7 @@ impl HttpDataPlane {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Epoll => "epoll",
+            Self::IoUring => "io_uring",
             Self::Tokio => "tokio",
         }
     }

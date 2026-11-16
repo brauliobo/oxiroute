@@ -2,7 +2,7 @@ use std::{io, os::fd::OwnedFd, sync::Arc};
 
 use async_trait::async_trait;
 use log::error;
-use oxiroute_epoll_h1::{Config, Engine, Listener};
+use oxiroute_epoll_h1::{Config, Driver, Engine, Listener};
 use pingora::{
     apps::{AcceptGate, ServerApp},
     server::{ListenFds, ShutdownWatch},
@@ -11,7 +11,7 @@ use pingora::{
 use tokio::{sync::mpsc::unbounded_channel, task::spawn_blocking};
 
 use super::{handoff, service::EngineFront};
-use crate::{MAX_HTTP_ATTEMPTS, RuntimeGeneration, http::proxy::lane::LaneFront};
+use crate::{DataPlane, MAX_HTTP_ATTEMPTS, RuntimeGeneration, http::proxy::lane::LaneFront};
 
 #[derive(Clone)]
 pub struct EpollLane(Arc<LaneFront>);
@@ -29,6 +29,7 @@ pub struct EpollHttpService<A> {
     app: Arc<A>,
     lane: Arc<LaneFront>,
     generation: Arc<RuntimeGeneration>,
+    driver: Driver,
 }
 
 impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
@@ -46,7 +47,17 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             app: Arc::new(app),
             lane: lane.0,
             generation,
+            driver: Driver::Epoll,
         }
+    }
+
+    #[must_use]
+    pub const fn on(mut self, plane: DataPlane) -> Self {
+        self.driver = match plane {
+            DataPlane::IoUring => Driver::IoUring,
+            DataPlane::Epoll | DataPlane::Tokio => Driver::Epoll,
+        };
+        self
     }
 
     async fn launch(&self, socket: OwnedFd, shutdown: &ShutdownWatch) -> io::Result<Engine> {
@@ -58,6 +69,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
         ));
         let config = Config {
             threads: self.threads,
+            driver: self.driver,
             max_attempts: u8::try_from(MAX_HTTP_ATTEMPTS).expect("the attempt limit fits a byte"),
             ..Config::default()
         };
