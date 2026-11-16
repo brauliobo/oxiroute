@@ -29,7 +29,7 @@ mod finalizer;
 mod fsutil;
 mod limits;
 mod registry;
-mod store;
+mod root;
 
 pub use commit::*;
 pub use error::*;
@@ -39,7 +39,7 @@ pub(crate) use finalizer::*;
 use fsutil::*;
 pub use limits::*;
 pub use registry::*;
-pub use store::*;
+pub use root::*;
 
 mod flv;
 

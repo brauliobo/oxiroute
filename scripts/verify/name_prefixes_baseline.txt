@@ -12,8 +12,6 @@
 2 crates/oxiroute-import/src/nginx/stream
 7 crates/oxiroute-import/tests/haproxy
 12 crates/oxiroute-import/tests/nginx
-2 crates/oxiroute-rtmp/src/recording/recording
-3 crates/oxiroute-rtmp/tests/recording
 2 crates/oxiroute-server/src/http/action/access
 6 crates/oxiroute-server/src/http/action/static
 2 crates/oxiroute-server/src/observability/operational_event/audit
