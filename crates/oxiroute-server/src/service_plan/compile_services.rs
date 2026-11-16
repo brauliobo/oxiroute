@@ -217,6 +217,10 @@ pub(super) fn compile_rtmp_services(
         .collect()
 }
 
+fn terminable(tls: Option<&crate::tls::TlsProfilePlan>) -> bool {
+    tls.is_none_or(crate::tls::TlsProfilePlan::serves_on_epoll)
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn compile_listener(
     listener: &ListenerBlueprint,
@@ -269,8 +273,12 @@ pub(super) fn compile_listener(
         h2_windows: listener.h2_windows,
         proxy_protocol: listener.proxy_protocol,
         data_plane: match &kind {
-            ServiceKind::Http(plan) => DataPlane::plan(listener.plane, plan, tls.as_deref()),
-            _ => DataPlane::Tokio,
+            ServiceKind::Http(plan) | ServiceKind::Http3(plan) => {
+                listener
+                    .plane
+                    .select(plan.serves_on_engine(), terminable(tls.as_deref()))
+            }
+            _ => PlaneSelection::tokio(),
         },
         kind,
         tls,

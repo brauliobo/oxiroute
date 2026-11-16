@@ -46,12 +46,19 @@ const SERVED_ON_EPOLL: &str = "served by the epoll data plane";
 const STEP: Duration = Duration::from_secs(10);
 const TOKEN: &str = "5b1f0c6e8a3d4f27b9c0e1d2a3f4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2";
 
-macro_rules! on_both_planes {
+macro_rules! on_every_plane {
     ($scenario:ident) => {
         mod $scenario {
             #[tokio::test]
             async fn epoll() {
                 super::$scenario(super::HttpDataPlane::Epoll).await;
+            }
+
+            #[tokio::test]
+            async fn io_uring() {
+                if oxiroute_epoll_h1::io_uring_support().is_ok() {
+                    super::$scenario(super::HttpDataPlane::IoUring).await;
+                }
             }
 
             #[tokio::test]
@@ -227,7 +234,7 @@ impl Proxy {
         tasks
             .flatten()
             .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
-            .filter(|name| name.starts_with("epoll-h1"))
+            .filter(|name| name.contains("-h1-"))
             .count()
     }
 
@@ -241,10 +248,10 @@ impl Proxy {
 }
 
 fn expected_on_epoll(plane: HttpDataPlane, requests: usize) -> usize {
-    if plane == HttpDataPlane::Epoll {
-        requests
-    } else {
+    if plane == HttpDataPlane::Tokio {
         0
+    } else {
+        requests
     }
 }
 
@@ -321,7 +328,7 @@ async fn a_body_ended_by_an_origin_reset_is_not_completed(plane: HttpDataPlane) 
     assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
 }
 
-on_both_planes!(a_body_ended_by_an_origin_reset_is_not_completed);
+on_every_plane!(a_body_ended_by_an_origin_reset_is_not_completed);
 
 async fn a_response_in_flight_survives_the_replacement_of_its_generation(plane: HttpDataPlane) {
     const SECONDS: usize = 36;
@@ -353,7 +360,7 @@ async fn a_response_in_flight_survives_the_replacement_of_its_generation(plane: 
     assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
 }
 
-on_both_planes!(a_response_in_flight_survives_the_replacement_of_its_generation);
+on_every_plane!(a_response_in_flight_survives_the_replacement_of_its_generation);
 
 async fn a_partial_request_head_is_closed_at_the_default_read_limit(plane: HttpDataPlane) {
     let origin = Scripted::start(|_| async {}).await;
@@ -374,7 +381,7 @@ async fn a_partial_request_head_is_closed_at_the_default_read_limit(plane: HttpD
     );
 }
 
-on_both_planes!(a_partial_request_head_is_closed_at_the_default_read_limit);
+on_every_plane!(a_partial_request_head_is_closed_at_the_default_read_limit);
 
 fn raise_descriptor_limit(needed: u64) {
     let Rlimit { current, maximum } = getrlimit(Resource::Nofile);
@@ -420,7 +427,7 @@ async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataP
     assert_eq!(proxy.engine_threads(), expected_on_epoll(plane, 1));
 }
 
-on_both_planes!(more_idle_connections_than_a_thread_cap_are_all_served);
+on_every_plane!(more_idle_connections_than_a_thread_cap_are_all_served);
 
 const FROM_A: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfrom-a";
 const FROM_B: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nfrom-b";
@@ -609,9 +616,9 @@ async fn forcing_an_evacuation_resets_a_response_that_started(plane: HttpDataPla
     assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
 }
 
-on_both_planes!(a_request_waiting_on_an_evacuated_server_is_sent_to_another);
-on_both_planes!(forcing_an_evacuation_cuts_a_request_waiting_on_it);
-on_both_planes!(a_response_that_started_is_left_running_by_an_evacuation);
+on_every_plane!(a_request_waiting_on_an_evacuated_server_is_sent_to_another);
+on_every_plane!(forcing_an_evacuation_cuts_a_request_waiting_on_it);
+on_every_plane!(a_response_that_started_is_left_running_by_an_evacuation);
 #[tokio::test]
 async fn forcing_an_evacuation_resets_a_response_that_started_at_once_on_epoll() {
     forcing_an_evacuation_resets_a_response_that_started(HttpDataPlane::Epoll).await;
@@ -665,7 +672,7 @@ async fn the_connect_time_is_logged_when_the_origin_closes_before_answering(plan
     assert!(!record["connectMs"].is_null(), "{record}");
 }
 
-on_both_planes!(the_connect_time_is_logged_when_the_origin_closes_before_answering);
+on_every_plane!(the_connect_time_is_logged_when_the_origin_closes_before_answering);
 
 #[tokio::test]
 async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it() {

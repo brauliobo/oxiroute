@@ -71,29 +71,33 @@ listener topologies remain on the direct runtime rather than using an untyped fa
 The server crate owns listener admission and dispatches by protocol:
 
 - HTTP reverse proxy routes host/path/method requests into immutable service and pool plans.
-- Plain-HTTP HTTP/1.1 listeners are served by one of two planes, chosen per listener when the generation is prepared
+- Plain-HTTP HTTP/1.1 listeners are served by one of three planes, chosen per listener when the generation is prepared
   (`service_plan::DataPlane`, root option `http_data_plane`). The tokio plane is Pingora's listener, the fast lane and the
-  classic path. The epoll plane (`oxiroute-epoll-h1`, adapted by `http/proxy/engine`) is a thread-per-core event loop
+  classic path. The epoll and io_uring planes (one engine, `oxiroute-epoll-h1`, adapted by `http/proxy/engine`, on two
+  drivers) are a thread-per-core event loop
   that serves the routes the plan marks `engine` and hands every other connection, with the bytes already read, to the
   tokio plane before any origin is contacted. The adapter reuses the lane's route selection, request context, leases,
   head rendering and access log; it joins the generation's accept gate (pause on publication, drain on retirement) and
-  the listener's admission, and its connections hold the same admission guards as tokio ones. `DataPlanePolicy` is the
-  one place that decides which listeners the engine may serve: the platform and `http_fast_lane` are its conditions; an
-  unset `http_data_plane` falls back to tokio when one fails and an explicit `epoll` is a plan error. An engine thread
-  that panics or fails marks the generation's runtime failed instead of leaving a listener that accepts connections
-  nothing serves. `aged_per_worker` and `dynamic` worker scaling run inside the engine (`plane/schedule`): the ready
-  order is `oxiroute-aged-order`, shared with the tokio executor, the active-set decision is `oxiroute-worker-scaling`,
-  and a connection moves between threads as an owned descriptor handed through the target thread's inbox while it holds
-  no request, no buffer and no origin connection.
-  The engine's I/O goes through a driver (`plane/driver`): readiness (`epoll`, the default) or, when
-  `http_data_plane` is `io_uring`, completions of a per-thread ring owned by `oxiroute-uring`. The state machine,
-  `Service` trait, timer wheel, scheduling and tests are shared; the io_uring driver turns completions into the
-  readiness the state machine consumes and owns the buffers of operations in flight. It is opt-in, and a kernel or
-  sandbox that lacks what it needs is a plan-time error, probed in `service_plan/data_plane.rs`, never a fallback.
-  What a ring socket cannot do is refused where the plan is made rather than served differently: `io_uring` with
-  `aged_per_worker` scheduling is a plan error (a connection moves between threads as an owned descriptor), a TLS
-  listener stays on the tokio plane, and the engine itself refuses both for the ring driver and never splices with it
-  (splice needs raw descriptors). Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
+  the listener's admission, and its connections hold the same admission guards as tokio ones. `DataPlanePolicy` is
+  the one place that decides which plane serves a listener, and it decides once per generation. The chain is data:
+  `DataPlane::DEFAULT_ORDER` is the ordered list (`epoll`, `tokio`) and each plane is a `Link` in
+  `service_plan/data_plane/chain.rs` with a capability probe and what it serves (fast lane, scheduling, TLS only when the
+  plane is chosen and the profile is rustls, plain HTTP/1.1 socket listeners). Per listener the first plane whose probe and conditions pass wins, and the skipped
+  planes with their reasons travel with the choice (`PlaneSelection`) to the log line written when the listener is
+  built. An explicit `epoll` or `io_uring` is a plan error when its probe or conditions fail, an explicit `tokio`
+  probes nothing, and an explicit plane left out of the default order still works. The `io_uring` probe runs once per
+  process on a short-lived ring. To put `io_uring` first, add `Self::IoUring` at the head of
+  `DataPlane::DEFAULT_ORDER` and the `io_uring` step to the chain sentence in `docs/CONFIG_SPEC.md` and
+  `docs/OPERATIONS.md`. An engine thread that panics or fails marks the generation's runtime failed instead of
+  leaving a listener that accepts connections nothing serves. `aged_per_worker` and `dynamic` worker scaling run
+  inside the epoll engine (`plane/schedule`): the ready order is `oxiroute-aged-order`, shared with the tokio
+  executor, the active-set decision is `oxiroute-worker-scaling`, and a connection moves between threads as an owned
+  descriptor handed through the target thread's inbox while it holds no request, no buffer and no origin
+  connection; the engine refuses to start the `io_uring` driver with scheduling.
+  The engine's I/O goes through a driver: readiness (`epoll`) or completions of a per-thread ring owned by
+  `oxiroute-uring` (`io_uring`). The state machine, `Service` trait, timer wheel and tests are shared; the io_uring
+  driver turns completions into the readiness the state machine consumes and owns the buffers of operations in
+  flight. Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by

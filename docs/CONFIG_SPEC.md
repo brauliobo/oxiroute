@@ -302,32 +302,36 @@ Current constraints:
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
-- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
-  HTTP/1.1 reverse-proxy listeners are served by the thread-per-core epoll data plane wherever the platform supports it
-  (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
-  TLS listeners stay on the tokio path unless `epoll` is chosen explicitly and the listener's TLS profile uses the rustls
-  backend: the epoll data plane then terminates TLS itself and serves HTTP/1.1 (ALPN `http/1.1` or none); an HTTP/2
-  connection continues on the tokio path over the same TLS session. Everything else (HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
-  and fixed-response routes, other platforms) is served by the tokio/Pingora path, which receives the connection with the
-  bytes already read. `tokio` forces the tokio/Pingora path for every request. The epoll plane runs one thread per
-  `listener_workers` and honours `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with
-  its `connection_age_ms` and `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its
-  ready connections newest first and the oldest first once it has waited the age, a new connection goes to the thread
-  with the fewest open connections, and a dynamically scaled listener keeps its connections on the active threads.
-  `epoll` chooses the epoll data plane explicitly: the configuration is rejected when the platform does not support it
-  or when `http_fast_lane` is `false`, and is never silently downgraded (the server performs
-  that check when it prepares the generation; the value itself is checked when the configuration is loaded). The epoll
-  plane serves requests that a client sends back to back on one connection without waiting for the answers (pipelining)
-  one after the other, where the classic path closes such a connection after the first answer. `io_uring` runs the
-  same engine on io_uring completions instead of epoll readiness. It is opt-in and never the default: the server
-  probes the kernel when it prepares the generation and rejects the configuration, naming the missing capability (a
-  kernel without the needed operations or provided buffer rings, `kernel.io_uring_disabled`, a seccomp or container
-  policy), instead of falling back to epoll; like `epoll` it requires `http_fast_lane` not `false`. The ring serves
-  plain HTTP with the kernel's spread of connections, so `io_uring` is also rejected with
-  `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more), whose per-worker queues and
-  thread-to-thread connection moves need a socket that is a plain descriptor, and the listeners with a TLS profile take
-  the tokio path under it; the ring copies bodies through its buffers where epoll may splice. Listeners and requests
-  the engine does not serve take the tokio path under either value. Measurements are in
+- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects, for each listener, the
+  best available plane in this order: `epoll`, then `tokio`. `io_uring` is not part of the default order and runs only
+  when `http_data_plane` is `io_uring`. The server evaluates the chain once when
+  it prepares a generation, as a plan-time decision and not a runtime fallback. A plane is skipped for a listener when
+  the platform, kernel or sandbox cannot run it (`kernel.io_uring_disabled`, a seccomp or container policy, a missing
+  operation or buffer ring, no epoll), when `http_fast_lane` is `false`, when the generation uses
+  `connection_scheduling = "aged_per_worker"` and the plane does not run it (`io_uring` does not), or when the listener
+  is not an HTTP/1.1 socket listener (HTTP/2, HTTP/3, Unix sockets), terminates TLS without the plane being chosen
+  explicitly (`io_uring` never serves TLS, and `epoll` only with a rustls profile), or its service has no route the plane
+  serves. The first plane that remains serves the listener; `tokio` ends the chain and serves everything.
+  The server logs once per listener, at info level, the plane it chose and why each better plane was skipped. The
+  engine planes serve the requests and routes the compiled fast lane can serve; everything else (upgrades, chunked
+  request bodies, `Expect`, ineligible routes, static and fixed-response routes) is served by the tokio/Pingora path,
+  which receives the connection with the bytes already read. Explicit values keep their meaning: `tokio` forces the
+  tokio/Pingora path for every request, and `epoll` or `io_uring` reject the configuration, naming the missing
+  capability, when the platform, kernel or sandbox cannot run that plane or when `http_fast_lane` is `false`
+  (`io_uring` is also rejected with `aged_per_worker`), and are never silently downgraded; listeners the plane does not
+  serve (HTTP/3, Unix sockets, TLS under `io_uring`, TLS profiles on the OpenSSL backend) take the tokio path under
+  either value. With `epoll` chosen explicitly, the epoll plane terminates the TLS of a listener whose profile uses the
+  rustls backend and serves HTTP/1.1 (ALPN `http/1.1` or none); an HTTP/2 connection continues on the tokio path over
+  the same TLS session. The server performs these checks when it
+  prepares the generation; the value itself is checked when the configuration is loaded. The probe of the kernel
+  runs once per process and leaves no ring open. The epoll plane runs one thread per `listener_workers` and honours
+  `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with its `connection_age_ms` and
+  `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its ready connections newest
+  first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
+  connections, and a dynamically scaled listener keeps its connections on the active threads. The `io_uring` plane runs
+  the same engine on io_uring completions instead of epoll readiness. The epoll and io_uring planes serve requests that
+  a client sends back to back on one connection without waiting for the answers (pipelining) one after the other, where
+  the classic path closes such a connection after the first answer. Measurements of the planes are in
   `benchmarks/reports/io-uring-http1/README.md`. Changing the value is an ordinary reload: the plane belongs to the
   generation. Connections served by any plane appear identically in status, metrics and access logs.
 - Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of

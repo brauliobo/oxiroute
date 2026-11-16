@@ -66,7 +66,7 @@ pub(crate) mod types;
 use compile_http::*;
 #[allow(clippy::wildcard_imports)]
 use compile_services::*;
-pub use data_plane::DataPlane;
+pub use data_plane::{DataPlane, PlaneSelection, Skip, Skipped};
 pub(crate) use data_plane::{DataPlanePolicy, ListenerPlane};
 pub(crate) use disk_registry::*;
 pub use runtime_plan::*;

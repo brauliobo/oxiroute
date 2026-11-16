@@ -1,5 +1,7 @@
 return {
   version = 1,
+  -- http_data_plane = "io_uring" | "epoll" | "tokio". Omitted: each listener takes the first available plane of
+  -- io_uring, epoll, tokio; an explicit io_uring or epoll is rejected where it cannot run.
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",

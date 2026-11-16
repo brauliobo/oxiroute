@@ -163,17 +163,31 @@ fn clipped(text: &str) -> String {
     text.chars().take(600).collect()
 }
 
+fn engine_planes() -> Vec<HttpDataPlane> {
+    let ring = oxiroute_epoll_h1::io_uring_support().is_ok();
+    [HttpDataPlane::Epoll]
+        .into_iter()
+        .chain(ring.then_some(HttpDataPlane::IoUring))
+        .collect()
+}
+
 async fn agree(cases: &[Case]) {
     let (theirs, _) = through(HttpDataPlane::Tokio, cases).await;
-    let (ours, served) = through(HttpDataPlane::Epoll, cases).await;
-    if oxiroute_epoll_h1::supported() {
-        assert_eq!(served, cases.len(), "requests the epoll plane served");
+    for plane in engine_planes() {
+        agree_on(plane, cases, &theirs).await;
     }
-    for ((case, theirs), ours) in cases.iter().zip(&theirs).zip(&ours) {
+}
+
+async fn agree_on(plane: HttpDataPlane, cases: &[Case], theirs: &[Vec<u8>]) {
+    let (ours, served) = through(plane, cases).await;
+    if oxiroute_epoll_h1::supported() {
+        assert_eq!(served, cases.len(), "requests the {plane:?} plane served");
+    }
+    for ((case, theirs), ours) in cases.iter().zip(theirs).zip(&ours) {
         let shown = text(ours);
         assert!(
             ours == theirs,
-            "{}: the planes answer differently\n  tokio: {:?}\n  epoll: {:?}",
+            "{}: the planes answer differently\n  tokio: {:?}\n  {plane:?}: {:?}",
             case.name,
             clipped(&text(theirs)),
             clipped(&shown),
@@ -613,16 +627,23 @@ async fn connection_options_and_start_lines_the_tokio_plane_refuses_are_a_bad_ga
 }
 
 #[tokio::test]
-async fn a_chunk_size_that_is_not_hex_is_a_bad_gateway_where_the_tokio_plane_closes_the_connection() {
+async fn a_chunk_size_that_is_not_hex_is_a_bad_gateway_where_the_tokio_plane_closes_the_connection()
+{
     let chunked = case(
         "chunk-size-that-is-not-hex",
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nok\r\n0\r\n\r\n",
         BAD_GATEWAY,
     );
     let (theirs, _) = through(HttpDataPlane::Tokio, std::slice::from_ref(&chunked)).await;
-    let (ours, _) = through(HttpDataPlane::Epoll, std::slice::from_ref(&chunked)).await;
     assert_eq!(text(&theirs[0]), "<EOF>");
-    assert!(text(&ours[0]).starts_with(BAD_GATEWAY), "{}", text(&ours[0]));
+    for plane in engine_planes() {
+        let (ours, _) = through(plane, std::slice::from_ref(&chunked)).await;
+        assert!(
+            text(&ours[0]).starts_with(BAD_GATEWAY),
+            "{}",
+            text(&ours[0])
+        );
+    }
 }
 
 #[tokio::test]
@@ -765,15 +786,17 @@ async fn a_head_that_arrives_in_pieces_is_read_whole_like_on_the_tokio_plane() {
             reply
         };
         let theirs = paced_answer(HttpDataPlane::Tokio, pieces_of(reply, size)).await;
-        let ours = paced_answer(HttpDataPlane::Epoll, pieces_of(reply, size)).await;
-        assert!(
-            ours == theirs,
-            "{name}: tokio {:?}, epoll {:?}",
-            clipped(&text(&theirs)),
-            clipped(&text(&ours))
-        );
-        assert!(text(&ours).starts_with("HTTP/1.1 200 OK\r\n"), "{name}");
-        assert!(text(&ours).contains("ok<OPEN>"), "{name}");
+        for plane in engine_planes() {
+            let ours = paced_answer(plane, pieces_of(reply, size)).await;
+            assert!(
+                ours == theirs,
+                "{name}: tokio {:?}, {plane:?} {:?}",
+                clipped(&text(&theirs)),
+                clipped(&text(&ours))
+            );
+            assert!(text(&ours).starts_with("HTTP/1.1 200 OK\r\n"), "{name}");
+            assert!(text(&ours).contains("ok<OPEN>"), "{name}");
+        }
     }
 }
 
@@ -782,7 +805,7 @@ const FINAL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 
 #[tokio::test]
 async fn an_interim_response_reaches_the_client_before_the_final_one_exists() {
-    for plane in [HttpDataPlane::Tokio, HttpDataPlane::Epoll] {
+    for plane in [HttpDataPlane::Tokio].into_iter().chain(engine_planes()) {
         let pause = Duration::from_millis(600);
         let origin = paced_origin(vec![(EARLY_HINTS, pause), (FINAL, Duration::ZERO)]).await;
         let wire = Wire::over(origin, logged(plane)).await;
@@ -812,7 +835,7 @@ async fn an_interim_response_reaches_the_client_before_the_final_one_exists() {
 
 #[tokio::test]
 async fn the_connection_serves_the_next_request_after_an_interim_and_a_final_response() {
-    for plane in [HttpDataPlane::Tokio, HttpDataPlane::Epoll] {
+    for plane in [HttpDataPlane::Tokio].into_iter().chain(engine_planes()) {
         let both: &'static [u8] = leaked([EARLY_HINTS, FINAL].concat());
         let origin = Origin::start(both).await;
         let wire = Wire::over(origin, logged(plane)).await;
