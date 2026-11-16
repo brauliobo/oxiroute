@@ -1,9 +1,11 @@
-use std::os::fd::OwnedFd;
+use std::{io, os::fd::OwnedFd};
 
+use oxiroute_uring::Released;
 use rustix::event::epoll::EventFlags;
 use rustls::ServerConnection;
 
 use super::{
+    driver::RingSocket,
     sys::{self, Read, Wrote},
     tls::{Finish, Progress, Session, Transport},
 };
@@ -43,8 +45,13 @@ impl Ready {
     }
 }
 
+pub(crate) enum Io {
+    Fd(OwnedFd),
+    Ring(RingSocket),
+}
+
 pub(crate) struct Link {
-    pub(crate) fd: OwnedFd,
+    pub(crate) io: Io,
     pub(crate) ready: Ready,
     pub(crate) interest: (bool, bool),
     tls: Option<Box<Session>>,
@@ -52,17 +59,17 @@ pub(crate) struct Link {
 }
 
 impl Link {
-    pub(crate) const fn new(fd: OwnedFd) -> Self {
-        Self::with(fd, None)
+    pub(crate) const fn new(io: Io) -> Self {
+        Self::with(io, None)
     }
 
     pub(crate) fn secure(fd: OwnedFd, session: Session) -> Self {
-        Self::with(fd, Some(Box::new(session)))
+        Self::with(Io::Fd(fd), Some(Box::new(session)))
     }
 
-    const fn with(fd: OwnedFd, tls: Option<Box<Session>>) -> Self {
+    const fn with(io: Io, tls: Option<Box<Session>>) -> Self {
         Self {
-            fd,
+            io,
             ready: Ready {
                 read: false,
                 write: false,
@@ -84,9 +91,23 @@ impl Link {
     }
 
     fn secured(&mut self) -> Option<(&mut Session, Transport<'_>)> {
-        let Self { fd, ready, tls, .. } = self;
-        tls.as_deref_mut()
-            .map(|tls| (tls, Transport::new(fd, ready)))
+        let Self {
+            io: Io::Fd(fd),
+            ready,
+            tls: Some(tls),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some((&mut **tls, Transport::new(fd, ready)))
+    }
+
+    pub(crate) fn fd(&self) -> &OwnedFd {
+        match &self.io {
+            Io::Fd(fd) => fd,
+            Io::Ring(_) => unreachable!("only a link on a raw descriptor is spliced"),
+        }
     }
 
     pub(crate) fn recv(&mut self, buf: &mut [u8]) -> Read {
@@ -96,7 +117,10 @@ impl Link {
         if !self.ready.read {
             return Read::Block;
         }
-        let read = sys::read(&self.fd, buf);
+        let read = match &self.io {
+            Io::Fd(fd) => sys::read(fd, buf),
+            Io::Ring(socket) => socket.read(buf),
+        };
         self.ready.after_read(read, buf.len());
         read
     }
@@ -105,7 +129,11 @@ impl Link {
         if !self.ready.read {
             return false;
         }
-        let pending = !matches!(sys::peek(&self.fd), Read::Block);
+        let peeked = match &self.io {
+            Io::Fd(fd) => sys::peek(fd),
+            Io::Ring(socket) => socket.peek(),
+        };
+        let pending = !matches!(peeked, Read::Block);
         self.ready.read = pending;
         pending
     }
@@ -121,7 +149,10 @@ impl Link {
         if !self.ready.write {
             return Wrote::Block;
         }
-        let wrote = sys::write(&self.fd, head, body);
+        let wrote = match &self.io {
+            Io::Fd(fd) => sys::write(fd, head, body),
+            Io::Ring(socket) => socket.write(head, body),
+        };
         self.ready.after_write(wrote, head.len() + body.len());
         wrote
     }
@@ -144,9 +175,23 @@ impl Link {
             .map_or(Finish::Done, |(tls, mut io)| tls.finish(&mut io));
         if finish == Finish::Done && !self.shut {
             self.shut = true;
-            sys::shutdown_write(&self.fd);
+            self.shutdown_write();
         }
         finish
+    }
+
+    pub(crate) fn shutdown_write(&self) {
+        match &self.io {
+            Io::Fd(fd) => sys::shutdown_write(fd),
+            Io::Ring(socket) => socket.shutdown_write(),
+        }
+    }
+
+    pub(crate) fn connect_succeeded(&self) -> bool {
+        match &self.io {
+            Io::Fd(fd) => sys::connect_result(fd),
+            Io::Ring(socket) => socket.connected(),
+        }
     }
 
     pub(crate) fn farewell(&mut self) {
@@ -155,8 +200,16 @@ impl Link {
         }
     }
 
-    pub(crate) fn into_parts(self) -> (OwnedFd, Option<Box<ServerConnection>>) {
-        (self.fd, self.tls.and_then(|tls| tls.into_connection()))
+    pub(crate) fn into_parts(self) -> io::Result<(Released, Option<Box<ServerConnection>>)> {
+        let tls = self.tls.and_then(|tls| tls.into_connection());
+        let released = match self.io {
+            Io::Fd(fd) => Released {
+                fd,
+                unread: Vec::new(),
+            },
+            Io::Ring(socket) => socket.release()?,
+        };
+        Ok((released, tls))
     }
 }
 
@@ -174,7 +227,7 @@ mod tests {
             None,
         )
         .expect("a socket pair");
-        let mut link = Link::new(near);
+        let mut link = Link::new(Io::Fd(near));
         link.ready.read = true;
         (link, far)
     }
@@ -194,7 +247,7 @@ mod tests {
         assert!(link.has_input());
         assert!(link.ready.read);
         let mut byte = [0_u8; 1];
-        assert_eq!(sys::read(&link.fd, &mut byte), Read::Data(1));
+        assert_eq!(sys::read(link.fd(), &mut byte), Read::Data(1));
     }
 
     #[test]

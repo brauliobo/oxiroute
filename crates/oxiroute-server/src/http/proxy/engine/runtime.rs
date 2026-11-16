@@ -2,7 +2,7 @@ use std::{io, os::fd::OwnedFd, sync::Arc};
 
 use async_trait::async_trait;
 use log::error;
-use oxiroute_epoll_h1::{Config, Engine, Listener, Scheduling, TlsRouter};
+use oxiroute_epoll_h1::{Config, Driver, Engine, Listener, Scheduling, TlsRouter};
 use pingora::{
     apps::{AcceptGate, ServerApp},
     server::{ListenFds, RuntimeOpts, ShutdownWatch},
@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use super::{handoff, service::EngineFront};
-use crate::{MAX_HTTP_ATTEMPTS, RuntimeGeneration, http::proxy::lane::LaneFront};
+use crate::{DataPlane, MAX_HTTP_ATTEMPTS, RuntimeGeneration, http::proxy::lane::LaneFront};
 
 #[derive(Clone)]
 pub struct EpollLane(Arc<LaneFront>);
@@ -34,6 +34,7 @@ pub struct EpollHttpService<A> {
     lane: Arc<LaneFront>,
     generation: Arc<RuntimeGeneration>,
     tls: Option<Arc<dyn TlsRouter>>,
+    driver: Driver,
 }
 
 impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
@@ -53,6 +54,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             lane: lane.0,
             generation,
             tls: None,
+            driver: Driver::Epoll,
         }
     }
 
@@ -65,11 +67,21 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
     fn engine_config(&self) -> Config {
         Config {
             threads: self.threads,
+            driver: self.driver,
             max_attempts: u8::try_from(MAX_HTTP_ATTEMPTS).expect("the attempt limit fits a byte"),
             drain: self.generation.retirement_deadline(),
             scheduling: self.scheduling.clone(),
             ..Config::default()
         }
+    }
+
+    #[must_use]
+    pub const fn on(mut self, plane: DataPlane) -> Self {
+        self.driver = match plane {
+            DataPlane::IoUring => Driver::IoUring,
+            DataPlane::Epoll | DataPlane::Tokio => Driver::Epoll,
+        };
+        self
     }
 
     async fn launch(&self, socket: OwnedFd, shutdown: &ShutdownWatch) -> io::Result<Engine> {

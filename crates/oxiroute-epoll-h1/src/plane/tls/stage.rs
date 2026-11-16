@@ -1,4 +1,4 @@
-use std::{os::fd::OwnedFd, sync::Arc};
+use std::{io, os::fd::OwnedFd, sync::Arc};
 
 use super::{Progress, Session};
 use crate::plane::{
@@ -6,17 +6,26 @@ use crate::plane::{
     link::Link,
     reactor::{Reactor, Step},
     service::Service,
+    slab::Token,
 };
 
 impl<S: Service> Reactor<S> {
-    pub(crate) fn open_link(&self, listener: usize, fd: OwnedFd) -> (Link, Stage) {
-        match &self.tls[listener] {
-            Some(router) => (
-                Link::secure(fd, Session::new(Arc::clone(router))),
-                Stage::Handshake,
-            ),
-            None => (Link::new(fd), Stage::Idle),
-        }
+    pub(crate) fn open_link(
+        &self,
+        listener: usize,
+        fd: OwnedFd,
+        token: Token,
+    ) -> io::Result<(Link, Stage)> {
+        let session = self.tls[listener]
+            .as_ref()
+            .map(|router| Session::new(Arc::clone(router)));
+        let stage = if session.is_some() {
+            Stage::Handshake
+        } else {
+            Stage::Idle
+        };
+        let link = self.driver.open(fd, token, session)?;
+        Ok((link, stage))
     }
 
     pub(crate) fn handshake(client: &mut Client<S>) -> Step {

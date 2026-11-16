@@ -66,6 +66,9 @@ jobs:
       - name: Verify control-plane OpenAPI artifact
         run: ./scripts/verify-control-plane-contract.sh
 
+      - name: Verify unsafe code and raw io_uring stay in their crate
+        run: ./scripts/verify/unsafe_containment.sh
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 

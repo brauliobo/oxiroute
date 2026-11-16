@@ -30,6 +30,7 @@ macro_rules! dispatch {
 
 pub(crate) fn control_at(level: Level, buf: &[u8], i: usize) -> usize {
     dispatch!(level, scalar::control_at(buf, i),
+        // SAFETY: the kernel needs only SSE2, which every x86_64 CPU has.
         sse2: unsafe { control_at_sse42(buf, i) },
         sse42: control_at_sse42(buf, i), avx2: control_at_avx2(buf, i), avx512: control_at_avx512(buf, i))
 }

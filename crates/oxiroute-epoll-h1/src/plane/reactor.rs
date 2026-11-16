@@ -9,19 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rustix::{
-    buffer::spare_capacity,
-    event::{
-        Timespec,
-        epoll::{self, Event, EventFlags},
-    },
-    io::Errno,
-};
+use rustix::event::epoll::EventFlags;
 
 use super::{
     client::Shared,
     clock::{Clock, Moment},
     config::{Config, Timeouts},
+    driver::{Driver, Polled},
     origin_head::Heads,
     pipes::Pipes,
     pool::BufferPool,
@@ -121,7 +115,7 @@ pub(crate) struct ListenerFd<S: Service> {
 
 pub(crate) struct Reactor<S: Service> {
     pub(crate) config: Config,
-    pub(crate) epoll: OwnedFd,
+    pub(crate) driver: Driver,
     pub(crate) slab: Slab<S>,
     pub(crate) wheel: Wheel,
     pub(crate) pool: IdlePool,
@@ -152,18 +146,23 @@ impl<S: Service> Reactor<S> {
         (wake, control): (Waker, Arc<Control>),
         plan: Option<Plan<S::Admission>>,
     ) -> io::Result<Self> {
-        let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
+        let driver = Driver::new(config)?;
+        let pipes = config
+            .splice
+            .filter(|_| driver.splices())
+            .map(Pipes::new)
+            .transpose()?;
         let clock = Clock::start();
         let now = Instant::now();
         let shared = listeners.iter().map(|listener| listener.shared).collect();
         let mut reactor = Self {
             config: config.clone(),
-            epoll,
+            driver,
             slab: Slab::new(),
             wheel: Wheel::new(config.tick),
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             buffers: BufferPool::default(),
-            pipes: config.splice.map(Pipes::new).transpose()?,
+            pipes,
             services: Vec::with_capacity(listeners.len()),
             tls: Vec::with_capacity(listeners.len()),
             response: Heads::new(),
@@ -195,7 +194,7 @@ impl<S: Service> Reactor<S> {
         let Some(Body::Wake(wake)) = self.slab.body(token) else {
             unreachable!("just inserted")
         };
-        sys::watch(&self.epoll, wake.fd(), token.to_u64(), EventFlags::IN)
+        self.driver.watch_wake(token, wake.fd())
     }
 
     fn add_listener(&mut self, index: usize, listener: ListenerFd<S>) -> io::Result<()> {
@@ -209,7 +208,10 @@ impl<S: Service> Reactor<S> {
         });
         self.listeners.push(token);
         self.listening.push(false);
-        Ok(())
+        let Some(Body::Listener { fd, .. }) = self.slab.body(token) else {
+            unreachable!("just inserted")
+        };
+        self.driver.add_listener(token, fd)
     }
 
     pub(crate) fn set_armed(&mut self, armed: bool) -> io::Result<()> {
@@ -241,31 +243,23 @@ impl<S: Service> Reactor<S> {
             let Some(Body::Listener { fd, .. }) = self.slab.body(*token) else {
                 continue;
             };
-            if serves {
-                let flags = EventFlags::IN | EventFlags::EXCLUSIVE;
-                sys::watch(&self.epoll, fd, token.to_u64(), flags)?;
-            } else {
-                sys::unwatch(&self.epoll, fd);
-            }
+            self.driver.set_listening(*token, fd, serves)?;
             self.listening[position] = serves;
         }
         Ok(())
     }
 
     pub(crate) fn run(mut self) -> io::Result<()> {
-        let mut events: Vec<Event> = Vec::with_capacity(self.config.events);
+        let mut events: Vec<Polled> = Vec::with_capacity(self.config.events);
         loop {
             events.clear();
             let timeout = self.timeout();
-            match epoll::wait(&self.epoll, spare_capacity(&mut events), timeout.as_ref()) {
-                Ok(_) | Err(Errno::INTR) => {}
-                Err(error) => return Err(error.into()),
-            }
+            self.driver.wait(timeout, &mut events)?;
             self.now = Instant::now();
             self.moment = self.clock.moment(self.now);
             self.begin_batch(events.len());
-            for event in &events {
-                self.dispatch(Token::from_u64(event.data.u64()), event.flags);
+            for event in events.drain(..) {
+                self.dispatch(event);
             }
             self.serve_ready();
             self.fire_timers();
@@ -276,16 +270,16 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    fn timeout(&self) -> Option<Timespec> {
+    fn timeout(&self) -> Option<Duration> {
         if self.backlogged() {
-            return Some(timespec(Duration::ZERO));
+            return Some(Duration::ZERO);
         }
         let wheel = self.wheel.next_wake(self.moment);
         let drain = self
             .drain_deadline
             .map(|at| at.saturating_duration_since(self.now));
         let wait = [wheel, drain].into_iter().flatten().min()?;
-        Some(timespec(wait.max(Duration::from_millis(1))))
+        Some(wait.max(Duration::from_millis(1)))
     }
 
     fn finished(&mut self) -> bool {
@@ -298,7 +292,14 @@ impl<S: Service> Reactor<S> {
         self.drain_deadline.is_some() && self.live == 0
     }
 
-    fn dispatch(&mut self, token: Token, flags: EventFlags) {
+    fn dispatch(&mut self, event: Polled) {
+        match event {
+            Polled::Ready(token, flags) => self.ready(token, flags),
+            Polled::Accepted(token, fd, peer) => self.accepted(token, fd, peer),
+        }
+    }
+
+    fn ready(&mut self, token: Token, flags: EventFlags) {
         match self.slab.body(token) {
             Some(Body::Client(_)) => self.client_ready(token, flags),
             Some(Body::Upstream(_)) => self.upstream_event(token, flags),
@@ -306,8 +307,8 @@ impl<S: Service> Reactor<S> {
                 let index = *index;
                 self.accept(token, index);
             }
-            Some(Body::Wake(_)) => self.woken(),
-            Some(Body::Inbox(_)) => self.arrived(),
+            Some(Body::Wake(_)) => self.woken(token),
+            Some(Body::Inbox(_)) => self.arrived(token),
             Some(Body::Free | Body::Busy) | None => {}
         }
     }
@@ -323,20 +324,14 @@ impl<S: Service> Reactor<S> {
         self.expired = expired;
     }
 
-    fn woken(&mut self) {
+    fn woken(&mut self, token: Token) {
         self.wake.settle();
+        self.driver.wake_consumed(token);
         match self.control.state() {
             DRAINING | STOPPING => self.begin_drain(),
             _ if self.set_armed(self.control.accepting()).is_err() => self.control.raise(STOPPING),
             _ => {}
         }
         self.cancel_requested();
-    }
-}
-
-fn timespec(duration: Duration) -> Timespec {
-    Timespec {
-        tv_sec: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-        tv_nsec: i64::from(duration.subsec_nanos()),
     }
 }

@@ -3,6 +3,7 @@ mod chunked;
 mod client;
 mod clock;
 mod config;
+mod driver;
 mod engine;
 mod events;
 mod finish;
@@ -25,7 +26,7 @@ mod upstream;
 mod wake;
 mod wheel;
 
-pub use config::{Config, Splice, Timeouts, Trigger};
+pub use config::{Config, Driver, Splice, Timeouts, Trigger};
 pub use engine::{Engine, Listener};
 pub use oxiroute_aged_order::Age;
 pub use oxiroute_worker_scaling::{Policy, Stats as ScalingStats};

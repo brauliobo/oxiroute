@@ -8,6 +8,26 @@ pub enum Trigger {
     Level,
 }
 
+/// How an engine thread waits for and performs socket I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Driver {
+    /// Readiness notification (`epoll`) and non-blocking system calls.
+    Epoll,
+    /// Completion-based `io_uring` with owned buffers; [`Config::uring`] tunes it. It serves plain HTTP with the
+    /// kernel's spread of connections: the engine refuses TLS termination and per-worker scheduling for it, and
+    /// never splices.
+    IoUring,
+}
+
+impl Driver {
+    pub(crate) const fn thread_prefix(self) -> &'static str {
+        match self {
+            Self::Epoll => "epoll",
+            Self::IoUring => "uring",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Splice {
     pub threshold: u64,
@@ -39,6 +59,8 @@ pub struct Config {
     pub linger: Duration,
     pub max_attempts: u8,
     pub trigger: Trigger,
+    pub driver: Driver,
+    pub uring: oxiroute_uring::Config,
     pub scheduling: Option<Scheduling>,
     pub splice: Option<Splice>,
 }
@@ -58,6 +80,8 @@ impl Default for Config {
             linger: Duration::from_secs(1),
             max_attempts: 4,
             trigger: Trigger::Edge,
+            driver: Driver::Epoll,
+            uring: oxiroute_uring::Config::default(),
             scheduling: None,
             splice: Some(Splice::default()),
         }

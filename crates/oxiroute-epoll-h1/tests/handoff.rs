@@ -8,7 +8,10 @@ use std::{
     time::Duration,
 };
 
-use support::{Fixture, eventually};
+use oxiroute_epoll_h1::{Config, Timeouts};
+use support::{Fixture, Knobs, eventually, test_config};
+
+const CHUNK: usize = 16 * 1024;
 
 fn handed_off(fixture: &Fixture) -> oxiroute_epoll_h1::Handoff<support::Guard> {
     fixture
@@ -77,6 +80,70 @@ fn a_head_over_the_limit_is_handed_off_with_everything_read() {
     let handoff = handed_off(&fixture);
     assert!(handoff.prefix.len() >= 8 * 1024);
     assert!(request.as_bytes().starts_with(&handoff.prefix));
+}
+
+fn chunked_upload(head_padding: usize, body: usize) -> Vec<u8> {
+    let mut request = format!(
+        "POST /x HTTP/1.1\r\nHost: test.example\r\nTransfer-Encoding: chunked\r\nX-Pad: {}\r\n\r\n{body:x}\r\n",
+        "a".repeat(head_padding)
+    )
+    .into_bytes();
+    request.extend(std::iter::repeat_n(b'b', body));
+    request.extend_from_slice(b"\r\n0\r\n\r\n");
+    request
+}
+
+fn what_the_tokio_path_receives(fixture: &Fixture, request: &[u8]) -> (usize, Vec<u8>) {
+    let mut wire = fixture.wire();
+    wire.send(request);
+    let mut handoff = handed_off(fixture);
+    let prefix = handoff.prefix.len();
+    let mut received = handoff.prefix;
+    let mut rest = vec![0_u8; request.len() - prefix];
+    handoff.stream.set_nonblocking(false).expect("blocking");
+    handoff
+        .stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    handoff
+        .stream
+        .read_exact(&mut rest)
+        .expect("the rest of the request stays on the socket");
+    received.extend(rest);
+    (prefix, received)
+}
+
+#[test]
+fn a_handed_off_request_with_a_body_over_a_chunk_arrives_whole() {
+    let fixture = Fixture::start();
+    for body in [CHUNK - 1, CHUNK, CHUNK + 1, 4 * CHUNK] {
+        let request = chunked_upload(0, body);
+        let (_, received) = what_the_tokio_path_receives(&fixture, &request);
+        assert!(
+            received == request,
+            "{body} body bytes were not handed off intact"
+        );
+    }
+}
+
+#[test]
+fn a_prefix_over_a_chunk_is_handed_off_byte_for_byte() {
+    let config = Config {
+        head_limit: 64 * 1024,
+        request_buffer: 64 * 1024,
+        ..test_config()
+    };
+    let fixture = Fixture::with(config, Timeouts::default(), Knobs::default());
+    let request = chunked_upload(CHUNK + 4_000, 3 * CHUNK);
+    let (prefix, received) = what_the_tokio_path_receives(&fixture, &request);
+    assert!(
+        prefix > CHUNK,
+        "the engine read {prefix} bytes before the handoff"
+    );
+    assert!(
+        received == request,
+        "the handed-off request differs from the one sent"
+    );
 }
 
 #[test]

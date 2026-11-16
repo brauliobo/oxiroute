@@ -145,7 +145,7 @@ fn drain(piped: &mut Piped, sent: &mut u64, client: &mut Link) -> Move {
     if !client.ready.write {
         return Move::ClientBlocked;
     }
-    match piped.pipe.drain(&client.fd) {
+    match piped.pipe.drain(client.fd()) {
         Wrote::Bytes(count) => {
             *sent += count as u64;
             client.ready.write = piped.pipe.pending() == 0;
@@ -163,7 +163,7 @@ fn fill(piped: &mut Piped, origin: &mut Link) -> Move {
     if !origin.ready.read {
         return Move::OriginBlocked;
     }
-    match piped.pipe.fill(&origin.fd, piped.left) {
+    match piped.pipe.fill(origin.fd(), piped.left) {
         Read::Data(count) => {
             piped.left -= count as u64;
             Move::Filled

@@ -708,7 +708,7 @@ fn serve_generation(
                 #[cfg(target_os = "linux")]
                 let epoll_lane = policy
                     .epoll_lane()
-                    .filter(|_| data_plane == DataPlane::Epoll);
+                    .filter(|_| data_plane != DataPlane::Tokio);
                 let app = MonitoredHttpApp::new(
                     HttpListenerApp::new(policy, listener_tls.as_deref())
                         .with_generation(Arc::clone(generation)),
@@ -724,7 +724,8 @@ fn serve_generation(
                         app,
                         lane,
                         Arc::clone(generation),
-                    );
+                    )
+                    .on(data_plane);
                     if let Some(profile) = listener_tls.as_deref() {
                         service = service.terminating_tls(profile.epoll_router()?);
                     }

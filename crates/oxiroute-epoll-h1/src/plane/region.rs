@@ -76,7 +76,7 @@ mod tests {
         let sender = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
         let (receiver, _) = listener.accept().expect("accept");
         receiver.set_nonblocking(true).expect("nonblocking");
-        let mut link = Link::new(OwnedFd::from(receiver));
+        let mut link = Link::new(crate::plane::link::Io::Fd(OwnedFd::from(receiver)));
         link.ready.read = true;
         (sender, link)
     }
