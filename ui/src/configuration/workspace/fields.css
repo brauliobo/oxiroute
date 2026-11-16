@@ -1,0 +1,114 @@
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.field {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 8px;
+  color: #b8bfb0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field small {
+  color: #747c6e;
+  font-size: 0.68rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.45;
+  text-transform: none;
+}
+
+.field input,
+.field select,
+.mobile-object-nav {
+  width: 100%;
+  min-width: 0;
+  min-height: 41px;
+  padding: 9px 11px;
+  border: 1px solid #42493c;
+  border-radius: 0;
+  color: #eef2e7;
+  background: #0d100c;
+  font: 0.78rem "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  text-transform: none;
+}
+
+.route-list {
+  min-width: 0;
+  margin: 28px 0 0;
+  padding: 8px 20px 20px;
+  border: 1px solid #34392f;
+  background: rgb(12 15 11 / 54%);
+}
+
+.route-list legend {
+  padding: 0 8px;
+  color: #b6ff51;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.enable-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  color: #cbd2c4;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.enable-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: #b6ff51;
+}
+
+.route-heading {
+  margin-bottom: 14px;
+}
+
+.route-card {
+  padding: 18px;
+  border: 1px solid #34392f;
+  background: #11140f;
+}
+
+.route-card + .route-card {
+  margin-top: 12px;
+}
+
+.route-card-heading {
+  margin-bottom: 16px;
+}
+
+.route-card-heading strong {
+  font-size: 0.8rem;
+}
+
+.empty-list {
+  color: #81897a;
+  font-size: 0.78rem;
+}
+
+@media (max-width: 900px) {
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 440px) {
+  .route-card {
+    padding-inline: 15px;
+  }
+}

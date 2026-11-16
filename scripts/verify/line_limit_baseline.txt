@@ -7,7 +7,3 @@
 2104 crates/oxiroute-server/tests/process_management.rs
 1627 crates/oxiroute-server/tests/service_plan.rs
 2547 crates/oxiroute-server/tests/wire_tls_interop.rs
-2017 ui/src/App.vue
-1999 ui/src/ConfigurationWorkspace.test.ts
-1793 ui/src/ConfigurationWorkspace.vue
-3453 ui/src/api/endpoints.ts
