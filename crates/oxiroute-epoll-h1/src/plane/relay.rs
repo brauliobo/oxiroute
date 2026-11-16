@@ -217,7 +217,6 @@ impl<S: Service> Reactor<S> {
             request_is_head: flow.is_head,
         };
         service.render_response(exchange, &response, self.now, down_head);
-        flow.status = Some(head.status);
         let leftover = Window::new(head.head_len as usize, client.resp_len);
         let mut relay = Relay {
             mode,
@@ -232,6 +231,7 @@ impl<S: Service> Reactor<S> {
             leftover,
             &mut flow.sent,
         )?;
+        flow.status = Some(head.status);
         flow.down = Down::Relaying(relay);
         let limit = flow.timeouts.map(|timeouts| timeouts.body);
         self.wait_for(token, client, Wait::Body, limit);

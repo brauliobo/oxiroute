@@ -249,6 +249,12 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
         }
         "closed" => false,
         "garbage" => write(stream, b"HTTP/1.1 20x Broken\r\n\r\n") && false,
+        "badchunk" => {
+            write(
+                stream,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n",
+            ) && false
+        }
         "hugehead" => {
             let head = format!(
                 "HTTP/1.1 200 OK\r\nX-Big: {}\r\nContent-Length: 0\r\n\r\n",

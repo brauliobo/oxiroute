@@ -26,6 +26,7 @@ fn origin_failures_are_answered_with_a_502_and_the_client_connection_ends() {
     for (path, failure) in [
         ("/closed", Failure::UpstreamClosed),
         ("/garbage", Failure::BadResponse),
+        ("/badchunk", Failure::BadResponse),
         ("/hugehead", Failure::ResponseHeadTooLarge),
     ] {
         let mut wire = fixture.wire();

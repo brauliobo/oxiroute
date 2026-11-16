@@ -184,6 +184,7 @@ impl Exchange {
     }
 
     pub(super) fn finish(mut self, front: &LaneFront, outcome: &Outcome) {
+        self.ctx.trace.connect = self.ctx.trace.connect.or(outcome.connect);
         if let Some(failure) = outcome.failure {
             self.settle(failure, Self::unreplayable(outcome.status));
         }

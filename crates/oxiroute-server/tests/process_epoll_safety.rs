@@ -23,7 +23,8 @@ use std::{
 
 use http_support::http_request;
 use oxiroute_config::{
-    ConfigDraft, DnsResolutionPolicy, HttpDataPlane, Management, UpstreamAlgorithm, UpstreamServer,
+    AccessLogPolicy, ConfigDraft, DnsResolutionPolicy, HttpDataPlane, Management,
+    UpstreamAlgorithm, UpstreamServer,
 };
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rustix::{
@@ -36,7 +37,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::Notify,
     task::JoinHandle,
-    time::timeout,
+    time::{sleep, timeout},
 };
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
@@ -589,3 +590,53 @@ on_both_planes!(a_response_that_started_is_left_running_by_an_evacuation);
 async fn forcing_an_evacuation_resets_a_response_that_started_at_once_on_epoll() {
     forcing_an_evacuation_resets_a_response_that_started(HttpDataPlane::Epoll).await;
 }
+
+#[tokio::test]
+async fn a_response_with_a_malformed_first_chunk_is_answered_with_a_502() {
+    let plane = HttpDataPlane::Epoll;
+    let origin =
+        replying_origin(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbroken\r\n")
+            .await;
+    let proxy = Proxy::start(origin.address, plane, |_| {}).await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    let answer = read_to_end(&mut client).await;
+    assert!(answer.starts_with("HTTP/1.1 502"), "{answer:?}");
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+async fn access_record(path: &std::path::Path) -> Value {
+    timeout(STEP, async {
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if let Some(line) = text.lines().next() {
+                return serde_json::from_str(line).expect("a JSON access line");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the access record was written")
+}
+
+async fn the_connect_time_is_logged_when_the_origin_closes_before_answering(plane: HttpDataPlane) {
+    let origin = Scripted::start(|mut stream| async move {
+        read_head(&mut stream).await;
+    })
+    .await;
+    let directory = tempfile::tempdir().expect("log directory");
+    let log = directory.path().join("access.log");
+    let path = log.clone();
+    let proxy = Proxy::start(origin.address, plane, move |config| {
+        config.http_services[0].access_log = Some(AccessLogPolicy::File { path });
+    })
+    .await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    let answer = read_to_end(&mut client).await;
+    assert!(answer.starts_with("HTTP/1.1 502"), "{answer:?}");
+    let record = access_record(&log).await;
+    assert!(!record["connectMs"].is_null(), "{record}");
+}
+
+on_both_planes!(the_connect_time_is_logged_when_the_origin_closes_before_answering);
