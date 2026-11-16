@@ -273,11 +273,9 @@ pub(super) fn compile_listener(
         h2_windows: listener.h2_windows,
         proxy_protocol: listener.proxy_protocol,
         data_plane: match &kind {
-            ServiceKind::Http(plan) | ServiceKind::Http3(plan) => {
-                listener
-                    .plane
-                    .select(plan.serves_on_engine(), terminable(tls.as_deref()))
-            }
+            ServiceKind::Http(plan) | ServiceKind::Http3(plan) => listener
+                .plane
+                .select(plan.serves_on_engine(), terminable(tls.as_deref())),
             _ => PlaneSelection::tokio(),
         },
         kind,

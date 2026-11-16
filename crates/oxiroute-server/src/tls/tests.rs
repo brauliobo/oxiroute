@@ -36,8 +36,8 @@ use openssl::{
 use oxiroute_config::{
     AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, ConfigDraft,
     HttpVersion, HttpVersionPolicy, KtlsMode, SelfSignedKeyType, TlsBackend, TlsClientAuthMode,
-    TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamTls, ValidatedConfig,
+    TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm,
+    UpstreamEndpoint, UpstreamPool, UpstreamTls, ValidatedConfig,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;

@@ -149,7 +149,11 @@ fn ssl_dhparam_maps_to_the_dh_parameters_path_and_notes_the_openssl_backend() {
     assert_eq!(policy(&report).dh_parameters_path, Some(DHPARAM.into()));
     assert_eq!(policy(&report).cipher_list, None);
     assert_eq!(warning_codes(&report), ["W_TLS_BACKEND_OPENSSL"]);
-    assert!(warnings(&report)[0].message().contains("dh_parameters_path"));
+    assert!(
+        warnings(&report)[0]
+            .message()
+            .contains("dh_parameters_path")
+    );
 }
 
 #[test]
