@@ -1,5 +1,3 @@
-#[path = "support/ports.rs"]
-mod ports_support;
 use std::{
     io,
     net::SocketAddr,
@@ -24,6 +22,10 @@ use tokio::{
     sync::{oneshot, watch},
     time::{sleep, timeout},
 };
+
+use crate::ports_support;
+
+mod splice;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
