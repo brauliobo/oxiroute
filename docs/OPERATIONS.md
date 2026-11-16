@@ -190,10 +190,21 @@ sudo modprobe tls                                   # now
 grep -E 'TlsTxSw|TlsCurrTxSw|TlsDecryptError' /proc/net/tls_stat   # converted since boot, alive now
 ```
 
-Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend (the default backend, see below), `"auto"` behaves exactly as
+Without the module, or with an older kernel or an unsupported cipher, `"auto"` behaves exactly as
 `"off"`; the log of the profile says once (info) whether kernel TLS is active or why not. Set `ktls = "off"` to keep
 all TLS in user space. A converted connection that then serves small responses costs 1% to 4% more instructions per
 request; the break-even is one large file per 200 small requests.
+
+The `rustls` backend converts TLS 1.2 and TLS 1.3 connections (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305) and the
+kernel then encrypts and decrypts both directions. A connection stays in user space when the peer has sent plaintext
+that was not read yet, half a record, or the next request ahead of the conversion; a later large file asks again.
+
+The kernel does not change keys by itself, so the server does it for converted connections: a TLS 1.3 `KeyUpdate` from
+the client is followed (and answered when it asks for an answer), and the key the server sends with rolls with a
+`KeyUpdate` after 2^23 records, half of the AES-GCM confidentiality limit of RFC 8446. TLS 1.3 connections are
+converted only when the kernel accepts a second key on a running connection (Linux 6.14 and newer, checked at start);
+older kernels still convert TLS 1.2 and keep TLS 1.3 in user space. A TLS 1.2 connection cannot change keys: it ends at
+2^24 records with AES-GCM, as it does in user space, and a renegotiation request from the client ends it.
 
 ## TLS backend
 
@@ -205,8 +216,7 @@ stops the start or reload with an error naming the setting. A connection never c
 fewer instructions per full handshake and 3% to 14% fewer per keep-alive or HTTP/2 request, and about half the memory of
 an idle TLS connection.
 
-rustls offers the TLS 1.3 and ECDHE AEAD suites only and has no kernel TLS (`ktls = "auto"` stays in user space), no
-FIPS module and no finite-field DHE. A profile that used the OpenSSL default list therefore no longer offers its
+rustls offers the TLS 1.3 and ECDHE AEAD suites only and has no FIPS module and no finite-field DHE. A profile that used the OpenSSL default list therefore no longer offers its
 DHE-RSA suites once it runs on rustls; clients that connect with
 only those fail the handshake.
 

@@ -1,6 +1,5 @@
 use std::{
-    cell::Cell,
-    io::{self, BufRead, Write},
+    io,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll, ready},
@@ -16,46 +15,48 @@ use pingora::protocols::{
     tls::{ALPN, SslDigest},
 };
 use rustls::ServerConnection;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    net::TcpStream,
+};
 
 use crate::{
     digest::{selected_alpn, ssl_digest},
+    kernel::socket::{Failure, KernelIo},
+    kernel::{self, Offer},
     pump::Pump,
+    records::Records,
+    user_tls::UserTls,
 };
 
-/// Plaintext held back for the next record when a plain write is small: the size of the accepted socket's own write
-/// buffer, so data that used to wait for a flush still waits for one and data that used to leave at once still does.
-const COALESCE_PLAIN_LIMIT: usize = 1460;
-/// Vectored writes (HTTP/2 frames, chunked bodies) may leave pending up to a whole TLS record: their writers flush
-/// right after, and their bytes are packed into full records.
-const COALESCE_VECTORED_LIMIT: usize = 16 * 1024;
-/// A drained buffer larger than this goes back to the thread's spare instead of staying with the connection.
-const COALESCE_RETAINED_CAPACITY: usize = 2048;
-
-thread_local! {
-    /// The record-sized buffer of the connections of this thread that are writing a body: a connection that went idle
-    /// keeps none.
-    static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+/// Who encrypts the records of a connection.
+#[derive(Debug)]
+enum Tls {
+    User(Box<UserTls>),
+    Kernel(Box<KernelIo>),
+    Failed(Failure),
 }
 
 /// An established server-side TLS connection.
 #[derive(Debug)]
 pub struct TlsStream {
-    pump: Pump,
+    io: L4Stream,
+    tls: Tls,
     digest: Arc<SslDigest>,
     alpn: Option<ALPN>,
     timing: TimingDigest,
-    /// Plaintext not yet handed to rustls; the next flush, or the next write that does not fit, encrypts it.
-    pending: Vec<u8>,
-    sent: usize,
-    close_sent: bool,
     /// Plaintext another reader took from this connection before it was handed over: it is read again first.
     replay: Vec<u8>,
     replayed: usize,
 }
 
 impl TlsStream {
-    pub(crate) fn established(pump: Pump, handshake_started: Instant) -> Self {
+    pub(crate) fn established(
+        io: L4Stream,
+        pump: Pump,
+        offer: Option<Offer>,
+        handshake_started: Instant,
+    ) -> Self {
         let digest = Arc::new(ssl_digest(&pump.conn));
         let alpn = selected_alpn(&pump.conn);
         let timing = TimingDigest {
@@ -64,13 +65,11 @@ impl TlsStream {
             offload_wait_duration: None,
         };
         Self {
-            pump,
+            io,
+            tls: Tls::User(Box::new(UserTls::new(pump, offer))),
             digest,
             alpn,
             timing,
-            pending: Vec::new(),
-            sent: 0,
-            close_sent: false,
             replay: Vec::new(),
             replayed: 0,
         }
@@ -80,7 +79,7 @@ impl TlsStream {
     /// already read from it and the next reads return it first.
     #[must_use]
     pub fn resume(io: L4Stream, conn: ServerConnection, replay: Vec<u8>) -> Self {
-        let mut stream = Self::established(Pump::new(io, conn), Instant::now());
+        let mut stream = Self::established(io, Pump::new(conn, Records::default()), None, Instant::now());
         stream.replay = replay;
         stream
     }
@@ -101,75 +100,51 @@ impl TlsStream {
     }
 
     /// The rustls connection, for what a handshake leaves to read (negotiated suite, resumption, peer certificates).
+    /// A connection the kernel took over has none left.
     #[must_use]
-    pub const fn connection(&self) -> &ServerConnection {
-        &self.pump.conn
-    }
-
-    /// Splits the stream into its transport and its rustls state, for what takes the connection over (kernel TLS needs
-    /// the connection by value to extract its secrets). Plaintext a write still holds is lost: flush first.
-    #[must_use]
-    pub fn into_parts(self) -> (L4Stream, ServerConnection) {
-        (self.pump.io, self.pump.conn)
-    }
-
-    /// Moves plaintext into rustls and its records into the transport's write buffer, without flushing the socket.
-    fn poll_encrypt_pending(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        while self.sent < self.pending.len() {
-            let taken = self.pump.conn.writer().write(&self.pending[self.sent..])?;
-            if taken == 0 {
-                ready!(self.pump.poll_drain(context))?;
-            }
-            self.sent += taken;
+    pub const fn connection(&self) -> Option<&ServerConnection> {
+        match &self.tls {
+            Tls::User(user) => Some(user.connection()),
+            Tls::Kernel(_) | Tls::Failed(_) => None,
         }
-        self.sent = 0;
-        self.pending.clear();
-        if self.pending.capacity() > COALESCE_RETAINED_CAPACITY {
-            SPARE.set(std::mem::take(&mut self.pending));
-        }
-        Poll::Ready(Ok(()))
     }
 
-    /// Encrypts `buffer` as records of its own. Whatever the socket does not take yet stays queued in rustls until the
-    /// next write or flush.
-    fn poll_write_records(
-        &mut self,
-        context: &mut Context<'_>,
-        buffer: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let taken = loop {
-            match self.pump.conn.writer().write(buffer)? {
-                0 if !buffer.is_empty() => ready!(self.pump.poll_drain(context))?,
-                taken => break taken,
+    /// Converts the connection to kernel TLS, once everything that ties it to user space is gone. It stays in user
+    /// space (`false`) when the kernel was not offered or cannot run the negotiated suite, or when the peer has sent
+    /// plaintext, half a record or the next request that was not consumed yet. A conversion the kernel refuses after
+    /// rustls handed the keys over ends the connection: its next read or write fails.
+    fn offload(&mut self, suite: kernel::Suite) -> bool {
+        match std::mem::replace(&mut self.tls, Tls::Failed(Failure::default())) {
+            Tls::User(user) => self.convert(user, suite),
+            other => {
+                self.tls = other;
+                false
             }
+        }
+    }
+
+    fn convert(&mut self, mut user: Box<UserTls>, suite: kernel::Suite) -> bool {
+        let Some(socket) = self.io.tcp_socket() else {
+            self.tls = Tls::User(user);
+            return false;
         };
-        if let Poll::Ready(Err(error)) = self.pump.poll_drain(context) {
-            return Poll::Ready(Err(error));
+        if let Err(error) = kernel::attach(socket) {
+            log::warn!("kernel TLS stays off for a connection: {error}");
+            user.keep_in_user_space();
+            self.tls = Tls::User(user);
+            return false;
         }
-        Poll::Ready(Ok(taken))
-    }
-
-    /// Moves as much of `buffers` as fits the record being filled into `pending`.
-    fn poll_write_vectored_pending(
-        &mut self,
-        context: &mut Context<'_>,
-        buffers: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        if self.pending.len() >= COALESCE_VECTORED_LIMIT {
-            ready!(self.poll_encrypt_pending(context))?;
+        match user.into_kernel(socket, suite) {
+            Ok(kernel) => {
+                self.tls = Tls::Kernel(Box::new(kernel));
+                true
+            }
+            Err(failure) => {
+                log::warn!("{}", failure.error());
+                self.tls = Tls::Failed(failure);
+                false
+            }
         }
-        if self.pending.capacity() == 0 {
-            self.pending = SPARE.take();
-        }
-        let room = COALESCE_VECTORED_LIMIT - self.pending.len();
-        self.pending.reserve(room);
-        let mut taken = 0;
-        for buffer in buffers {
-            let part = &buffer[..buffer.len().min(room - taken)];
-            self.pending.extend_from_slice(part);
-            taken += part.len();
-        }
-        Poll::Ready(Ok(taken))
     }
 }
 
@@ -183,33 +158,10 @@ impl AsyncRead for TlsStream {
         if buffer.remaining() == 0 || this.read_replay(buffer) {
             return Poll::Ready(Ok(()));
         }
-        loop {
-            // Copies only the plaintext that is there: reading into `initialize_unfilled` would zero the caller's whole
-            // spare capacity (a body buffer is 16 to 64 KiB) on every read and make it resident.
-            let mut reader = this.pump.conn.reader();
-            match reader.fill_buf() {
-                Ok(plaintext) => {
-                    let count = plaintext.len().min(buffer.remaining());
-                    buffer.put_slice(&plaintext[..count]);
-                    reader.consume(count);
-                    return Poll::Ready(Ok(()));
-                }
-                // The peer closed without a close_notify: the stream ends the way a closed connection does.
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                    return Poll::Ready(Ok(()));
-                }
-                Err(error) if error.kind() != io::ErrorKind::WouldBlock => {
-                    return Poll::Ready(Err(error));
-                }
-                Err(_) => {}
-            }
-            if !ready!(this.pump.poll_pull(context))? {
-                return Poll::Ready(Ok(()));
-            }
-            // What rustls answers on its own (key updates, alerts) leaves with the next write or flush at the latest.
-            if let Poll::Ready(Err(error)) = this.pump.poll_drain(context) {
-                return Poll::Ready(Err(error));
-            }
+        match &mut this.tls {
+            Tls::User(user) => user.poll_read(&mut this.io, context, buffer),
+            Tls::Kernel(kernel) => kernel.poll_read(&this.io, context, buffer),
+            Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
         }
     }
 }
@@ -221,14 +173,11 @@ impl AsyncWrite for TlsStream {
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        if this.pending.len() + buffer.len() > COALESCE_PLAIN_LIMIT {
-            ready!(this.poll_encrypt_pending(context))?;
+        match &mut this.tls {
+            Tls::User(user) => user.poll_write(&mut this.io, context, buffer),
+            Tls::Kernel(kernel) => kernel.poll_write(&mut this.io, context, buffer),
+            Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
         }
-        if buffer.len() <= COALESCE_PLAIN_LIMIT {
-            this.pending.extend_from_slice(buffer);
-            return Poll::Ready(Ok(buffer.len()));
-        }
-        this.poll_write_records(context, buffer)
     }
 
     fn poll_write_vectored(
@@ -236,7 +185,12 @@ impl AsyncWrite for TlsStream {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        self.get_mut().poll_write_vectored_pending(context, buffers)
+        let this = self.get_mut();
+        match &mut this.tls {
+            Tls::User(user) => user.poll_write_vectored(&mut this.io, context, buffers),
+            Tls::Kernel(kernel) => kernel.poll_write_vectored(&mut this.io, context, buffers),
+            Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -245,26 +199,26 @@ impl AsyncWrite for TlsStream {
 
     fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        ready!(this.poll_encrypt_pending(context))?;
-        ready!(this.pump.poll_drain(context))?;
-        Pin::new(&mut this.pump.io).poll_flush(context)
+        match &mut this.tls {
+            Tls::User(user) => user.poll_flush(&mut this.io, context),
+            Tls::Kernel(_) => KernelIo::poll_flush(&mut this.io, context),
+            Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        ready!(this.poll_encrypt_pending(context))?;
-        if !this.close_sent {
-            this.pump.conn.send_close_notify();
-            this.close_sent = true;
+        match &mut this.tls {
+            Tls::User(user) => user.poll_shutdown(&mut this.io, context),
+            Tls::Kernel(kernel) => kernel.poll_shutdown(&mut this.io, context),
+            Tls::Failed(_) => Pin::new(&mut this.io).poll_shutdown(context),
         }
-        ready!(this.pump.poll_drain(context))?;
-        Pin::new(&mut this.pump.io).poll_shutdown(context)
     }
 }
 
 impl UniqueID for TlsStream {
     fn id(&self) -> UniqueIDType {
-        self.pump.io.id()
+        self.io.id()
     }
 }
 
@@ -276,37 +230,62 @@ impl Ssl for TlsStream {
     fn selected_alpn_proto(&self) -> Option<ALPN> {
         self.alpn.clone()
     }
+
+    fn poll_kernel_tx(&mut self, context: &mut Context<'_>, bytes: u64) -> Poll<bool> {
+        if let Tls::User(user) = &mut self.tls {
+            let Some(suite) = user.kernel_suite(&self.io) else {
+                return Poll::Ready(false);
+            };
+            if ready!(user.poll_flush(&mut self.io, context)).is_err() || !self.offload(suite) {
+                return Poll::Ready(false);
+            }
+        }
+        let Tls::Kernel(kernel) = &mut self.tls else {
+            return Poll::Ready(false);
+        };
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        kernel
+            .poll_sendfile_budget(&self.io, context, bytes)
+            .map(|fits| fits.unwrap_or(false))
+    }
+
+    fn kernel_tx_socket(&self) -> Option<&TcpStream> {
+        match self.tls {
+            Tls::Kernel(_) => self.io.tcp_socket(),
+            Tls::User(_) | Tls::Failed(_) => None,
+        }
+    }
 }
 
 impl GetTimingDigest for TlsStream {
     fn get_timing_digest(&self) -> Vec<Option<TimingDigest>> {
-        let mut digests = self.pump.io.get_timing_digest();
+        let mut digests = self.io.get_timing_digest();
         digests.push(Some(self.timing.clone()));
         digests
     }
 
     fn get_read_pending_time(&self) -> Duration {
-        self.pump.io.get_read_pending_time()
+        self.io.get_read_pending_time()
     }
 
     fn get_write_pending_time(&self) -> Duration {
-        self.pump.io.get_write_pending_time()
+        self.io.get_write_pending_time()
     }
 }
 
 impl GetProxyDigest for TlsStream {
     fn get_proxy_digest(&self) -> Option<Arc<ProxyDigest>> {
-        self.pump.io.get_proxy_digest()
+        self.io.get_proxy_digest()
     }
 }
 
 impl GetSocketDigest for TlsStream {
     fn get_socket_digest(&self) -> Option<Arc<SocketDigest>> {
-        self.pump.io.get_socket_digest()
+        self.io.get_socket_digest()
     }
 
     fn set_socket_digest(&mut self, socket_digest: SocketDigest) {
-        self.pump.io.set_socket_digest(socket_digest);
+        self.io.set_socket_digest(socket_digest);
     }
 }
 
@@ -314,20 +293,16 @@ impl GetSocketDigest for TlsStream {
 impl Peek for TlsStream {
     /// A TLS connection ends with its transport, whether the peer sent `close_notify` first or not.
     async fn peer_closed(&mut self) -> io::Result<()> {
-        self.pump.io.peer_closed().await
+        self.io.peer_closed().await
     }
 
-    /// Ready while decrypted bytes wait or the connection has ended; otherwise the transport decides, so a connection
-    /// with nothing to read is not decrypted again to find that out.
     fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.replayed < self.replay.len() {
             return Poll::Ready(Ok(()));
         }
-        match self.pump.conn.reader().fill_buf() {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                self.pump.io.poll_read_ready(context)
-            }
-            _ => Poll::Ready(Ok(())),
+        match &mut self.tls {
+            Tls::User(user) => user.poll_read_ready(&mut self.io, context),
+            Tls::Kernel(_) | Tls::Failed(_) => KernelIo::poll_read_ready(&mut self.io, context),
         }
     }
 }

@@ -156,13 +156,7 @@ impl CompiledTlsProfilePolicy {
 /// Whether connections of the profile are offered the kernel TLS transmit offload. A kernel that cannot do it
 /// leaves the profile in user space, exactly as `ktls = "off"`, and the operator hears it once per generation, here.
 fn kernel_tx_available(profile: &str, mode: KtlsMode, backend: TlsBackend) -> bool {
-    if mode == KtlsMode::Off {
-        return false;
-    }
-    if backend == TlsBackend::Rustls {
-        log::info!(
-            "TLS profile `{profile}`: kernel TLS applies to the OpenSSL backend only, TLS stays in user space"
-        );
+    if mode == KtlsMode::Off || backend == TlsBackend::Rustls {
         return false;
     }
     match pingora::protocols::l4::ktls::probe() {
@@ -193,6 +187,7 @@ pub struct TlsProfilePlan {
     prefer_server_ciphers: bool,
     backend: TlsBackend,
     kernel_tx: bool,
+    rustls_kernel: Option<oxiroute_tls_rustls::KernelTls>,
     tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
     /// The rustls resumption state, created by the first listener of the profile that uses the backend.
@@ -245,6 +240,7 @@ impl TlsProfilePlan {
             prefer_server_ciphers: policy.prefer_server_ciphers,
             backend: policy.backend,
             kernel_tx: kernel_tx_available(&blueprint.name, policy.ktls, policy.backend),
+            rustls_kernel: rustls_backend::kernel_tls(&blueprint.name, policy.ktls, policy.backend),
             tls_alpn_challenge_store,
             selector,
             rustls_sessions: OnceLock::new(),
@@ -479,7 +475,7 @@ mod kernel_tx_tests {
     use super::*;
 
     #[test]
-    fn only_an_openssl_profile_that_asks_for_it_is_offered_the_kernel() {
+    fn only_an_openssl_profile_that_asks_for_it_is_offered_the_openssl_kernel_path() {
         assert!(!kernel_tx_available(
             "edge",
             KtlsMode::Off,
@@ -492,7 +488,22 @@ mod kernel_tx_tests {
         ));
         assert!(
             !kernel_tx_available("edge", KtlsMode::Auto, TlsBackend::Rustls),
-            "a rustls profile never converts to kernel TLS, whatever the kernel can do"
+            "a rustls profile is offered its own kernel path, never the OpenSSL one"
+        );
+    }
+
+    #[test]
+    fn only_a_rustls_profile_that_asks_for_it_is_offered_the_rustls_kernel_path() {
+        for (mode, backend) in [
+            (KtlsMode::Off, TlsBackend::Rustls),
+            (KtlsMode::Off, TlsBackend::Openssl),
+            (KtlsMode::Auto, TlsBackend::Openssl),
+        ] {
+            assert!(rustls_backend::kernel_tls("edge", mode, backend).is_none());
+        }
+        assert_eq!(
+            rustls_backend::kernel_tls("edge", KtlsMode::Auto, TlsBackend::Rustls).is_some(),
+            oxiroute_tls_rustls::probe().is_ok()
         );
     }
 }

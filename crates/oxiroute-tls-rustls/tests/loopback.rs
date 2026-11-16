@@ -1,95 +1,14 @@
-use std::{
-    future::poll_fn, mem::MaybeUninit, net::Ipv4Addr, pin::Pin, sync::Arc, task::Poll,
-    time::Duration,
-};
+use std::{future::poll_fn, mem::MaybeUninit, pin::Pin, task::Poll, time::Duration};
 
-use oxiroute_tls_rustls::{ConfigRouter, RustlsAcceptor};
-use pingora::{
-    listeners::StreamTlsAcceptor,
-    protocols::{Stream, l4::stream::Stream as L4Stream, tls::ALPN},
-};
-use rcgen::{CertifiedKey, generate_simple_self_signed};
-use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
-    crypto::ring,
-    pki_types::{PrivatePkcs8KeyDer, ServerName},
-    server::ClientHello,
-};
+use pingora::protocols::tls::ALPN;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
-    net::{TcpListener, TcpStream},
     time::timeout,
 };
-use tokio_rustls::TlsConnector;
 
-const NAME: &str = "localhost";
+mod common;
 
-struct Fixed(Option<Arc<ServerConfig>>);
-
-impl ConfigRouter for Fixed {
-    fn route(&self, _hello: &ClientHello<'_>) -> Option<Arc<ServerConfig>> {
-        self.0.clone()
-    }
-}
-
-struct Pair {
-    client: ClientConfig,
-    server: Arc<ServerConfig>,
-}
-
-fn pair(alpn: &[&[u8]]) -> Pair {
-    pair_for(alpn, rustls::ALL_VERSIONS)
-}
-
-fn pair_for(alpn: &[&[u8]], versions: &[&'static rustls::SupportedProtocolVersion]) -> Pair {
-    let CertifiedKey { cert, signing_key } =
-        generate_simple_self_signed(vec![NAME.into()]).unwrap();
-    let provider = Arc::new(ring::default_provider());
-    let mut server = ServerConfig::builder_with_provider(Arc::clone(&provider))
-        .with_protocol_versions(versions)
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![cert.der().clone()],
-            PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-        )
-        .unwrap();
-    server.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
-    let mut roots = RootCertStore::empty();
-    roots.add(cert.der().clone()).unwrap();
-    let mut client = ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(versions)
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    client.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
-    Pair {
-        client,
-        server: Arc::new(server),
-    }
-}
-
-/// Accepts one connection with `router` and returns what the server side made of it next to the connected client.
-async fn connect(
-    client: ClientConfig,
-    router: Fixed,
-) -> (
-    pingora::Result<Stream>,
-    std::io::Result<tokio_rustls::client::TlsStream<TcpStream>>,
-) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let acceptor = RustlsAcceptor::new(Arc::new(router));
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        acceptor.accept(L4Stream::from(socket)).await
-    });
-    let socket = TcpStream::connect(address).await.unwrap();
-    let client = TlsConnector::from(Arc::new(client))
-        .connect(ServerName::try_from(NAME).unwrap(), socket)
-        .await;
-    (server.await.unwrap(), client)
-}
+use common::{Fixed, Pair, connect, pair, pair_for};
 
 #[tokio::test]
 async fn serves_requests_and_reports_what_was_negotiated() {

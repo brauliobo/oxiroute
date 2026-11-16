@@ -15,7 +15,9 @@ use std::future::poll_fn;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    pump::{Pump, Transport},
+    kernel::{KernelTls, Offer},
+    pump::{Framed, Pump, Transport},
+    records::Records,
     stream::TlsStream,
 };
 
@@ -31,11 +33,24 @@ pub trait ConfigRouter: Send + Sync + 'static {
 /// Runs the server handshake of accepted connections with the configuration a [`ConfigRouter`] picks.
 pub struct RustlsAcceptor {
     router: Arc<dyn ConfigRouter>,
+    kernel: Option<KernelTls>,
 }
 
 impl RustlsAcceptor {
     pub fn new(router: Arc<dyn ConfigRouter>) -> Self {
-        Self { router }
+        Self {
+            router,
+            kernel: None,
+        }
+    }
+
+    /// Offers the connections whose configuration enables `enable_secret_extraction` to the kernel: the first one that
+    /// is asked to send a file with `sendfile(2)` (see [`pingora::protocols::Ssl::poll_kernel_tx`]) is converted, with
+    /// the suites in `kernel`.
+    #[must_use]
+    pub const fn with_kernel_tls(mut self, kernel: KernelTls) -> Self {
+        self.kernel = Some(kernel);
+        self
     }
 }
 
@@ -43,7 +58,8 @@ impl RustlsAcceptor {
 impl StreamTlsAcceptor for RustlsAcceptor {
     async fn accept(&self, mut io: L4Stream) -> Result<Stream> {
         let started = Instant::now();
-        let accepted = read_client_hello(&mut io)
+        let mut records = Records::default();
+        let accepted = read_client_hello(&mut io, &mut records)
             .await
             .explain_err(TLSHandshakeFailure, |error| {
                 format!("TLS accept() failed: {error}")
@@ -57,6 +73,13 @@ impl StreamTlsAcceptor for RustlsAcceptor {
                 "TLS accept() failed: no application protocol could be agreed",
             ));
         };
+        let (config, offer) = match self.kernel.filter(|_| config.enable_secret_extraction) {
+            Some(kernel) => {
+                let (config, offer) = Offer::attach(kernel, &config);
+                (config, Some(offer))
+            }
+            None => (config, None),
+        };
         let conn = match accepted.into_connection(config) {
             Ok(conn) => conn,
             Err((error, alert)) => {
@@ -67,24 +90,27 @@ impl StreamTlsAcceptor for RustlsAcceptor {
                 ));
             }
         };
-        let mut pump = Pump::new(io, conn);
-        poll_fn(|context| pump.poll_handshake(context))
+        let mut pump = Pump::new(conn, records);
+        poll_fn(|context| pump.poll_handshake(&mut io, context))
             .await
             .explain_err(TLSHandshakeFailure, |error| {
                 format!("TLS accept() failed: {error}")
             })?;
-        Ok(Box::new(TlsStream::established(pump, started)))
+        Ok(Box::new(TlsStream::established(io, pump, offer, started)))
     }
 }
 
 /// Reads until the `ClientHello` is complete.
-async fn read_client_hello(io: &mut L4Stream) -> io::Result<Accepted> {
+async fn read_client_hello(io: &mut L4Stream, records: &mut Records) -> io::Result<Accepted> {
     let mut acceptor = Acceptor::default();
     loop {
         let read = poll_fn(|context| {
-            let read = acceptor.read_tls(&mut Transport {
-                io: &mut *io,
-                context,
+            let read = acceptor.read_tls(&mut Framed {
+                transport: Transport {
+                    io: &mut *io,
+                    context,
+                },
+                records: &mut *records,
             });
             match read {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Poll::Pending,

@@ -303,9 +303,11 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
 - `protocols/l4/sendfile.rs`, `protocols/http/v1/server.rs`, `protocols/http/v1/body.rs` and `protocols/http/server.rs`: `Session::write_response_body_from_file`
   sends a range of an open file as the body of a `Content-Length` response with `sendfile(2)` (flushes the response head first, accounts the
   bytes in the body writer and `body_bytes_sent`, applies the write timeout) and returns `None`, sending nothing, for chunked bodies, HTTP/2, TLS
-  and any other transport than a plain TCP stream. Tests in `protocols/l4/sendfile.rs`.
+  connections that stay in user space and any other transport than a plain TCP stream or a kernel TLS connection. Tests in `protocols/l4/sendfile.rs`.
   `l4::sendfile::plain_tcp_socket` and `send_file_to_stream` do the same for a bare `Stream` (the HTTP/1 fast lane has no session):
-  the caller flushes its response head first, and the result is `None` when the stream is not a plain TCP connection.
+  the caller flushes its response head first, and the result is `None` unless the stream is a plain TCP connection or a TLS connection that
+  offers kernel TLS and was converted by `Ssl::poll_kernel_tx` (the OpenSSL and rustls backends). `poll_kernel_tx(cx, bytes)` takes the
+  length about to be sent: the rustls backend counts it against the records its sending key may protect and rolls the key first when due.
 
 - `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
   of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,

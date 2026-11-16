@@ -97,7 +97,7 @@ async fn connected(
 }
 
 async fn convert(server: &mut SslStream<Stream>) -> bool {
-    poll_fn(|cx| server.poll_kernel_tx(cx)).await
+    poll_fn(|cx| server.poll_kernel_tx(cx, 0)).await
 }
 
 /// What the HTTP session does for a file: let the stream settle its keys, then `sendfile`.

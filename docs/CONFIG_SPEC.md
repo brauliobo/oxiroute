@@ -1043,8 +1043,11 @@ The current certificate and profile rules are:
   `info` line per generation and profile. The host needs the `tls` kernel module loaded at boot (a
   file in `/etc/modules-load.d/`, or `modprobe tls`) and kernel 6.5 or newer; a service without
   permission to autoload the module simply stays in user space. Set `"off"` to keep TLS in user
-  space. The option has no effect on HTTP/2, HTTP/3, proxied bodies, or TLS 1.2, and changes nothing
-  else about the profile.
+  space. With the `rustls` backend TLS 1.2 and ChaCha20-Poly1305 connections are converted too; TLS 1.3
+  connections only when the kernel (6.14 or newer) changes the keys of a running connection, which the server does
+  for a client `KeyUpdate` and before the AES-GCM record limit. The option has no effect on HTTP/2,
+  HTTP/3 or proxied bodies, nor on TLS 1.2 with the `openssl` backend, and changes nothing else about
+  the profile.
 - Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
   but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
   Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for

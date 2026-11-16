@@ -1246,7 +1246,7 @@ impl HttpSession {
             return Ok(None);
         }
         if plain_tcp_socket(&self.underlying_stream).is_none()
-            && !poll_fn(|cx| self.underlying_stream.poll_kernel_tx(cx)).await
+            && !poll_fn(|cx| self.underlying_stream.poll_kernel_tx(cx, length as u64)).await
         {
             return Ok(None);
         }
