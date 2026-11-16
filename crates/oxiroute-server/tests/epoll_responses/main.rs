@@ -4,13 +4,13 @@
 //! raw socket, and the bytes the client receives are compared between the two planes (the date and the request id
 //! aside). Every case also states what the client must see, so two planes that agree on a failure cannot pass.
 
-#[path = "support/config.rs"]
+#[path = "../support/config.rs"]
 mod config_support;
-#[path = "support/fixtures.rs"]
+#[path = "../support/fixtures.rs"]
 mod fixture_support;
-#[path = "support/h1_wire.rs"]
+#[path = "../support/h1_wire.rs"]
 mod h1_wire;
-#[path = "support/process.rs"]
+#[path = "../support/process.rs"]
 mod process_support;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};

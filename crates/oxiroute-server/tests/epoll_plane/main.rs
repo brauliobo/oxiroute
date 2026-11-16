@@ -4,13 +4,13 @@
 //! origin is contacted (a chunked request, an upgrade, `Expect`, a route with a TLS origin). The proxy is the real
 //! binary in front of raw TCP origins; the debug line of the plane says which requests it served.
 
-#[path = "support/config.rs"]
+#[path = "../support/config.rs"]
 mod config_support;
-#[path = "support/fixtures.rs"]
+#[path = "../support/fixtures.rs"]
 mod fixture_support;
-#[path = "support/h1_wire.rs"]
+#[path = "../support/h1_wire.rs"]
 mod h1_wire;
-#[path = "support/process.rs"]
+#[path = "../support/process.rs"]
 mod process_support;
 
 use std::time::Duration;

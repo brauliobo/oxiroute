@@ -3,11 +3,9 @@
 //! classic path accepts is read the same, what it refuses is refused, and every proper prefix of an accepted head is
 //! partial.
 
-mod common;
-
-use common::classic_response::{ClassicResponse, classic_response, framing_length};
-use common::request_corpus::crlf;
-use common::{MUTATION_ALPHABET, Rng, mutate};
+use crate::common::classic_response::{ClassicResponse, classic_response, framing_length};
+use crate::common::request_corpus::crlf;
+use crate::common::{MUTATION_ALPHABET, Rng, mutate};
 use oxiroute_h1_head::{
     Canonical, Class, Connection, HeadRead, MAX_NAME_LEN, MAX_NOMINATED, MAX_RESPONSE_HEADERS,
     ResponseHead, ScanResponse, canonicalize_response, read_response_head, scan_response,
@@ -101,7 +99,7 @@ struct Verdict {
 }
 
 fn classify_with_classic(raw: &[u8]) -> Verdict {
-    use common::classic_request::Classic;
+    use crate::common::classic_request::Classic;
     let classic = match classic_response(raw) {
         Ok(classic) => classic,
         Err(Classic::Partial) => {
@@ -183,7 +181,7 @@ fn assert_reads_as_classic(raw: &[u8], classic: &ClassicResponse) {
     assert_eq!(facts.transfer_encoding, classic.facts.transfer_encoding);
     if facts.transfer_encoding {
         let chunked =
-            common::classic_request::is_chunked_encoding_from_headers(&classic.header.headers);
+            crate::common::classic_request::is_chunked_encoding_from_headers(&classic.header.headers);
         assert_eq!(facts.chunked_final, chunked, "{shown:?}");
         assert_eq!(facts.content_length, None);
     } else {

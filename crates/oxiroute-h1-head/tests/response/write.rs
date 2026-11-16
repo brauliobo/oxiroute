@@ -1,13 +1,11 @@
 //! `write_response` against the vendored serializer (`http_resp_header_to_buf`) over a `ResponseHeader` edited through
 //! the real `HeaderMap` calls, and `stamp_request_id` against `stamp_response`.
 
-mod common;
-
-use common::Rng;
-use common::classic_response::classic_response;
-use common::classic_write::{Kind, OwnedEdit, apply, lend, serialize_response, stamp_response};
-use common::request_corpus::crlf;
-use common::response_corpus::{Verdict, corpus};
+use crate::common::Rng;
+use crate::common::classic_response::classic_response;
+use crate::common::classic_write::{Kind, OwnedEdit, apply, lend, serialize_response, stamp_response};
+use crate::common::request_corpus::crlf;
+use crate::common::response_corpus::{Verdict, corpus};
 use http::header::HeaderValue;
 use oxiroute_h1_head::{
     Automatic, Edits, ResponseHead, ScanResponse, Value, scan_response, write_response,

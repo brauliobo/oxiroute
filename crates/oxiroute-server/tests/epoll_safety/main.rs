@@ -3,15 +3,15 @@
 //! What the epoll data plane must hold on to in production: the real binary in front of raw loopback origins, each
 //! scenario on the epoll plane and, where the tokio plane has the same contract, on the tokio plane too.
 
-#[path = "support/config.rs"]
+#[path = "../support/config.rs"]
 mod config_support;
-#[path = "support/fixtures.rs"]
+#[path = "../support/fixtures.rs"]
 mod fixture_support;
-#[path = "support/h1_wire.rs"]
+#[path = "../support/h1_wire.rs"]
 mod h1_wire;
-#[path = "support/http.rs"]
+#[path = "../support/http.rs"]
 mod http_support;
-#[path = "support/process.rs"]
+#[path = "../support/process.rs"]
 mod process_support;
 
 use std::{

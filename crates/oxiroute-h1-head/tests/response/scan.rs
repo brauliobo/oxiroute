@@ -1,13 +1,11 @@
 //! Differential tests of `scan_response` against the classic client parse: `Head` must imply the classic path
 //! accepts the same bytes and reads the same status, version, reason, header list and facts; `Slow` is never wrong.
 
-mod common;
-
-use common::classic_request::buf_to_content_length;
-use common::classic_response::{ClassicResponse, classic_response};
-use common::request_corpus::crlf;
-use common::response_corpus::{Verdict, corpus};
-use common::{MUTATION_ALPHABET, Rng, mutate};
+use crate::common::classic_request::buf_to_content_length;
+use crate::common::classic_response::{ClassicResponse, classic_response};
+use crate::common::request_corpus::crlf;
+use crate::common::response_corpus::{Verdict, corpus};
+use crate::common::{MUTATION_ALPHABET, Rng, mutate};
 use oxiroute_h1_head::{Class, Connection, ResponseHead, ScanResponse, scan_response};
 
 fn assert_same_as_classic(buf: &[u8], head: &ResponseHead, classic: &ClassicResponse) {
@@ -57,7 +55,7 @@ fn assert_same_as_classic(buf: &[u8], head: &ResponseHead, classic: &ClassicResp
     );
     if facts.transfer_encoding {
         let chunked =
-            common::classic_request::is_chunked_encoding_from_headers(&classic.header.headers);
+            crate::common::classic_request::is_chunked_encoding_from_headers(&classic.header.headers);
         assert_eq!(facts.chunked_final, chunked, "chunked of {shown:?}");
     } else {
         assert!(!facts.chunked_final);
