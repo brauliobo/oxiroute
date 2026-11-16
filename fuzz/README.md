@@ -12,7 +12,7 @@ application behavior.
 - A host C/C++ compiler and LLVM tooling are required by `libfuzzer-sys` on the target platform.
 - The harnesses do not open sockets, resolve names, read configuration files, or access the network.
 
-`scripts/verify-fuzz.sh` is the required stable contract gate. It checks the manifest/source target
+`scripts/verify/fuzz.sh` is the required stable contract gate. It checks the manifest/source target
 set, input bounds, corpus directories, regular seed files, decoded `hex:` sizes, and recognized
 deterministic `seed:` markers before running the fuzz workspace format and locked compile checks.
 The separate optional `fuzz-smoke` workflow exits successfully when `cargo-fuzz` or nightly Rust is
@@ -67,7 +67,7 @@ this is reproducible local smoke evidence, not a coverage result or a long-runni
 From the repository root:
 
 ```sh
-./scripts/verify-fuzz.sh
+./scripts/verify/fuzz.sh
 cargo fmt --manifest-path fuzz/Cargo.toml --check
 cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
 cargo fuzz list

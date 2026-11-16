@@ -109,7 +109,7 @@ The v6.5.2 archive includes the supervised launcher and related workspace crates
 archive before using the recipe, then keep the source checksum synchronized with that exact asset and
 regenerate `.SRCINFO`.
 
-From this repository, `../../scripts/verify-release-version.sh` checks aligned release metadata and
+From this repository, `../../scripts/verify/release/version.sh` checks aligned release metadata and
 `../../scripts/create-release-archive.sh` recreates an archive from committed `HEAD`. The archive
 verifier excludes benchmark reports and build artifacts, then `./build-local.sh` checks it against the
 PKGBUILD checksum before invoking `makepkg`. Until the next release archive is published, the

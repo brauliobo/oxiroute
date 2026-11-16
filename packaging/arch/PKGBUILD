@@ -32,14 +32,14 @@ sha256sums=('a5c667344bf3b5943c502bc26bc6ace680873b9efaf0ebc9b3685e710994c373'
              'd56db017915b82ad6204bb4de1aa268cc41586eafcbbf35194366b32ed02f19a'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-             'ef376abd6ce6dcbab820ce478f4b9f134a4be4528fb88bb3abb9d7425e83137e')
+             '7db4e5e9de2c6e962bb893c1354b0deef2931b2de4156a461e0f2cab37d4c16d')
 
 prepare() {
   cd "oxiroute-${pkgver}"
   cargo fetch --locked --target "${_target}"
 }
 
-# Copy of scripts/lib/reject-isa-flags.sh (the pinned release archive predates it; scripts/test-verify-baseline-isa.sh
+# Copy of scripts/lib/reject-isa-flags.sh (the pinned release archive predates it; scripts/test/verify/baseline-isa.sh
 # runs the same cases on both). The binary must stay generic x86-64 and pick AVX at run time, so a CPU target in
 # RUSTFLAGS or CFLAGS (makepkg.conf of x86-64-v3 distributions) fails the build; set generic flags in ~/.makepkg.conf.
 isa_rust_re='^((-C|--codegen)=?)?target-(cpu|feature)'

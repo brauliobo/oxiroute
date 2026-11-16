@@ -65,7 +65,7 @@ jobs:
         working-directory: ui
 
       - name: Verify control-plane OpenAPI artifact
-        run: ./scripts/verify-control-plane-contract.sh
+        run: ./scripts/verify/control-plane-contract.sh
 
       - name: Verify unsafe code and raw io_uring stay in their crate
         run: ./scripts/verify/unsafe_containment.sh
@@ -204,7 +204,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes qemu-user
 
       - name: Verify scanners on baseline, SSSE3, AVX2 and native CPUs
-        run: ./scripts/test-cpu-targets.sh
+        run: ./scripts/test/cpu-targets.sh
 
   release-archive:
     name: Release archive policy
@@ -215,12 +215,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Test the release archive policy
-        run: ./scripts/test-release-archive.sh
+        run: ./scripts/test/release/archive.sh
 
       - name: Test the release binary build gates
         run: |
-          ./scripts/test-verify-binary-paths.sh
-          ./scripts/test-verify-baseline-isa.sh
+          ./scripts/test/verify/binary-paths.sh
+          ./scripts/test/verify/baseline-isa.sh
           ./benchmarks/scripts/test-pgo.sh
 
       - name: Build and verify the source archive from the commit under test
@@ -240,7 +240,7 @@ jobs:
           components: rustfmt
 
       - name: Verify every checked-in fuzz target and seed
-        run: ./scripts/verify-fuzz.sh
+        run: ./scripts/verify/fuzz.sh
 
   package:
     name: Arch package service metadata
@@ -351,7 +351,7 @@ jobs:
         working-directory: ui
 
       - name: Verify embedded stats page assets are what the UI builds
-        run: ./scripts/verify-stats-assets.sh
+        run: ./scripts/verify/stats/assets.sh
 
       - name: Build the dashboard (Playwright starts its preview server too)
         run: pnpm build

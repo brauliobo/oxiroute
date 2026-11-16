@@ -22,7 +22,7 @@ else
   "${repo_dir}/scripts/create-release-archive.sh" "${archive}" "${pkgver}"
 fi
 
-"${repo_dir}/scripts/verify-release-archive.sh" "${archive}" "${pkgver}" "${expected_sha256}"
+"${repo_dir}/scripts/verify/release/archive.sh" "${archive}" "${pkgver}" "${expected_sha256}"
 actual_sha256=$(sha256sum -- "${archive}")
 actual_sha256=${actual_sha256%% *}
 if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then

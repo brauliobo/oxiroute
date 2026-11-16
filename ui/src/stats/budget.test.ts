@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // The size budget script runs against hand-made output directories.
-const script = join(import.meta.dirname, '../../../scripts/verify-stats-budget.mjs')
+const script = join(import.meta.dirname, '../../../scripts/verify/stats/budget.mjs')
 const made: string[] = []
 afterEach(() => made.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true })))
 

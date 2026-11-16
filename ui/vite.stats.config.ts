@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import type { Plugin } from 'vite'
 
 // The stats page: its own entry (stats.html), built to dist-stats/. stats.html is the single source of the shell the
-// page listener serves: the build only adds the hashed script and stylesheet links, and scripts/generate-stats-assets.sh
+// page listener serves: the build only adds the hashed script and stylesheet links, and scripts/generate/stats/assets.sh
 // installs the result as crates/oxiroute-server/assets/stats/index.html. The listener fills in the `/__stats_prefix__`
 // token (the configured uri_prefix) and the `__stats_*__` values per request, so the build base is the token itself.
 // Layout and budget: src/stats/README.md.

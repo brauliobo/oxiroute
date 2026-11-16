@@ -48,7 +48,7 @@ fn poll_until(harness: &mut Harness, reached: impl Fn(MasterState) -> bool) {
 }
 
 /// A panic inside the listener service is unwound to the service boundary, which fails the generation: the master
-/// never reaches `Running` and reaps the worker. It runs the real worker binary, so scripts/test-release-binary.sh uses it
+/// never reaches `Running` and reaps the worker. It runs the real worker binary, so scripts/test/release/binary.sh uses it
 /// to exercise the unwind tables of a post-link-optimised build.
 #[test]
 pub(super) fn listener_service_panic_fails_the_generation_and_is_reaped() {

@@ -584,7 +584,7 @@ The header links `CSV` (`stats.csv`, downloaded as `stats.csv`) and `JSON` (`sna
 
 - Vue 3.6 single-page application built with Vite and rendered in Vapor mode: every SFC is
   `<script setup lang="ts" vapor>` and `src/main.ts` boots with `createVaporApp`, so the bundle has
-  no virtual DOM renderer (`scripts/verify-ui-bundle.mjs` enforces it). `vue` and
+  no virtual DOM renderer (`scripts/verify/ui-bundle.mjs` enforces it). `vue` and
   `@vitejs/plugin-vue` are pinned to exact versions while Vue 3.6 is a release candidate; bump them
   deliberately and run the unit, production-build browser, and Rust built-UI tests.
 - Pug 3.x used only through `<template lang="pug">` in precompiled Vue SFCs.

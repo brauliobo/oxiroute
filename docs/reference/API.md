@@ -6,7 +6,7 @@ the corrected event-only contract under `/api/v2/events`. Exact errors, response
 
 The checked [OpenAPI 3.1 control-plane artifact](../../contracts/control-plane.openapi.json) currently
 covers the six protected read-only status, listener, pool, server, generation, and in-flight request operations. Its
-freshness gate is `scripts/verify-control-plane-contract.sh`; routes outside that registry remain
+freshness gate is `scripts/verify/control-plane-contract.sh`; routes outside that registry remain
 documented by this page and the normative API/UI specification until their DTO and endpoint metadata
 are migrated.
 

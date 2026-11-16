@@ -16,7 +16,3 @@
 3 crates/oxiroute-server/tests/lane
 18 crates/oxiroute-server/tests/process
 9 crates/oxiroute-server/tests/wire
-3 scripts/generate
-2 scripts/rtmp
-8 scripts/test
-16 scripts/verify

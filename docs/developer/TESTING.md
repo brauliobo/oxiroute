@@ -10,8 +10,8 @@ cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 ./scripts/ci/tiers.sh check
 ./scripts/test/all.sh
-./scripts/verify-control-plane-contract.sh
-./scripts/verify-fuzz.sh
+./scripts/verify/control-plane-contract.sh
+./scripts/verify/fuzz.sh
 ./scripts/verify/line_limit.sh
 ./scripts/verify/name_prefixes.sh
 pnpm --dir ui test
@@ -65,7 +65,7 @@ the archive small.
 Security and release dependency gates can be run directly when the pinned tools are installed:
 
 ```sh
-./scripts/verify-lockfiles.sh
+./scripts/verify/lockfiles.sh
 cargo audit -D warnings
 pnpm --dir ui audit --audit-level high
 pnpm --dir remotion audit --audit-level high
@@ -95,7 +95,7 @@ redacted certificate evidence; it must not be used with production directory set
 The deterministic harness checks remain local and do not contact a CA:
 
 ```sh
-bash scripts/test-acme-staging-evidence.sh
+bash scripts/test/acme-staging-evidence.sh
 ```
 
 Build tasks should use at most four workers in constrained environments. For make-based tooling, use
@@ -153,7 +153,7 @@ A capability should not move to `stable` without the relevant:
 - reload/rotation or lifecycle coverage where applicable; and
 - independent protocol or interoperability evidence where applicable.
 
-Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; `scripts/verify-fuzz.sh` is a required
+Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; `scripts/verify/fuzz.sh` is a required
 manifest, harness, corpus, format, and locked-compile gate. The separate optional
 `.github/workflows/fuzz-smoke.yml` workflow does not claim fuzz coverage and reports/skips execution
 when cargo-fuzz or nightly Rust is unavailable; detected but broken optional tooling fails closed. The

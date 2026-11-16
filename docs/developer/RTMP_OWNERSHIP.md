@@ -16,7 +16,7 @@ runtime. Canonical RTMP configuration remains the boundary between import loweri
 construction.
 
 Value-only RTMP plan construction is isolated in `oxiroute-rtmp::composition`. The
-`scripts/verify-rtmp-plan-purity.mjs` gate parses that module's direct Rust import/module surface and
+`scripts/verify/rtmp/plan-purity.mjs` gate parses that module's direct Rust import/module surface and
 the RTMP crate's Cargo dependency surface against explicit allowlists, rejecting newly introduced
 acquisition-capable dependencies by default. The server's `rtmp_value_mapping` module similarly owns
 pure canonical field conversion; it must not resolve DNS, read files, open stores/logs, or construct
