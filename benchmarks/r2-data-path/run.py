@@ -945,8 +945,8 @@ def main():
     parser.add_argument("--alloc-requests", type=int, default=4000)
     parser.add_argument("--alloc-warmup", type=int, default=1000)
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every lane's request counts (smoke runs)")
-    parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
-                        help="policy.backend of the generated TLS profile")
+    parser.add_argument("--tls-backend", choices=["default", "openssl", "rustls"], default="default",
+                        help="policy.backend of the generated TLS profile (default leaves it out)")
     parser.add_argument("--tls-handshake-threads", type=int, default=None,
                         help="tls_handshake_threads of every lane (-1: automatic, 0: handshakes inline on the worker)")
     parser.add_argument("--classic", action="store_true",
