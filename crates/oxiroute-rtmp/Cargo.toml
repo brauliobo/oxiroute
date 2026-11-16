@@ -44,7 +44,7 @@ path = "tests/flv_muxer.rs"
 
 [[test]]
 name = "recording_path"
-path = "tests/recording_path.rs"
+path = "tests/recording/path.rs"
 
 [[test]]
 name = "simple_handshake"

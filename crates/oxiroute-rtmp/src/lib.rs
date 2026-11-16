@@ -81,22 +81,22 @@ pub use recording::path::{
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
     RecordingTimezone,
 };
-pub(crate) use recording::recording_store::{
+pub use recording::runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
+pub(crate) use recording::store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
-pub use recording::recording_store::{
+pub use recording::store::{
     RecordingQuotaScope, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
     RecordingStoreStats,
 };
 #[cfg(test)]
-pub(crate) use recording::recording_worker::RecorderShutdown;
-pub use recording::recording_worker::{
+pub(crate) use recording::worker::RecorderShutdown;
+pub use recording::worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,
     RecorderVideoCodec, RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError,
     RecorderWorkerStatus,
 };
-pub(crate) use recording::recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
-pub use recording::runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
+pub(crate) use recording::worker::{RecorderWorker, RecorderWorkerSupervisor};
 pub use relay::{
     RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsRefreshFailure,
     RtmpDnsResolver, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
@@ -199,10 +199,10 @@ mod push_relay_tests;
 #[path = "../tests/recorder_session.rs"]
 mod recorder_session_tests;
 #[cfg(test)]
-#[path = "../tests/recording_store.rs"]
+#[path = "../tests/recording/store.rs"]
 mod recording_store_tests;
 #[cfg(test)]
-#[path = "../tests/recording_worker.rs"]
+#[path = "../tests/recording/worker/mod.rs"]
 mod recording_worker_tests;
 #[cfg(test)]
 #[path = "../tests/service_plans.rs"]
