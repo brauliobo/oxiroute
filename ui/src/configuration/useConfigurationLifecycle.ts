@@ -10,6 +10,7 @@ import type {
 } from '../config'
 import { errorDiagnosticsFrom } from '../config'
 import { isRecord } from '../valueGuards'
+import { clone } from './clone'
 
 export interface SaveMessage {
   kind: 'success' | 'pending' | 'error'
@@ -357,8 +358,4 @@ function revisionPayload(
   return isRecord(value) && typeof value.diskRevision === 'string'
     ? (value as { diskRevision: string; activeRevision?: string | null })
     : null
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
 }

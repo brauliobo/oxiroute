@@ -1,0 +1,69 @@
+.diagnostic-list {
+  margin: 0;
+  padding: 0;
+  border: 1px solid #34392f;
+  list-style: none;
+}
+
+.diagnostic {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 20px;
+  padding: 18px;
+  border-left: 3px solid #7b8375;
+  background: #11140f;
+}
+
+.diagnostic + .diagnostic {
+  border-top: 1px solid #34392f;
+}
+
+.diagnostic.severity-error {
+  border-left-color: #ff745c;
+}
+
+.diagnostic.severity-warning {
+  border-left-color: #ffbf4b;
+}
+
+.diagnostic-code {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.diagnostic-code span,
+.diagnostic-meta {
+  color: #8d9585;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.diagnostic p {
+  margin: 6px 0 0;
+  color: #929a89;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.diagnostic-target {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.diagnostic-target:focus-visible {
+  outline: 2px solid #b7f34a;
+  outline-offset: 4px;
+}
+
+@media (max-width: 700px) {
+  .diagnostic {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
