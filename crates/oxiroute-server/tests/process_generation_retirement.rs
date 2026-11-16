@@ -21,7 +21,7 @@ use oxiroute_config::{
     ConfigDraft, ConnectionScheduling, DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy,
     HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy, L4Service,
     Listener, Management, Protocol, Retirement, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamPool,
+    UpstreamPool, WorkerScaling,
 };
 use serde_json::Value;
 use tokio::{
@@ -88,29 +88,37 @@ impl Instance {
     }
 
     async fn start_http_aged() -> Self {
-        Self::start_http_with(
-            Retirement::default(),
-            false,
-            Some(ConnectionScheduling::AgedPerWorker),
-        )
+        Self::start_http_with(Retirement::default(), false, |config| {
+            config.connection_scheduling = Some(ConnectionScheduling::AgedPerWorker);
+        })
+        .await
+    }
+
+    async fn start_http_scaled() -> Self {
+        Self::start_http_with(Retirement::default(), false, |config| {
+            config.listener_workers = Some(4);
+            config.connection_scheduling = Some(ConnectionScheduling::AgedPerWorker);
+            config.worker_scaling = Some(WorkerScaling::Dynamic);
+            config.scale_down_delay_ms = Some(200);
+        })
         .await
     }
 
     async fn start_http_mode(retirement: Retirement, supervised: bool) -> Self {
-        Self::start_http_with(retirement, supervised, None).await
+        Self::start_http_with(retirement, supervised, |_| {}).await
     }
 
     async fn start_http_with(
         retirement: Retirement,
         supervised: bool,
-        scheduling: Option<ConnectionScheduling>,
+        tune: impl FnOnce(&mut ConfigDraft),
     ) -> Self {
         let release = Arc::new(Semaphore::new(0));
         let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
         let mut config = http_config(management, listener, upstream_address, retirement);
-        config.connection_scheduling = scheduling;
+        tune(&mut config);
         let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(listener).await;
@@ -640,6 +648,18 @@ async fn an_idle_http_keepalive_connection_is_closed_at_retirement_with_aged_per
     idle_keepalive_is_closed_at_retirement(Instance::start_http_aged().await).await;
 }
 
+#[tokio::test]
+async fn an_idle_http_keepalive_connection_is_closed_at_retirement_with_dynamic_worker_scaling() {
+    let _guard = process_test_guard().await;
+    idle_keepalive_is_closed_at_retirement(Instance::start_http_scaled().await).await;
+}
+
+#[tokio::test]
+async fn an_in_flight_http_response_finishes_at_retirement_with_dynamic_worker_scaling() {
+    let _guard = process_test_guard().await;
+    in_flight_response_finishes_at_retirement(Instance::start_http_scaled().await).await;
+}
+
 async fn idle_keepalive_is_closed_at_retirement(mut instance: Instance) {
     let mut idle = TcpStream::connect(instance.listener)
         .await
@@ -673,7 +693,11 @@ async fn idle_keepalive_is_closed_at_retirement(mut instance: Instance) {
 #[tokio::test]
 async fn an_in_flight_http_response_finishes_and_closes_the_connection() {
     let _guard = process_test_guard().await;
-    let mut instance = Instance::start_http(Retirement::default()).await;
+    in_flight_response_finishes_at_retirement(Instance::start_http(Retirement::default()).await)
+        .await;
+}
+
+async fn in_flight_response_finishes_at_retirement(mut instance: Instance) {
     let mut busy = TcpStream::connect(instance.listener)
         .await
         .expect("connection");
