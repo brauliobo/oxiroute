@@ -9,6 +9,7 @@ mod finish;
 mod link;
 mod pool;
 mod reactor;
+mod region;
 mod relay;
 mod serve;
 mod service;

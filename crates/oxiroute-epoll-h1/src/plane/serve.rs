@@ -70,8 +70,11 @@ impl<S: Service> Reactor<S> {
     }
 
     fn fill_request(&mut self, token: Token, client: &mut Client<S>) -> Step {
-        let buffers = &mut client.buffers;
-        match client.link.recv(&mut buffers.req[client.req_len..]) {
+        match client
+            .buffers
+            .req
+            .recv(&mut client.link, client.req_len, usize::MAX)
+        {
             Read::Data(count) => {
                 client.req_len += count;
                 if client.stage == Stage::Idle {
@@ -100,7 +103,7 @@ impl<S: Service> Reactor<S> {
             return Step::Handoff;
         };
         let keepalive = !request.close() && self.drain_deadline.is_none();
-        let flow = self.flow(&request, exchange, client.buffers.req.len(), keepalive);
+        let flow = self.flow(&request, exchange, client.buffers.req.limit(), keepalive);
         client.flow = Some(flow);
         client.stage = Stage::Serving;
         Step::Again

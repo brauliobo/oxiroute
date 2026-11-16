@@ -4,7 +4,7 @@ use oxiroute_h1_head::{Connection, ScanResponse, scan_response};
 
 use super::{
     chunked::{ChunkScanner, HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
-    client::{Buffers, Client, Down, Flow, Mode, Relay, Wait, Window},
+    client::{Buffers, Client, Down, Flow, Mode, RESPONSE_TAIL, Relay, Wait, Window},
     link::Link,
     reactor::Reactor,
     service::{Answered, Failure, Framing, Recovery, Response, Service},
@@ -12,7 +12,7 @@ use super::{
     sys::{Read, Wrote},
 };
 
-const TAIL_ROOM: usize = 2;
+const TAIL_ROOM: usize = RESPONSE_TAIL;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Moved {
@@ -139,16 +139,16 @@ impl<S: Service> Reactor<S> {
     ) -> Result<bool, Failure> {
         let mut progressed = false;
         loop {
-            let usable = client.buffers.resp.len() - TAIL_ROOM;
-            if client.resp_len == usable {
+            if client.buffers.resp.exhausted(client.resp_len) {
                 return Err(Failure::ResponseHeadTooLarge);
             }
             let Some(origin) = self.slab.upstream_mut(upstream) else {
                 return Err(Failure::UpstreamClosed);
             };
-            match origin
-                .link
-                .recv(&mut client.buffers.resp[client.resp_len..usable])
+            match client
+                .buffers
+                .resp
+                .recv(&mut origin.link, client.resp_len, usize::MAX)
             {
                 Read::Data(count) => {
                     client.resp_len += count;
@@ -289,22 +289,18 @@ impl<S: Service> Reactor<S> {
             let Some(origin) = self.slab.upstream_mut(upstream) else {
                 return Err(Failure::UpstreamClosed);
             };
-            let end = usable(buffers);
-            let read = match relay.mode {
-                Mode::UntilClose => origin.link.recv(&mut buffers.resp[HEADER_ROOM..end]),
-                _ => origin.link.recv(&mut buffers.resp[..end]),
+            let first = if matches!(relay.mode, Mode::UntilClose) {
+                HEADER_ROOM
+            } else {
+                0
             };
+            let read = buffers.resp.recv(&mut origin.link, first, usize::MAX);
             match read {
                 Read::Data(count) => {
-                    let start = if matches!(relay.mode, Mode::UntilClose) {
-                        HEADER_ROOM
-                    } else {
-                        0
-                    };
                     absorb(
                         relay,
                         &mut buffers.resp,
-                        Window::new(start, start + count),
+                        Window::new(first, first + count),
                         &mut flow.sent,
                     )?;
                     progressed = true;
@@ -338,24 +334,20 @@ impl<S: Service> Flow<S> {
     }
 }
 
-fn usable(buffers: &Buffers) -> usize {
-    buffers.resp.len() - TAIL_ROOM
-}
-
 fn read_body<S: Service>(
     link: &mut Link,
     buffers: &mut Buffers,
     flow: &mut Flow<S>,
     req_len: &mut usize,
 ) -> Read {
-    let capacity = buffers.req.len();
+    let capacity = buffers.req.limit();
     let (start, room) = if flow.replayable {
         (*req_len, capacity - *req_len)
     } else {
         (0, capacity)
     };
     let room = usize::try_from(flow.body_unread).map_or(room, |unread| room.min(unread));
-    let read = link.recv(&mut buffers.req[start..start + room]);
+    let read = buffers.req.recv(link, start, room);
     if let Read::Data(count) = read {
         flow.body_unread -= count as u64;
         flow.window = Window::new(start, start + count);

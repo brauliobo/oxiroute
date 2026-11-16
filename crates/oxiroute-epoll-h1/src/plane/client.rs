@@ -13,15 +13,21 @@ use super::{
     clock::Moment,
     config::{Config, Timeouts},
     link::Link,
+    region::Region,
     service::{AttemptTimeouts, Failure, Reuse, Service},
     slab::Token,
 };
 
 pub(crate) type Shared<S> = Rc<Arc<S>>;
 
+const REQUEST_INITIAL: usize = 1024;
+const RESPONSE_INITIAL: usize = 2048;
+const HEAD_INITIAL: usize = 512;
+pub(crate) const RESPONSE_TAIL: usize = 2;
+
 pub(crate) struct Buffers {
-    pub(crate) req: Box<[u8]>,
-    pub(crate) resp: Box<[u8]>,
+    pub(crate) req: Region,
+    pub(crate) resp: Region,
     pub(crate) up_head: Vec<u8>,
     pub(crate) down_head: Vec<u8>,
     pub(crate) head: Box<RequestHead>,
@@ -29,18 +35,15 @@ pub(crate) struct Buffers {
 
 impl Buffers {
     pub(crate) fn new(config: &Config) -> Self {
-        let head_capacity = config.head_limit + HEAD_GROWTH;
         Self {
-            req: vec![0; config.request_buffer].into_boxed_slice(),
-            resp: vec![0; config.response_buffer].into_boxed_slice(),
-            up_head: Vec::with_capacity(head_capacity),
-            down_head: Vec::with_capacity(head_capacity),
+            req: Region::new(REQUEST_INITIAL, config.request_buffer, 0),
+            resp: Region::new(RESPONSE_INITIAL, config.response_buffer, RESPONSE_TAIL),
+            up_head: Vec::with_capacity(HEAD_INITIAL),
+            down_head: Vec::with_capacity(HEAD_INITIAL),
             head: Box::new(RequestHead::new()),
         }
     }
 }
-
-pub(crate) const HEAD_GROWTH: usize = 4096;
 
 pub(crate) struct Pooled(Box<Buffers>);
 
