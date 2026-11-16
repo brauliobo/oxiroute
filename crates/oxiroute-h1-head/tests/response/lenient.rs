@@ -180,8 +180,9 @@ fn assert_reads_as_classic(raw: &[u8], classic: &ClassicResponse) {
     let facts = head.facts;
     assert_eq!(facts.transfer_encoding, classic.facts.transfer_encoding);
     if facts.transfer_encoding {
-        let chunked =
-            crate::common::classic::request::is_chunked_encoding_from_headers(&classic.header.headers);
+        let chunked = crate::common::classic::request::is_chunked_encoding_from_headers(
+            &classic.header.headers,
+        );
         assert_eq!(facts.chunked_final, chunked, "{shown:?}");
         assert_eq!(facts.content_length, None);
     } else {

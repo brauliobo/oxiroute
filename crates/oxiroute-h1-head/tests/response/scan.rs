@@ -54,8 +54,9 @@ fn assert_same_as_classic(buf: &[u8], head: &ResponseHead, classic: &ClassicResp
         "te of {shown:?}"
     );
     if facts.transfer_encoding {
-        let chunked =
-            crate::common::classic::request::is_chunked_encoding_from_headers(&classic.header.headers);
+        let chunked = crate::common::classic::request::is_chunked_encoding_from_headers(
+            &classic.header.headers,
+        );
         assert_eq!(facts.chunked_final, chunked, "chunked of {shown:?}");
     } else {
         assert!(!facts.chunked_final);
