@@ -626,7 +626,10 @@ fn serve_generation(
         let h2_windows = spec.h2_windows;
         let listener_proxy_protocol = spec.proxy_protocol;
         #[cfg(target_os = "linux")]
-        let data_plane = spec.data_plane;
+        let data_plane = spec.data_plane.plane;
+        if matches!(spec.kind, ServiceKind::Http(_) | ServiceKind::Http3(_)) {
+            spec.data_plane.announce(&listener_name);
+        }
 
         match spec.kind {
             ServiceKind::ForwardHttp1(forward_service) => {

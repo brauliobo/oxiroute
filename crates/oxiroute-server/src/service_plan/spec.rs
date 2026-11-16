@@ -12,7 +12,7 @@ pub struct ServiceSpec {
     pub proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
     pub kind: ServiceKind,
     pub tls: Option<Arc<TlsProfilePlan>>,
-    pub data_plane: DataPlane,
+    pub data_plane: PlaneSelection,
 }
 
 #[derive(Clone, Debug)]
@@ -299,7 +299,7 @@ impl HttpServicePlan {
             .any(|route| route.lane != LaneRoute::Classic)
     }
 
-    /// Whether the epoll data plane can serve a route of this service, and the service as a whole is one the lane
+    /// Whether an engine data plane can serve a route of this service, and the service as a whole is one the lane
     /// serves.
     pub(crate) fn serves_on_engine(&self) -> bool {
         self.gzip.is_none()

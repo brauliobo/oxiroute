@@ -269,8 +269,10 @@ pub(super) fn compile_listener(
         h2_windows: listener.h2_windows,
         proxy_protocol: listener.proxy_protocol,
         data_plane: match &kind {
-            ServiceKind::Http(plan) => DataPlane::plan(listener.plane, plan),
-            _ => DataPlane::Tokio,
+            ServiceKind::Http(plan) | ServiceKind::Http3(plan) => {
+                listener.plane.select(plan.serves_on_engine())
+            }
+            _ => PlaneSelection::tokio(),
         },
         kind,
         tls,
