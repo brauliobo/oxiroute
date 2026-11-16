@@ -124,6 +124,7 @@ pub struct Reference {
     waker: Mutex<Option<Waker>>,
     pub counters: Counters,
     pub outcomes: Mutex<Vec<Outcome>>,
+    pub routed: Mutex<Vec<String>>,
     handoffs: Mutex<Sender<Handoff<Guard>>>,
     paused: Mutex<Sender<()>>,
     clock: (Instant, SystemTime),
@@ -142,6 +143,7 @@ impl Reference {
             waker: Mutex::new(None),
             counters: Counters::default(),
             outcomes: Mutex::new(Vec::new()),
+            routed: Mutex::new(Vec::new()),
             handoffs: Mutex::new(handoffs),
             paused: Mutex::new(paused),
             clock: (Instant::now(), SystemTime::now()),
@@ -208,10 +210,14 @@ impl Service for Reference {
         if request.head().facts.hop_by_hop != 0 || request.target().starts_with(b"/handoff") {
             return Routed::Handoff;
         }
+        if self.knobs.record {
+            let target = String::from_utf8_lossy(request.target()).into_owned();
+            self.routed.lock().expect("routed").push(target);
+        }
         if let Some(pause) = self
             .knobs
             .pause_in_route
-            .filter(|_| request.target() == b"/pause")
+            .filter(|_| request.target().starts_with(b"/pause"))
         {
             let _ = self.paused.lock().expect("paused").send(());
             std::thread::sleep(pause);

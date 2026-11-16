@@ -162,6 +162,7 @@ impl<S: Service> Reactor<S> {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
+        self.left();
         let prefix = client.buffers.req[..client.req_len].to_vec();
         self.release_buffers(&mut client);
         let Client {

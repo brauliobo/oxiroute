@@ -10,6 +10,7 @@ mod link;
 mod pool;
 mod reactor;
 mod relay;
+mod schedule;
 mod serve;
 mod service;
 mod slab;
@@ -21,6 +22,9 @@ mod wheel;
 
 pub use config::{Config, Timeouts, Trigger};
 pub use engine::{Engine, Listener};
+pub use oxiroute_aged_order::Age;
+pub use oxiroute_worker_scaling::{Policy, Stats as ScalingStats};
+pub use schedule::{Scale, Scheduling};
 pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
     Response, Reuse, Routed, Selected, Service, Target,

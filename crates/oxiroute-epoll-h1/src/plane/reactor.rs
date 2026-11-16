@@ -24,6 +24,7 @@ use super::{
     clock::{Clock, Moment},
     config::{Config, Timeouts},
     pool::BufferPool,
+    schedule::{Plan, Schedule},
     service::Service,
     slab::{Body, Slab, Token},
     spare::Spare,
@@ -112,6 +113,7 @@ pub(crate) struct ListenerFd<S: Service> {
     pub(crate) service: Arc<S>,
     pub(crate) timeouts: Timeouts,
     pub(crate) fd: OwnedFd,
+    pub(crate) shared: bool,
 }
 
 pub(crate) struct Reactor<S: Service> {
@@ -132,20 +134,23 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) drain_deadline: Option<Instant>,
     pub(crate) wake: Waker,
     pub(crate) listeners: Vec<Token>,
+    pub(crate) listening: Vec<bool>,
     pub(crate) armed: bool,
     pub(crate) spare: Spare,
+    pub(crate) schedule: Option<Schedule<S::Admission>>,
 }
 
 impl<S: Service> Reactor<S> {
     pub(crate) fn new(
         config: &Config,
         listeners: Vec<ListenerFd<S>>,
-        wake: Waker,
-        control: Arc<Control>,
+        (wake, control): (Waker, Arc<Control>),
+        plan: Option<Plan<S::Admission>>,
     ) -> io::Result<Self> {
         let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
         let clock = Clock::start();
         let now = Instant::now();
+        let shared = listeners.iter().map(|listener| listener.shared).collect();
         let mut reactor = Self {
             config: config.clone(),
             epoll,
@@ -164,10 +169,13 @@ impl<S: Service> Reactor<S> {
             drain_deadline: None,
             wake: wake.clone(),
             listeners: Vec::with_capacity(listeners.len()),
+            listening: Vec::with_capacity(listeners.len()),
             armed: false,
             spare: Spare::reserve()?,
+            schedule: plan.map(|plan| Schedule::new(plan, shared)),
         };
         reactor.watch_wake(wake)?;
+        reactor.watch_inbox()?;
         for (index, listener) in listeners.into_iter().enumerate() {
             reactor.add_listener(index, listener)?;
         }
@@ -192,33 +200,46 @@ impl<S: Service> Reactor<S> {
             index,
         });
         self.listeners.push(token);
+        self.listening.push(false);
         Ok(())
     }
 
     pub(crate) fn set_armed(&mut self, armed: bool) -> io::Result<()> {
-        if armed == self.armed {
-            return Ok(());
+        if armed != self.armed {
+            self.armed = armed;
+            if armed {
+                self.control.arm();
+            } else {
+                self.control.disarm();
+            }
         }
-        for token in &self.listeners {
+        self.sync_listening()
+    }
+
+    fn serves(&self, listener: usize) -> bool {
+        self.armed
+            && self
+                .schedule
+                .as_ref()
+                .is_none_or(|schedule| schedule.serves(listener))
+    }
+
+    fn sync_listening(&mut self) -> io::Result<()> {
+        for (position, token) in self.listeners.iter().enumerate() {
+            let serves = self.serves(position);
+            if serves == self.listening[position] {
+                continue;
+            }
             let Some(Body::Listener { fd, .. }) = self.slab.body(*token) else {
                 continue;
             };
-            if armed {
-                sys::watch(
-                    &self.epoll,
-                    fd,
-                    token.to_u64(),
-                    EventFlags::IN | EventFlags::EXCLUSIVE,
-                )?;
+            if serves {
+                let flags = EventFlags::IN | EventFlags::EXCLUSIVE;
+                sys::watch(&self.epoll, fd, token.to_u64(), flags)?;
             } else {
                 sys::unwatch(&self.epoll, fd);
             }
-        }
-        self.armed = armed;
-        if armed {
-            self.control.arm();
-        } else {
-            self.control.disarm();
+            self.listening[position] = serves;
         }
         Ok(())
     }
@@ -234,17 +255,23 @@ impl<S: Service> Reactor<S> {
             }
             self.now = Instant::now();
             self.moment = self.clock.moment(self.now);
+            self.begin_batch(events.len());
             for event in &events {
                 self.dispatch(Token::from_u64(event.data.u64()), event.flags);
             }
+            self.serve_ready();
             self.fire_timers();
             if self.finished() {
                 return Ok(());
             }
+            self.account_busy();
         }
     }
 
     fn timeout(&self) -> Option<Timespec> {
+        if self.backlogged() {
+            return Some(timespec(Duration::ZERO));
+        }
         let wheel = self.wheel.next_wake(self.moment);
         let drain = self
             .drain_deadline
@@ -265,13 +292,14 @@ impl<S: Service> Reactor<S> {
 
     fn dispatch(&mut self, token: Token, flags: EventFlags) {
         match self.slab.body(token) {
-            Some(Body::Client(_)) => self.client_event(token, Some(flags)),
+            Some(Body::Client(_)) => self.client_ready(token, flags),
             Some(Body::Upstream(_)) => self.upstream_event(token, flags),
             Some(Body::Listener { index, .. }) => {
                 let index = *index;
                 self.accept(token, index);
             }
             Some(Body::Wake(_)) => self.woken(),
+            Some(Body::Inbox(_)) => self.arrived(),
             Some(Body::Free | Body::Busy) | None => {}
         }
     }

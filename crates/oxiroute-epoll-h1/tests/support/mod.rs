@@ -15,11 +15,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_epoll_h1::{Config, Engine, Handoff, Listener, Timeouts};
+use oxiroute_epoll_h1::{
+    Age, Config, Engine, Handoff, Listener, Policy, Scale, Scheduling, Timeouts,
+};
 
 pub use origin::{Origin, await_head, reset};
 pub use service::{Guard, KILL, Knobs, MOVE, Reference, Route};
 pub use wire::Wire;
+
+struct Start {
+    accepting: bool,
+    shared: bool,
+}
 
 pub struct Fixture {
     pub addr: SocketAddr,
@@ -42,7 +49,31 @@ pub fn test_config() -> Config {
         } else {
             oxiroute_epoll_h1::Trigger::Edge
         },
+        scheduling: suite_scheduling(),
         ..Config::default()
+    }
+}
+
+fn suite_scheduling() -> Option<Scheduling> {
+    let policy = Policy {
+        min_active: 1,
+        target_busy_permille: 400,
+        release_delay: Duration::from_millis(100),
+    };
+    let scale = Some(Scale {
+        name: "engine-suite".into(),
+        policy,
+    });
+    match std::env::var("EPOLL_H1_SCHEDULING").as_deref() {
+        Ok("aged") => Some(Scheduling {
+            age: Age::adaptive(),
+            scale: None,
+        }),
+        Ok("scaled") => Some(Scheduling {
+            age: Age::Fixed(Duration::from_millis(5)),
+            scale,
+        }),
+        _ => None,
     }
 }
 
@@ -86,22 +117,65 @@ impl Fixture {
         Self::build((config, timeouts, knobs), origin, routes, true)
     }
 
+    pub fn on_shared_listener(config: Config, knobs: Knobs) -> Self {
+        let origin = Origin::start();
+        let routes = vec![Route {
+            host: "test.example",
+            prefix: "/",
+            origin: origin.addr,
+        }];
+        Self::build_with(
+            (config, Timeouts::default(), knobs),
+            origin,
+            routes,
+            Start {
+                accepting: true,
+                shared: true,
+            },
+        )
+    }
+
     fn build(
-        (config, timeouts, knobs): (Config, Timeouts, Knobs),
+        parts: (Config, Timeouts, Knobs),
         origin: Origin,
         routes: Vec<Route>,
         accepting: bool,
     ) -> Self {
+        let start = Start {
+            accepting,
+            shared: false,
+        };
+        Self::build_with(parts, origin, routes, start)
+    }
+
+    fn build_with(
+        (config, timeouts, knobs): (Config, Timeouts, Knobs),
+        origin: Origin,
+        routes: Vec<Route>,
+        Start { accepting, shared }: Start,
+    ) -> Self {
         let (sender, handoffs) = mpsc::channel();
         let (paused_sender, paused) = mpsc::channel();
         let service = Arc::new(Reference::new(routes, knobs, (sender, paused_sender)));
-        let listener = Listener::reuseport(
-            "127.0.0.1:0".parse().expect("address"),
-            config.threads,
-            Arc::clone(&service),
-            timeouts,
-        )
-        .expect("listeners");
+        let listener = if shared {
+            let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            socket.set_nonblocking(true).expect("nonblocking");
+            Listener::shared(
+                &std::os::fd::OwnedFd::from(socket),
+                config.threads,
+                Arc::clone(&service),
+                timeouts,
+            )
+            .expect("listeners")
+        } else {
+            Listener::reuseport(
+                "127.0.0.1:0".parse().expect("address"),
+                config.threads,
+                Arc::clone(&service),
+                timeouts,
+            )
+            .expect("listeners")
+        };
         let addr = listener.local_addr().expect("listener address");
         let engine = if accepting {
             Engine::start(&config, vec![listener])

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use super::schedule::Scheduling;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Trigger {
     Edge,
@@ -20,6 +22,7 @@ pub struct Config {
     pub linger: Duration,
     pub max_attempts: u8,
     pub trigger: Trigger,
+    pub scheduling: Option<Scheduling>,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             linger: Duration::from_secs(1),
             max_attempts: 4,
             trigger: Trigger::Edge,
+            scheduling: None,
         }
     }
 }

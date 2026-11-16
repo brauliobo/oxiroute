@@ -2937,7 +2937,9 @@ dependencies = [
 name = "oxiroute-epoll-h1"
 version = "6.5.2"
 dependencies = [
+ "oxiroute-aged-order",
  "oxiroute-h1-head",
+ "oxiroute-worker-scaling",
  "rustix",
 ]
 
