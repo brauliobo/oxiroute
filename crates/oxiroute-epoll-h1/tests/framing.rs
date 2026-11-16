@@ -2,9 +2,14 @@
 
 mod support;
 
-use std::time::Duration;
+use std::{
+    io::{Read, Write},
+    sync::{Mutex, mpsc},
+    time::Duration,
+};
 
-use support::{Fixture, Knobs, eventually, test_config};
+use oxiroute_epoll_h1::Timeouts;
+use support::{Fixture, Knobs, Origin, Route, await_head, eventually, reset, test_config};
 
 #[test]
 fn keepalive_requests_share_one_client_and_one_upstream_connection() {
@@ -122,6 +127,55 @@ fn a_response_delimited_by_the_close_is_chunked_for_the_client_and_its_upstream_
     wire.get("/size/5");
     assert_eq!(wire.reply().body.len(), 5);
     assert_eq!(fixture.origin.accepted(), 2);
+}
+
+#[test]
+fn a_response_delimited_by_the_close_that_the_origin_resets_is_not_completed() {
+    let (reset_now, reset_signal) = mpsc::channel::<()>();
+    let reset_signal = Mutex::new(reset_signal);
+    let origin = Origin::scripted(move |mut stream| {
+        await_head(&mut stream);
+        stream
+            .write_all(b"HTTP/1.0 200 OK\r\n\r\npart-one;")
+            .expect("origin write");
+        reset_signal
+            .lock()
+            .expect("signal")
+            .recv()
+            .expect("reset requested");
+        reset(stream);
+    });
+    let routes = vec![Route {
+        host: "test.example",
+        prefix: "/",
+        origin: origin.addr,
+    }];
+    let fixture = Fixture::with_routes(
+        test_config(),
+        Timeouts::default(),
+        Knobs::default(),
+        origin,
+        routes,
+    );
+    let mut wire = fixture.wire();
+    wire.get("/");
+    let mut received = Vec::new();
+    while !String::from_utf8_lossy(&received).contains("part-one;") {
+        let mut chunk = [0_u8; 1024];
+        let count = wire
+            .stream
+            .read(&mut chunk)
+            .expect("the relayed head and first chunk");
+        assert_ne!(count, 0, "closed before the first chunk");
+        received.extend_from_slice(&chunk[..count]);
+    }
+    reset_now.send(()).expect("origin waits");
+    let mut rest = Vec::new();
+    let _ = wire.stream.read_to_end(&mut rest);
+    received.extend_from_slice(&rest);
+    let text = String::from_utf8_lossy(&received);
+    assert!(!text.ends_with("0\r\n\r\n"), "{text}");
+    assert!(wire.ended());
 }
 
 #[test]

@@ -56,6 +56,26 @@ impl Origin {
         origin
     }
 
+    pub fn scripted(script: impl Fn(TcpStream) + Send + Sync + 'static) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind origin");
+        let origin = Self {
+            addr: listener.local_addr().expect("origin address"),
+            accepted: Arc::default(),
+            flaky_left: Arc::default(),
+            connections: Arc::default(),
+            heads: Arc::default(),
+        };
+        let (accepted, script) = (Arc::clone(&origin.accepted), Arc::new(script));
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let script = Arc::clone(&script);
+                thread::spawn(move || script(stream));
+            }
+        });
+        origin
+    }
+
     pub fn accepted(&self) -> usize {
         self.accepted.load(Ordering::SeqCst)
     }
@@ -65,6 +85,27 @@ impl Origin {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
+}
+
+pub fn await_head(stream: &mut TcpStream) {
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut chunk = [0_u8; 1];
+        if stream
+            .read(&mut chunk)
+            .ok()
+            .filter(|count| *count > 0)
+            .is_none()
+        {
+            return;
+        }
+        head.push(chunk[0]);
+    }
+}
+
+pub fn reset(stream: TcpStream) {
+    rustix::net::sockopt::set_socket_linger(&stream, Some(Duration::ZERO)).expect("linger");
+    drop(stream);
 }
 
 fn read_request(stream: &mut TcpStream, pending: &mut Vec<u8>) -> Option<Incoming> {

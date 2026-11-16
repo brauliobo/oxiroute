@@ -16,7 +16,7 @@ use std::{
 
 use oxiroute_epoll_h1::{Config, Engine, Handoff, Listener, Timeouts};
 
-pub use origin::Origin;
+pub use origin::{Origin, await_head, reset};
 pub use service::{Guard, Knobs, Reference, Route};
 pub use wire::Wire;
 

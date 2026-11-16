@@ -312,7 +312,7 @@ impl<S: Service> Reactor<S> {
                     self.wait_for(token, client, Wait::Body, limit);
                 }
                 Read::Block => return Ok(progressed),
-                Read::Eof | Read::Failed if matches!(relay.mode, Mode::UntilClose) => {
+                Read::Eof if matches!(relay.mode, Mode::UntilClose) => {
                     buffers.resp[..LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
                     relay.window = Window::new(0, LAST_CHUNK.len());
                     relay.complete = true;
