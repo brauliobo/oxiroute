@@ -143,7 +143,7 @@ def spawn(command, cpus, log, env=None):
                             env={**os.environ, **(env or {})})
 
 
-def wait_udp(port, process, timeout=30.0):
+def wait_udp(port, process, timeout=30.0, host="127.0.0.1"):
     probe = bytes([0xC0]) + bytes.fromhex("1a2a3a4a") + bytes([8]) + os.urandom(8) + bytes([8]) + os.urandom(8)
     probe += bytes(1200 - len(probe))
     deadline = time.monotonic() + timeout
@@ -153,7 +153,7 @@ def wait_udp(port, process, timeout=30.0):
             if process.poll() is not None:
                 raise RuntimeError("server exited before listening")
             try:
-                udp.sendto(probe, ("127.0.0.1", port))
+                udp.sendto(probe, (host, port))
                 udp.recv(2048)
                 return
             except (socket.timeout, ConnectionRefusedError):
@@ -161,13 +161,13 @@ def wait_udp(port, process, timeout=30.0):
     raise RuntimeError("udp port not ready")
 
 
-def wait_tcp(port, process, timeout=30.0):
+def wait_tcp(port, process, timeout=30.0, host="127.0.0.1"):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("server exited before listening")
         try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            socket.create_connection((host, port), timeout=0.2).close()
             return
         except OSError:
             pass

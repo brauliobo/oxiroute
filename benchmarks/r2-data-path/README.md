@@ -175,6 +175,56 @@ benchmarks/r2-data-path/h3_impair.py small --server oxiroute --server-cpus 8-9 -
 * The server CPU counters tick at 10 ms: a measured section has to burn several hundred milliseconds to give a stable
   CPU per MiB or per request (`--requests 200000` for `small`).
 
+## BBR measurements
+
+The measurements behind the `http3_congestion_control` default (`bbr`, with `cubic` selectable) are in `fairness/`. Raw
+records and the Markdown table of every fairness cell are in `fairness/results/`.
+
+```sh
+export OXIROUTE_BIN=/path/to/oxiroute R2TOOL_BIN=/path/to/r2tool
+benchmarks/r2-data-path/fairness/gate.sh out/gate.jsonl 3
+benchmarks/r2-data-path/fairness/matrix.sh out/fairness.jsonl 3 16-21
+python3 benchmarks/r2-data-path/fairness/summarize.py out/fairness.jsonl
+```
+
+* `gate.sh` runs `h3_impair.py` for cubic and bbr alternately: 10 MiB downloads at 40 ms with 0.5% loss, at 100 ms with 1%
+  loss and at 40 ms without loss, then on the plain loopback the 48 MiB download and the 1 KiB request rate (`gate.jsonl`).
+* `lane.py` (driven by `matrix.sh`) builds two network namespaces in one unprivileged user namespace, joined by a veth pair:
+  the servers on one side, one curl client per flow on the other. Data crosses a `netem` delay line and a `tbf` queue of 0.5,
+  1 or 4 times the bandwidth-delay product at 100 Mbit/s; acknowledgements cross a second delay line. Flows are an
+  OxiRoute HTTP/3 listener with `bbr`, one with `cubic` (UDP segmentation offload off, so the counters see single
+  packets), and an HTTP/2 over TLS listener (kernel cubic). Each flow downloads a 48 MiB file repeatedly; after 15 s of
+  warmup a 25 s window gives per flow the goodput share, loss (packets entering the queue and not leaving it; TCP:
+  retransmitted segments), CPU per MiB delivered, the queue occupancy and Jain's index. Every cell has three runs; the
+  table in `summary.md` holds the medians. No privileges and no change to the host.
+* Every record carries the `some avg10` CPU pressure before and after the run (at most 4.4% during the matrix).
+
+Medians over three runs, rounded; `bbr` and `cubic` alone are the same listener with the setting changed.
+
+| Measurement | cubic | bbr |
+|---|---|---|
+| 10 MiB, 40 ms, 0.5% loss | 15.0 s | 0.37 s |
+| 10 MiB, 100 ms, 1% loss | 61.8 s | 0.80 s |
+| 10 MiB, 40 ms, no loss | 0.55 s | 0.31 s |
+| LAN 48 MiB download | 1,100 MiB/s, 0.96 ms CPU per MiB | 226 MiB/s, 2.9 ms CPU per MiB |
+| LAN 1 KiB, 8 connections of 4 streams | 237,000 per s, p99 263 us, 6.2 us CPU per request | 247,000 per s, p99 219 us, 6.0 us CPU per request |
+| Shared 100 Mbit/s, bbr against cubic flow | cubic keeps 0.4% to 0.7% | bbr takes 99.3% to 99.7%, Jain 0.50 |
+| Shared 100 Mbit/s, bbr against TCP flow | TCP keeps 0.3% to 0.5% | bbr takes 99.5% to 99.7%, Jain 0.50 |
+| Shared 100 Mbit/s, cubic against TCP flow | Jain 0.90 to 0.98 (QUIC share 37% to 60%) | |
+| Alone through the 100 Mbit/s bottleneck | loss under 0.1%, 7.1 to 12.1 ms CPU per MiB | loss 28% to 70%, 10.1 to 17.3 ms CPU per MiB (0.8 to 2.0 times, median 1.7) |
+
+Why `bbr` behaves this way, from quinn 0.11's controller (`quinn-proto` `congestion/bbr`, which exposes only
+`initial_window`): the pacer of quinn-proto is driven by the congestion window (1.25 times the window per smoothed round
+trip), not by BBR's own pacing rate, and the window is 2 times the estimated bandwidth-delay product plus the largest
+ack aggregation seen. With an empty queue that sends at about 2.5 times the estimated bandwidth, so a buffer under about
+a bandwidth-delay product overflows continuously (the loss above) and a competing loss-based flow, which backs off at
+every loss, is starved. On a LAN the estimated bandwidth-delay product (about 250 MB/s times a 15 us minimum round trip,
+under 4 KB) is below the controller's fixed floor of 4 datagrams: the window sits at 5,808 bytes for the whole transfer
+and one system call carries 3 datagrams (`fairness/results/connection_stats/`, sampled every 100 ms from a scratch
+build that logged `Connection::stats`), against a window that grows without bound with `cubic`. The floor, the gains and
+the pacing source are constants of the library; nothing in our transport configuration changes them (the one exposed
+parameter, the initial window, only matters before the first bandwidth samples and made no difference at 32 packets).
+
 ## Soak
 
 ```sh
