@@ -24,7 +24,7 @@ use tokio::{
 
 use h1_wire::{Origin, STEP, Wire, find};
 
-const WARM: usize = 50;
+const WARM: usize = 300;
 const MEASURED: usize = 300;
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: idle.test\r\n\r\n";
@@ -35,8 +35,9 @@ const UPGRADE: &[u8] =
     b"GET /socket HTTP/1.1\r\nHost: idle.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
-/// Bytes per connection, measured with 300 connections after 50 warm ones: 13.0 kB for a WebSocket and 3.2 kB for an
-/// HTTP/1 connection. A read buffer kept while the connection waits adds 8 kB to either.
+/// Bytes per connection, measured with 300 connections after 300 warm ones: 13.0 kB for a WebSocket and 3.2 kB for an
+/// HTTP/1 connection. The warm connections outnumber the receive buffers of the `io_uring` plane's ring, so every page
+/// of that fixed pool is resident before the measurement. A read buffer kept while the connection waits adds 8 kB to either.
 const WEBSOCKET_CEILING: usize = 14_000;
 const HTTP1_CEILING: usize = 4_500;
 

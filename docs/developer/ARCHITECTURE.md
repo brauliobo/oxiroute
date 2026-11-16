@@ -85,6 +85,12 @@ The server crate owns listener admission and dispatches by protocol:
   order is `oxiroute-aged-order`, shared with the tokio executor, the active-set decision is `oxiroute-worker-scaling`,
   and a connection moves between threads as an owned descriptor handed through the target thread's inbox while it holds
   no request, no buffer and no origin connection.
+  The engine's I/O goes through a driver: readiness (`epoll`, the default) or, when `http_data_plane` is
+  `io_uring`, completions of a per-thread ring owned by `oxiroute-uring`. The state machine, `Service` trait, timer
+  wheel and tests are shared; the io_uring driver turns completions into the readiness the state machine consumes
+  and owns the buffers of operations in flight. It is opt-in, and a kernel or sandbox that lacks what it needs is a
+  plan-time error, probed in `service_plan/data_plane.rs`, never a fallback. Measurements are in
+  `benchmarks/reports/io-uring-http1/README.md`.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by
@@ -96,6 +102,18 @@ The server crate owns listener admission and dispatches by protocol:
 Retries, capacity permits, DNS address order, health eligibility, and route precedence must be shared
 between the runtime and the observable snapshot. A value that affects selection should have an
 observable representation or an explicit reason why it is not exposed.
+
+## Unsafe Containment
+
+Every first-party crate forbids `unsafe` except `oxiroute-allocator`, `oxiroute-cpu` and `oxiroute-uring`. The io_uring
+layer cannot be written without it (submission queue entries hand the kernel raw pointers, provided buffer rings are
+shared memory), and no safe crate provides the operations it needs, so `oxiroute-uring` is the one crate that opts
+in and the engine stays unsafe-free. All unsafe code lives in `crates/oxiroute-uring/src/raw.rs`, behind a safe API
+that owns every buffer for as long as the kernel may use it; each unsafe block carries a `SAFETY` comment, and
+`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks` and `multiple_unsafe_ops_per_block` are denied.
+`scripts/verify-unsafe-containment.sh` runs in CI and fails when another crate stops forbidding unsafe, when unsafe
+appears outside `raw.rs`, when a block lacks its `SAFETY` comment, or when another crate depends on `io-uring` or
+references io_uring system calls.
 
 ## RTMP Plane
 

@@ -50,6 +50,11 @@ pub fn test_config() -> Config {
             oxiroute_epoll_h1::Trigger::Edge
         },
         scheduling: suite_scheduling(),
+        driver: if std::env::var("EPOLL_H1_DRIVER").is_ok_and(|value| value == "io_uring") {
+            oxiroute_epoll_h1::Driver::IoUring
+        } else {
+            oxiroute_epoll_h1::Driver::Epoll
+        },
         ..Config::default()
     }
 }

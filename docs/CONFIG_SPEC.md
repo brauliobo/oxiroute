@@ -302,7 +302,7 @@ Current constraints:
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
-- Root `http_data_plane` is an optional string, `epoll` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
+- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
   HTTP/1.1 reverse-proxy listeners are served by the thread-per-core epoll data plane wherever the platform supports it
   (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
   Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
@@ -315,6 +315,11 @@ Current constraints:
   `epoll` chooses the epoll data plane explicitly: the configuration is rejected when the platform does not support it
   or when `http_fast_lane` is `false`, and is never silently downgraded (the server performs
   that check when it prepares the generation; the value itself is checked when the configuration is loaded). The epoll
+  `io_uring` runs the same engine on io_uring completions instead of epoll readiness. It is opt-in and never the
+  default: the server probes the kernel when it prepares the generation and rejects the configuration, naming the
+  missing capability (a kernel without the needed operations or provided buffer rings, `kernel.io_uring_disabled`, a
+  seccomp or container policy), instead of falling back to epoll; like `epoll` it requires `http_fast_lane` not
+  `false`. Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
   plane serves requests that a client sends back to back on one connection without waiting for the answers (pipelining)
   one after the other, where the classic path closes such a connection after the first answer. Changing the value is an
   ordinary reload: the plane belongs to the generation. Connections served by either plane appear identically in

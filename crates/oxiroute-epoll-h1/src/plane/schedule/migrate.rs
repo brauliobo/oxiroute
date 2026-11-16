@@ -1,6 +1,6 @@
 use std::io;
 
-use rustix::event::epoll::EventFlags;
+use oxiroute_uring::Released;
 
 use super::arrival::Arrival;
 use crate::plane::{
@@ -8,7 +8,6 @@ use crate::plane::{
     reactor::Reactor,
     service::Service,
     slab::{Body, Token},
-    sys,
 };
 
 impl<S: Service> Reactor<S> {
@@ -22,7 +21,7 @@ impl<S: Service> Reactor<S> {
         let Some(Body::Inbox(waker)) = self.slab.body(token) else {
             unreachable!("just inserted")
         };
-        sys::watch(&self.epoll, waker.fd(), token.to_u64(), EventFlags::IN)
+        self.driver.watch_wake(token, waker.fd())
     }
 
     pub(crate) fn place(&mut self, arrival: Arrival<S::Admission>) {
@@ -43,11 +42,12 @@ impl<S: Service> Reactor<S> {
         None
     }
 
-    pub(crate) fn arrived(&mut self) {
+    pub(crate) fn arrived(&mut self, token: Token) {
         let Some(schedule) = &mut self.schedule else {
             return;
         };
         schedule.placement.settle_inbox();
+        self.driver.wake_consumed(token);
         let mut arrivals = std::mem::take(&mut schedule.arrivals);
         schedule.placement.take(&mut arrivals);
         for arrival in arrivals.drain(..) {
@@ -96,10 +96,12 @@ impl<S: Service> Reactor<S> {
             listener,
             ..
         } = client;
-        sys::unwatch(&self.epoll, &link.fd);
+        let Ok(Released { fd, .. }) = self.driver.release(link) else {
+            return self.left();
+        };
         if let Some(schedule) = &self.schedule {
             let arrival = Arrival {
-                fd: link.fd,
+                fd,
                 peer,
                 listener,
                 admission,

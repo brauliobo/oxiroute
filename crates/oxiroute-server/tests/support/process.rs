@@ -252,13 +252,14 @@ fn pending_accepts(address: SocketAddr) -> Option<u64> {
 
 const DATA_PLANE_ENV: &str = "OXIROUTE_TEST_HTTP_DATA_PLANE";
 
-/// The HTTP data plane a whole suite runs on, from the test variable: `epoll` or `tokio`. Omitted leaves each
+/// The HTTP data plane a whole suite runs on, from the test variable: `epoll`, `io_uring` or `tokio`. Omitted leaves each
 /// configuration to its own choice, which defaults to epoll where the platform supports it.
 pub fn suite_data_plane() -> Option<HttpDataPlane> {
     match std::env::var(DATA_PLANE_ENV).ok()?.as_str() {
         "epoll" => Some(HttpDataPlane::Epoll),
+        "io_uring" => Some(HttpDataPlane::IoUring),
         "tokio" => Some(HttpDataPlane::Tokio),
-        other => panic!("{DATA_PLANE_ENV} is `epoll` or `tokio`, not `{other}`"),
+        other => panic!("{DATA_PLANE_ENV} is `epoll`, `io_uring` or `tokio`, not `{other}`"),
     }
 }
 

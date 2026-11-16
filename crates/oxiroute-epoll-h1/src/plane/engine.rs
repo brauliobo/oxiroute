@@ -12,7 +12,7 @@ use rustix::net::getsockname;
 
 use super::{
     ScalingStats,
-    config::{Config, Timeouts},
+    config::{Config, Driver, Timeouts},
     reactor::{Control, DRAINING, ListenerFd, Reactor, STOPPING},
     schedule::{Fleet, Plan},
     service::Service,
@@ -140,6 +140,11 @@ impl Engine {
         listeners: Vec<Listener<S>>,
         accepting: bool,
     ) -> io::Result<Self> {
+        if config.driver == Driver::IoUring && config.scheduling.is_some() {
+            return Err(io::Error::other(
+                "the io_uring driver does not schedule threads",
+            ));
+        }
         let mut per_thread = (0..config.threads).map(|_| Vec::new()).collect::<Vec<_>>();
         for listener in listeners {
             if listener.sockets.len() != config.threads {
@@ -183,7 +188,7 @@ impl Engine {
             let control = Arc::clone(&control);
             let (ready, exits) = (ready_tx.clone(), exit_tx.clone());
             let handle = thread::Builder::new()
-                .name(format!("epoll-h1-{index}"))
+                .name(format!("{}-h1-{index}", config.driver.thread_prefix()))
                 .spawn(move || supervised(parts, control, (&ready, &exits)))?;
             engine.threads.push(handle);
         }

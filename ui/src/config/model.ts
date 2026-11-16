@@ -780,7 +780,7 @@ export interface UdpPolicyConfig {
   max_queue_bytes: number
 }
 
-export type HttpDataPlane = 'epoll' | 'tokio'
+export type HttpDataPlane = 'epoll' | 'io_uring' | 'tokio'
 
 export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker' | 'auto'
 export type CongestionControl = 'cubic' | 'bbr'

@@ -24,9 +24,10 @@ fn absence_leaves_the_choice_open_and_stays_out_of_the_canonical_form() {
 }
 
 #[test]
-fn both_planes_are_taken_as_written_and_round_trip() {
+fn every_plane_is_taken_as_written_and_round_trip() {
     for (token, plane) in [
         ("epoll", HttpDataPlane::Epoll),
+        ("io_uring", HttpDataPlane::IoUring),
         ("tokio", HttpDataPlane::Tokio),
     ] {
         let config = draft(&json!({"http_data_plane": token}))
@@ -44,7 +45,7 @@ fn both_planes_are_taken_as_written_and_round_trip() {
 
 #[test]
 fn anything_but_a_plane_name_is_rejected() {
-    for value in [json!("io_uring"), json!(true), json!(0), json!(["epoll"])] {
+    for value in [json!("uring"), json!(true), json!(0), json!(["epoll"])] {
         assert!(
             draft(&json!({"http_data_plane": value})).is_err(),
             "{value}"
