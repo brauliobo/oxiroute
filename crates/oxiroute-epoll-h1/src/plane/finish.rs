@@ -5,7 +5,6 @@ use super::{
     reactor::{Reactor, Step},
     service::{Failure, Lease as _, Outcome, Service},
     slab::Token,
-    sys,
     upstream::Phase,
 };
 
@@ -58,7 +57,7 @@ impl<S: Service> Reactor<S> {
         if !unread {
             return Step::Close;
         }
-        sys::shutdown_write(&client.link.fd);
+        client.link.shutdown_write();
         client.stage = Stage::Lingering;
         let deadline = Some(self.moment.after(self.config.linger));
         self.set_deadline(token, deadline, &mut client.deadline);

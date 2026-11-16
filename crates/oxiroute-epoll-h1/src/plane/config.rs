@@ -6,6 +6,24 @@ pub enum Trigger {
     Level,
 }
 
+/// How an engine thread waits for and performs socket I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Driver {
+    /// Readiness notification (`epoll`) and non-blocking system calls.
+    Epoll,
+    /// Completion-based `io_uring` with owned buffers; [`Config::uring`] tunes it.
+    IoUring,
+}
+
+impl Driver {
+    pub(crate) const fn thread_prefix(self) -> &'static str {
+        match self {
+            Self::Epoll => "epoll",
+            Self::IoUring => "uring",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub threads: usize,
@@ -21,6 +39,8 @@ pub struct Config {
     pub linger: Duration,
     pub max_attempts: u8,
     pub trigger: Trigger,
+    pub driver: Driver,
+    pub uring: oxiroute_uring::Config,
 }
 
 impl Default for Config {
@@ -39,6 +59,8 @@ impl Default for Config {
             linger: Duration::from_secs(1),
             max_attempts: 4,
             trigger: Trigger::Edge,
+            driver: Driver::Epoll,
+            uring: oxiroute_uring::Config::default(),
         }
     }
 }

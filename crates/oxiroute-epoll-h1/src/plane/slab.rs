@@ -118,6 +118,10 @@ impl<S: Service> Slab<S> {
         }
     }
 
+    pub(crate) fn fill(&mut self, token: Token, body: Body<S>) {
+        self.slots[token.index as usize].body = body;
+    }
+
     pub(crate) fn put_client(&mut self, token: Token, client: Box<Client<S>>) {
         self.slots[token.index as usize].body = Body::Client(client);
     }

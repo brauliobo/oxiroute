@@ -7,7 +7,7 @@ use super::{
     reactor::{Reactor, Step},
     service::{Handoff, Request, Reuse, Routed, Service},
     slab::Token,
-    sys::{self, Read, Wrote},
+    sys::{Read, Wrote},
 };
 
 fn servable(head: &RequestHead) -> bool {
@@ -167,9 +167,11 @@ impl<S: Service> Reactor<S> {
             served,
             ..
         } = client;
-        sys::unwatch(&self.epoll, &link.fd);
+        let Ok(fd) = self.driver.release(link) else {
+            return;
+        };
         service.handoff(Handoff {
-            stream: TcpStream::from(link.fd),
+            stream: TcpStream::from(fd),
             prefix,
             peer,
             listener,

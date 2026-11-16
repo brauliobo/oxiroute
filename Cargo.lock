@@ -2944,6 +2944,7 @@ name = "oxiroute-epoll-h1"
 version = "6.5.2"
 dependencies = [
  "oxiroute-h1-head",
+ "oxiroute-uring",
  "rustix",
 ]
 

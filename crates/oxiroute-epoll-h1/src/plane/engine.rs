@@ -113,7 +113,7 @@ impl Engine {
             engine.wakers.push(wake.try_clone()?);
             let (config, control, ready) = (config.clone(), Arc::clone(&control), ready_tx.clone());
             let handle = thread::Builder::new()
-                .name(format!("epoll-h1-{index}"))
+                .name(format!("{}-h1-{index}", config.driver.thread_prefix()))
                 .spawn(move || {
                     let reactor = match Reactor::new(&config, fds, wake, control) {
                         Ok(reactor) => reactor,

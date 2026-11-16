@@ -3,11 +3,9 @@ use std::{rc::Rc, time::Duration};
 use super::{
     client::{Buffers, Client, Down, Flow, Stage, Wait, Window},
     clock::Moment,
-    link::Link,
     reactor::{Reactor, Step},
     service::{Failure, Lease as _, Recovery, Request, Reuse, Selected, Service, Target},
     slab::{Body, Token},
-    sys,
     upstream::{Phase, Upstream},
 };
 
@@ -101,11 +99,15 @@ impl<S: Service> Reactor<S> {
         if !lease.connecting() {
             return self.fail(token, client, Failure::NoCapacity);
         }
-        let Ok(connecting) = sys::connect(&address) else {
+        let Some(upstream_token) = self.slab.insert(Body::Busy) else {
+            return self.fail(token, client, Failure::Connect);
+        };
+        let Ok((link, established)) = self.driver.dial(upstream_token, address) else {
+            self.slab.remove(upstream_token);
             return self.fail(token, client, Failure::Connect);
         };
         let flow = client.flow.as_mut().expect("a serving client has a flow");
-        let phase = if connecting.established {
+        let phase = if established {
             Phase::Busy
         } else {
             Phase::Connecting
@@ -115,7 +117,7 @@ impl<S: Service> Reactor<S> {
             Reuse::Never => None,
         };
         let upstream = Upstream {
-            link: Link::new(connecting.fd),
+            link,
             key: flow.key,
             phase,
             client: Some(token),
@@ -123,23 +125,9 @@ impl<S: Service> Reactor<S> {
             lease,
             idle,
         };
-        let Some(upstream_token) = self.slab.insert(Body::Upstream(upstream)) else {
-            return self.fail(token, client, Failure::Connect);
-        };
-        let watched = match self.slab.body(upstream_token) {
-            Some(Body::Upstream(upstream)) => sys::watch(
-                &self.epoll,
-                &upstream.link.fd,
-                upstream_token.to_u64(),
-                sys::interest_flags(self.config.trigger, true, true),
-            ),
-            _ => unreachable!("just inserted"),
-        };
+        self.slab.fill(upstream_token, Body::Upstream(upstream));
         flow.upstream = Some(upstream_token);
-        if watched.is_err() {
-            return self.fail(token, client, Failure::Connect);
-        }
-        if connecting.established {
+        if established {
             flow.connected_at = Some(self.moment);
             self.start_request(token, client);
         } else {
@@ -162,7 +150,7 @@ impl<S: Service> Reactor<S> {
         if !(connecting.link.ready.write || connecting.link.ready.hangup) {
             return Some(Step::Wait);
         }
-        if !sys::connect_result(&connecting.link.fd) {
+        if !connecting.link.connect_succeeded() {
             return Some(self.fail(token, client, Failure::Connect));
         }
         connecting.phase = Phase::Busy;

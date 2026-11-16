@@ -1,8 +1,11 @@
-use std::os::fd::OwnedFd;
+use std::{io, os::fd::OwnedFd};
 
 use rustix::event::epoll::EventFlags;
 
-use super::sys::{self, Read, Wrote};
+use super::{
+    driver::RingSocket,
+    sys::{self, Read, Wrote},
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Ready {
@@ -22,16 +25,21 @@ impl Ready {
     }
 }
 
+pub(crate) enum Io {
+    Fd(OwnedFd),
+    Ring(RingSocket),
+}
+
 pub(crate) struct Link {
-    pub(crate) fd: OwnedFd,
+    pub(crate) io: Io,
     pub(crate) ready: Ready,
     pub(crate) interest: (bool, bool),
 }
 
 impl Link {
-    pub(crate) const fn new(fd: OwnedFd) -> Self {
+    pub(crate) const fn new(io: Io) -> Self {
         Self {
-            fd,
+            io,
             ready: Ready {
                 read: false,
                 write: false,
@@ -46,7 +54,10 @@ impl Link {
         if !self.ready.read {
             return Read::Block;
         }
-        let read = sys::read(&self.fd, buf);
+        let read = match &mut self.io {
+            Io::Fd(fd) => sys::read(fd, buf),
+            Io::Ring(socket) => socket.read(buf),
+        };
         match read {
             Read::Data(count) if count == buf.len() => {}
             Read::Data(_) => self.ready.read = self.ready.closing,
@@ -60,12 +71,36 @@ impl Link {
         if !self.ready.write {
             return Wrote::Block;
         }
-        let wrote = sys::write(&self.fd, head, body);
+        let wrote = match &mut self.io {
+            Io::Fd(fd) => sys::write(fd, head, body),
+            Io::Ring(socket) => socket.write(head, body),
+        };
         match wrote {
             Wrote::Bytes(count) if count == head.len() + body.len() => {}
             Wrote::Bytes(_) | Wrote::Block => self.ready.write = false,
             Wrote::Failed => {}
         }
         wrote
+    }
+
+    pub(crate) fn shutdown_write(&self) {
+        match &self.io {
+            Io::Fd(fd) => sys::shutdown_write(fd),
+            Io::Ring(socket) => socket.shutdown_write(),
+        }
+    }
+
+    pub(crate) fn connect_succeeded(&self) -> bool {
+        match &self.io {
+            Io::Fd(fd) => sys::connect_result(fd),
+            Io::Ring(socket) => socket.connected(),
+        }
+    }
+
+    pub(crate) fn release(self) -> io::Result<OwnedFd> {
+        match self.io {
+            Io::Fd(fd) => Ok(fd),
+            Io::Ring(socket) => socket.release(),
+        }
     }
 }

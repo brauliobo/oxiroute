@@ -9,6 +9,7 @@ version.workspace = true
 
 [dependencies]
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
+oxiroute-uring = { path = "../oxiroute-uring" }
 rustix.workspace = true
 
 [lints.rust]

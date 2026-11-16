@@ -3,6 +3,7 @@ mod chunked;
 mod client;
 mod clock;
 mod config;
+mod driver;
 mod engine;
 mod events;
 mod finish;
@@ -17,7 +18,7 @@ mod sys;
 mod upstream;
 mod wheel;
 
-pub use config::{Config, Timeouts, Trigger};
+pub use config::{Config, Driver, Timeouts, Trigger};
 pub use engine::{Engine, Listener};
 pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
