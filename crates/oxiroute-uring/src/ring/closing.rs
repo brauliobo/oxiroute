@@ -1,11 +1,13 @@
 use std::{
     io,
-    os::fd::OwnedFd,
     time::{Duration, Instant},
 };
 
 use super::Ring;
-use crate::slot::{Connect, Handle, Reader, Writer};
+use crate::{
+    event::Released,
+    slot::{Connect, Handle, Reader, Writer},
+};
 
 impl Ring {
     /// Gives the socket up. Receives, connects, polls and accepts are cancelled; a send already accepted is
@@ -74,14 +76,17 @@ impl Ring {
     }
 
     /// Takes the descriptor back out of the ring, for a connection that leaves the data plane. Operations in
-    /// flight are cancelled and waited for, so nothing of the ring touches the descriptor afterwards. A send
-    /// that cannot finish within `Config::flush` fails the release and closes the socket.
-    pub fn release(&mut self, handle: Handle) -> io::Result<OwnedFd> {
+    /// flight are cancelled and waited for, so nothing of the ring touches the descriptor afterwards, and the bytes
+    /// the ring received but nobody read come back with it. A send that cannot finish within `Config::flush` fails
+    /// the release and closes the socket.
+    pub fn release(&mut self, handle: Handle) -> io::Result<Released> {
+        let unread = self.take_parked(handle);
         if !self.retire(handle) {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
         if let Some(slot) = self.slot(handle) {
             slot.releasing = true;
+            slot.unread.extend(unread);
         }
         let deadline = Instant::now() + self.config.flush;
         while self.busy(handle) {
@@ -105,9 +110,10 @@ impl Ring {
             .fd
             .take()
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        let unread = std::mem::take(&mut slot.unread);
         *slot = crate::slot::Slot::vacant_after(slot.generation);
         self.free.push(handle.index);
-        Ok(fd)
+        Ok(Released { fd, unread })
     }
 
     fn busy(&self, handle: Handle) -> bool {

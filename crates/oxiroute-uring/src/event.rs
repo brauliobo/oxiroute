@@ -38,6 +38,14 @@ impl Event {
     }
 }
 
+/// A socket taken back out of the ring. `unread` holds the bytes the ring had already received from the peer and
+/// the owner never read; they come before everything the descriptor delivers from now on.
+#[derive(Debug)]
+pub struct Released {
+    pub fd: OwnedFd,
+    pub unread: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Read {
     Data(usize),

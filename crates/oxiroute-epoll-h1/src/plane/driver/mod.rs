@@ -3,6 +3,7 @@ mod ring;
 
 use std::{io, net::SocketAddr, os::fd::OwnedFd, time::Duration};
 
+use oxiroute_uring::Released;
 use rustix::event::epoll::EventFlags;
 
 use self::ring::Uring;
@@ -64,7 +65,7 @@ impl Driver {
     }
 
     /// Takes a socket out of the driver, for a connection that leaves the data plane.
-    pub(crate) fn release(&self, link: Link) -> io::Result<OwnedFd> {
+    pub(crate) fn release(&self, link: Link) -> io::Result<Released> {
         match self {
             Self::Epoll(driver) => driver.release(link),
             Self::Uring(_) => link.release(),

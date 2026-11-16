@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::support::{Harness, client, read_all, small, write_all};
-use oxiroute_uring::{Config, Event, Read, Sent};
+use oxiroute_uring::{Config, Event, Read, Released, Sent};
 use rustix::net::sockopt;
 
 fn shrink_send_buffer(stream: &TcpStream) {
@@ -129,7 +129,7 @@ fn a_released_socket_goes_back_to_its_owner_with_no_operation_left_on_it() {
     let mut peer = client(address);
     let (handle, _) = harness.accept(1);
     harness.pump(20);
-    let fd = harness.ring.release(handle).expect("released");
+    let fd = harness.ring.release(handle).expect("released").fd;
     assert_eq!(harness.ring.in_flight(), harness.baseline);
     let mut stream = TcpStream::from(fd);
     peer.write_all(b"after the release").expect("write");
@@ -153,11 +153,67 @@ fn a_release_waits_for_the_send_in_flight_and_loses_nothing() {
         harness.ring.send(handle, b"previous response", b""),
         Sent::Queued(17)
     );
-    let fd = harness.ring.release(handle).expect("released");
+    let fd = harness.ring.release(handle).expect("released").fd;
     let mut bytes = [0_u8; 17];
     peer.read_exact(&mut bytes).expect("response");
     assert_eq!(&bytes, b"previous response");
     drop(fd);
+}
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|index| (index % 251) as u8).collect()
+}
+
+fn rest_of_the_stream(released: Released, total: usize) -> Vec<u8> {
+    let mut bytes = released.unread;
+    let mut stream = TcpStream::from(released.fd);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let mut chunk = vec![0_u8; 8192];
+    while bytes.len() < total {
+        let count = stream
+            .read(&mut chunk)
+            .expect("the descriptor delivers the rest");
+        assert_ne!(count, 0, "the stream ended after {} bytes", bytes.len());
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    bytes
+}
+
+#[test]
+fn a_release_keeps_every_byte_a_receive_in_flight_took_in_order() {
+    let mut harness = Harness::new(small());
+    let (_listener, address) = harness.listener();
+    let mut peer = client(address);
+    let (handle, _) = harness.accept(1);
+    harness.pump(20);
+    let sent = pattern(100_000);
+    peer.write_all(&sent).expect("write");
+    let released = harness.ring.release(handle).expect("released");
+    assert_eq!(rest_of_the_stream(released, sent.len()), sent);
+    assert_eq!(harness.ring.in_flight(), harness.baseline);
+}
+
+#[test]
+fn a_release_keeps_the_bytes_received_and_not_yet_read_in_order() {
+    let mut harness = Harness::new(small());
+    let (_listener, address) = harness.listener();
+    let mut peer = client(address);
+    let (handle, _) = harness.accept(1);
+    let sent = pattern(60_000);
+    peer.write_all(&sent).expect("write");
+    harness.readable(1);
+    let mut head = vec![0_u8; 1000];
+    assert_eq!(harness.ring.read(handle, &mut head), Read::Data(1000));
+    assert_eq!(head, sent[..1000]);
+    let released = harness.ring.release(handle).expect("released");
+    assert!(!released.unread.is_empty());
+    assert_eq!(
+        rest_of_the_stream(released, sent.len() - 1000),
+        sent[1000..]
+    );
+    assert_eq!(harness.ring.in_flight(), harness.baseline);
 }
 
 #[test]

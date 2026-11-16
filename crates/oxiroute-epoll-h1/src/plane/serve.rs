@@ -1,6 +1,7 @@
 use std::{net::TcpStream, rc::Rc};
 
 use oxiroute_h1_head::{Connection, RequestHead, Scan, scan_request};
+use oxiroute_uring::Released;
 
 use super::{
     client::{Buffers, Client, Down, Flow, Stage, Window},
@@ -156,7 +157,7 @@ impl<S: Service> Reactor<S> {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
-        let prefix = client.buffers.req[..client.req_len].to_vec();
+        let mut prefix = client.buffers.req[..client.req_len].to_vec();
         self.release_buffers(&mut client);
         let Client {
             link,
@@ -167,9 +168,10 @@ impl<S: Service> Reactor<S> {
             served,
             ..
         } = client;
-        let Ok(fd) = self.driver.release(link) else {
+        let Ok(Released { fd, unread }) = self.driver.release(link) else {
             return;
         };
+        prefix.extend(unread);
         service.handoff(Handoff {
             stream: TcpStream::from(fd),
             prefix,

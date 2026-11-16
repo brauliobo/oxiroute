@@ -143,15 +143,13 @@ impl Ring {
             self.available = self.available.saturating_sub(1);
         }
         let received = usize::try_from(done.result).ok().filter(|len| *len > 0);
-        let data = taken.zip(received).filter(|_| !closing);
+        if closing {
+            self.received_after_close(handle, taken.map(|buffer| (buffer, received.unwrap_or(0))));
+            return;
+        }
+        let data = taken.zip(received);
         if let Some(buffer) = taken.filter(|_| data.is_none()) {
             self.give_buffer(buffer);
-        }
-        if closing {
-            if let Some(slot) = self.slot_any(handle) {
-                slot.reader = Reader::Idle;
-            }
-            return;
         }
         match data {
             Some((buffer, len)) => {
@@ -176,6 +174,42 @@ impl Ring {
                     slot.reader = Reader::Idle;
                 }
                 self.receive_failed(handle, Self::errno(done.result));
+            }
+        }
+    }
+
+    /// A receive that ended after the socket was given up. Its bytes are gone for a closed socket and belong to the
+    /// owner of a released one, whose descriptor will never deliver them again.
+    fn received_after_close(&mut self, handle: Handle, taken: Option<(u16, usize)>) {
+        let bytes = taken.map(|(buffer, len)| {
+            let mut bytes = vec![0; len];
+            self.queue.buffers().copy_out(buffer, 0, &mut bytes);
+            self.give_buffer(buffer);
+            bytes
+        });
+        if let Some(slot) = self.slot_any(handle) {
+            slot.reader = Reader::Idle;
+            if slot.releasing {
+                slot.unread.extend(bytes.into_iter().flatten());
+            }
+        }
+    }
+
+    /// Takes the bytes of the socket that were received and not read yet.
+    pub(crate) fn take_parked(&mut self, handle: Handle) -> Vec<u8> {
+        let Some(slot) = self.slot(handle) else {
+            return Vec::new();
+        };
+        match std::mem::replace(&mut slot.reader, Reader::Idle) {
+            Reader::Parked { chunk, taken, len } => {
+                let mut bytes = vec![0; len - taken];
+                self.copy_out(&chunk, taken, &mut bytes);
+                self.discard(chunk);
+                bytes
+            }
+            reader => {
+                slot.reader = reader;
+                Vec::new()
             }
         }
     }

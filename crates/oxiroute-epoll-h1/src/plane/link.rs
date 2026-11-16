@@ -1,5 +1,6 @@
 use std::{io, os::fd::OwnedFd};
 
+use oxiroute_uring::Released;
 use rustix::event::epoll::EventFlags;
 
 use super::{
@@ -97,9 +98,12 @@ impl Link {
         }
     }
 
-    pub(crate) fn release(self) -> io::Result<OwnedFd> {
+    pub(crate) fn release(self) -> io::Result<Released> {
         match self.io {
-            Io::Fd(fd) => Ok(fd),
+            Io::Fd(fd) => Ok(Released {
+                fd,
+                unread: Vec::new(),
+            }),
             Io::Ring(socket) => socket.release(),
         }
     }

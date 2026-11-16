@@ -1,5 +1,6 @@
 use std::{io, net::SocketAddr, os::fd::OwnedFd, time::Duration};
 
+use oxiroute_uring::Released;
 use rustix::{
     buffer::spare_capacity,
     event::{
@@ -70,10 +71,10 @@ impl Epoll {
         Ok((self.open(connecting.fd, token)?, connecting.established))
     }
 
-    pub(crate) fn release(&self, link: Link) -> io::Result<OwnedFd> {
-        let fd = link.release()?;
-        sys::unwatch(&self.fd, &fd);
-        Ok(fd)
+    pub(crate) fn release(&self, link: Link) -> io::Result<Released> {
+        let released = link.release()?;
+        sys::unwatch(&self.fd, &released.fd);
+        Ok(released)
     }
 
     pub(crate) fn arm_listeners<S: Service>(

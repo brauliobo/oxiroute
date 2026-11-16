@@ -19,7 +19,7 @@ mod ring;
 mod slot;
 
 pub use config::{Config, Taskrun};
-pub use event::{Event, Read, Sent};
+pub use event::{Event, Read, Released, Sent};
 pub use probe::{Missing, probe};
 pub use ring::Ring;
 pub use slot::Handle;

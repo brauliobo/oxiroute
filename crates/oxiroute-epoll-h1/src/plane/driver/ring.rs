@@ -1,6 +1,6 @@
 use std::{cell::RefCell, io, net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
 
-use oxiroute_uring::{Event, Handle, Read as Received, Ring, Sent};
+use oxiroute_uring::{Event, Handle, Read as Received, Released, Ring, Sent};
 use rustix::event::epoll::EventFlags;
 
 use super::Polled;
@@ -52,7 +52,7 @@ impl RingSocket {
         self.ring.borrow_mut().connected(self.handle) == Some(true)
     }
 
-    pub(crate) fn release(self) -> io::Result<OwnedFd> {
+    pub(crate) fn release(self) -> io::Result<Released> {
         self.ring.borrow_mut().release(self.handle)
     }
 }
