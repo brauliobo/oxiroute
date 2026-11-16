@@ -69,7 +69,7 @@ impl HaproxyStatsApi {
             }
             ("GET", "/metrics") => self.metrics_response(),
             ("GET", "/ready") => self.readiness_response(),
-            ("GET", "/status.json") => crate::observability::status_summary::status_json_response(
+            ("GET", "/status.json") => crate::observability::status::summary::status_json_response(
                 &self.metrics,
                 Some(&self.generations),
             ),

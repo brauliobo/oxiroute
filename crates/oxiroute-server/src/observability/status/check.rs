@@ -6,7 +6,7 @@ use std::{cmp::Reverse, fmt::Write as _};
 use serde::Serialize;
 
 use crate::{
-    observability::status_summary::{
+    observability::status::summary::{
         CanarySummary, GenerationSummary, PoolSummary, RegistrySummary, Severity, StatusSummary,
     },
     routing::CanaryResult,

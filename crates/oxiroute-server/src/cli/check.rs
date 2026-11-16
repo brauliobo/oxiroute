@@ -4,8 +4,8 @@
 use std::time::Instant;
 
 use crate::{
-    observability::status_check::{Finding, Thresholds, Verdict, plugin_line},
-    observability::status_summary::{Severity, StatusSummary},
+    observability::status::check::{Finding, Thresholds, Verdict, plugin_line},
+    observability::status::summary::{Severity, StatusSummary},
 };
 
 #[allow(clippy::wildcard_imports)]
