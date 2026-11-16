@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    compression_validation::validate_cache_compression,
     defaults::{
         MAX_CACHE_ENTRIES, MAX_CACHE_FOLLOWERS_PER_FILL, MAX_CACHE_HEADER_BYTES,
         MAX_CACHE_IN_FLIGHT_FILLS, MAX_CACHE_KEY_BYTES, MAX_CACHE_KEY_COMPONENTS,
@@ -197,6 +198,9 @@ pub(crate) fn validate_cache_policy(
                 "must fit the referenced store's max_tag_bytes".into(),
             ));
         }
+    }
+    if let Some(compression) = &policy.compression {
+        validate_cache_compression(compression, &invalid)?;
     }
     if let Some(CachePurgeAuthorization::BearerTokenFile { token_file_path }) =
         &policy.purge_authorization

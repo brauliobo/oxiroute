@@ -565,6 +565,19 @@ export interface HttpCachePolicyConfig {
   vary_policy: 'respect' | 'ignore'
   surrogate_tags: CacheSurrogateTagsConfig | null
   purge_authorization: CachePurgeAuthorizationConfig | null
+  compression?: CacheCompressionConfig | null
+}
+
+export type CacheCompressionCoding = 'zstd' | 'br' | 'gzip'
+
+export interface CacheCompressionConfig {
+  codings: CacheCompressionCoding[]
+  precompress: CacheCompressionCoding[]
+  content_types: string[]
+  min_length_bytes: number
+  gzip_level: number
+  brotli_level: number
+  zstd_level: number
 }
 
 export interface HttpLiteralHeaderConfig {

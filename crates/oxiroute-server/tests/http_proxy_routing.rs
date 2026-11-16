@@ -8574,6 +8574,7 @@ fn cached_route(host: Option<&str>, path: &str, pool: &str) -> HttpRoute {
         vary_policy: oxiroute_config::CacheVaryPolicy::default(),
         surrogate_tags: None,
         purge_authorization: None,
+        compression: None,
     }));
     route
 }

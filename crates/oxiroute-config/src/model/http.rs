@@ -527,6 +527,8 @@ pub struct HttpCachePolicy {
     pub surrogate_tags: Option<CacheSurrogateTags>,
     #[serde(default)]
     pub purge_authorization: Option<CachePurgeAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<HttpCacheCompression>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]

@@ -269,7 +269,7 @@ fn validate_static_mime(
     Ok(())
 }
 
-pub(super) fn validate_content_type(value: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_content_type(value: &str) -> Result<(), &'static str> {
     if value.is_empty() || value.len() > MAX_HTTP_MIME_TYPE_BYTES || !value.contains('/') {
         return Err("content type must be 1..=128 bytes and contain `/`");
     }

@@ -155,6 +155,7 @@ pub(crate) fn default_forward_http_versions() -> Vec<ForwardHttpVersion> {
 }
 
 mod cache_store;
+mod compression;
 mod core;
 mod errors;
 mod forward;
@@ -164,6 +165,7 @@ mod tls;
 mod upstream;
 
 pub use cache_store::*;
+pub use compression::*;
 pub use core::*;
 pub use errors::*;
 pub use forward::*;

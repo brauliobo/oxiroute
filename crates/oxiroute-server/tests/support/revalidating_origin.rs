@@ -140,5 +140,6 @@ pub fn with_cache(config: &mut ConfigDraft) {
         vary_policy: CacheVaryPolicy::default(),
         surrogate_tags: None,
         purge_authorization: None,
+        compression: None,
     }));
 }

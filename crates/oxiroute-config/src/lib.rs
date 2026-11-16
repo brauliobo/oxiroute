@@ -1,5 +1,6 @@
 mod cache_validation;
 mod composition;
+mod compression_validation;
 mod defaults;
 mod forward_validation;
 mod http_validation;

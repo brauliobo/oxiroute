@@ -195,6 +195,7 @@ fn caching_policy() -> HttpProxyPolicy {
             vary_policy: oxiroute_config::CacheVaryPolicy::default(),
             surrogate_tags: None,
             purge_authorization: None,
+            compression: None,
         })),
         ..HttpProxyPolicy::default()
     }

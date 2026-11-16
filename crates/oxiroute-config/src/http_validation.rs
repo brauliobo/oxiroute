@@ -252,6 +252,7 @@ use matcher::*;
 use proxy_policy::*;
 #[allow(clippy::wildcard_imports)]
 use retry::*;
+pub(crate) use static_files::validate_content_type;
 #[allow(clippy::wildcard_imports)]
 use static_files::*;
 
