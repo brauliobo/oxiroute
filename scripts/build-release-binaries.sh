@@ -22,12 +22,23 @@
 # Every flavour but v3 must run on generic x86-64 and pick AVX at run time (crate oxiroute-cpu): the build refuses a
 # RUSTFLAGS or CFLAGS that bakes in a CPU target (scripts/lib/reject-isa-flags.sh), and scripts/verify-baseline-isa.sh
 # checks the binaries (disassembly, and `version` under qemu CPUs without AVX when qemu-x86_64 is installed).
+# PGO_TARGET=aarch64-unknown-linux-gnu builds on an aarch64 host with the same gates against the ARMv8-A baseline; BOLT
+# and the v3 flavour are x86_64 only and refused for it.
 #
 # Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind, abort or v3, default unwind), PGO_TARGET (default
 # x86_64-unknown-linux-gnu), PGO_WORK and the other benchmarks/scripts/pgo.sh variables, BOLT_BIN_DIR (directory of
 # llvm-bolt and merge-fdata, see scripts/install-bolt.sh) and the other benchmarks/scripts/bolt.sh variables,
 # PGO_KEEP_INSTRUMENTED=1 (keep the instrumented build; it is removed to save disk), SOURCE_DATE_EPOCH (default:
-# commit time of HEAD).
+# commit time of HEAD), RELEASE_COMMIT (recorded commit, default HEAD; for a source tree without a git repository).
+#
+# The build is two stages that can run on different machines (STAGE, default all = both in one process):
+#   STAGE=pgo     training, profile-use build, path, ISA and glibc checks and the smoke lanes of the binaries; leaves
+#                 OUT_DIR/stage (the binaries and stage.env). This is the stage that fixes the libc a binary links, so the
+#                 release workflow runs it in a container of the oldest supported system (GLIBC_FLOOR=2.34).
+#   STAGE=layout  from OUT_DIR/stage: the BOLT layout (x86_64), the tests of the shipped binary and the tarball.
+# GLIBC_FLOOR (for example 2.34) makes the script fail when a binary needs a newer glibc symbol version
+# (scripts/verify/glibc_floor.sh); unset, nothing is checked. RELEASE_TESTS=0 leaves the workspace tests of the shipped
+# binary (BOLT and abort flavours) to scripts/test-release-binary.sh run by another job of the workflow.
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,11 +49,18 @@ target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
 pgo=${PGO:-1}
 bolt=${BOLT:-1}
 flavour=${FLAVOUR:-unwind}
+stage_name=${STAGE:-all}
+release_tests=${RELEASE_TESTS:-1}
 [[ ${pgo} == 0 || ${pgo} == 1 ]] || { echo "PGO must be 0 or 1" >&2; exit 2; }
 [[ ${bolt} == 0 || ${bolt} == 1 ]] || { echo "BOLT must be 0 or 1" >&2; exit 2; }
+[[ ${release_tests} == 0 || ${release_tests} == 1 ]] || { echo "RELEASE_TESTS must be 0 or 1" >&2; exit 2; }
 [[ ${flavour} == unwind || ${flavour} == abort || ${flavour} == v3 ]] || { echo "FLAVOUR must be unwind, abort or v3" >&2; exit 2; }
+[[ ${stage_name} == all || ${stage_name} == pgo || ${stage_name} == layout ]] || { echo "STAGE must be all, pgo or layout" >&2; exit 2; }
+[[ ${target} == x86_64-unknown-linux-gnu || ${target} == aarch64-unknown-linux-gnu ]] || { echo "PGO_TARGET must be x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu" >&2; exit 2; }
+[[ ${target} == x86_64-* || ${flavour} != v3 ]] || { echo "FLAVOUR=v3 is an x86-64 flavour" >&2; exit 2; }
+[[ ${target} == x86_64-* || ${bolt} == 0 ]] || { echo "BOLT is installed and verified for x86_64 only (scripts/install-bolt.sh pins amd64 packages); use BOLT=0" >&2; exit 2; }
 source "${repo}/scripts/lib/reject-isa-flags.sh"
-reject_isa_flags
+reject_isa_flags "${target}"
 export ISA_GUARD_DONE=1 # the CFLAGS_* below are ours, pgo.sh must not reject the v3 flavour's
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
 bolt_script=${repo}/benchmarks/scripts/bolt.sh
@@ -64,78 +82,112 @@ profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "${repo}" log -1 --format=%ct HEAD)}
 name=oxiroute-${version}-${target}${suffix}
 # BOLT rewrites the linked binary and needs its relocations; code generation does not change, so the profile still matches.
-if [[ ${bolt} == 1 ]]; then
-  export RUSTFLAGS="${RUSTFLAGS:-} -Clink-arg=-Wl,-q"
+[[ ${bolt} == 0 ]] || export RUSTFLAGS="${RUSTFLAGS:-} -Clink-arg=-Wl,-q"
+# The v3 flavour needs AVX2 by design; the launcher has no `version` command, so only `oxiroute` runs under qemu.
+verify_isa() { [[ ${flavour} == v3 ]] || "${repo}/scripts/verify-baseline-isa.sh" "$@"; }
+verify_glibc() { [[ -z ${GLIBC_FLOOR:-} ]] || "${repo}/scripts/verify/glibc_floor.sh" "${GLIBC_FLOOR}" "$@"; }
+verify_binary() {
+  "${repo}/scripts/verify-binary-paths.sh" "$1" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+  verify_glibc "$1"
+}
+out=$(realpath -m -- "${out}")
+stage_dir=${out}/stage
+mkdir -p -- "${out}"
+
+pgo_stage() {
+  if [[ ${pgo} == 1 ]]; then
+    "${pgo_script}" train
+    [[ ${PGO_KEEP_INSTRUMENTED:-0} == 1 ]] || rm -rf -- "${work}/target-gen"
+    "${pgo_script}" build
+    release=${CARGO_TARGET_DIR:-${work}/target-use}/${target}/${cargo_profile}
+    pgo_json=true
+    note="built with profile-guided optimization (trained on the pinned compiler by the release workflow; \`${name}.build.json\` records it)"
+    profile_sha256="\"$(sha256sum "${profile}" | cut -d' ' -f1)\""
+  else
+    "${pgo_script}" plain
+    release=${CARGO_TARGET_DIR:-${work}/target-plain}/${target}/${cargo_profile}
+    pgo_json=false
+    note="a plain build without profile-guided optimization (the release workflow was started with PGO disabled)"
+    profile_sha256=null
+  fi
+  for binary in oxiroute oxiroute-worker-launcher; do
+    verify_binary "${release}/${binary}"
+    verify_isa "${release}/${binary}"
+  done
+  verify_isa --run "${release}/oxiroute"
+  "${pgo_script}" smoke "${release}/oxiroute"
+}
+
+save_stage() {
+  rm -rf -- "${stage_dir}"
+  install -Dm755 "${release}/oxiroute" "${stage_dir}/oxiroute"
+  install -Dm755 "${release}/oxiroute-worker-launcher" "${stage_dir}/oxiroute-worker-launcher"
+  printf 'pgo_json=%q\nnote=%q\nprofile_sha256=%q\n' "${pgo_json}" "${note}" "${profile_sha256}" > "${stage_dir}/stage.env"
+}
+
+load_stage() {
+  [[ -f ${stage_dir}/stage.env ]] || { echo "no stage of the profile-guided build in ${stage_dir} (STAGE=pgo)" >&2; exit 1; }
+  source "${stage_dir}/stage.env"
+  release=${stage_dir}
+  for binary in oxiroute oxiroute-worker-launcher; do
+    verify_binary "${release}/${binary}"
+  done
+  "${pgo_script}" smoke "${release}/oxiroute"
+}
+
+require_bolt() {
   export PATH=${BOLT_BIN_DIR:+${BOLT_BIN_DIR}:}${PATH}
   command -v llvm-bolt > /dev/null && command -v merge-fdata > /dev/null || {
     echo "llvm-bolt and merge-fdata are required (scripts/install-bolt.sh DIR, then BOLT_BIN_DIR=DIR/usr/lib/llvm-18/bin), or BOLT=0" >&2
     exit 1
   }
-fi
-# The v3 flavour needs AVX2 by design; the launcher has no `version` command, so only `oxiroute` runs under qemu.
-verify_isa() { [[ ${flavour} == v3 ]] || "${repo}/scripts/verify-baseline-isa.sh" "$@"; }
-out=$(realpath -m -- "${out}")
-mkdir -p -- "${out}"
+}
 
-if [[ ${pgo} == 1 ]]; then
-  "${pgo_script}" train
-  [[ ${PGO_KEEP_INSTRUMENTED:-0} == 1 ]] || rm -rf -- "${work}/target-gen"
-  "${pgo_script}" build
-  release=${CARGO_TARGET_DIR:-${work}/target-use}/${target}/${cargo_profile}
-  pgo_json=true
-  note="built with profile-guided optimization (trained on the pinned compiler by the release workflow; \`${name}.build.json\` records it)"
-  profile_sha256="\"$(sha256sum "${profile}" | cut -d' ' -f1)\""
-else
-  "${pgo_script}" plain
-  release=${CARGO_TARGET_DIR:-${work}/target-plain}/${target}/${cargo_profile}
-  pgo_json=false
-  note="a plain build without profile-guided optimization (the release workflow was started with PGO disabled)"
-  profile_sha256=null
-fi
-for binary in oxiroute oxiroute-worker-launcher; do
-  "${repo}/scripts/verify-binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
-  verify_isa "${release}/${binary}"
-done
-verify_isa --run "${release}/oxiroute"
-"${pgo_script}" smoke "${release}/oxiroute"
+layout_stage() {
+  shipped=${release}/oxiroute
+  if [[ ${bolt} == 1 ]]; then
+    export BOLT_WORK=${work}/bolt R2TOOL_BIN=${work}/target-tool/release/r2tool
+    shipped=${BOLT_WORK}/oxiroute
+    mkdir -p "${BOLT_WORK}"
+    "${bolt_script}" all "${release}/oxiroute" "${shipped}"
+    verify_binary "${shipped}"
+    verify_isa --run "${shipped}"
+    "${pgo_script}" smoke "${shipped}"
+    note="${note}, then relinked by BOLT for instruction layout"
+  fi
+  if [[ ${bolt} == 1 || ${flavour} == abort ]]; then
+    if [[ ${release_tests} == 1 ]]; then
+      # The binary that ships, not the one cargo test builds, runs the whole workspace test suite.
+      BOLT_TEST_TARGET_DIR=${work}/target-test "${repo}/scripts/test-release-binary.sh" "${shipped}"
+      rm -rf -- "${work}/target-test"
+      note="${note} (the workspace tests ran against it)"
+    else
+      note="${note} (the release workflow runs the workspace tests against it before it publishes)"
+    fi
+  fi
+  if [[ ${flavour} == v3 ]]; then
+    note="${note}. This is the x86-64-v3 flavour: the C dependencies, the vendored OpenSSL above all, are compiled with \`-march=x86-64-v3\` and the binary needs a CPU with AVX2 and BMI2 (Intel Haswell, AMD Excavator or newer)"
+  fi
+  if [[ ${flavour} == abort ]]; then
+    note="${note}. This is the fail-fast flavour (\`panic = \"abort\"\`): a panic ends the whole worker process, which the supervisor reports as a failed generation, instead of closing one connection"
+  fi
+}
 
-shipped=${release}/oxiroute
-if [[ ${bolt} == 1 ]]; then
-  export BOLT_WORK=${work}/bolt R2TOOL_BIN=${work}/target-tool/release/r2tool
-  shipped=${BOLT_WORK}/oxiroute
-  mkdir -p "${BOLT_WORK}"
-  "${bolt_script}" all "${release}/oxiroute" "${shipped}"
-  "${repo}/scripts/verify-binary-paths.sh" "${shipped}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
-  verify_isa --run "${shipped}"
-  "${pgo_script}" smoke "${shipped}"
-  note="${note}, then relinked by BOLT for instruction layout"
-fi
-# The binary that ships, not the one cargo test builds, runs the whole workspace test suite.
-if [[ ${bolt} == 1 || ${flavour} == abort ]]; then
-  BOLT_TEST_TARGET_DIR=${work}/target-test "${repo}/scripts/test-release-binary.sh" "${shipped}"
-  rm -rf -- "${work}/target-test"
-  note="${note} (the workspace tests ran against it)"
-fi
-if [[ ${flavour} == v3 ]]; then
-  note="${note}. This is the x86-64-v3 flavour: the C dependencies, the vendored OpenSSL above all, are compiled with \`-march=x86-64-v3\` and the binary needs a CPU with AVX2 and BMI2 (Intel Haswell, AMD Excavator or newer)"
-fi
-if [[ ${flavour} == abort ]]; then
-  note="${note}. This is the fail-fast flavour (\`panic = \"abort\"\`): a panic ends the whole worker process, which the supervisor reports as a failed generation, instead of closing one connection"
-fi
-
-stage=$(mktemp -d)
-trap 'rm -rf -- "${stage}"' EXIT
-root=${stage}/${name}
-install -Dm755 "${shipped}" "${root}/bin/oxiroute"
-ln -s oxiroute "${root}/bin/oxr"
-install -Dm755 "${release}/oxiroute-worker-launcher" "${root}/lib/oxiroute/oxiroute-worker-launcher"
-install -Dm644 "${repo}/LICENSE" "${root}/LICENSE"
-cat > "${root}/BUILD-INFO.json" <<JSON
+pack() {
+  local stage root
+  stage=$(mktemp -d)
+  trap 'rm -rf -- "${stage}"' RETURN
+  root=${stage}/${name}
+  install -Dm755 "${shipped}" "${root}/bin/oxiroute"
+  ln -s oxiroute "${root}/bin/oxr"
+  install -Dm755 "${release}/oxiroute-worker-launcher" "${root}/lib/oxiroute/oxiroute-worker-launcher"
+  install -Dm644 "${repo}/LICENSE" "${root}/LICENSE"
+  cat > "${root}/BUILD-INFO.json" <<JSON
 {
   "schema": "oxiroute.release-binary.v1",
   "version": "${version}",
   "target": "${target}",
-  "commit": "$(git -C "${repo}" rev-parse HEAD)",
+  "commit": "${RELEASE_COMMIT:-$(git -C "${repo}" rev-parse HEAD)}",
   "rustc": "$(rustc --version)",
   "pgo": ${pgo_json},
   "pgo_profile_sha256": ${profile_sha256},
@@ -144,10 +196,17 @@ cat > "${root}/BUILD-INFO.json" <<JSON
   "c_flags": "${c_flags}"
 }
 JSON
+  tar --directory="${stage}" --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+    --create "${name}" | gzip -n > "${out}/${name}.tar.gz"
+  (cd "${out}" && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+  cp -- "${root}/BUILD-INFO.json" "${out}/${name}.build.json"
+  printf "The \`%s\` binaries%s are %s.\n" "${target}" "${suffix:+ (\`${flavour}\` flavour)}" "${note}" > "${out}/pgo-note-${target}${suffix}.md"
+  ls -l -- "${out}"
+}
 
-tar --directory="${stage}" --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
-  --create "${name}" | gzip -n > "${out}/${name}.tar.gz"
-(cd "${out}" && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
-cp -- "${root}/BUILD-INFO.json" "${out}/${name}.build.json"
-printf "The \`%s\` binaries%s are %s.\n" "${target}" "${suffix:+ (\`${flavour}\` flavour)}" "${note}" > "${out}/pgo-note-${target}${suffix}.md"
-ls -l -- "${out}"
+[[ ${stage_name} == pgo || ${bolt} == 0 ]] || require_bolt
+case ${stage_name} in
+  pgo) pgo_stage; save_stage ;;
+  layout) load_stage; layout_stage; verify_glibc "${shipped}"; pack ;;
+  all) pgo_stage; layout_stage; verify_glibc "${shipped}"; pack ;;
+esac

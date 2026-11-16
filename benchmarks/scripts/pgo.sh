@@ -57,7 +57,7 @@ remap_rustflags() {
 # The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments. A profile other
 # than release (PGO_CARGO_PROFILE=release-abort) has its own profile data: unwinding changes the control-flow hashes.
 cargo_build() {
-  [[ ${ISA_GUARD_DONE:-} == 1 ]] || reject_isa_flags
+  [[ ${ISA_GUARD_DONE:-} == 1 ]] || reject_isa_flags "${target}"
   local select=(--release)
   [[ ${cargo_profile} == release ]] || select=(--profile "${cargo_profile}")
   (cd "${repo}" && RUSTFLAGS="${RUSTFLAGS:-} $(remap_rustflags)" nice cargo build "${select[@]}" --locked \
