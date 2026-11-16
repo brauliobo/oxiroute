@@ -19,7 +19,7 @@ use oxiroute_epoll_h1::{
     Age, Config, Engine, Handoff, Listener, Policy, Scale, Scheduling, Timeouts,
 };
 
-pub use origin::{Origin, await_head, reset};
+pub use origin::{Origin, await_head, reset, sized};
 pub use service::{Guard, KILL, Knobs, MOVE, Reference, Route};
 pub use wire::Wire;
 

@@ -5,6 +5,7 @@ use oxiroute_h1_head::{Connection, HeadRead, ResponseHead, read_response_head};
 use super::{
     chunked::{ChunkScanner, HEADER_ROOM},
     client::{Buffers, Client, Down, Flow, HEAD_GROWTH, Mode, Relay, Wait, Window},
+    pipes::Carry,
     reactor::Reactor,
     relay::{TAIL_ROOM, absorb},
     service::{Answered, Failure, Framing, Recovery, Response, Service},
@@ -386,6 +387,7 @@ impl<S: Service> Reactor<S> {
             head_pos: 0,
             complete: false,
             reusable,
+            carry: Carry::Undecided,
         };
         absorb(&mut relay, &mut buffers.resp, leftover, &mut flow.sent)?;
         flow.status = Some(head.status);

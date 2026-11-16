@@ -8,6 +8,23 @@ pub enum Trigger {
     Level,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Splice {
+    pub threshold: u64,
+    pub pipes: usize,
+    pub pipe_bytes: usize,
+}
+
+impl Default for Splice {
+    fn default() -> Self {
+        Self {
+            threshold: 16 * 1024,
+            pipes: 64,
+            pipe_bytes: 64 * 1024,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub threads: usize,
@@ -23,6 +40,7 @@ pub struct Config {
     pub max_attempts: u8,
     pub trigger: Trigger,
     pub scheduling: Option<Scheduling>,
+    pub splice: Option<Splice>,
 }
 
 impl Default for Config {
@@ -41,6 +59,7 @@ impl Default for Config {
             max_attempts: 4,
             trigger: Trigger::Edge,
             scheduling: None,
+            splice: Some(Splice::default()),
         }
     }
 }

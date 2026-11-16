@@ -331,6 +331,15 @@ epoll plane; the classic path closes such a connection after the first answer. W
 fails, the generation is marked failed and the supervisor replaces the worker. When the process runs out of file
 descriptors, the plane closes the connections it cannot accept and keeps serving the others, instead of stalling.
 
+The epoll plane relays a response body framed by `Content-Length` of at least 16 KiB from the origin socket to the
+client socket with `splice(2)` through a per-thread pool of 64 pipes of 64 KiB, instead of copying it through the
+connection buffers; chunked and close-delimited bodies keep the buffered path. These are engine defaults
+(`oxiroute_epoll_h1::Splice`), not configuration keys. When no pipe can be leased, the body of that response takes the
+buffered path and the engine reports it in the outcome of the exchange (`Outcome::splice`): `PoolFull` when the thread
+already holds its 64 pipes, `OpenFailed` when the kernel refuses a new one (no free descriptors, or the per-user
+pipe memory limit `pipe-user-pages-soft` makes `F_SETPIPE_SZ` fail). `Spliced` marks a spliced body and `Unused` a
+response that was not eligible. A pipe size the kernel refuses at start refuses to start the plane.
+
 An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
 server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once.
 

@@ -161,7 +161,7 @@ fn serve(mut stream: TcpStream, heads: &Mutex<Vec<String>>, flaky: &AtomicUsize)
     }
 }
 
-fn sized(len: usize) -> Vec<u8> {
+pub fn sized(len: usize) -> Vec<u8> {
     (0..len).map(|index| b'a' + (index % 23) as u8).collect()
 }
 
@@ -196,12 +196,50 @@ fn big_head(value_len: usize) -> String {
     )
 }
 
+fn head_of(len: usize) -> Vec<u8> {
+    format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n").into_bytes()
+}
+
+fn dribble(stream: &mut TcpStream, len: usize) -> bool {
+    let body = sized(len);
+    write(stream, &head_of(len))
+        && body.chunks(8192).all(|piece| {
+            thread::sleep(Duration::from_millis(2));
+            write(stream, piece)
+        })
+}
+
+fn cut(stream: &mut TcpStream, len: usize) -> bool {
+    let _ = write(stream, &head_of(len));
+    let _ = write(stream, &sized(len / 2));
+    let _ = rustix::net::sockopt::set_socket_linger(&*stream, Some(Duration::ZERO));
+    false
+}
+
+fn hang(stream: &mut TcpStream, len: usize) -> bool {
+    let _ = write(stream, &head_of(len));
+    let _ = write(stream, &sized(len / 2));
+    thread::sleep(Duration::from_secs(3));
+    false
+}
+
+fn extra(stream: &mut TcpStream, len: usize) -> bool {
+    let mut out = head_of(len);
+    out.extend(sized(len));
+    out.extend_from_slice(b"junk!");
+    write(stream, &out)
+}
+
 fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> bool {
     let path = request.path.as_str();
     let segment = path.rsplit('/').next().unwrap_or("");
     let number = segment.parse::<usize>().unwrap_or(0);
     match path.split('/').nth(1).unwrap_or("") {
         "size" => write(stream, &ok(&sized(number), "")),
+        "slow" => dribble(stream, number),
+        "cut" => cut(stream, number),
+        "hang" => hang(stream, number),
+        "extra" => extra(stream, number),
         "echo" => write(stream, &ok(&request.body, "")),
         "info" => write(stream, &ok(request.head.as_bytes(), "")),
         "once" => {

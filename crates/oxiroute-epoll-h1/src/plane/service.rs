@@ -6,6 +6,7 @@ use std::{
 use oxiroute_h1_head::{Connection, RequestHead, ResponseHead};
 
 use super::wake::Waker;
+use super::pipes::SpliceUse;
 
 pub struct Request<'a> {
     bytes: &'a [u8],
@@ -214,6 +215,7 @@ pub struct Outcome {
     pub connect: Option<Duration>,
     pub header: Option<Duration>,
     pub keepalive: bool,
+    pub splice: SpliceUse,
 }
 
 pub struct Handoff<A> {

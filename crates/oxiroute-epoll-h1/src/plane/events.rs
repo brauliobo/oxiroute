@@ -165,8 +165,7 @@ impl<S: Service> Reactor<S> {
         upstream.link.ready.apply(flags);
         let (client, unsolicited) = (
             upstream.client,
-            upstream.phase == Phase::Idle
-                && (upstream.link.ready.read || upstream.link.ready.hangup),
+            upstream.phase == Phase::Idle && upstream.link.unsolicited(),
         );
         match client {
             Some(client) => self.client_ready(client, EventFlags::empty()),

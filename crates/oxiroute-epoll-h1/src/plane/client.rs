@@ -14,6 +14,7 @@ use super::{
     config::{Config, Timeouts},
     link::Link,
     origin_head::OriginHead,
+    pipes::{Carry, SpliceUse},
     service::{AttemptTimeouts, Failure, Reuse, Service},
     slab::Token,
 };
@@ -146,6 +147,7 @@ pub(crate) struct Relay {
     pub(crate) head_pos: usize,
     pub(crate) complete: bool,
     pub(crate) reusable: bool,
+    pub(crate) carry: Carry,
 }
 
 pub(crate) enum Down {
@@ -187,6 +189,7 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) upload_failed: bool,
     pub(crate) contacted: bool,
     pub(crate) fresh: bool,
+    pub(crate) splice: SpliceUse,
 }
 
 pub(crate) struct Client<S: Service> {

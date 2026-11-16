@@ -5,6 +5,7 @@ use super::{
     reactor::Reactor,
     service::{Failure, Service},
     slab::Token,
+    splice::Spliced,
     sys::{Read, Wrote},
 };
 
@@ -135,6 +136,14 @@ impl<S: Service> Reactor<S> {
     ) -> Result<bool, Failure> {
         let mut progressed = false;
         loop {
+            match self.splice_step(token, client, upstream)? {
+                Spliced::Progress => {
+                    progressed = true;
+                    continue;
+                }
+                Spliced::Blocked => return Ok(progressed),
+                Spliced::Buffered => {}
+            }
             let Client {
                 link,
                 buffers,
@@ -212,7 +221,7 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    fn relay_blocked(&mut self, token: Token, client: &mut Client<S>) {
+    pub(super) fn relay_blocked(&mut self, token: Token, client: &mut Client<S>) {
         let limit = client.timeouts.write;
         self.wait_for(token, client, Wait::ClientWrite, limit);
     }
