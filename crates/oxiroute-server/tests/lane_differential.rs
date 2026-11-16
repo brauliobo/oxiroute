@@ -13,6 +13,11 @@ mod h1_wire;
 #[path = "support/process.rs"]
 mod process_support;
 
+#[path = "support/revalidating_origin.rs"]
+mod revalidating_origin;
+
+#[path = "lane_differential/cache_hits.rs"]
+mod cache_hits;
 #[path = "lane_differential/corpus.rs"]
 mod corpus;
 #[path = "lane_differential/features.rs"]

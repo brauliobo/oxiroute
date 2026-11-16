@@ -3,9 +3,12 @@
 
 use std::fmt::Write as _;
 
+#[path = "corpus/cache.rs"]
+mod cache;
 #[path = "corpus_features.rs"]
 mod features;
 
+pub use cache::cache_requests;
 pub use features::{bodies, chunked_over_the_limit, forwarded, logged};
 
 pub struct Case {
