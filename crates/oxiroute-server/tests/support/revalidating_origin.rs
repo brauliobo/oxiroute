@@ -111,12 +111,21 @@ fn reply(head: &str) -> Vec<u8> {
 
 /// A memory cache on the first route of the first service, keyed by scheme, host, path and query.
 pub fn with_cache(config: &mut ConfigDraft) {
+    with_cache_on(config, 0);
+}
+
+/// [`with_cache`] on the route at `route` of the first service, which must proxy.
+pub fn with_cache_on(config: &mut ConfigDraft, route: usize) {
     config.cache_stores = vec![CacheStore::memory("memory", 1024 * 1024)];
-    let HttpRouteAction::Proxy { policy, .. } = &mut config.http_services[0].routes[0].action
+    let HttpRouteAction::Proxy { policy, .. } = &mut config.http_services[0].routes[route].action
     else {
-        unreachable!("wire route is a proxy route");
+        unreachable!("the cached route is a proxy route");
     };
-    policy.cache = Some(Box::new(HttpCachePolicy {
+    policy.cache = Some(Box::new(memory_cache_policy()));
+}
+
+pub fn memory_cache_policy() -> HttpCachePolicy {
+    HttpCachePolicy {
         store: "memory".into(),
         methods: vec!["GET".into(), "HEAD".into()],
         key_components: vec![
@@ -140,5 +149,5 @@ pub fn with_cache(config: &mut ConfigDraft) {
         vary_policy: CacheVaryPolicy::default(),
         surrogate_tags: None,
         purge_authorization: None,
-    }));
+    }
 }

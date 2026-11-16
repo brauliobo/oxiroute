@@ -59,6 +59,36 @@ pub struct CachedResponse {
     pub age: Duration,
 }
 
+/// The stored representation that answers a request while fresh, shared with the cache: reading it copies nothing.
+#[derive(Clone, Debug)]
+pub struct FreshHit {
+    pub(super) entry: Arc<PreparedEntry>,
+    pub(super) age: Duration,
+}
+
+impl FreshHit {
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.entry.status
+    }
+
+    /// The headers as stored: the response was stored without an `Age`, which a hit adds from [`FreshHit::age`].
+    #[must_use]
+    pub fn headers(&self) -> &HeaderMap {
+        &self.entry.headers
+    }
+
+    #[must_use]
+    pub fn body(&self) -> &Bytes {
+        &self.entry.body
+    }
+
+    #[must_use]
+    pub const fn age(&self) -> Duration {
+        self.age
+    }
+}
+
 /// Cache lookup result and wire-facing cache status.
 #[derive(Clone, Debug)]
 pub enum Lookup {
@@ -114,6 +144,33 @@ pub struct CacheStats {
     pub entries: usize,
     pub bytes_used: usize,
     pub in_flight: usize,
+}
+
+impl CacheStats {
+    pub(super) fn absorb(&mut self, other: &Self) {
+        let counters = [
+            (&mut self.hits, other.hits),
+            (&mut self.misses, other.misses),
+            (&mut self.bypasses, other.bypasses),
+            (&mut self.revalidations, other.revalidations),
+            (
+                &mut self.stale_while_revalidate,
+                other.stale_while_revalidate,
+            ),
+            (&mut self.stale_hits, other.stale_hits),
+            (&mut self.stale_if_error, other.stale_if_error),
+            (&mut self.stores, other.stores),
+            (&mut self.rejected, other.rejected),
+            (&mut self.evictions, other.evictions),
+            (&mut self.purged, other.purged),
+            (&mut self.fill_leaders, other.fill_leaders),
+            (&mut self.fill_followers, other.fill_followers),
+            (&mut self.fill_cancelled, other.fill_cancelled),
+        ];
+        for (total, added) in counters {
+            *total = total.saturating_add(added);
+        }
+    }
 }
 
 /// Result of joining a collapsed-forwarding group.
@@ -174,6 +231,21 @@ pub struct PurgeResult {
     pub entries: usize,
     pub bytes: usize,
     pub fills_cancelled: usize,
+}
+
+impl PurgeResult {
+    pub(super) fn remove(&mut self, state: &mut State, key: &CacheKey) {
+        if let Some(stored) = state.remove_entry(key) {
+            self.entries += 1;
+            self.bytes = self.bytes.saturating_add(stored.entry.charge);
+        }
+    }
+
+    pub(super) fn absorb(&mut self, other: &Self) {
+        self.entries += other.entries;
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.fills_cancelled += other.fills_cancelled;
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

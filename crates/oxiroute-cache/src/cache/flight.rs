@@ -4,7 +4,7 @@ use super::*;
 impl FillGuard {
     pub(crate) fn is_current(&self) -> bool {
         self.shared.upgrade().is_some_and(|shared| {
-            let state = shared.lock();
+            let state = shared.shard(&self.base).lock();
             generation_matches(&state, &self.base, &self.generation)
         })
     }
@@ -39,17 +39,19 @@ impl FillGuard {
             self.active = false;
             return ClaimedStoreOutcome::GenerationLost;
         };
-        let mut state = shared.lock();
+        let mut state = shared.shard(&self.base).lock();
         if !generation_matches(&state, &self.base, &self.generation) {
             self.active = false;
             return ClaimedStoreOutcome::GenerationLost;
         }
-        let flight = state.flights.remove(&self.base);
-        let delta = insert_entry(&shared.config, &mut state, entry.0);
+        let flight = state.take_flight(&self.base);
+        let mut delta = state.insert_entry(entry.0);
         state.stats.stores = state.stats.stores.saturating_add(1);
         if let Some(flight) = flight {
             flight.signal.send_replace(FillOutcome::Stored);
         }
+        drop(state);
+        shared.evict_to_bounds(&mut delta);
         self.active = false;
         ClaimedStoreOutcome::Stored(delta)
     }
@@ -66,11 +68,11 @@ impl FillGuard {
         let Some(shared) = self.shared.upgrade() else {
             return false;
         };
-        let mut state = shared.lock();
+        let mut state = shared.shard(&self.base).lock();
         if !generation_matches(&state, &self.base, &self.generation) {
             return false;
         }
-        if let Some(flight) = state.flights.remove(&self.base) {
+        if let Some(flight) = state.take_flight(&self.base) {
             flight.signal.send_replace(outcome);
             return true;
         }
@@ -90,9 +92,9 @@ impl Drop for FillGuard {
             return;
         }
         if let Some(shared) = self.shared.upgrade() {
-            let mut state = shared.lock();
+            let mut state = shared.shard(&self.base).lock();
             if generation_matches(&state, &self.base, &self.generation) {
-                if let Some(flight) = state.flights.remove(&self.base) {
+                if let Some(flight) = state.take_flight(&self.base) {
                     flight.signal.send_replace(FillOutcome::Cancelled);
                 }
                 state.stats.fill_cancelled = state.stats.fill_cancelled.saturating_add(1);
@@ -117,118 +119,329 @@ impl FillWaiter {
 }
 
 impl Shared {
+    pub(super) fn shard(&self, base: &BaseKey) -> &Shard {
+        let hash = self.hasher.hash_one(base);
+        &self.shards[usize::from(hash.to_le_bytes()[0]) & (SHARDS - 1)]
+    }
+
+    /// Evicts the least recently used representations of the whole cache until its bounds hold again. The victim is the
+    /// head of the shard whose head is oldest; no shard is locked while another is.
+    pub(super) fn evict_to_bounds(&self, delta: &mut InsertionDelta) {
+        while self.usage.exceeds(&self.config) {
+            let Some(victim) = self.shards.iter().min_by_key(|shard| shard.oldest_access()) else {
+                return;
+            };
+            let Some(key) = victim.lock().evict_oldest() else {
+                return;
+            };
+            delta.removed.push(key);
+            delta.evicted += 1;
+        }
+    }
+}
+
+impl Shard {
     pub(super) fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn oldest_access(&self) -> u64 {
+        self.lock()
+            .entries
+            .least_recently_used()
+            .map_or(u64::MAX, |(access, _)| *access)
+    }
+}
+
+impl Usage {
+    pub(super) fn exceeds(&self, config: &CacheConfig) -> bool {
+        self.entries.load(Ordering::Relaxed) > config.max_entries
+            || self.bytes.load(Ordering::Relaxed) > config.max_total_bytes
+    }
+
+    pub(super) fn in_flight(&self) -> usize {
+        self.flights.load(Ordering::Relaxed)
+    }
+
+    fn reserve_flight(&self, limit: usize) -> bool {
+        if self.flights.fetch_add(1, Ordering::Relaxed) >= limit {
+            self.flights.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
 }
 
 impl State {
-    pub(super) fn next_sequence(&mut self) -> u64 {
-        if self.sequence == u64::MAX {
-            self.sequence = self.entries.renumber();
-        }
-        self.sequence += 1;
-        self.sequence
-    }
-}
-
-pub(super) fn remove_expired_entry(state: &mut State, key: &CacheKey, now: MonoTime) -> bool {
-    let expired =
-        state.entries.get(key).is_some_and(|stored| {
-            let age = stored
-                .entry
-                .policy
-                .corrected_initial_age
-                .saturating_add(now.saturating_duration_since(stored.entry.response_received));
-            stored.entry.policy.retention.keep().is_some_and(|keep| {
-                age > stored.entry.policy.freshness_lifetime.saturating_add(keep)
-            })
-        });
-    if expired && let Some(stored) = state.entries.remove(key) {
-        state.bytes_used = state.bytes_used.saturating_sub(stored.entry.charge);
-    }
-    expired
-}
-
-pub(super) fn cache_miss(state: &mut State, policy: &RequestPolicy, base: BaseKey) -> Lookup {
-    state.stats.misses = state.stats.misses.saturating_add(1);
-    Lookup::Miss {
-        status: LookupStatus::Miss,
-        only_if_cached: policy.only_if_cached,
-        base,
-    }
-}
-
-pub(super) fn matching_key(
-    state: &State,
-    base: &BaseKey,
-    headers: &HeaderMap,
-    max_key_bytes: usize,
-    authorized: bool,
-) -> Option<CacheKey> {
-    state
-        .entries
-        .variants(base)
-        .iter()
-        .filter(|key| {
-            key.matches_request(base, headers, max_key_bytes)
-                && state.entries.get(key).is_some_and(|stored| {
-                    !authorized || stored.entry.policy.allows_authorized_reuse
-                })
-        })
-        .max_by_key(|key| state.entries.get(key).map_or(0, |entry| entry.last_access))
-        .cloned()
-}
-
-pub(super) fn insert_entry(
-    config: &CacheConfig,
-    state: &mut State,
-    entry: PreparedEntry,
-) -> InsertionDelta {
-    let inserted = entry.key.clone();
-    let mut removed = Vec::new();
-    if let Some(old) = state.entries.remove(&entry.key) {
-        state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
-        removed.push(entry.key.clone());
-    }
-    let mut conflicting = state
-        .entries
-        .variants(entry.key.base())
-        .iter()
-        .filter(|key| !key.same_vary_schema(&entry.key))
-        .cloned()
-        .collect::<Vec<_>>();
-    conflicting.sort_unstable();
-    for key in conflicting {
-        if let Some(old) = state.entries.remove(&key) {
-            state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
-            removed.push(key);
+    pub(super) fn new(usage: Arc<Usage>) -> Self {
+        Self {
+            entries: Entries::default(),
+            flights: HashMap::new(),
+            stats: CacheStats::default(),
+            usage,
         }
     }
-    let mut evicted = 0usize;
-    while state.entries.len() >= config.max_entries
-        || state.bytes_used.saturating_add(entry.charge) > config.max_total_bytes
-    {
-        let Some(lru) = state.entries.least_recently_used().cloned() else {
-            break;
+
+    fn next_sequence(&self) -> u64 {
+        self.usage.sequence.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(super) fn remove_entry(&mut self, key: &CacheKey) -> Option<StoredEntry> {
+        let stored = self.entries.remove(key)?;
+        self.usage
+            .bytes
+            .fetch_sub(stored.entry.charge, Ordering::Relaxed);
+        self.usage.entries.fetch_sub(1, Ordering::Relaxed);
+        Some(stored)
+    }
+
+    pub(super) fn touch(&mut self, key: &CacheKey) {
+        let access = self.next_sequence();
+        self.entries.touch(key, access);
+    }
+
+    pub(super) fn count(&mut self, verdict: Verdict) {
+        let stats = &mut self.stats;
+        let counter = match verdict {
+            Verdict::Fresh => &mut stats.hits,
+            Verdict::Stale => &mut stats.stale_hits,
+            Verdict::StaleWhileRevalidate => &mut stats.stale_while_revalidate,
+            Verdict::Revalidate { .. } => &mut stats.revalidations,
         };
-        if let Some(old) = state.entries.remove(&lru) {
-            state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
-            removed.push(lru);
-            evicted += 1;
+        *counter = counter.saturating_add(1);
+    }
+
+    pub(super) fn count_purged(&mut self, result: &PurgeResult) {
+        self.stats.purged = self.stats.purged.saturating_add(result.entries as u64);
+    }
+
+    pub(super) fn keys_tagged(&self, tag: &[u8]) -> Vec<CacheKey> {
+        self.entries
+            .iter()
+            .filter(|(_, stored)| {
+                stored
+                    .entry
+                    .tags
+                    .iter()
+                    .any(|entry_tag| entry_tag.as_ref() == tag)
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn evict_oldest(&mut self) -> Option<CacheKey> {
+        let key = self.entries.least_recently_used()?.1.clone();
+        self.remove_entry(&key);
+        self.stats.evictions = self.stats.evictions.saturating_add(1);
+        Some(key)
+    }
+
+    pub(super) fn insert_entry(&mut self, entry: PreparedEntry) -> InsertionDelta {
+        let inserted = entry.key.clone();
+        let mut removed = Vec::new();
+        if self.remove_entry(&entry.key).is_some() {
+            removed.push(entry.key.clone());
+        }
+        let mut conflicting = self
+            .entries
+            .variants(entry.key.base())
+            .iter()
+            .filter(|key| !key.same_vary_schema(&entry.key))
+            .cloned()
+            .collect::<Vec<_>>();
+        conflicting.sort_unstable();
+        for key in conflicting {
+            if self.remove_entry(&key).is_some() {
+                removed.push(key);
+            }
+        }
+        let access = self.next_sequence();
+        self.usage.bytes.fetch_add(entry.charge, Ordering::Relaxed);
+        self.usage.entries.fetch_add(1, Ordering::Relaxed);
+        self.entries.insert(entry, access);
+        InsertionDelta {
+            inserted,
+            removed,
+            evicted: 0,
         }
     }
-    let last_access = state.next_sequence();
-    state.bytes_used = state.bytes_used.saturating_add(entry.charge);
-    state.entries.insert(entry, last_access);
-    state.stats.evictions = state.stats.evictions.saturating_add(evicted as u64);
-    InsertionDelta {
-        inserted,
-        removed,
-        evicted,
+
+    pub(super) fn begin_flight(
+        &mut self,
+        base: &BaseKey,
+        limit: usize,
+    ) -> Option<Arc<FlightGeneration>> {
+        if !self.usage.reserve_flight(limit) {
+            return None;
+        }
+        let generation = Arc::new(FlightGeneration);
+        let (signal, _receiver) = watch::channel(FillOutcome::Filling);
+        let flight = Flight {
+            generation: Arc::clone(&generation),
+            signal,
+            followers: 0,
+        };
+        self.flights.insert(base.clone(), flight);
+        Some(generation)
     }
+
+    pub(super) fn take_flight(&mut self, base: &BaseKey) -> Option<Flight> {
+        let flight = self.flights.remove(base)?;
+        self.usage.flights.fetch_sub(1, Ordering::Relaxed);
+        Some(flight)
+    }
+
+    pub(super) fn cancel_flight(&mut self, base: &BaseKey, outcome: FillOutcome) -> bool {
+        let Some(flight) = self.take_flight(base) else {
+            return false;
+        };
+        flight.signal.send_replace(outcome);
+        self.stats.fill_cancelled = self.stats.fill_cancelled.saturating_add(1);
+        true
+    }
+
+    pub(super) fn cancel_all_flights(&mut self) {
+        let bases = self.flights.keys().cloned().collect::<Vec<_>>();
+        for base in &bases {
+            if let Some(flight) = self.take_flight(base) {
+                flight.signal.send_replace(FillOutcome::Cancelled);
+            }
+        }
+        self.stats.fill_cancelled = self.stats.fill_cancelled.saturating_add(bases.len() as u64);
+    }
+
+    pub(super) fn probe(&self, request: &Probing<'_>) -> Probe {
+        let found = self
+            .entries
+            .variants(request.base)
+            .iter()
+            .filter(|key| {
+                key.matches_request(request.base, request.headers, request.max_key_bytes)
+                    && self.entries.get(key).is_some_and(|stored| {
+                        !request.authorized || stored.entry.policy.allows_authorized_reuse
+                    })
+            })
+            .max_by_key(|key| self.entries.get(key).map_or(0, |entry| entry.last_access));
+        let Some(key) = found else {
+            return Probe::Absent;
+        };
+        let Some(stored) = self.entries.get(key) else {
+            return Probe::Absent;
+        };
+        let age = entry_age(&stored.entry, request.now);
+        if entry_expired(&stored.entry, age) {
+            return Probe::Expired(key.clone());
+        }
+        Probe::Found(Candidate {
+            entry: Arc::clone(&stored.entry),
+            age,
+            verdict: Verdict::of(&stored.entry, age, request.policy),
+        })
+    }
+}
+
+pub(super) struct Probing<'a> {
+    pub(super) base: &'a BaseKey,
+    pub(super) headers: &'a HeaderMap,
+    pub(super) policy: &'a RequestPolicy,
+    pub(super) max_key_bytes: usize,
+    pub(super) authorized: bool,
+    pub(super) now: MonoTime,
+}
+
+pub(super) enum Probe {
+    Absent,
+    Expired(CacheKey),
+    Found(Candidate),
+}
+
+pub(super) struct Candidate {
+    pub(super) entry: Arc<PreparedEntry>,
+    pub(super) age: Duration,
+    pub(super) verdict: Verdict,
+}
+
+impl Candidate {
+    pub(super) fn into_lookup(self) -> Lookup {
+        let response = response_snapshot(&self.entry, self.age);
+        let status = match self.verdict {
+            Verdict::Fresh => LookupStatus::Hit,
+            Verdict::Stale => LookupStatus::Stale,
+            Verdict::StaleWhileRevalidate => LookupStatus::StaleWhileRevalidate,
+            Verdict::Revalidate { stale_if_error } => {
+                return Lookup::Revalidate {
+                    status: LookupStatus::Revalidate,
+                    response,
+                    validators: self.entry.validators.clone(),
+                    stale_if_error,
+                };
+            }
+        };
+        Lookup::Hit { status, response }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Verdict {
+    Fresh,
+    Stale,
+    StaleWhileRevalidate,
+    Revalidate { stale_if_error: bool },
+}
+
+impl Verdict {
+    fn of(entry: &PreparedEntry, age: Duration, policy: &RequestPolicy) -> Self {
+        let lifetime = entry.policy.freshness_lifetime;
+        let request_fresh = policy.max_age.is_none_or(|maximum| age <= maximum);
+        let fresh = age.saturating_add(policy.min_fresh) <= lifetime;
+        let forced = policy.mode == RequestMode::Revalidate
+            || !request_fresh
+            || !policy.min_fresh.is_zero() && !fresh
+            || entry.policy.always_revalidate
+            || entry.policy.must_revalidate_stale && !fresh;
+        if fresh && request_fresh && !forced {
+            return Self::Fresh;
+        }
+        let staleness = age.saturating_sub(lifetime);
+        let request_allows_stale = entry.policy.retention.request_stale_allowed()
+            && !forced
+            && !entry.policy.must_revalidate_stale
+            && policy
+                .max_stale
+                .is_some_and(|limit| limit.is_none_or(|limit| staleness <= limit));
+        if request_allows_stale {
+            return Self::Stale;
+        }
+        let swr = !forced
+            && staleness <= entry.policy.stale_while_revalidate
+            && !entry.policy.stale_while_revalidate.is_zero();
+        if swr {
+            return Self::StaleWhileRevalidate;
+        }
+        Self::Revalidate {
+            stale_if_error: policy.mode != RequestMode::Revalidate
+                && !entry.policy.must_revalidate_stale
+                && staleness <= entry.policy.stale_if_error
+                && !entry.policy.stale_if_error.is_zero(),
+        }
+    }
+}
+
+pub(super) fn entry_age(entry: &PreparedEntry, now: MonoTime) -> Duration {
+    entry
+        .policy
+        .corrected_initial_age
+        .saturating_add(now.saturating_duration_since(entry.response_received))
+}
+
+fn entry_expired(entry: &PreparedEntry, age: Duration) -> bool {
+    entry
+        .policy
+        .retention
+        .keep()
+        .is_some_and(|keep| age > entry.policy.freshness_lifetime.saturating_add(keep))
 }
 
 pub(super) fn response_snapshot(entry: &PreparedEntry, age: Duration) -> CachedResponse {
@@ -250,14 +463,4 @@ fn generation_matches(state: &State, base: &BaseKey, generation: &Arc<FlightGene
         .flights
         .get(base)
         .is_some_and(|flight| Arc::ptr_eq(&flight.generation, generation))
-}
-
-pub(super) fn cancel_flight(state: &mut State, base: &BaseKey, outcome: FillOutcome) -> bool {
-    if let Some(flight) = state.flights.remove(base) {
-        flight.signal.send_replace(outcome);
-        state.stats.fill_cancelled = state.stats.fill_cancelled.saturating_add(1);
-        true
-    } else {
-        false
-    }
 }

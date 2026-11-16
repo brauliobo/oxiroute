@@ -19,6 +19,9 @@ pub(crate) enum LaneRoute {
     /// A request forwarded to an HTTP/1.1 server of a pool, with header rules the codec can apply, retries and a
     /// queue class: no rescue pool, no cache, no affinity, no rewriting.
     Proxy,
+    /// A proxied route with a memory cache: a request the cache answers with a fresh representation is served on the
+    /// connection. Every other request of the route, a miss and a revalidation among them, is the classic path's.
+    Cached,
 }
 
 impl LaneRoute {
@@ -39,9 +42,19 @@ impl LaneRoute {
             }
             HttpActionPlan::Static(_) => Self::Static,
             HttpActionPlan::Proxy(proxy) if forwards_plainly(proxy, policy) => Self::Proxy,
+            HttpActionPlan::Proxy(proxy) if answers_from_memory_cache(proxy) => Self::Cached,
             _ => Self::Classic,
         }
     }
+}
+
+fn answers_from_memory_cache(proxy: &ProxyActionPlan) -> bool {
+    rules::supported(&proxy.policy)
+        && proxy
+            .policy
+            .cache
+            .as_ref()
+            .is_some_and(|cache| cache.cache.memory().is_some())
 }
 
 fn forwards_plainly(proxy: &ProxyActionPlan, route: &RoutePolicyPlan) -> bool {

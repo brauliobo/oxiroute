@@ -63,7 +63,7 @@ impl LaneFront {
             .await
     }
 
-    async fn conclude(
+    pub(super) async fn conclude(
         &self,
         stream: &mut Stream,
         connection: &mut Http1Connection,
@@ -108,7 +108,10 @@ impl LaneFront {
     }
 
     /// Whether `operation` finished, successfully, inside the time a response write may take.
-    async fn within_budget<T>(&self, operation: impl Future<Output = io::Result<T>>) -> bool {
+    pub(super) async fn within_budget<T>(
+        &self,
+        operation: impl Future<Output = io::Result<T>>,
+    ) -> bool {
         tokio::time::timeout(self.write_budget, operation)
             .await
             .is_ok_and(|result| result.is_ok())

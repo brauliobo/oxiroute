@@ -193,6 +193,13 @@ impl CacheFill {
 }
 
 impl HttpCacheBackend {
+    pub(crate) fn memory(&self) -> Option<&Cache> {
+        match self {
+            Self::Memory(cache) => Some(cache),
+            Self::Disk(_) => None,
+        }
+    }
+
     pub(crate) fn config(&self) -> &CacheConfig {
         match self {
             Self::Memory(cache) => cache.config(),

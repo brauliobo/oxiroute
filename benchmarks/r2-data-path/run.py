@@ -28,6 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from gen_config import server_address  # noqa: E402
+from hits import cache_hit_lanes, cpu_pressure, require_only_hits, served_probe  # noqa: E402
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
 PERF_SUDO = ["sudo", "-n"] if os.environ.get("R2_PERF_SUDO") else []  # kernel-side events (e.g. instructions:k) need root here
 PERF_EXTRA = [event for event in os.environ.get("R2_PERF_EXTRA", "").split(",") if event]  # e.g. cache-misses:u
@@ -119,8 +120,8 @@ def build_lanes():
     add(lane("gzip_html64k", ["--path", "/html64k", "--extra-header", "accept-encoding: gzip"] + base,
              features=["gzip"], requests=3000, warmup=100))
     add(lane("nogzip_html64k", ["--path", "/html64k"] + base, features=["gzip"], requests=3000, warmup=100))
-    add(lane("cache_hit_b1k", work, features=["cache"]))
-    add(lane("cache_hit_b64k", ["--path", "/b64k", "--expect-len", "65536"] + base, features=["cache"], requests=5000))
+    for hit in cache_hit_lanes(lane):
+        add(hit)
     for name, size in (("static_f1k", 1024), ("static_f64k", 65536), ("static_f1m", 1048576)):
         add(lane(name, ["--path", f"/static/{name[7:]}.bin", "--expect-len", str(size)] + base, features=["static"],
                  requests=20000 if size < 65536 else 5000 if size == 65536 else 1000))
@@ -606,10 +607,12 @@ def measured_rep(env, rep, idle):
     pid = env.proxy.pid
     switches = lambda tag: (f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}; "
                             f"cat /proc/{pid}/task/*/stat > {env.work}/st{rep}.{tag}")
-    hooks = [("hook-start", f"{switches('a')}; echo enable > {ctl}; read _ < {ack}"),
-             ("hook-stop", f"echo disable > {ctl}; read _ < {ack}; {switches('b')}")]
     lane = env.lane
+    probes = lambda tag: "; ".join([switches(tag), *served_probe(lane, env.work, rep, tag, UPSTREAM_PORT)])
+    hooks = [("hook-start", f"{probes('a')}; echo enable > {ctl}; read _ < {ack}"),
+             ("hook-stop", f"echo disable > {ctl}; read _ < {ack}; {probes('b')}")]
     storm = env.start_storm() if lane.storm else None
+    pressure_before = cpu_pressure()
     try:
         result = subprocess.run(env.load_command(lane.requests, lane.warmup, hooks), capture_output=True, text=True,
                                 timeout=LANE_TIMEOUT)
@@ -621,6 +624,7 @@ def measured_rep(env, rep, idle):
     load = parse_kv(result.stdout)
     if result.returncode != 0 or not load:
         raise RuntimeError(f"load generator failed: {result.stdout} {result.stderr}")
+    require_only_hits(lane, env.work, rep)
     counters = parse_perf(csv)
     switched_before = context_switches(env.work / f"sw{rep}.a")
     switched = context_switches(env.work / f"sw{rep}.b")
@@ -636,7 +640,7 @@ def measured_rep(env, rep, idle):
         "nvctxsw": (switched[1] - switched_before[1]) / requests,
         "rps": float(load["rps"]), "p50": int(load["p50_us"]), "p99": int(load["p99_us"]),
         "p999": int(load["p999_us"]), "errors": int(load["errors"]), "connect_p50": int(load["connect_p50_us"]),
-        "connects": int(load["connects"]), "ok": requests,
+        "connects": int(load["connects"]), "ok": requests, "pressure": f"{pressure_before}/{cpu_pressure()}",
     }
 
 
@@ -667,6 +671,7 @@ def measure_perf(env, reps):
         "connects": round(median(column("connects"))), "errors": sum(column("errors")), "rss_kb": status["rss_kb"], "hwm_kb": status["hwm_kb"],
         "threads": status["threads"], "fds": status["fds"], "busy_threads_pct": "/".join(map(str, samples[-1]["busy"])),
         "kernel_cpu_pct": round(median(column("kernel_pct"))), "cpu_us_per_req": round(median(column("cpu_us")), 1),
+        "psi_cpu_some_avg10_before_after": ",".join(column("pressure")),
     }
 
 
