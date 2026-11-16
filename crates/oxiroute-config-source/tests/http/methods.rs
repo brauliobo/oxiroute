@@ -1,6 +1,4 @@
-mod lua_support;
-
-use lua_support::{load_lua, render_lua};
+use crate::lua_support::{load_lua, render_lua};
 use oxiroute_config::{ConfigDraft, ForwardAccessMatcher, HttpRouteAction};
 use serde_json::json;
 

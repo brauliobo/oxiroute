@@ -1,6 +1,4 @@
-mod lua_support;
-
-use lua_support::render_lua;
+use crate::lua_support::render_lua;
 use oxiroute_config::{ConfigDraft, ConfigError};
 use serde_json::{Value, json};
 

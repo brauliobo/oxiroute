@@ -1,7 +1,7 @@
 //! Helpers shared by the HTTP route configuration tests.
 #![allow(dead_code)]
 
-use super::lua_support::load_lua;
+use crate::lua_support::load_lua;
 
 pub fn config(routes: &str, endpoint: &str) -> String {
     format!(

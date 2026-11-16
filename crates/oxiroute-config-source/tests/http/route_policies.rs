@@ -1,8 +1,5 @@
-mod http_routes_support;
-mod lua_support;
-
-use http_routes_support::{config, error, first_route, proxy_route};
-use lua_support::{load_lua, load_lua_error, render_lua};
+use crate::common::{config, error, first_route, proxy_route};
+use crate::lua_support::{load_lua, load_lua_error, render_lua};
 use oxiroute_config::{ConfigError, HttpRouteAction};
 use serde_json::json;
 

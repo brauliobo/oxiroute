@@ -1,6 +1,4 @@
-mod lua_support;
-
-use lua_support::{load_lua, load_lua_error, render_lua, render_lua_error};
+use crate::lua_support::{load_lua, load_lua_error, render_lua, render_lua_error};
 use oxiroute_config::ConfigDraft;
 
 const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
