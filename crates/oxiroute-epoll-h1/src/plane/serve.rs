@@ -4,6 +4,7 @@ use oxiroute_h1_head::{Connection, RequestHead, Scan, scan_request};
 
 use super::{
     client::{Buffers, Client, Down, Flow, Stage, Window},
+    pipes::SpliceUse,
     reactor::{Reactor, Step},
     service::{Handoff, Request, Reuse, Routed, Service},
     slab::Token,
@@ -149,6 +150,7 @@ impl<S: Service> Reactor<S> {
             upload_failed: false,
             contacted: false,
             fresh: false,
+            splice: SpliceUse::Unused,
         }
     }
 

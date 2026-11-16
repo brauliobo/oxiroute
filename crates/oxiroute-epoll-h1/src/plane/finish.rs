@@ -84,6 +84,7 @@ impl<S: Service> Reactor<S> {
             connect: flow.connected_at.map(|at| at.since(flow.attempt_started)),
             header: flow.first_byte_at.map(|at| at.since(flow.attempt_started)),
             keepalive: flow.keepalive,
+            splice: flow.splice,
         };
         Rc::clone(&client.service).finish(exchange, &outcome);
     }

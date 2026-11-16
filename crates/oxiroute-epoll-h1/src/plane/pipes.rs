@@ -81,6 +81,15 @@ impl Drop for Pipe {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpliceUse {
+    #[default]
+    Unused,
+    Spliced,
+    PoolFull,
+    OpenFailed,
+}
+
 pub(crate) struct Piped {
     pub(crate) pipe: Pipe,
     pub(crate) left: u64,
@@ -113,15 +122,15 @@ impl Pipes {
         body >= self.config.threshold
     }
 
-    pub(crate) fn lease(&mut self) -> Option<Pipe> {
-        self.idle.pop().or_else(|| self.open())
+    pub(crate) fn lease(&mut self) -> Result<Pipe, SpliceUse> {
+        self.idle.pop().map_or_else(|| self.open(), Ok)
     }
 
-    fn open(&self) -> Option<Pipe> {
+    fn open(&self) -> Result<Pipe, SpliceUse> {
         if self.live.get() >= self.config.pipes {
-            return None;
+            return Err(SpliceUse::PoolFull);
         }
-        Pipe::open(self.config.pipe_bytes, &self.live).ok()
+        Pipe::open(self.config.pipe_bytes, &self.live).map_err(|_| SpliceUse::OpenFailed)
     }
 
     pub(crate) fn give_back(&mut self, pipe: Pipe) {
@@ -160,10 +169,10 @@ mod tests {
         let mut pipes = Pipes::new(splice_config(2)).expect("pipes");
         let first = pipes.lease().expect("first");
         let second = pipes.lease().expect("second");
-        assert!(pipes.lease().is_none());
+        assert_eq!(pipes.lease().err(), Some(SpliceUse::PoolFull));
         pipes.give_back(first);
         let again = pipes.lease();
-        assert!(again.is_some());
+        assert!(again.is_ok());
         assert_eq!(pipes.live.get(), 2);
         drop(second);
         assert_eq!(pipes.live.get(), 1);
@@ -174,7 +183,7 @@ mod tests {
         let mut pipes = Pipes::new(splice_config(1)).expect("pipes");
         drop(pipes.lease().expect("lease"));
         assert_eq!(pipes.live.get(), 0);
-        assert!(pipes.lease().is_some());
+        assert!(pipes.lease().is_ok());
     }
 
     #[test]
@@ -217,6 +226,16 @@ mod tests {
         assert_eq!(pipe.fill(&source, 10), Read::Block);
         drop(sink);
         assert_eq!(pipe.fill(&source, 10), Read::Eof);
+    }
+
+    #[test]
+    fn a_pipe_size_the_kernel_refuses_later_is_an_open_failure_that_leaves_the_pool_intact() {
+        let mut pipes = Pipes::new(splice_config(2)).expect("pipes");
+        pipes.config.pipe_bytes = usize::MAX / 2;
+        assert_eq!(pipes.lease().err(), Some(SpliceUse::OpenFailed));
+        assert_eq!(pipes.live.get(), 0);
+        pipes.config.pipe_bytes = 64 * 1024;
+        assert!(pipes.lease().is_ok());
     }
 
     #[test]

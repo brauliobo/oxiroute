@@ -13,7 +13,7 @@ use super::{
     clock::Moment,
     config::{Config, Timeouts},
     link::Link,
-    pipes::Carry,
+    pipes::{Carry, SpliceUse},
     service::{AttemptTimeouts, Failure, Reuse, Service},
     slab::Token,
 };
@@ -187,6 +187,7 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) upload_failed: bool,
     pub(crate) contacted: bool,
     pub(crate) fresh: bool,
+    pub(crate) splice: SpliceUse,
 }
 
 pub(crate) struct Client<S: Service> {

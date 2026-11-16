@@ -21,6 +21,7 @@ mod wheel;
 
 pub use config::{Config, Splice, Timeouts, Trigger};
 pub use engine::{Engine, Listener};
+pub use pipes::SpliceUse;
 pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
     Response, Reuse, Routed, Selected, Service, Target,

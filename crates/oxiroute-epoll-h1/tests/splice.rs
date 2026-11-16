@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_epoll_h1::{Config, Failure, Splice, Timeouts};
+use oxiroute_epoll_h1::{Config, Failure, Splice, SpliceUse, Timeouts};
 use support::{Fixture, Knobs, Wire, eventually, sized, test_config};
 
 fn config(pipes: usize) -> Config {
@@ -188,25 +188,59 @@ fn bytes_after_the_declared_body_are_never_forwarded_nor_left_in_a_pooled_connec
     assert_eq!(fixture.origin.accepted(), 2);
 }
 
-#[test]
-fn pipe_exhaustion_sends_the_remaining_bodies_through_the_buffers() {
-    let fixture = fixture(1);
-    let mut wires: Vec<Wire> = (0..4).map(|_| fixture.wire()).collect();
-    for (index, wire) in wires.iter_mut().enumerate() {
-        wire.get(&format!("/size/{}", 2_000_000 + index));
-    }
-    for (index, wire) in wires.iter_mut().enumerate() {
-        assert!(wire.reply().body == sized(2_000_000 + index));
+fn recording() -> Knobs {
+    Knobs {
+        record: true,
+        ..Knobs::default()
     }
 }
 
+fn uses(fixture: &Fixture, wanted: SpliceUse) -> usize {
+    let outcomes = fixture.outcomes();
+    outcomes
+        .iter()
+        .filter(|outcome| outcome.splice == wanted)
+        .count()
+}
+
 #[test]
-fn a_disabled_splice_keeps_the_buffered_path() {
+fn pipe_exhaustion_sends_the_remaining_bodies_through_the_buffers_and_is_counted() {
+    let fixture = Fixture::with(config(1), Timeouts::default(), recording());
+    let mut wires: Vec<Wire> = (0..4).map(|_| fixture.wire()).collect();
+    for (index, wire) in wires.iter_mut().enumerate() {
+        wire.get(&format!("/size/{}", 24_000_000 + index));
+    }
+    for (index, wire) in wires.iter_mut().enumerate() {
+        assert!(wire.reply().body == sized(24_000_000 + index));
+    }
+    eventually("four recorded exchanges", || fixture.outcomes().len() == 4);
+    assert!(uses(&fixture, SpliceUse::Spliced) >= 1);
+    assert!(uses(&fixture, SpliceUse::PoolFull) >= 1);
+    assert_eq!(uses(&fixture, SpliceUse::OpenFailed), 0);
+    assert_eq!(
+        uses(&fixture, SpliceUse::Spliced) + uses(&fixture, SpliceUse::PoolFull),
+        4
+    );
+}
+
+#[test]
+fn bodies_below_the_threshold_do_not_count_as_splice_fallbacks() {
+    let fixture = Fixture::with(config(1), Timeouts::default(), recording());
+    let mut wire = fixture.wire();
+    assert_eq!(fetch(&mut wire, "/size/1000"), sized(1000));
+    eventually("a recorded exchange", || fixture.outcomes().len() == 1);
+    assert_eq!(uses(&fixture, SpliceUse::Unused), 1);
+}
+
+#[test]
+fn a_disabled_splice_keeps_the_buffered_path_and_counts_nothing() {
     let config = Config {
         splice: None,
         ..test_config()
     };
-    let fixture = Fixture::with(config, Timeouts::default(), Knobs::default());
+    let fixture = Fixture::with(config, Timeouts::default(), recording());
     let mut wire = fixture.wire();
     assert!(fetch(&mut wire, "/size/3000000") == sized(3_000_000));
+    eventually("a recorded exchange", || fixture.outcomes().len() == 1);
+    assert_eq!(uses(&fixture, SpliceUse::Unused), 1);
 }

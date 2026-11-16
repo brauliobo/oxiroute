@@ -1,7 +1,7 @@
 use super::{
     client::{Client, Down, Mode, Relay, Wait},
     link::Link,
-    pipes::{Carry, Piped},
+    pipes::{Carry, Piped, SpliceUse},
     reactor::Reactor,
     service::{Failure, Service},
     slab::Token,
@@ -79,17 +79,18 @@ impl<S: Service> Reactor<S> {
             return false;
         }
         if matches!(relay.carry, Carry::Undecided) {
-            relay.carry = self.carry_of(relay.mode);
+            (relay.carry, flow.splice) = self.carry_of(relay.mode);
         }
         matches!(relay.carry, Carry::Piped(_))
     }
 
-    fn carry_of(&mut self, mode: Mode) -> Carry {
+    fn carry_of(&mut self, mode: Mode) -> (Carry, SpliceUse) {
         match (self.pipes.as_mut(), mode) {
-            (Some(pipes), Mode::Length(left)) if pipes.wants(left) => pipes
-                .lease()
-                .map_or(Carry::Buffered, |pipe| Carry::Piped(Piped { pipe, left })),
-            _ => Carry::Buffered,
+            (Some(pipes), Mode::Length(left)) if pipes.wants(left) => match pipes.lease() {
+                Ok(pipe) => (Carry::Piped(Piped { pipe, left }), SpliceUse::Spliced),
+                Err(lack) => (Carry::Buffered, lack),
+            },
+            _ => (Carry::Buffered, SpliceUse::Unused),
         }
     }
 

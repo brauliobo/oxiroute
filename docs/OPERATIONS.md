@@ -287,6 +287,15 @@ ready) is handed to the tokio path with the bytes already read. The root option 
 (`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
 cannot run it. The option is an ordinary reload.
 
+The epoll plane relays a response body framed by `Content-Length` of at least 16 KiB from the origin socket to the
+client socket with `splice(2)` through a per-thread pool of 64 pipes of 64 KiB, instead of copying it through the
+connection buffers; chunked and close-delimited bodies keep the buffered path. These are engine defaults
+(`oxiroute_epoll_h1::Splice`), not configuration keys. When no pipe can be leased, the body of that response takes the
+buffered path and the engine reports it in the outcome of the exchange (`Outcome::splice`): `PoolFull` when the thread
+already holds its 64 pipes, `OpenFailed` when the kernel refuses a new one (no free descriptors, or the per-user
+pipe memory limit `pipe-user-pages-soft` makes `F_SETPIPE_SZ` fail). `Spliced` marks a spliced body and `Unused` a
+response that was not eligible. A pipe size the kernel refuses at start refuses to start the plane.
+
 An operator evacuation reports a request served by the epoll plane as `left running` (`data_plane`): it finishes where
 it is. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
 response, a `Connection` header that names other headers, a `Transfer-Encoding` that does not end in `chunked`) is a
