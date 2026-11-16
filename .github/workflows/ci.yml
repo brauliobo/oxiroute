@@ -187,13 +187,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate service and package lifecycle metadata
-        run: ./packaging/arch/test-service.sh
+        run: ./packaging/arch/test/service.sh
 
       - name: Verify the package recipes pin the checksums of the files they ship
         run: |
-          ./packaging/arch/test-verify-checksums.sh
-          ./packaging/arch/test-pin-bin-release.sh
-          ./packaging/arch/test-package-files.sh
+          ./packaging/arch/test/verify-checksums.sh
+          ./packaging/arch/test/pin-bin-release.sh
+          ./packaging/arch/test/package-files.sh
           ./packaging/arch/verify-checksums.sh
 
   ui:

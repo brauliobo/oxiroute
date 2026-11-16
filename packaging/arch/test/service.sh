@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-package_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+package_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 unit=${1:-"${package_dir}/oxiroute.service"}
 pkgbuild=${package_dir}/PKGBUILD
 srcinfo=${package_dir}/.SRCINFO

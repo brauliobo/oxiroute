@@ -3,7 +3,7 @@
 # disagreement and a missing local file, with and without makepkg.
 set -euo pipefail
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 root=$(mktemp -d)
 trap 'rm -rf -- "${root}"' EXIT
 

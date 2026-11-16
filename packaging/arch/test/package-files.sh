@@ -3,7 +3,7 @@
 # modes and that the support files are installed verbatim. No build, download or installation takes place.
 set -euo pipefail
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 root=$(mktemp -d)
 trap 'rm -rf -- "${root}"' EXIT
 

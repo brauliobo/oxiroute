@@ -36,7 +36,6 @@
 2 crates/oxiroute-server/tests/rtmp_api/config
 2 crates/oxiroute-server/tests/tcp
 9 crates/oxiroute-server/tests/wire
-4 packaging/arch/test
 3 scripts/generate
 2 scripts/rtmp
 8 scripts/test
