@@ -1,4 +1,31 @@
-use super::*;
+use crate::TEST_TIMEOUT;
+use crate::fixture_support::write_secure_token;
+use crate::http_support::read_request_head as read_request_head_bytes;
+use crate::support::builders::disk_cache_store;
+use crate::support::builders::memory_cache_store;
+use crate::support::builders::pool;
+use crate::support::builders::route;
+use crate::support::harness::ProxyHarness;
+use crate::support::origin::Origin;
+use crate::support::origin::RevalidatingOrigin;
+use crate::support::wire::assert_origin_response;
+use crate::support::wire::read_request_head;
+use oxiroute_config::CacheKeyComponent;
+use oxiroute_config::CachePurgeAuthorization;
+use oxiroute_config::CacheSurrogateTags;
+use oxiroute_config::DownstreamTimeoutPolicy;
+use oxiroute_config::HttpRoute;
+use oxiroute_config::HttpRouteAction;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::time::sleep;
+use tokio::time::timeout;
 
 fn cached_route(host: Option<&str>, path: &str, pool: &str) -> HttpRoute {
     let mut route = route(host, path, &["GET", "HEAD"], pool);
