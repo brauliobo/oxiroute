@@ -19,8 +19,6 @@
 2 crates/oxiroute-server/src/rtmp/value
 2 crates/oxiroute-server/src/service_plan/compile
 2 crates/oxiroute-server/src/service_plan/disk
-2 crates/oxiroute-server/src/tls/certbot
-2 crates/oxiroute-server/src/tls/file
 3 crates/oxiroute-server/src/tls/tests/certbot
 2 crates/oxiroute-server/tests/cli
 3 crates/oxiroute-server/tests/forward

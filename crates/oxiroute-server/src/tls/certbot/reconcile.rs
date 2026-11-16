@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{
+use crate::tls::{
     ActiveCertificateGeneration, CertbotLineage, TlsBuildError,
     certificate::{CertificatePublication, CertificatePublicationError, PublicationGate},
 };

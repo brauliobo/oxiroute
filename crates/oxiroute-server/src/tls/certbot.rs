@@ -19,6 +19,9 @@ use super::{
     certificate::CertificateGeneration, pem_labels,
 };
 
+pub(super) mod reconcile;
+pub(super) mod watcher;
+
 const CERTBOT_CERTIFICATE_FILE: &str = "Certbot certificate";
 const CERTBOT_CHAIN_FILE: &str = "Certbot chain";
 const CERTBOT_FULLCHAIN_FILE: &str = "Certbot full chain";

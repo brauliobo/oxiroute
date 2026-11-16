@@ -9,8 +9,8 @@ use std::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 #[cfg(test)]
-use super::watcher_engine::DebounceWindow;
-use super::{
+use crate::tls::watcher_engine::DebounceWindow;
+use crate::tls::{
     CertbotReconciler,
     certificate::PublicationGate,
     watcher_engine::{
