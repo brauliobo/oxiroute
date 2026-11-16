@@ -922,7 +922,7 @@ tls_profiles = {
       session_timeout_seconds = nil,
       session_tickets = false,
       prefer_server_ciphers = true,
-      backend = "openssl",
+      backend = nil,
       key_exchange_groups = nil,
       ktls = "auto",
       client_auth = {
@@ -990,7 +990,7 @@ The current certificate and profile rules are:
   kTLS transmit offload and `sendfile`; later responses on that connection are encrypted by the
   kernel too (a few percent more instructions for small responses, many fewer cycles for large
   files). If the kernel cannot (the `tls` kernel module is not loaded, the kernel is older than 6.5,
-  or the cipher is refused), TLS stays in user space exactly as with `"off"` and the server logs one
+  or the cipher is refused, or the profile runs on the rustls backend), TLS stays in user space exactly as with `"off"` and the server logs one
   `info` line per generation and profile. The host needs the `tls` kernel module loaded at boot (a
   file in `/etc/modules-load.d/`, or `modprobe tls`) and kernel 6.5 or newer; a service without
   permission to autoload the module simply stays in user space. Set `"off"` to keep TLS in user
@@ -1043,18 +1043,27 @@ The current certificate and profile rules are:
   `{ "http/1.1" }`; the only accepted policies are `{ "http/1.1" }`, `{ "h2" }`, and
   `{ "h2", "http/1.1" }` in that order.
 - `policy.backend` selects the TLS library that runs the handshakes and records of every listener using the profile:
-  `"openssl"` (the default) or `"rustls"` (rustls with the aws-lc-rs provider). Certificates, SNI selection, ALPN, the
+  `"rustls"` (rustls with the aws-lc-rs provider) or `"openssl"`. Omitted, it is chosen once per generation when the
+  configuration is compiled: `"rustls"`, unless the profile uses a setting only OpenSSL provides, in which case
+  `"openssl"` is selected and the server logs one `info` line naming the setting. The settings that need OpenSSL are
+  `dh_parameters_path`; a `cipher_list` that names a `DHE-RSA-` or `EDH-RSA-` suite while `min_version` is `"1.2"`; and
+  a `cipher_list` that selects no TLS 1.2 suite rustls implements while `min_version` is `"1.2"`. The default
+  `ktls = "auto"` is inert on rustls and selects nothing. `backend = "openssl"` is always honoured. `backend =
+  "rustls"` together with a setting that needs OpenSSL is rejected when the generation is compiled (start and reload),
+  with an error that names the setting. A connection never changes library. Certificates, SNI selection, ALPN, the
   minimum version, client authentication (`mode`, `ca_certificate_path`, `allowed_dns_names`), `session_cache`,
-  `session_timeout_seconds`, `session_tickets`, `prefer_server_ciphers`, certificate hot reload and TLS-ALPN-01
-  challenges behave the same on both. The rustls suites are TLS 1.3 AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 and,
-  for TLS 1.2, the ECDHE AEAD suites. With `backend = "rustls"`, `cipher_list` is evaluated by OpenSSL, so the string
-  means what it means on the OpenSSL backend (`HIGH:!aNULL`, `ECDHE+AESGCM`, `@STRENGTH`, exact names), and the TLS 1.2
-  suites it selects that rustls implements are offered in OpenSSL's order; the ones it cannot implement (finite-field
-  DHE, CBC, RSA key exchange) are left out and named once in the log, and a profile whose list leaves no TLS 1.2 suite
-  fails to start unless `min_version` is `"1.3"` (TLS 1.3 suites are not governed by `cipher_list` on either backend).
-  `dh_parameters_path` is read and ignored (a warning says so): rustls offers no DHE suites.
-  Upstream TLS, ACME and HTTP/3 are not affected by the setting. Changing it is an ordinary reload: new connections
-  of the new generation use the new library and connections of the replaced generation finish as they were accepted.
+  `session_timeout_seconds`, `session_tickets`, `prefer_server_ciphers`, `key_exchange_groups`, certificate hot reload
+  and TLS-ALPN-01 challenges behave the same on both. The rustls suites are TLS 1.3 AES-128-GCM, AES-256-GCM and
+  ChaCha20-Poly1305 and, for TLS 1.2, the ECDHE AEAD suites, so a profile on rustls does not offer the finite-field
+  DHE-RSA suites of the OpenSSL default list; a client that only speaks those needs a separate profile with
+  `backend = "openssl"` (see the TLS backend section of the operations guide). With `backend = "rustls"`, `cipher_list`
+  is evaluated by OpenSSL, so the string means what it means on the OpenSSL backend (`HIGH:!aNULL`, `ECDHE+AESGCM`,
+  `@STRENGTH`, exact names), and the TLS 1.2 suites it selects that rustls implements are offered in OpenSSL's order;
+  the others (DHE, CBC, RSA key exchange) that a group such as `HIGH` expands to are left out and named once in the log.
+  Kernel TLS (`ktls`), FIPS and the DHE suites exist on the OpenSSL backend only. Upstream TLS, ACME and RTMPS use
+  OpenSSL whatever the setting, and HTTP/3 uses its own stack. Changing the setting is an ordinary reload: new
+  connections of the new generation use the new library and connections of the replaced generation finish as they were
+  accepted.
 - Downstream TLS session caching and tickets are disabled. Every new handshake selects one identity
   and takes one immutable certificate-generation snapshot through the TLS callback, so an atomic
   generation publication cannot mix key and chain material and existing connections retain their
