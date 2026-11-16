@@ -40,7 +40,9 @@ pub async fn send_file_to_stream(
     offset: u64,
     length: usize,
 ) -> io::Result<Option<usize>> {
-    if plain_tcp_socket(stream).is_none() && !poll_fn(|cx| stream.poll_kernel_tx(cx)).await {
+    if plain_tcp_socket(stream).is_none()
+        && !poll_fn(|cx| stream.poll_kernel_tx(cx, length as u64)).await
+    {
         return Ok(None);
     }
     match plain_tcp_socket(stream).or_else(|| stream.kernel_tx_socket()) {

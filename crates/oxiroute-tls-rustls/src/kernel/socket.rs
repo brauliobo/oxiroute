@@ -10,6 +10,8 @@ use nix::{
     cmsg_space,
     sys::socket::{ControlMessageOwned, MsgFlags, TlsGetRecordType, recvmsg},
 };
+
+use super::keys::{Keys, MAX_PLAINTEXT, unrollable};
 use pingora::protocols::{Peek, l4::stream::Stream as L4Stream};
 use socket2::{MsgHdr, SockRef};
 use tokio::{
@@ -17,9 +19,10 @@ use tokio::{
     net::TcpStream,
 };
 
-/// The largest plaintext of one TLS record.
-const MAX_PLAINTEXT: usize = 16 * 1024;
 const ALERT_CONTENT_TYPE: u8 = 21;
+const HANDSHAKE_CONTENT_TYPE: u8 = 22;
+const KEY_UPDATE: [u8; 4] = [24, 0, 0, 1];
+const KEY_UPDATE_NOT_REQUESTED: [u8; 5] = [24, 0, 0, 1, 0];
 const ALERT_LEVEL_WARNING: u8 = 1;
 const ALERT_CLOSE_NOTIFY: u8 = 0;
 const CLOSE_NOTIFY: [u8; 2] = [ALERT_LEVEL_WARNING, ALERT_CLOSE_NOTIFY];
@@ -52,6 +55,15 @@ impl Default for Failure {
     }
 }
 
+impl Failure {
+    fn rekey(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            message: format!("kernel TLS could not change the keys of the connection: {error}"),
+        }
+    }
+}
+
 impl From<io::Error> for Failure {
     fn from(error: io::Error) -> Self {
         Self {
@@ -65,27 +77,22 @@ impl From<io::Error> for Failure {
 enum Record {
     Plaintext(usize),
     Alert(u8),
+    KeyUpdate { requested: bool },
     Closed,
 }
 
 /// A connection whose records the kernel encrypts and decrypts: bytes written to the socket leave as application data
 /// records and reads return the plaintext of the ones that arrived. The record types the kernel hands to user space
-/// (alerts, handshake messages) are answered here.
+/// (alerts, key updates) are answered here, and the keys roll here: when the peer updates its keys, and when the
+/// records the sending key protected come near the limit of its cipher.
 #[derive(Debug)]
 pub(crate) struct KernelIo {
     control: Vec<u8>,
+    keys: Keys,
     close_notify_received: bool,
     close_notify_sent: bool,
-}
-
-impl Default for KernelIo {
-    fn default() -> Self {
-        Self {
-            control: cmsg_space!(u8),
-            close_notify_received: false,
-            close_notify_sent: false,
-        }
-    }
+    update_owed: bool,
+    failed: Option<Failure>,
 }
 
 fn socket(io: &L4Stream) -> io::Result<&TcpStream> {
@@ -98,6 +105,91 @@ fn socket(io: &L4Stream) -> io::Result<&TcpStream> {
 }
 
 impl KernelIo {
+    pub(crate) fn new(keys: Keys) -> Self {
+        Self {
+            control: cmsg_space!(u8),
+            keys,
+            close_notify_received: false,
+            close_notify_sent: false,
+            update_owed: false,
+            failed: None,
+        }
+    }
+
+    fn check(&self) -> io::Result<()> {
+        self.failed
+            .as_ref()
+            .map_or(Ok(()), |failure| Err(failure.error()))
+    }
+
+    /// Answers a `KeyUpdate` the peer asked an answer for: a `KeyUpdate` of this side, which the keys after it follow.
+    fn poll_owed_update(
+        &mut self,
+        socket: &TcpStream,
+        context: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.update_owed {
+            ready!(self.poll_roll_sent(socket, context))?;
+            self.update_owed = false;
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    /// Sends a `KeyUpdate` and switches the kernel to the next sending key, which protects every record after it.
+    fn poll_roll_sent(
+        &mut self,
+        socket: &TcpStream,
+        context: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        if !self.keys.rolls() {
+            return Poll::Ready(Err(unrollable()));
+        }
+        ready!(send_record(
+            socket,
+            context,
+            HANDSHAKE_CONTENT_TYPE,
+            &KEY_UPDATE_NOT_REQUESTED
+        ))?;
+        let rolled = self.keys.roll_sent(socket);
+        Poll::Ready(rolled.inspect_err(|error| self.failed = Some(Failure::rekey(error))))
+    }
+
+    /// How many of `bytes` the sending key may protect now: the key rolls first when it has reached its limit, or
+    /// when `whole` asks for all of them and it protects fewer.
+    fn poll_budget(
+        &mut self,
+        io: &L4Stream,
+        context: &mut Context<'_>,
+        bytes: usize,
+        whole: bool,
+    ) -> Poll<io::Result<usize>> {
+        self.check()?;
+        let socket = socket(io)?;
+        ready!(self.poll_owed_update(socket, context))?;
+        if self.keys.roll_due(bytes, whole) {
+            ready!(self.poll_roll_sent(socket, context))?;
+        }
+        Poll::Ready(Ok(self
+            .keys
+            .bytes_left()
+            .map_or(bytes, |left| bytes.min(left))))
+    }
+
+    /// Whether `bytes` that are about to leave with `sendfile(2)` fit the sending key, after counting them.
+    pub(crate) fn poll_sendfile_budget(
+        &mut self,
+        io: &L4Stream,
+        context: &mut Context<'_>,
+        bytes: usize,
+    ) -> Poll<io::Result<bool>> {
+        let budget = ready!(self.poll_budget(io, context, bytes, true))?;
+        let fits = budget == bytes;
+        if fits {
+            self.keys.count(bytes);
+        }
+        Poll::Ready(Ok(fits))
+    }
+
     pub(crate) fn poll_read(
         &mut self,
         io: &L4Stream,
@@ -107,8 +199,10 @@ impl KernelIo {
         if buffer.remaining() == 0 || self.close_notify_received {
             return Poll::Ready(Ok(()));
         }
+        self.check()?;
         let socket = socket(io)?;
         loop {
+            ready!(self.poll_owed_update(socket, context))?;
             ready!(socket.poll_read_ready(context))?;
             let room = buffer.remaining().min(MAX_PLAINTEXT);
             let plaintext = buffer.initialize_unfilled_to(room);
@@ -119,6 +213,10 @@ impl KernelIo {
                 Ok(Record::Plaintext(length)) => {
                     buffer.advance(length);
                     return Poll::Ready(Ok(()));
+                }
+                Ok(Record::KeyUpdate { requested }) => {
+                    self.keys.roll_received(socket)?;
+                    self.update_owed = requested;
                 }
                 Ok(Record::Closed) => return Poll::Ready(Ok(())),
                 Ok(Record::Alert(ALERT_CLOSE_NOTIFY)) => {
@@ -138,19 +236,34 @@ impl KernelIo {
     }
 
     pub(crate) fn poll_write(
+        &mut self,
         io: &mut L4Stream,
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(io).poll_write(context, buffer)
+        let budget = ready!(self.poll_budget(io, context, buffer.len(), false))?;
+        let written = ready!(Pin::new(io).poll_write(context, &buffer[..budget]))?;
+        self.keys.count(written);
+        Poll::Ready(Ok(written))
     }
 
     pub(crate) fn poll_write_vectored(
+        &mut self,
         io: &mut L4Stream,
         context: &mut Context<'_>,
         buffers: &[IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(io).poll_write_vectored(context, buffers)
+        let total = buffers.iter().map(|buffer| buffer.len()).sum();
+        let budget = ready!(self.poll_budget(io, context, total, false))?;
+        let written = if budget == total {
+            ready!(Pin::new(io).poll_write_vectored(context, buffers))?
+        } else {
+            let first = buffers.iter().find(|buffer| !buffer.is_empty());
+            let first = first.map_or(&[][..], |buffer| &buffer[..]);
+            ready!(Pin::new(io).poll_write(context, &first[..first.len().min(budget)]))?
+        };
+        self.keys.count(written);
+        Poll::Ready(Ok(written))
     }
 
     pub(crate) fn poll_flush(io: &mut L4Stream, context: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -166,7 +279,12 @@ impl KernelIo {
     ) -> Poll<io::Result<()>> {
         ready!(Pin::new(&mut *io).poll_flush(context))?;
         if !self.close_notify_sent {
-            ready!(send_close_notify(socket(io)?, context))?;
+            ready!(send_record(
+                socket(io)?,
+                context,
+                ALERT_CONTENT_TYPE,
+                &CLOSE_NOTIFY
+            ))?;
             self.close_notify_sent = true;
         }
         Pin::new(io).poll_shutdown(context)
@@ -199,9 +317,18 @@ fn receive(socket: &TcpStream, plaintext: &mut [u8], control: &mut [u8]) -> io::
         (_, 0) => Ok(Record::Closed),
         (Some(TlsGetRecordType::ApplicationData), length) => Ok(Record::Plaintext(length)),
         (Some(TlsGetRecordType::Alert), 2) => Ok(Record::Alert(plaintext[1])),
+        (Some(TlsGetRecordType::Handshake), 5) if plaintext[..4] == KEY_UPDATE => {
+            match plaintext[4] {
+                0 => Ok(Record::KeyUpdate { requested: false }),
+                1 => Ok(Record::KeyUpdate { requested: true }),
+                _ => Err(invalid_data(
+                    "the peer sent a key update with an unknown request",
+                )),
+            }
+        }
         (Some(TlsGetRecordType::Handshake), _) => Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "the peer sent a TLS handshake message (key update or renegotiation) on a connection the kernel decrypts",
+            "the peer sent a TLS handshake message other than a key update on a connection the kernel decrypts",
         )),
         (record_type, _) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -210,13 +337,24 @@ fn receive(socket: &TcpStream, plaintext: &mut [u8], control: &mut [u8]) -> io::
     }
 }
 
-fn send_close_notify(socket: &TcpStream, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-    let control = record_type_control(ALERT_CONTENT_TYPE);
-    let alert = [IoSlice::new(&CLOSE_NOTIFY)];
+fn invalid_data(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Sends `payload` as one record of `content_type`, the way only user space can: the kernel makes records of
+/// application data otherwise.
+fn send_record(
+    socket: &TcpStream,
+    context: &mut Context<'_>,
+    content_type: u8,
+    payload: &[u8],
+) -> Poll<io::Result<()>> {
+    let control = record_type_control(content_type);
+    let record = [IoSlice::new(payload)];
     loop {
         ready!(socket.poll_write_ready(context))?;
         let sent = socket.try_io(Interest::WRITABLE, || {
-            let message = MsgHdr::new().with_buffers(&alert).with_control(&control);
+            let message = MsgHdr::new().with_buffers(&record).with_control(&control);
             SockRef::from(socket).sendmsg(&message, 0)
         });
         match sent {

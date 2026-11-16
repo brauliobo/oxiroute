@@ -15,7 +15,7 @@ use std::future::poll_fn;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    kernel::KernelTls,
+    kernel::{KernelTls, Offer},
     pump::{Framed, Pump, Transport},
     records::Records,
     stream::TlsStream,
@@ -73,7 +73,13 @@ impl StreamTlsAcceptor for RustlsAcceptor {
                 "TLS accept() failed: no application protocol could be agreed",
             ));
         };
-        let kernel = self.kernel.filter(|_| config.enable_secret_extraction);
+        let (config, offer) = match self.kernel.filter(|_| config.enable_secret_extraction) {
+            Some(kernel) => {
+                let (config, offer) = Offer::attach(kernel, &config);
+                (config, Some(offer))
+            }
+            None => (config, None),
+        };
         let conn = match accepted.into_connection(config) {
             Ok(conn) => conn,
             Err((error, alert)) => {
@@ -90,7 +96,7 @@ impl StreamTlsAcceptor for RustlsAcceptor {
             .explain_err(TLSHandshakeFailure, |error| {
                 format!("TLS accept() failed: {error}")
             })?;
-        Ok(Box::new(TlsStream::established(io, pump, kernel, started)))
+        Ok(Box::new(TlsStream::established(io, pump, offer, started)))
     }
 }
 

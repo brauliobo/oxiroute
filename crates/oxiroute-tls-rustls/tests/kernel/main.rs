@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 //! Connections converted to kernel TLS over real sockets: every suite, both directions, resumption, conversion while
-//! the peer is still sending, `close_notify`, `KeyUpdate`, and the connections that stay in user space.
+//! the peer is still sending, `close_notify`, and the connections that stay in user space.
 //!
 //! The kernel's `tls` module has to be loaded (`sudo modprobe tls`); without it the tests that need the kernel say
 //! so and pass.
@@ -24,6 +24,7 @@ use tokio::{
 
 #[path = "../common/mod.rs"]
 mod common;
+mod keys;
 
 use common::{Fixed, Pair, connect_with, pair_with};
 
@@ -128,7 +129,7 @@ async fn serve(case: &Case, extraction: bool, kernel: Option<KernelTls>) -> (Str
 }
 
 async fn offload(server: &mut Stream) -> bool {
-    poll_fn(|context| server.poll_kernel_tx(context)).await
+    poll_fn(|context| server.poll_kernel_tx(context, 0)).await
 }
 
 async fn push<W, R>(from: &mut W, to: &mut R, body: &[u8])
@@ -149,12 +150,15 @@ where
     assert!(received == body, "the bytes changed on the way");
 }
 
-async fn talk_in_user_space(server: &mut Stream, client: &mut Client) {
+async fn talk_in_user_space<C: AsyncRead + AsyncWrite + Unpin>(
+    server: &mut Stream,
+    client: &mut C,
+) {
     push(client, server, b"GET /big HTTP/1.1\r\n\r\n").await;
     push(server, client, b"HTTP/1.1 200 OK\r\n\r\n").await;
 }
 
-async fn move_large_bodies(server: &mut Stream, client: &mut Client) {
+async fn move_large_bodies<C: AsyncRead + AsyncWrite + Unpin>(server: &mut Stream, client: &mut C) {
     let body = pattern(BODY);
     push(server, client, &body).await;
     push(client, server, &body).await;
@@ -354,29 +358,6 @@ async fn keys_rotated_before_the_conversion_are_the_keys_the_kernel_gets() {
 
     assert!(offload(&mut server).await);
     move_large_bodies(&mut server, &mut client).await;
-}
-
-#[tokio::test]
-async fn a_key_update_after_the_conversion_ends_the_connection() {
-    let Some(kernel) = kernel() else { return };
-    let (mut server, mut client) = serve(&tls13_aes(), true, Some(kernel)).await;
-    talk_in_user_space(&mut server, &mut client).await;
-    assert!(offload(&mut server).await);
-
-    client.get_mut().1.refresh_traffic_keys().unwrap();
-    client.write_all(b"after the key update").await.unwrap();
-    client.flush().await.unwrap();
-    let error = timeout(TIMEOUT, async {
-        let mut buffer = [0; 64];
-        loop {
-            if let Err(error) = server.read(&mut buffer).await {
-                break error;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
 }
 
 #[tokio::test]

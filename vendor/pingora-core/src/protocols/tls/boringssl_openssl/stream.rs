@@ -485,7 +485,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Ssl for SslStream<T> {
         ALPN::from_wire_selected(ssl.selected_alpn_protocol()?)
     }
 
-    fn poll_kernel_tx(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+    fn poll_kernel_tx(&mut self, cx: &mut Context<'_>, _bytes: u64) -> Poll<bool> {
         self.poll_ktls_tx(cx)
     }
 

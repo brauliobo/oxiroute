@@ -13,8 +13,12 @@ use tokio::{
 };
 
 use crate::{
-    kernel::socket::{Failure, KernelIo},
-    kernel::{self, KernelTls, Suite},
+    kernel::{
+        self, Offer, Suite,
+        keys::Keys,
+        secrets::Rotation,
+        socket::{Failure, KernelIo},
+    },
     pump::Pump,
 };
 
@@ -37,7 +41,7 @@ thread_local! {
 #[derive(Debug)]
 pub(crate) struct UserTls {
     pump: Pump,
-    kernel: Option<KernelTls>,
+    kernel: Option<Offer>,
     /// Plaintext not yet handed to rustls; the next flush, or the next write that does not fit, encrypts it.
     pending: Vec<u8>,
     sent: usize,
@@ -45,7 +49,7 @@ pub(crate) struct UserTls {
 }
 
 impl UserTls {
-    pub(crate) const fn new(pump: Pump, kernel: Option<KernelTls>) -> Self {
+    pub(crate) const fn new(pump: Pump, kernel: Option<Offer>) -> Self {
         Self {
             pump,
             kernel,
@@ -63,7 +67,7 @@ impl UserTls {
     /// user space right now: the socket is TCP, the peer has not sent a record that is half read or plaintext that
     /// is unread, and nothing has been read ahead of rustls.
     pub(crate) fn kernel_suite(&self, io: &L4Stream) -> Option<Suite> {
-        let offered = self.kernel?;
+        let offered = self.kernel.as_ref()?.kernel;
         let suite = Suite::of(&self.pump.conn).filter(|suite| offered.offers(*suite))?;
         let ready = io.tcp_socket().is_some()
             && !self.close_sent
@@ -72,19 +76,31 @@ impl UserTls {
         ready.then_some(suite)
     }
 
-    pub(crate) const fn keep_in_user_space(&mut self) {
+    pub(crate) fn keep_in_user_space(&mut self) {
         self.kernel = None;
     }
 
     /// Takes the connection over for the kernel: the secrets leave rustls, so a failure ends the connection.
     pub(crate) fn into_kernel(self, socket: &TcpStream, suite: Suite) -> Result<KernelIo, Failure> {
+        let offer = self
+            .kernel
+            .ok_or_else(|| io::Error::other("kernel TLS was not offered"))?;
+        let tls13 = self
+            .pump
+            .conn
+            .negotiated_cipher_suite()
+            .and_then(|negotiated| negotiated.tls13());
         let secrets = self
             .pump
             .conn
             .dangerous_extract_secrets()
             .map_err(io::Error::other)?;
+        let rotation = tls13
+            .map(|tls13| Rotation::locate(tls13, &offer.capture, &secrets))
+            .transpose()?;
         kernel::install(socket, suite, &secrets)?;
-        Ok(KernelIo::default())
+        let keys = Keys::new(suite, rotation, secrets.tx.0, offer.kernel.roll_after());
+        Ok(KernelIo::new(keys))
     }
 
     /// Moves plaintext into rustls and its records into the transport's write buffer, without flushing the socket.

@@ -96,8 +96,14 @@ pub trait Ssl {
 
     /// Switches the write direction of a TLS connection to the kernel TLS offload when the listener offers it, and
     /// reports whether the kernel now encrypts the records of this connection (`Ready(false)`: it stays in user
-    /// space, and always will). The switch happens once, with one TLS 1.3 `KeyUpdate`; nothing else changes.
-    fn poll_kernel_tx(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<bool> {
+    /// space, and always will). The switch happens once; nothing else changes. `bytes` is what the caller is about to
+    /// send to the socket with `sendfile(2)`: the connection keeps it within what the key that protects the records
+    /// may protect (rolling the key first when that is due) and reports `Ready(false)` when it cannot.
+    fn poll_kernel_tx(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        _bytes: u64,
+    ) -> std::task::Poll<bool> {
         std::task::Poll::Ready(false)
     }
 

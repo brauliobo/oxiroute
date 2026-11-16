@@ -2,6 +2,7 @@ use std::{
     fmt, io,
     net::{Ipv4Addr, TcpListener, TcpStream},
     os::fd::AsFd,
+    sync::Arc,
 };
 
 use nix::sys::socket::{
@@ -9,9 +10,14 @@ use nix::sys::socket::{
     sockopt::{TcpTlsRx, TcpTlsTx, TcpUlp, TlsCryptoInfo},
 };
 use rustls::{
-    CipherSuite, ConnectionTrafficSecrets, ExtractedSecrets, ProtocolVersion, ServerConnection,
+    CipherSuite, ConnectionTrafficSecrets, ExtractedSecrets, ProtocolVersion, ServerConfig,
+    ServerConnection,
 };
 
+use self::secrets::Capture;
+
+pub(crate) mod keys;
+pub(crate) mod secrets;
 pub(crate) mod socket;
 
 const NONCE_LEN: usize = 12;
@@ -107,15 +113,47 @@ impl Suite {
     }
 }
 
-/// The suites the running kernel runs for both directions of a connection, as [`probe`] found them.
+/// The suites the running kernel runs for both directions of a connection, as [`probe`] found them. TLS 1.3 suites are
+/// there only when the kernel also changes the keys of a running connection, which a `KeyUpdate` of the peer and the
+/// confidentiality limit of the cipher need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelTls {
     suites: u8,
+    roll_after: Option<u64>,
 }
 
 impl KernelTls {
     pub(crate) const fn offers(self, suite: Suite) -> bool {
         self.suites & suite.bit() != 0
+    }
+
+    pub(crate) const fn roll_after(self) -> Option<u64> {
+        self.roll_after
+    }
+
+    /// Makes TLS 1.3 connections roll the key they send with, with a `KeyUpdate`, after this many records instead of
+    /// at the AES-GCM confidentiality limit only: a shorter lifetime for the keys of a connection. The limit of the
+    /// cipher still applies.
+    #[must_use]
+    pub const fn rolling_keys_after(mut self, records: u64) -> Self {
+        self.roll_after = Some(records);
+        self
+    }
+}
+
+/// What an accepted connection carries to be converted later: the suites the kernel runs, and the secrets its handshake
+/// reports, from which the keys roll.
+#[derive(Debug)]
+pub(crate) struct Offer {
+    pub(crate) kernel: KernelTls,
+    pub(crate) capture: Arc<Capture>,
+}
+
+impl Offer {
+    /// The configuration to run the handshake with, which reports the traffic secrets to the offer.
+    pub(crate) fn attach(kernel: KernelTls, config: &ServerConfig) -> (Arc<ServerConfig>, Self) {
+        let (config, capture) = Capture::attach(config);
+        (config, Self { kernel, capture })
     }
 }
 
@@ -162,15 +200,23 @@ pub fn probe() -> Result<KernelTls, KtlsUnavailable> {
     if suites == 0 {
         return Err(KtlsUnavailable::NoSuite);
     }
-    Ok(KernelTls { suites })
+    Ok(KernelTls {
+        suites,
+        roll_after: None,
+    })
 }
 
 fn accepts(suite: Suite) -> Result<bool, KtlsUnavailable> {
     let (socket, _peer) = loopback_pair().map_err(KtlsUnavailable::Probe)?;
     attach(&socket).map_err(KtlsUnavailable::UlpMissing)?;
     let key = vec![1; suite.cipher.key_len()];
-    let keyed = crypto_info(suite, &key, [2; NONCE_LEN], 0)
-        .and_then(|info| set_keys(&socket, &info, &info).map_err(Into::into));
+    let keyed = crypto_info(suite, &key, [2; NONCE_LEN], 0).and_then(|info| {
+        set_keys(&socket, &info, &info)?;
+        if suite.version == Version::Tls13 {
+            set_keys(&socket, &info, &info)?;
+        }
+        Ok(())
+    });
     Ok(keyed.is_ok())
 }
 
@@ -211,7 +257,7 @@ fn set_keys<F: AsFd>(socket: &F, tx: &TlsCryptoInfo, rx: &TlsCryptoInfo) -> nix:
     setsockopt(socket, TcpTlsRx, rx)
 }
 
-fn traffic(secrets: &ConnectionTrafficSecrets) -> io::Result<(&[u8], [u8; NONCE_LEN])> {
+pub(crate) fn traffic(secrets: &ConnectionTrafficSecrets) -> io::Result<(&[u8], [u8; NONCE_LEN])> {
     match secrets {
         ConnectionTrafficSecrets::Aes128Gcm { key, iv }
         | ConnectionTrafficSecrets::Aes256Gcm { key, iv }

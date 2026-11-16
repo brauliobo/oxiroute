@@ -333,31 +333,33 @@ async fn rustls_a_key_update_before_the_first_large_file_is_followed() {
 }
 
 #[tokio::test]
-async fn rustls_a_key_update_after_the_conversion_closes_the_connection() {
-    if !kernel_available() {
-        eprintln!("skipped: the connection is never converted without kernel TLS");
-        return;
-    }
+async fn rustls_key_updates_after_the_conversion_are_followed() {
     timeout(TEST_TIMEOUT, async {
         let body = pattern(BIG);
         let (_directory, root) = static_root(&body);
         let (proxy, _origin) = serving_on(root, KtlsMode::Auto, TlsBackend::Rustls);
+        let before = kernel_tx_sockets();
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("TLS connection to OxiRoute");
-        let big = h1_request(&mut stream, "/big.bin", false)
-            .await
-            .expect("large response");
-        assert!(big.body == body, "the body differs");
-        stream
-            .get_mut()
-            .1
-            .refresh_traffic_keys()
-            .expect("client key update");
-        assert!(
-            h1_request(&mut stream, "/small.txt", true).await.is_err(),
-            "the kernel cannot follow a key update, the connection must end"
-        );
+        for round in 0..4 {
+            let big = h1_request(&mut stream, "/big.bin", false)
+                .await
+                .expect("large response");
+            assert!(big.body == body, "round {round}: the body differs");
+            stream
+                .get_mut()
+                .1
+                .refresh_traffic_keys()
+                .expect("client key update");
+            let small = h1_request(&mut stream, "/small.txt", round == 3)
+                .await
+                .expect("small response after the key update");
+            assert_eq!(small.body, b"small", "round {round}");
+        }
+        if kernel_available() {
+            assert!(kernel_tx_sockets() > before, "the kernel did not encrypt");
+        }
         drop(stream);
         proxy.finish().await;
     })

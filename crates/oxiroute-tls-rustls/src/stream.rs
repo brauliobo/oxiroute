@@ -23,7 +23,7 @@ use tokio::{
 use crate::{
     digest::{selected_alpn, ssl_digest},
     kernel::socket::{Failure, KernelIo},
-    kernel::{self, KernelTls},
+    kernel::{self, Offer},
     pump::Pump,
     user_tls::UserTls,
 };
@@ -32,7 +32,7 @@ use crate::{
 #[derive(Debug)]
 enum Tls {
     User(Box<UserTls>),
-    Kernel(KernelIo),
+    Kernel(Box<KernelIo>),
     Failed(Failure),
 }
 
@@ -50,7 +50,7 @@ impl TlsStream {
     pub(crate) fn established(
         io: L4Stream,
         pump: Pump,
-        kernel: Option<KernelTls>,
+        offer: Option<Offer>,
         handshake_started: Instant,
     ) -> Self {
         let digest = Arc::new(ssl_digest(&pump.conn));
@@ -62,7 +62,7 @@ impl TlsStream {
         };
         Self {
             io,
-            tls: Tls::User(Box::new(UserTls::new(pump, kernel))),
+            tls: Tls::User(Box::new(UserTls::new(pump, offer))),
             digest,
             alpn,
             timing,
@@ -106,7 +106,7 @@ impl TlsStream {
         }
         match user.into_kernel(socket, suite) {
             Ok(kernel) => {
-                self.tls = Tls::Kernel(kernel);
+                self.tls = Tls::Kernel(Box::new(kernel));
                 true
             }
             Err(failure) => {
@@ -145,7 +145,7 @@ impl AsyncWrite for TlsStream {
         let this = self.get_mut();
         match &mut this.tls {
             Tls::User(user) => user.poll_write(&mut this.io, context, buffer),
-            Tls::Kernel(_) => KernelIo::poll_write(&mut this.io, context, buffer),
+            Tls::Kernel(kernel) => kernel.poll_write(&mut this.io, context, buffer),
             Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
         }
     }
@@ -158,7 +158,7 @@ impl AsyncWrite for TlsStream {
         let this = self.get_mut();
         match &mut this.tls {
             Tls::User(user) => user.poll_write_vectored(&mut this.io, context, buffers),
-            Tls::Kernel(_) => KernelIo::poll_write_vectored(&mut this.io, context, buffers),
+            Tls::Kernel(kernel) => kernel.poll_write_vectored(&mut this.io, context, buffers),
             Tls::Failed(failure) => Poll::Ready(Err(failure.error())),
         }
     }
@@ -201,17 +201,22 @@ impl Ssl for TlsStream {
         self.alpn.clone()
     }
 
-    fn poll_kernel_tx(&mut self, context: &mut Context<'_>) -> Poll<bool> {
-        let Tls::User(user) = &mut self.tls else {
-            return Poll::Ready(matches!(self.tls, Tls::Kernel(_)));
-        };
-        let Some(suite) = user.kernel_suite(&self.io) else {
-            return Poll::Ready(false);
-        };
-        if ready!(user.poll_flush(&mut self.io, context)).is_err() {
-            return Poll::Ready(false);
+    fn poll_kernel_tx(&mut self, context: &mut Context<'_>, bytes: u64) -> Poll<bool> {
+        if let Tls::User(user) = &mut self.tls {
+            let Some(suite) = user.kernel_suite(&self.io) else {
+                return Poll::Ready(false);
+            };
+            if ready!(user.poll_flush(&mut self.io, context)).is_err() || !self.offload(suite) {
+                return Poll::Ready(false);
+            }
         }
-        Poll::Ready(self.offload(suite))
+        let Tls::Kernel(kernel) = &mut self.tls else {
+            return Poll::Ready(false);
+        };
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        kernel
+            .poll_sendfile_budget(&self.io, context, bytes)
+            .map(|fits| fits.unwrap_or(false))
     }
 
     fn kernel_tx_socket(&self) -> Option<&TcpStream> {
