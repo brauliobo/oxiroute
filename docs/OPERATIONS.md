@@ -287,6 +287,13 @@ ready) is handed to the tokio path with the bytes already read. The root option 
 (`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
 cannot run it. The option is an ordinary reload.
 
+A TLS listener is served by the epoll plane only when `http_data_plane = "epoll"` is set explicitly and its TLS profile
+uses the rustls backend. The plane then runs the handshake, record decryption and encryption on the event-loop thread
+(handshakes are not offloaded to `tls_handshake_threads`), with the profile's certificates, SNI selection, resumption,
+protocol versions and client-certificate policy. A connection that negotiates `h2` or another ALPN, and every request
+the plane does not serve, continues on the tokio path over the established TLS session together with the plaintext
+already read, with no second handshake.
+
 An operator evacuation reports a request served by the epoll plane as `left running` (`data_plane`): it finishes where
 it is. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`
 response, a `Connection` header that names other headers, a `Transfer-Encoding` that does not end in `chunked`) is a
