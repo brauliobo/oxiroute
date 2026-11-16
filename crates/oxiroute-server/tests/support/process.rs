@@ -253,7 +253,7 @@ fn pending_accepts(address: SocketAddr) -> Option<u64> {
 const DATA_PLANE_ENV: &str = "OXIROUTE_TEST_HTTP_DATA_PLANE";
 
 /// The HTTP data plane a whole suite runs on, from the test variable: `epoll`, `io_uring` or `tokio`. Omitted leaves each
-/// configuration to its own choice, which defaults to epoll where the platform supports it.
+/// configuration to its own choice, which defaults to the first available plane of the chain.
 pub fn suite_data_plane() -> Option<HttpDataPlane> {
     match std::env::var(DATA_PLANE_ENV).ok()?.as_str() {
         "epoll" => Some(HttpDataPlane::Epoll),
@@ -269,8 +269,9 @@ pub fn serves_on_epoll() -> bool {
     suite_data_plane() != Some(HttpDataPlane::Tokio) && oxiroute_epoll_h1::supported()
 }
 
-fn takes_a_data_plane(draft: &ConfigDraft) -> bool {
+fn takes_a_data_plane(draft: &ConfigDraft, plane: HttpDataPlane) -> bool {
     draft.fast_lane_enabled()
+        && !(plane == HttpDataPlane::IoUring && draft.aged_per_worker())
         && draft
             .listeners
             .iter()
@@ -278,7 +279,9 @@ fn takes_a_data_plane(draft: &ConfigDraft) -> bool {
 }
 
 fn on_suite_data_plane(config: &ValidatedConfig) -> ValidatedConfig {
-    let Some(plane) = suite_data_plane().filter(|_| takes_a_data_plane(config.as_draft())) else {
+    let Some(plane) =
+        suite_data_plane().filter(|plane| takes_a_data_plane(config.as_draft(), *plane))
+    else {
         return config.clone();
     };
     let mut draft = config.as_draft().clone();

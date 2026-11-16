@@ -26,6 +26,7 @@ use tokio::{
 
 use fixture_support::fixture;
 use h1_wire::{Origin, STEP, Wire, find, status};
+use oxiroute_server::DataPlane;
 use process_support::serves_on_epoll;
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
@@ -423,6 +424,22 @@ fn engine_threads(pid: u32) -> Vec<String> {
         .collect()
 }
 
+fn available(plane: DataPlane) -> bool {
+    match plane {
+        DataPlane::IoUring => oxiroute_epoll_h1::io_uring_support().is_ok(),
+        DataPlane::Epoll => oxiroute_epoll_h1::supported(),
+        DataPlane::Tokio => true,
+    }
+}
+
+fn first_available_plane() -> DataPlane {
+    DataPlane::DEFAULT_ORDER
+        .iter()
+        .copied()
+        .find(|plane| available(*plane))
+        .expect("tokio ends the default order")
+}
+
 #[tokio::test]
 async fn a_listener_that_chooses_io_uring_runs_its_engine_on_a_ring() {
     if oxiroute_epoll_h1::io_uring_support().is_err() {
@@ -445,17 +462,27 @@ async fn a_listener_that_chooses_io_uring_runs_its_engine_on_a_ring() {
 }
 
 #[tokio::test]
-async fn a_listener_without_a_choice_runs_its_engine_on_epoll() {
-    if !oxiroute_epoll_h1::supported() || process_support::suite_data_plane().is_some() {
+async fn a_listener_without_a_choice_runs_its_engine_on_the_first_available_plane_of_the_chain() {
+    if process_support::suite_data_plane().is_some() {
         return;
     }
     let wire = Wire::over(Origin::start(OK).await, logged).await;
     let response = wire.exchange(GET).await;
     assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
     let threads = engine_threads(wire.server.pid());
-    assert!(!threads.is_empty(), "no engine thread");
-    assert!(
-        threads.iter().all(|name| name.starts_with("epoll-h1-")),
-        "{threads:?}"
-    );
+    let prefix = match first_available_plane() {
+        DataPlane::IoUring => Some("uring-h1-"),
+        DataPlane::Epoll => Some("epoll-h1-"),
+        DataPlane::Tokio => None,
+    };
+    match prefix {
+        Some(prefix) => {
+            assert!(!threads.is_empty(), "no engine thread");
+            assert!(
+                threads.iter().all(|name| name.starts_with(prefix)),
+                "{threads:?}"
+            );
+        }
+        None => assert!(threads.is_empty(), "{threads:?}"),
+    }
 }
