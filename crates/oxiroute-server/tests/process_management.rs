@@ -2127,6 +2127,8 @@ fn management_config(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -2200,6 +2202,8 @@ fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),

@@ -68,6 +68,8 @@ fn typed_configs_render_in_every_supported_format() {
         target_busy_percent: Some(60),
         scale_down_delay_ms: Some(2_500),
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         version: 1,
         max_connections: None,

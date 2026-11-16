@@ -149,6 +149,8 @@ pub(super) fn lower(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         listeners,
         forward_proxy_services: vec![service],

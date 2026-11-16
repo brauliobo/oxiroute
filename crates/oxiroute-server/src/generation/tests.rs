@@ -80,6 +80,8 @@ fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfig
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         version: 1,
         max_connections,

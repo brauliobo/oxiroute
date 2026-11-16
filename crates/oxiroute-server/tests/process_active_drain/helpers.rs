@@ -20,6 +20,8 @@ pub(super) fn management_config_only(address: SocketAddr) -> ConfigDraft {
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(management(address)),
         ..empty_config()
@@ -41,6 +43,8 @@ pub(super) fn http_config(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
@@ -96,6 +100,8 @@ pub(super) fn forward_h2_config(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(management(management_address)),
         certificates: vec![Certificate {
@@ -173,6 +179,8 @@ pub(super) fn tcp_config(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
@@ -233,6 +241,8 @@ pub(super) fn rtmp_config(
         target_busy_percent: None,
         scale_down_delay_ms: None,
         tls_handshake_threads: None,
+        http3_congestion_control: None,
+        http3_segmentation_offload: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
