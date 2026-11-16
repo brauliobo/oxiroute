@@ -7,7 +7,7 @@ use serde_json::json;
 fn validated() -> ValidatedConfig {
     serde_json::from_value::<ConfigDraft>(json!({
         "version": 1, "listeners": [],
-        "http3_congestion_control": "bbr", "http3_segmentation_offload": false
+        "http3_congestion_control": "cubic", "http3_segmentation_offload": false
     }))
     .expect("authored configuration")
     .validate()

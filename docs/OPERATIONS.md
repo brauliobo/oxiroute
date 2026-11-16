@@ -137,6 +137,20 @@ a listener takes thousands of new TLS connections per second and those threads a
 workers. A change is an ordinary reload (the new generation starts its own threads, the replaced one finishes its handshakes
 on its own). Handshakes waiting for a thread count against `max_connections` and the handshake timeout.
 
+## HTTP/3 congestion control
+
+HTTP/3 listeners use the BBR congestion controller by default (`http3_congestion_control = "bbr"`). It keeps a download
+fast on paths with random loss or a long round trip, where `cubic` collapses: a 10 MiB download over a 100 ms round trip
+with 1% loss takes under a second with `bbr` and about a minute with `cubic`. It is not neutral: on a bottleneck shared
+with `cubic` HTTP/3 or TCP flows the BBR flow takes nearly the whole link, it drops many of its own packets at shallow
+buffers, uses more CPU per MiB, and a loss-free LAN bulk transfer is several times slower than with `cubic`.
+
+Set `http3_congestion_control = "cubic"` when the listener serves LAN or data-center clients, when its large transfers
+share a bottleneck with other traffic you must not starve, or when you watch CPU per MiB or packet loss on the link. A
+change is an ordinary reload: new connections of the new generation use the new controller, established ones keep theirs.
+The measured numbers and how to repeat them are in the [setting description](CONFIG_SPEC.md) and in
+`benchmarks/r2-data-path/README.md`.
+
 ## HTTP/2 receive windows
 
 An `http` or `forward_http2` listener advertises `h2_initial_stream_window` (default 1 MiB, 65535 to 16 MiB) as each
