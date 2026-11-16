@@ -88,6 +88,7 @@ pub const GRPC_BODY: &[u8] = b"\0\0\0\0\x05hello";
 type BoxError = Box<dyn Error + Send + Sync>;
 
 include!("certificates.rs");
+include!("curl.rs");
 include!("proxy.rs");
 include!("tls.rs");
 include!("h1.rs");
