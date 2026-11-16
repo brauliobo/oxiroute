@@ -35,12 +35,7 @@ mod process_support;
 #[path = "../support/mod.rs"]
 mod support;
 
-mod cases_cache;
-mod cases_fixed;
-mod cases_limits;
-mod cases_proxy;
-mod cases_static;
-mod cases_wire;
+mod cases;
 mod client;
 mod config;
 mod context;
@@ -55,16 +50,16 @@ use golden::{RECORD_CASES_VARIABLE, RECORD_VARIABLE};
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reverse_http3_matches_the_golden_corpus() {
     let mut context = context::Context::start().await;
-    cases_fixed::run(&mut context).await;
+    cases::fixed::run(&mut context).await;
     context.checkpoint("after_fixed_responses").await;
-    cases_static::run(&mut context).await;
+    cases::r#static::run(&mut context).await;
     context.checkpoint("after_static_files").await;
-    cases_proxy::run(&mut context).await;
+    cases::proxy::run(&mut context).await;
     context.checkpoint("after_proxy").await;
-    cases_cache::run(&mut context).await;
+    cases::cache::run(&mut context).await;
     context.checkpoint("after_cache").await;
-    cases_wire::run(&mut context).await;
-    cases_limits::run(&mut context).await;
+    cases::wire::run(&mut context).await;
+    cases::limits::run(&mut context).await;
     let observed = context.finish().await;
     let selected = std::env::var(RECORD_CASES_VARIABLE).ok();
     if selected.is_some() || std::env::var_os(RECORD_VARIABLE).is_some() {

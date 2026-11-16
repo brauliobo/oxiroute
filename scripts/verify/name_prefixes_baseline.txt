@@ -25,7 +25,6 @@
 2 crates/oxiroute-server/tests/http
 3 crates/oxiroute-server/tests/lane
 18 crates/oxiroute-server/tests/process
-6 crates/oxiroute-server/tests/reverse_http3_golden/cases
 9 crates/oxiroute-server/tests/wire
 3 scripts/generate
 2 scripts/rtmp

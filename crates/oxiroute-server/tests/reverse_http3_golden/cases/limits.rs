@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 
 use crate::{
-    cases_wire::{conclude, request_case},
+    cases::wire::{conclude, request_case},
     client::{Body, Req},
     config::{LISTENER_CONNECTIONS, ROUTE_BODY_LIMIT},
     context::{Context, host},
@@ -429,7 +429,7 @@ async fn connection_limit(c: &mut Context) {
     for _ in 0..LISTENER_CONNECTIONS {
         let raw = Raw::open(&endpoint, address).await;
         statuses.push(
-            raw.exchange(&crate::cases_wire::ok_request(&host(id)))
+            raw.exchange(&crate::cases::wire::ok_request(&host(id)))
                 .await["status"]
                 .clone(),
         );
@@ -457,7 +457,7 @@ async fn connection_limit(c: &mut Context) {
     c.wait_idle_below(LISTENER_CONNECTIONS).await;
     let fresh = Raw::open(&endpoint, address).await;
     let answer = fresh
-        .exchange(&crate::cases_wire::ok_request(&host(id)))
+        .exchange(&crate::cases::wire::ok_request(&host(id)))
         .await;
     steps.push(step("a connection after one was released", answer));
     fresh.finish();
