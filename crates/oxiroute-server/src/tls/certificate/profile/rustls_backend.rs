@@ -124,22 +124,7 @@ impl TlsProfilePlan {
             .map_err(|error| self.rustls_error(format!("cipher_list: {error}")))?;
         let (provider, left_out) = with_cipher_list(&provider, &selected);
         if !left_out.is_empty() {
-            let shown = left_out
-                .iter()
-                .take(6)
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            log::warn!(
-                "TLS profile `{}`: cipher_list selects {} TLS 1.2 suites the rustls backend does not implement and leaves out: {}{}",
-                self.name,
-                left_out.len(),
-                shown.join(", "),
-                if left_out.len() > shown.len() {
-                    ", ..."
-                } else {
-                    ""
-                }
-            );
+            log::warn!("{}", left_out_message(&self.name, &left_out));
         }
         Ok(provider)
     }
@@ -249,5 +234,59 @@ fn alpn_protocols(alpn: &ALPN) -> Vec<Vec<u8>> {
         ALPN::H2 => vec![b"h2".to_vec()],
         ALPN::H2H1 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         ALPN::Custom(custom) => vec![custom.protocol().to_vec()],
+    }
+}
+
+fn left_out_message(profile: &str, left_out: &[String]) -> String {
+    let shown = left_out
+        .iter()
+        .take(6)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let more = if left_out.len() > shown.len() {
+        ", ..."
+    } else {
+        ""
+    };
+    format!(
+        "TLS profile `{profile}`: policy.cipher_list selects {} TLS 1.2 suites the rustls backend does not implement and does not offer: {}{more}. Clients that need them fail the handshake. To serve them, move those clients to their own listener and TLS profile with policy.backend = \"openssl\" and an explicit policy.cipher_list (see \"Serving legacy clients\" in the operations guide), or set policy.backend = \"openssl\" on this profile",
+        left_out.len(),
+        shown.join(", "),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::left_out_message;
+
+    #[test]
+    fn the_left_out_message_names_the_setting_the_suites_and_the_remedy() {
+        let left_out = ["DHE-RSA-AES128-GCM-SHA256", "AES128-SHA"].map(String::from);
+
+        let message = left_out_message("public", &left_out);
+
+        assert!(message.contains("`public`"), "{message}");
+        assert!(message.contains("policy.cipher_list"), "{message}");
+        assert!(
+            message.contains("DHE-RSA-AES128-GCM-SHA256, AES128-SHA"),
+            "{message}"
+        );
+        assert!(
+            message.contains("policy.backend = \"openssl\""),
+            "{message}"
+        );
+        assert!(message.contains("Serving legacy clients"), "{message}");
+    }
+
+    #[test]
+    fn a_long_left_out_list_is_cut_after_six_names() {
+        let left_out = (0..8)
+            .map(|index| format!("SUITE-{index}"))
+            .collect::<Vec<_>>();
+
+        let message = left_out_message("public", &left_out);
+
+        assert!(message.contains("SUITE-5, ..."), "{message}");
+        assert!(!message.contains("SUITE-6"), "{message}");
     }
 }

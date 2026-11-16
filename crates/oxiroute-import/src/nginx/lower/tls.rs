@@ -23,8 +23,10 @@ use super::{
     provenance::{issue, utf8, warning},
 };
 
+mod ciphers;
 mod identity;
 
+use ciphers::{CipherImport, PolicyNotes};
 use identity::{certificate_source, declared_identities, lineage_identities, uncovered_identities};
 
 /// A listen-flag `http2` on one server enables HTTP/2 for every server on the socket.
@@ -178,6 +180,7 @@ impl Lowerer {
         let mut certificates = Vec::new();
         let mut protocol_policy = None;
         let mut tls_policy = None;
+        let mut notes = None;
         let mut default_certificate = None;
         let mut origins = Vec::new();
         let mut warnings = Vec::new();
@@ -185,7 +188,7 @@ impl Lowerer {
         for policy in &policies {
             let server = policy.server;
             match self.tls_policy(server.origin.occurrence, &server.origin) {
-                Ok((policy, policy_origins)) => {
+                Ok((policy, policy_origins, policy_notes)) => {
                     origins.extend(policy_origins);
                     if tls_policy
                         .as_ref()
@@ -196,8 +199,9 @@ impl Lowerer {
                             E_SEMANTICS_NOT_REPRESENTABLE,
                             "virtual servers on one bind have mismatched TLS policies",
                         ));
-                    } else {
+                    } else if tls_policy.is_none() {
                         tls_policy = Some(policy);
+                        notes = Some(policy_notes);
                     }
                 }
                 Err(policy_issues) => issues.extend(policy_issues),
@@ -241,6 +245,9 @@ impl Lowerer {
             return Err(issues);
         }
         self.diagnostics.extend(warnings);
+        let minimum = protocol_policy.expect("validated TLS protocol policy");
+        self.diagnostics
+            .extend(notes.expect("validated TLS policy").diagnostics(minimum));
         let default_certificate = default_certificate.expect("default server certificate");
         let mut canonical_certificates = Vec::new();
         let mut certificate_names = Vec::new();
@@ -270,7 +277,7 @@ impl Lowerer {
                 name: profile_name,
                 certificates: certificate_names,
                 default_certificate,
-                min_version: protocol_policy.expect("validated TLS protocol policy"),
+                min_version: minimum,
                 alpn: if h2 {
                     vec![AlpnProtocol::H2, AlpnProtocol::Http11]
                 } else {
@@ -286,36 +293,45 @@ impl Lowerer {
         &self,
         scope: OccurrenceId,
         fallback_origin: &DirectiveOrigin,
-    ) -> Result<(TlsPolicy, Vec<DirectiveOrigin>), Vec<LowerIssue>> {
+    ) -> Result<(TlsPolicy, Vec<DirectiveOrigin>, PolicyNotes), Vec<LowerIssue>> {
         let mut policy = TlsPolicy::default();
         let mut origins = Vec::new();
         let mut issues = Vec::new();
+        let mut notes = PolicyNotes::default();
 
-        if let Some(value) = self.effective_policy(scope, b"ssl_ciphers") {
-            let origin = value.origins.last().unwrap_or(fallback_origin);
-            origins.extend(value.origins.clone());
-            match value.arguments.as_slice() {
-                [cipher_list] if utf8(cipher_list).is_some_and(|value| !value.is_empty()) => {
-                    policy.cipher_list = utf8(cipher_list).map(str::to_owned);
-                }
-                _ => issues.push(issue(
-                    origin,
-                    E_INVALID_VALUE,
-                    "ssl_ciphers must be one nonempty UTF-8 cipher string",
-                )),
-            }
-        }
         if let Some(value) = self.effective_policy(scope, b"ssl_dhparam") {
             let origin = value.origins.last().unwrap_or(fallback_origin);
             origins.extend(value.origins.clone());
             match value.arguments.as_slice() {
                 [path] if absolute_file_path(path).is_some() => {
                     policy.dh_parameters_path = absolute_file_path(path);
+                    notes.dhparam = Some(origin.clone());
                 }
                 _ => issues.push(issue(
                     origin,
                     E_INVALID_VALUE,
                     "ssl_dhparam must be one canonical absolute file path",
+                )),
+            }
+        }
+        if let Some(value) = self.effective_policy(scope, b"ssl_ciphers") {
+            let origin = value.origins.last().unwrap_or(fallback_origin);
+            origins.extend(value.origins.clone());
+            let cipher_list = match value.arguments.as_slice() {
+                [cipher_list] => utf8(cipher_list).filter(|value| !value.is_empty()),
+                _ => None,
+            };
+            match cipher_list {
+                Some(cipher_list) => {
+                    let ciphers =
+                        CipherImport::new(cipher_list, origin, policy.dh_parameters_path.is_some());
+                    policy.cipher_list = ciphers.cipher_list();
+                    notes.ciphers = Some(ciphers);
+                }
+                None => issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "ssl_ciphers must be one nonempty UTF-8 cipher string",
                 )),
             }
         }
@@ -376,7 +392,7 @@ impl Lowerer {
         }
 
         if issues.is_empty() {
-            Ok((policy, origins))
+            Ok((policy, origins, notes))
         } else {
             Err(issues)
         }

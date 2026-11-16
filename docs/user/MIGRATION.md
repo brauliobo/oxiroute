@@ -76,6 +76,15 @@ match exactly one lowered rule fail the import, so a typo never silently disable
   `AUTHORITY=SNI` verifies the chain and hostname against the system roots, `,ca=PATH` trusts that CA bundle
   instead, and `,activate` records a connectivity check as an activation requirement. Paths must be absolute
   and must not contain commas.
+- Cipher strings: the default TLS backend cannot interpret an OpenSSL cipher macro, so `ssl_ciphers HIGH:!aNULL:!MD5`
+  (or any value with a keyword or operator such as `HIGH`, `DEFAULT`, `ALL`, `!`, `+`, `@STRENGTH`) imports as the
+  profile's default cipher policy and the preview carries `W_TLS_CIPHERS_DEFAULTED`. The default list is TLS 1.3
+  AES-GCM and ChaCha20-Poly1305 plus the TLS 1.2 ECDHE AEAD suites; DHE-RSA, CBC and RSA key-exchange suites are not
+  offered, so a client that only speaks those fails the handshake. An explicit list of suite names imports unchanged,
+  and `W_TLS_BACKEND_OPENSSL` reports that the profile runs on OpenSSL when it names a `DHE-RSA-` suite or when
+  `ssl_dhparam` is set (imported as `dh_parameters_path`). To keep legacy clients, give them a separate listener and TLS
+  profile with `backend = "openssl"` and an explicit `cipher_list` that includes the suites they need, as in "Serving
+  legacy clients" of the operations guide (`docs/OPERATIONS.md`). The mapping table is in `docs/IMPORT_SPEC.md`.
 - Other defaults that change on import, each reported as a warning: HTTP/2 is socket-wide as in nginx (any
   `listen ... http2` flag enables `h2` for every server on that TLS socket), `listen N` plus `listen [::]:N`
   becomes one dual-stack `[::]:N` listener, and a default `proxy_buffering on` streams the response instead of

@@ -1115,7 +1115,10 @@ The current certificate and profile rules are:
   `backend = "openssl"` (see the TLS backend section of the operations guide). With `backend = "rustls"`, `cipher_list`
   is evaluated by OpenSSL, so the string means what it means on the OpenSSL backend (`HIGH:!aNULL`, `ECDHE+AESGCM`,
   `@STRENGTH`, exact names), and the TLS 1.2 suites it selects that rustls implements are offered in OpenSSL's order;
-  the others (DHE, CBC, RSA key exchange) that a group such as `HIGH` expands to are left out and named once in the log.
+  the others (DHE, CBC, RSA key exchange) that a group such as `HIGH` expands to are left out and named once in the log
+  as a warning that names `policy.cipher_list` and `policy.backend` and points to "Serving legacy clients" in the operations
+  guide. A macro is not rejected: OpenSSL evaluates it, and a macro that leaves no TLS 1.2 suite rustls implements selects the
+  OpenSSL backend when `backend` is omitted and is an error when `backend = "rustls"` is explicit.
   Kernel TLS (`ktls`), FIPS and the DHE suites exist on the OpenSSL backend only. Upstream TLS, ACME and RTMPS use
   OpenSSL whatever the setting, and HTTP/3 uses its own stack. Changing the setting is an ordinary reload: new
   connections of the new generation use the new library and connections of the replaced generation finish as they were

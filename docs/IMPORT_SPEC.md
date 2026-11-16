@@ -232,6 +232,30 @@ source order alone is incorrect.
   agree and that value applies; mixed directive-only values stay blocked because per-server ALPN is not representable.
   `W_HTTP2_SOCKET_WIDE` names each server that gets HTTP/2 although its own configuration did not enable it. A plaintext bind
   whose effective `http2` is on stays blocked.
+- Cipher policy: nginx evaluates `ssl_ciphers` with OpenSSL's cipher-string language, which the default rustls backend does
+  not interpret, so the importer classifies each token. A token is a macro when it is an OpenSSL keyword (`HIGH`, `MEDIUM`,
+  `LOW`, `DEFAULT`, `ALL`, `aNULL`, `eNULL`, `MD5`, `kEECDH`, `AESGCM`, ...) or carries an operator (`!`, `+`, `-`,
+  `@STRENGTH`, `@SECLEVEL=n`); every other token is an explicit suite name. `ssl_dhparam` always imports as
+  `policy.dh_parameters_path`, and `ssl_prefer_server_ciphers on|off` as `policy.prefer_server_ciphers`. The importer never
+  sets `policy.backend`; the backend is chosen when the configuration is compiled, from the imported settings, by the plan
+  rules in the TLS backend section of `OPERATIONS.md`. The cipher diagnostics are Warnings and apply only when the minimum
+  version is TLS 1.2: an OpenSSL cipher string does not govern TLS 1.3, so with `ssl_protocols TLSv1.3` a macro is
+  omitted silently and an explicit list is imported unchanged.
+
+  | `ssl_ciphers` value | Imported `policy.cipher_list` | Backend selected at compile time | Diagnostic |
+  | --- | --- | --- | --- |
+  | Only explicit suites that rustls serves (TLS 1.3 names, ECDHE AES-GCM and ChaCha20-Poly1305 TLS 1.2 names) | the list, unchanged | `rustls` | none |
+  | Explicit suites, at least one served by rustls, others not (CBC, RSA key exchange, DHE-DSS), no `DHE-RSA-` | the list, unchanged | `rustls`, which does not offer the others | `W_TLS_CIPHERS_LEFT_OUT` names them |
+  | Explicit suites with a `DHE-RSA-` or `EDH-RSA-` suite, or none that rustls serves | the list, unchanged | `openssl` | `W_TLS_BACKEND_OPENSSL` |
+  | Any macro, alone or mixed with explicit suites (`HIGH:!aNULL:!MD5`, `ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL`), naming no `DHE-RSA-` suite | omitted: the profile's default cipher policy | `rustls` | `W_TLS_CIPHERS_DEFAULTED` |
+  | A macro mixed with a `DHE-RSA-` or `EDH-RSA-` suite | the list, unchanged | `openssl` | `W_TLS_BACKEND_OPENSSL` |
+  | Any value together with `ssl_dhparam` | the list, unchanged | `openssl` | one `W_TLS_BACKEND_OPENSSL` for `ssl_dhparam` |
+
+  `W_TLS_CIPHERS_DEFAULTED` states that the macro was replaced by the default modern list served by rustls (TLS 1.3
+  AES-GCM and ChaCha20-Poly1305, TLS 1.2 ECDHE AEAD suites), that DHE-RSA, CBC and RSA key-exchange suites are not
+  offered, and the legacy-client recipe: a separate listener and TLS profile with `backend = "openssl"` and an explicit
+  `cipher_list` naming the suites, described in "Serving legacy clients" of `OPERATIONS.md`. Only an explicit `DHE-RSA-`
+  suite, `ssl_dhparam`, FIPS or forced kernel TLS keep a profile on OpenSSL; a macro alone never does.
 - IPv6: `*` (`0.0.0.0`) and `[::]` are distinct endpoints, as in nginx (`listen [::]:P` is its own IPv6-only socket). `listen P`
   plus `listen [::]:P`, with the same virtual servers, the same default server and the same `ssl` flag on both sockets, lowers
   to one dual-stack `[::]:P` listener and emits `W_DUAL_STACK_LISTENER`. Any other pair lowers to two listeners, `0.0.0.0:P`

@@ -101,7 +101,26 @@
         "crates/oxiroute-import/tests/nginx_root.rs#formatted_access_log_migrates_through_the_overlay_and_lists_dropped_fields",
         "crates/oxiroute-import/tests/nginx_root.rs#accepted_directives_without_runtime_effect_are_reported_individually",
         "crates/oxiroute-import/tests/nginx_router_shape.rs#router_shape_skeleton_finalizes_end_to_end",
-        "crates/oxiroute-import/tests/nginx_lower.rs#caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations"
+        "crates/oxiroute-import/tests/nginx_lower.rs#caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_cipher_macro_imports_as_the_default_policy_with_one_explanatory_note",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#the_macro_note_names_the_default_list_the_dropped_suites_and_the_legacy_client_recipe",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_rustls_supports_imports_unchanged_without_a_note",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#tls13_suite_names_in_an_explicit_list_are_served_by_rustls_without_a_note",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_with_dhe_imports_unchanged_and_the_note_says_openssl_serves_it",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_without_a_tls12_suite_rustls_serves_selects_openssl_through_the_note",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_that_rustls_serves_only_in_part_stays_on_rustls_and_names_what_it_lacks",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_list_mixing_explicit_suites_and_a_macro_imports_as_the_default_policy",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_macro_list_that_names_a_dhe_suite_imports_unchanged_for_openssl",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#ssl_dhparam_maps_to_the_dh_parameters_path_and_notes_the_openssl_backend",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_macro_with_ssl_dhparam_keeps_its_openssl_meaning_on_the_openssl_profile",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_tls13_only_minimum_imports_a_macro_without_a_note_because_the_list_governs_tls12_only",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#the_tls_protocol_policy_still_sets_the_minimum_version",
+        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#ssl_prefer_server_ciphers_maps_independently_of_the_cipher_import",
+        "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_cipher_macro_runs_on_rustls",
+        "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_explicit_list_rustls_serves_runs_on_rustls",
+        "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_explicit_dhe_list_selects_openssl",
+        "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_ssl_dhparam_selects_openssl_with_or_without_a_cipher_macro",
+        "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_tls13_minimum_leaves_the_cipher_list_out_of_the_backend_choice"
       ]
     },
     {

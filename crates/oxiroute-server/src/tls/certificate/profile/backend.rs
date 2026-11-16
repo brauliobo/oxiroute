@@ -1,4 +1,4 @@
-use oxiroute_config::{TlsBackend, TlsProfile, TlsVersion};
+use oxiroute_config::{CipherList, TlsBackend, TlsProfile, TlsVersion};
 use pingora::listeners::tls::cipher_list_names;
 use rustls::SupportedCipherSuite;
 
@@ -45,14 +45,9 @@ fn openssl_only_setting(profile: &TlsProfile) -> Result<Option<&'static str>, Tl
         return Ok(None);
     };
     let needs_openssl = profile.min_version == TlsVersion::Tls12
-        && (lists_dhe_rsa(cipher_list) || selects_no_rustls_suite(&profile.name, cipher_list)?);
+        && (CipherList::parse(cipher_list).lists_dhe_rsa()
+            || selects_no_rustls_suite(&profile.name, cipher_list)?);
     Ok(needs_openssl.then_some(CIPHER_LIST))
-}
-
-fn lists_dhe_rsa(cipher_list: &str) -> bool {
-    cipher_list
-        .split([':', ' ', ',', ';'])
-        .any(|token| token.starts_with("DHE-RSA-") || token.starts_with("EDH-RSA-"))
 }
 
 fn selects_no_rustls_suite(profile: &str, cipher_list: &str) -> Result<bool, TlsBuildError> {

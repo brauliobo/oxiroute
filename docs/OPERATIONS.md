@@ -220,6 +220,17 @@ rustls offers the TLS 1.3 and ECDHE AEAD suites only and has no FIPS module and 
 DHE-RSA suites once it runs on rustls; clients that connect with
 only those fail the handshake.
 
+### Cipher macros
+
+`cipher_list` accepts an OpenSSL cipher string. On the default backend a macro such as `HIGH:!aNULL:!MD5` is evaluated by
+OpenSSL, the TLS 1.2 suites it selects that rustls implements are offered in OpenSSL's order, and the rest (DHE, CBC, RSA
+key exchange) are not offered. The log names them once at `warn`, with the setting to change: `policy.cipher_list` and
+`policy.backend`. A macro alone never selects OpenSSL; an explicit `DHE-RSA-` suite, `dh_parameters_path`, FIPS or forced
+kernel TLS do. A macro that leaves rustls no TLS 1.2 suite, such as `LOW`, selects OpenSSL.
+
+An nginx `ssl_ciphers` macro is imported as the profile's default cipher policy instead (`cipher_list` omitted), with the
+`W_TLS_CIPHERS_DEFAULTED` note; the mapping table is in the nginx TLS section of `IMPORT_SPEC.md`.
+
 ### Serving legacy clients
 
 Give the legacy clients their own listener and profile on OpenSSL, and keep the main profile on rustls:
