@@ -167,7 +167,7 @@ benchmarks/r2-data-path/h3_impair.py small --server oxiroute --server-cpus 8-9 -
   (size over p50), the server's CPU milliseconds per MiB (user plus system of every server process, from `/proc`),
   the bytes, packets and drops the qdisc saw, and the `some avg10` CPU pressure before and after the measured section.
 * UDP and TCP segmentation offload must be off on an impaired link: `netem` drops one whole segmented batch, so
-  loss would arrive in bursts of up to ten packets. The script turns TSO, GSO and GRO off on the namespace loopback
+  loss would arrive in bursts of a whole batch (up to 64 KiB). The script turns TSO, GSO and GRO off on the namespace loopback
   for TCP; for QUIC set `http3_segmentation_offload = false` (`--set`). `--keep-offload` leaves the loopback features on.
 * `small` and every run without impairment hold `/tmp/oxiroute-bench.lock` while they measure; use the pinned CPU
   sets of the harness (`--server-cpus 8-9 --client-cpus 12-15`). Impaired runs take `--server-cpus` and `--client-cpus`

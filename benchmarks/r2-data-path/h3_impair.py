@@ -94,6 +94,7 @@ def parse():
     parser.add_argument("--nginx-stream-buffer", default="64k", help="nginx http3_stream_buffer_size (default 64k)")
     parser.add_argument("--nginx-extra", default="", help="extra nginx http-level directives")
     parser.add_argument("--queue-pkts", type=int, default=100000, help="netem queue limit in packets")
+    parser.add_argument("--lock-held", action="store_true", help="the caller holds the benchmark lock for a batch")
     parser.add_argument("--client", choices=["curl", "r2tool"], default="curl")
     parser.add_argument("--label", default="")
     parser.add_argument("--out", default="")
@@ -291,7 +292,7 @@ def measure_small(args, server, work):
 
 @contextlib.contextmanager
 def measuring(args):
-    if args.rtt_ms or args.loss_pct or args.rate:
+    if args.rtt_ms or args.loss_pct or args.rate or args.lock_held:
         yield
         return
     with open(LOCK, "w") as lock:
