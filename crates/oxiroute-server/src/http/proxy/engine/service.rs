@@ -6,17 +6,18 @@ use oxiroute_epoll_h1::{
 use pingora::apps::{ConnectionAdmission, ServerApp};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{exchange::Exchange, lease::EngineLease};
+use super::{exchange::Exchange, lease::EngineLease, routes::Routes};
 use crate::http::proxy::lane::LaneFront;
 
 pub(super) struct EngineFront<A> {
     app: Arc<A>,
     lane: Arc<LaneFront>,
+    routes: Routes,
     handoffs: UnboundedSender<Handoff<ConnectionAdmission>>,
 }
 
 impl<A> EngineFront<A> {
-    pub(super) const fn new(
+    pub(super) fn new(
         app: Arc<A>,
         lane: Arc<LaneFront>,
         handoffs: UnboundedSender<Handoff<ConnectionAdmission>>,
@@ -24,6 +25,7 @@ impl<A> EngineFront<A> {
         Self {
             app,
             lane,
+            routes: Routes::new(),
             handoffs,
         }
     }
@@ -39,7 +41,8 @@ impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
     }
 
     fn route(&self, request: &Request<'_>, now: Instant) -> Routed<Exchange> {
-        Exchange::begin(&self.lane, request, now).map_or(Routed::Handoff, Routed::Serve)
+        Exchange::begin(&self.lane, &self.routes, request, now)
+            .map_or(Routed::Handoff, Routed::Serve)
     }
 
     fn select(&self, exchange: &mut Exchange, _now: Instant) -> Selected<EngineLease> {

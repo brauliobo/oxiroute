@@ -1,6 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::upstream_peer::ReusePeer;
+use crate::{http::action::RoutePolicyPlan, upstream_peer::ReusePeer};
+use oxiroute_config::HttpProxyTimeouts;
 
 /// What an attempt allows each of its steps once its server is selected.
 #[derive(Clone, Copy)]
@@ -10,6 +11,46 @@ pub(super) struct AttemptTimeouts {
     read: Duration,
     write: Duration,
     body_read: Duration,
+}
+
+/// What the attempts of a route allow each step before the time the request has left is taken into account. It
+/// follows from the route's policy and its pool alone, so a route that serves many requests works it out once.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttemptBase {
+    connect: Duration,
+    response: Duration,
+    write: Duration,
+    explicit: HttpProxyTimeouts,
+}
+
+impl AttemptBase {
+    pub(crate) fn of(
+        route: RoutePolicyPlan,
+        explicit: HttpProxyTimeouts,
+        pool: &UpstreamPlan,
+    ) -> Self {
+        Self {
+            connect: pool.connect_timeout(route.connect_timeout),
+            response: pool.server_timeout(route.read_timeout),
+            write: pool.server_timeout(route.write_timeout),
+            explicit,
+        }
+    }
+
+    fn within(&self, now: Instant, remaining: Duration) -> AttemptTimeouts {
+        let attempt = |explicit: Option<u64>, inherited: Duration| {
+            explicit
+                .map_or(inherited, Duration::from_millis)
+                .min(remaining)
+        };
+        AttemptTimeouts {
+            now,
+            connect: attempt(self.explicit.connect_ms, self.connect),
+            read: attempt(self.explicit.header_ms, self.response),
+            write: self.write.min(remaining),
+            body_read: attempt(self.explicit.idle_ms, self.response),
+        }
+    }
 }
 
 impl AttemptTimeouts {
@@ -185,27 +226,9 @@ impl HttpRequestContext {
     }
 
     fn attempt_timeouts(&self, now: Instant, remaining: Duration) -> AttemptTimeouts {
-        let route_policy = proxy_route(self).policy;
-        let timeouts = proxy_policy(self).timeouts;
-        let attempt = |explicit: Option<u64>, inherited: Duration| {
-            explicit
-                .map_or(inherited, Duration::from_millis)
-                .min(remaining)
-        };
         let pool = self.pool.as_ref().expect("a pool was selected");
-        let response = pool.server_timeout(route_policy.read_timeout);
-        AttemptTimeouts {
-            now,
-            connect: attempt(
-                timeouts.connect_ms,
-                pool.connect_timeout(route_policy.connect_timeout),
-            ),
-            read: attempt(timeouts.header_ms, response),
-            write: pool
-                .server_timeout(route_policy.write_timeout)
-                .min(remaining),
-            body_read: attempt(timeouts.idle_ms, response),
-        }
+        AttemptBase::of(proxy_route(self).policy, proxy_policy(self).timeouts, pool)
+            .within(now, remaining)
     }
 
     /// [`Self::next_attempt`] for a caller that cannot wait: `None` when the attempt would have to (the retry delay
@@ -213,6 +236,7 @@ impl HttpRequestContext {
     /// data plane serves never wait: their pools answer a selection at once and their retries have no delay.
     pub(super) fn next_attempt_now(
         &mut self,
+        base: &AttemptBase,
         host: impl FnOnce(
             &RuntimeEndpoint,
             &HttpUpstreamHost,
@@ -244,7 +268,7 @@ impl HttpRequestContext {
             self.enter_phase(Phase::Queued, now);
             self.adopt_selection(selected?, now, host)?;
         }
-        Ok(Some(self.attempt_timeouts(now, remaining)))
+        Ok(Some(base.within(now, remaining)))
     }
 
     /// The lease of the selected server, which the connection of the attempt owns from now on.
@@ -360,7 +384,7 @@ impl HttpRequestContext {
         self.trace.connect = self
             .trace
             .attempt_started
-            .map(|started| now.saturating_duration_since(started));
+            .map(|started| crate::clock::since(now, started));
         let result =
             validate_tls_connection(self.pool.as_deref().and_then(UpstreamPlan::tls), digest);
         if result.is_err() {

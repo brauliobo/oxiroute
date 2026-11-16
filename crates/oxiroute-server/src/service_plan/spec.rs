@@ -304,7 +304,7 @@ impl HttpServicePlan {
     pub(crate) fn serves_on_engine(&self) -> bool {
         self.gzip.is_none()
             && self.automatic_response_headers
-            && self.route_plans.iter().any(|route| route.engine)
+            && self.route_plans.iter().any(|route| route.engine.is_some())
     }
 }
 
@@ -337,7 +337,7 @@ mod tests {
     fn route(lane: LaneRoute, route_id: &str) -> Arc<HttpRoutePlan> {
         Arc::new(HttpRoutePlan {
             access: None,
-            engine: false,
+            engine: None,
             lane,
             edits: crate::http::proxy::lane::RouteEdits::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),

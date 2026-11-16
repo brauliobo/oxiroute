@@ -126,7 +126,7 @@ pub struct HttpRequestContext {
     observed_received: u64,
     observed_sent: u64,
     authority: Option<Authority>,
-    attempted_upstreams: Vec<crate::label::Label>,
+    attempted_upstreams: crate::label::Labels,
     pool: Option<Arc<UpstreamPlan>>,
     route: Option<Arc<HttpRoutePlan>>,
     selected: Option<SelectedEndpoint>,
@@ -151,8 +151,10 @@ pub struct HttpRequestContext {
     request_facts: RequestFacts,
     /// The latest clock reading of this request; see `refresh_clock`.
     now: Instant,
-    total_deadline: Instant,
-    client_deadline: Option<Instant>,
+    /// What the service and the route allow the request, and what the client's timeouts allow it: the least of them is
+    /// `budget`.
+    total_budget: Duration,
+    client_budget: Option<Duration>,
     deadline: Instant,
     /// `deadline` as a length of time from `started_at`.
     budget: Duration,
@@ -173,7 +175,7 @@ pub struct HttpRequestContext {
 /// What the access log and per-server counters need to know about the attempts of one request.
 #[derive(Default)]
 struct AttemptTrace {
-    servers: Vec<crate::label::Label>,
+    servers: crate::label::Labels,
     failure_reason: Option<&'static str>,
     budget_spent: std::sync::atomic::AtomicBool,
     queue_wait: Duration,
@@ -226,7 +228,7 @@ impl HttpRequestContext {
             observed_received: 0,
             observed_sent: 0,
             authority: None,
-            attempted_upstreams: Vec::new(),
+            attempted_upstreams: crate::label::Labels::default(),
             pool: None,
             route: None,
             selected: None,
@@ -249,8 +251,8 @@ impl HttpRequestContext {
             started_at,
             request_facts: RequestFacts::default(),
             now: started_at,
-            total_deadline: deadline,
-            client_deadline: None,
+            total_budget: io_timeout,
+            client_budget: None,
             deadline,
             budget: io_timeout,
             operation_result: None,
@@ -539,11 +541,10 @@ impl HttpRequestContext {
     }
 
     fn adopt_client_timeouts(&mut self, timeouts: [Option<Duration>; 2]) {
-        self.client_deadline = timeouts
+        self.client_budget = timeouts
             .into_iter()
             .flatten()
-            .map(|timeout| self.started_at + timeout)
-            .chain(self.client_deadline)
+            .chain(self.client_budget)
             .min();
         self.refresh_deadline();
     }
@@ -551,31 +552,36 @@ impl HttpRequestContext {
     /// A route total shortens the service deadline; it never extends it.
     fn adopt_route_total(&mut self, total: Option<Duration>) {
         if let Some(total) = total {
-            self.total_deadline = self.total_deadline.min(self.started_at + total);
+            self.total_budget = self.total_budget.min(total);
             self.refresh_deadline();
         }
     }
 
     fn refresh_deadline(&mut self) {
-        self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
-            client.min(self.total_deadline)
-        });
-        self.budget = self.deadline.saturating_duration_since(self.started_at);
+        self.budget = self
+            .client_budget
+            .map_or(self.total_budget, |client| client.min(self.total_budget));
+        self.deadline = self.started_at + self.budget;
         if let Some(inflight) = &self.inflight {
             inflight.set_deadline(self.budget);
         }
     }
 
     fn client_deadline_expired(&self) -> bool {
-        self.client_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+        self.client_budget
+            .is_some_and(|budget| Instant::now() >= self.started_at + budget)
     }
 
     /// Reads the clock again. A step that follows a wait (the network, a queue, a retry delay) calls this first;
     /// every step that runs straight after another reuses its reading.
     fn refresh_clock(&mut self) -> Instant {
-        self.now = Instant::now();
+        self.set_clock(Instant::now());
         self.now
+    }
+
+    /// Takes `now`, a reading of the clock the caller made already, as the latest.
+    fn set_clock(&mut self, now: Instant) {
+        self.now = now;
     }
 
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {

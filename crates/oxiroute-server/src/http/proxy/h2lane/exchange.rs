@@ -81,7 +81,7 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
         );
         progress.status = fail(front, &mut stream, &mut ctx, error, &plan, &mut progress).await;
     }
-    let elapsed = front.finish_request(&mut ctx, error.as_deref(), &progress);
+    let elapsed = front.finish_request(&mut ctx, error.as_deref(), &progress, Instant::now());
     write_access_line(front, &ctx, &plan, &progress, elapsed);
     plan.recycle();
 }
