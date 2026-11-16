@@ -28,6 +28,12 @@ pub trait Workers: Send + Sync + 'static {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The controller changed the active count from `previous` to `active`; the workers between the two changed
+    /// their share in the active set.
+    fn active_changed(&self, previous: usize, active: usize) {
+        let _ = (previous, active);
+    }
 }
 
 /// The counters of one runtime's scaling.
@@ -56,6 +62,15 @@ impl Shared {
             relocations: self.relocations.load(Ordering::Relaxed),
         }
     }
+}
+
+/// The least loaded of the first `count` workers, the one at `first` winning ties, then the ones after it in order.
+#[must_use]
+pub fn least_loaded(first: usize, count: usize, load: impl Fn(usize) -> usize) -> usize {
+    (0..count)
+        .map(|step| (first + step) % count)
+        .min_by_key(|worker| load(*worker))
+        .unwrap_or(0)
 }
 
 type Registry = Mutex<Vec<(String, Weak<Shared>)>>;
@@ -206,11 +221,7 @@ impl Scaling {
     #[must_use]
     pub fn place(&self, own: usize, load: impl Fn(usize) -> usize) -> usize {
         let active = self.active();
-        let start = if own < active { own } else { 0 };
-        (0..active)
-            .map(|step| (start + step) % active)
-            .min_by_key(|worker| load(*worker))
-            .unwrap_or(0)
+        least_loaded(if own < active { own } else { 0 }, active, load)
     }
 
     /// The cheap check of a connection between two requests: its worker is released or holds more than its share.
@@ -268,10 +279,13 @@ fn run(shared: &Shared, policy: Policy, workers: &dyn Workers) {
         }
         let busy = shares(&mut window, now, workers);
         let active = controller.step(now.saturating_duration_since(start), &busy);
-        shared.active.store(active, Ordering::Relaxed);
+        let previous = shared.active.swap(active, Ordering::Relaxed);
         shared
             .rebalance_above
             .store(rebalance_above(workers, active), Ordering::Relaxed);
+        if previous != active {
+            workers.active_changed(previous, active);
+        }
     }
 }
 

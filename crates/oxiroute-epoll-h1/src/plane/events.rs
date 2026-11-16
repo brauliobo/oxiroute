@@ -8,6 +8,7 @@ use super::{
     config::Trigger,
     link::Link,
     reactor::{DRAINING, Reactor, Step},
+    schedule::Arrival,
     service::{Failure, Service},
     slab::{Body, Token},
     sys::{self, Accepted},
@@ -34,15 +35,39 @@ impl<S: Service> Reactor<S> {
         let Some(peer) = peer.filter(|_| self.drain_deadline.is_none()) else {
             return;
         };
-        let (service, timeouts) = (Rc::clone(&self.services[index].0), self.services[index].1);
-        let Some(admission) = service.admit(peer) else {
+        let Some(admission) = self.services[index].0.admit(peer) else {
             return;
         };
+        let wait = self.services[index].1.first_request;
+        self.place(Arrival {
+            fd,
+            peer,
+            listener: index,
+            admission,
+            wait,
+        });
+    }
+
+    pub(crate) fn install(&mut self, arrival: Arrival<S::Admission>) {
+        if self.drain_deadline.is_some() {
+            return self.left();
+        }
+        let Arrival {
+            fd,
+            peer,
+            listener,
+            admission,
+            wait,
+        } = arrival;
+        let (service, timeouts) = (
+            Rc::clone(&self.services[listener].0),
+            self.services[listener].1,
+        );
         let client = Box::new(Client {
             link: Link::new(fd),
             service,
             timeouts,
-            listener: index,
+            listener,
             peer,
             admission,
             stage: Stage::Idle,
@@ -61,11 +86,11 @@ impl<S: Service> Reactor<S> {
             return self.drop_unwatched(token);
         }
         self.live += 1;
-        let first = timeouts.first_request;
-        self.arm_client(token, first);
+        self.arm_client(token, wait);
     }
 
     fn drop_unwatched(&mut self, token: Token) {
+        self.left();
         if let Body::Client(mut client) = self.slab.remove(token) {
             self.release_buffers(&mut client);
         }
@@ -120,6 +145,9 @@ impl<S: Service> Reactor<S> {
         };
         match step {
             Step::Again | Step::Wait => {
+                let Some(mut client) = self.relocated(token, client) else {
+                    return;
+                };
                 if self.config.trigger == Trigger::Level {
                     self.sync_level(token, &mut client);
                 }
@@ -141,7 +169,7 @@ impl<S: Service> Reactor<S> {
                 && (upstream.link.ready.read || upstream.link.ready.hangup),
         );
         match client {
-            Some(client) => self.client_event(client, None),
+            Some(client) => self.client_ready(client, EventFlags::empty()),
             None if unsolicited => self.close_upstream(token),
             None => {}
         }
@@ -192,6 +220,7 @@ impl<S: Service> Reactor<S> {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
+        self.left();
         self.release_buffers(&mut client);
     }
 

@@ -308,11 +308,12 @@ Current constraints:
   Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
   and fixed-response routes, other platforms) is served by the tokio/Pingora path, which receives the connection with the
   bytes already read. `tokio` forces the tokio/Pingora path for every request. The epoll plane runs one thread per
-  `listener_workers` with the kernel spreading connections, so it does not honour `worker_scaling = "dynamic"` or
-  `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with its `connection_age_ms`: when
-  one of them is set, an omitted `http_data_plane` selects the tokio plane for every listener. `epoll` chooses the epoll
-  data plane explicitly: the configuration is rejected when the platform does not support it, when `http_fast_lane` is
-  `false` or when it sets dynamic scaling or aged scheduling, and is never silently downgraded (the server performs
+  `listener_workers` and honours `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with
+  its `connection_age_ms` and `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its
+  ready connections newest first and the oldest first once it has waited the age, a new connection goes to the thread
+  with the fewest open connections, and a dynamically scaled listener keeps its connections on the active threads.
+  `epoll` chooses the epoll data plane explicitly: the configuration is rejected when the platform does not support it
+  or when `http_fast_lane` is `false`, and is never silently downgraded (the server performs
   that check when it prepares the generation; the value itself is checked when the configuration is loaded). The epoll
   plane serves requests that a client sends back to back on one connection without waiting for the answers (pipelining)
   one after the other, where the classic path closes such a connection after the first answer. Changing the value is an
@@ -336,7 +337,9 @@ Current constraints:
   hundreds to thousands of busy keep-alive connections per worker, and no ready connection waits for more than about
   the age plus the time to serve the connections already older than it. It changes only the order in which ready
   connections are served: parsing, admission, limits, drain, retirement and evacuation are the same. A slow handler
-  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks run on the worker of their connection. The default stays `work_stealing`: with one worker per
+  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks run on the worker of their connection. The epoll data plane orders and places its connections the same way on its own threads
+  (a thread reads its ready events, serves the newest ready connection first and promotes the oldest after the age) and
+  reports the same `oxiroute_aged_queue_*` metrics. The default stays `work_stealing`: with one worker per
   listener `aged_per_worker` can lose request rate (0.6x to 0.8x at 512 and 2048 busy connections), so it is
   recommended from two workers (`listener_workers`) up. `auto` makes that choice: `aged_per_worker` when
   `listener_workers` is 2 or more, `work_stealing` with one (or omitted); `connection_age_ms` is accepted with it and
@@ -348,7 +351,9 @@ Current constraints:
   `min_active_workers` (1 to 256, default 1, at most `listener_workers`; an omitted `listener_workers` counts as 1),
   `target_busy_percent` (10 to 90, default 40: the share of one worker's time the active workers are kept under before
   another worker is activated) and `scale_down_delay_ms` (100 to 3600000, default 5000: how long the load must fit in
-  fewer workers before one is released).
+  fewer workers before one is released). On the epoll data plane a worker that leaves the active set stops accepting
+  from the listener, and its idle keep-alive connections move to an active worker between two requests (never with a
+  request in flight); both planes report `oxiroute_worker_scaling_*` metrics in the same shape.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at

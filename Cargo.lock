@@ -2866,9 +2866,14 @@ name = "oxiroute-aged-executor"
 version = "6.5.2"
 dependencies = [
  "atomic-waker",
+ "oxiroute-aged-order",
  "slab",
  "tokio",
 ]
+
+[[package]]
+name = "oxiroute-aged-order"
+version = "6.5.2"
 
 [[package]]
 name = "oxiroute-allocator"
@@ -2932,7 +2937,9 @@ dependencies = [
 name = "oxiroute-epoll-h1"
 version = "6.5.2"
 dependencies = [
+ "oxiroute-aged-order",
  "oxiroute-h1-head",
+ "oxiroute-worker-scaling",
  "rustix",
 ]
 

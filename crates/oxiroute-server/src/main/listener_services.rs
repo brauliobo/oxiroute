@@ -111,6 +111,28 @@ pub(super) fn epoll_bind(bind: &ListenerBind) -> String {
     }
 }
 
+/// The scheduling the epoll data plane runs a listener's threads with, `None` for the kernel's spread and arrival order.
+#[cfg(target_os = "linux")]
+pub(super) fn engine_scheduling(
+    config: &oxiroute_config::ConfigDraft,
+    listener: &str,
+) -> Option<oxiroute_epoll_h1::Scheduling> {
+    use oxiroute_epoll_h1::{Age, Policy, Scale, Scheduling};
+    aged_per_worker(config).then(|| Scheduling {
+        age: config
+            .connection_age_ms
+            .map_or_else(Age::adaptive, |age| Age::Fixed(Duration::from_millis(age))),
+        scale: worker_scaling(config).map(|scaling| Scale {
+            name: listener.to_owned(),
+            policy: Policy {
+                min_active: scaling.min_active,
+                target_busy_permille: scaling.target_busy_percent * 10,
+                release_delay: Duration::from_millis(scaling.scale_down_delay_ms),
+            },
+        }),
+    })
+}
+
 pub(super) struct RuntimeListenerService<S> {
     generation: Option<Arc<RuntimeGeneration>>,
     inner: S,
@@ -220,6 +242,10 @@ where
 
     fn threads(&self) -> Option<usize> {
         self.inner.threads()
+    }
+
+    fn runtime_opts_override(&self, global: &RuntimeOpts) -> Option<RuntimeOpts> {
+        self.inner.runtime_opts_override(global)
     }
 }
 

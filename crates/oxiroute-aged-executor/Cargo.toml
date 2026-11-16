@@ -9,6 +9,7 @@ version.workspace = true
 
 [dependencies]
 atomic-waker.workspace = true
+oxiroute-aged-order = { path = "../oxiroute-aged-order" }
 slab.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 

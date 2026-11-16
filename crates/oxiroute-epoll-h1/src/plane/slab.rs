@@ -26,6 +26,7 @@ pub(crate) enum Body<S: Service> {
     Busy,
     Listener { fd: OwnedFd, index: usize },
     Wake(Waker),
+    Inbox(Waker),
     Client(Box<Client<S>>),
     Upstream(Upstream<S>),
 }

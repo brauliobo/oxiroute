@@ -2,10 +2,10 @@ use std::{io, os::fd::OwnedFd, sync::Arc};
 
 use async_trait::async_trait;
 use log::error;
-use oxiroute_epoll_h1::{Config, Engine, Listener};
+use oxiroute_epoll_h1::{Config, Engine, Listener, Scheduling};
 use pingora::{
     apps::{AcceptGate, ServerApp},
-    server::{ListenFds, ShutdownWatch},
+    server::{ListenFds, RuntimeOpts, ShutdownWatch},
     services::{Service as PingoraService, ServiceReadyNotifier},
 };
 use tokio::{
@@ -29,6 +29,7 @@ pub struct EpollHttpService<A> {
     name: String,
     bind: String,
     threads: usize,
+    scheduling: Option<Scheduling>,
     app: Arc<A>,
     lane: Arc<LaneFront>,
     generation: Arc<RuntimeGeneration>,
@@ -37,7 +38,7 @@ pub struct EpollHttpService<A> {
 impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
     pub fn new(
         (name, bind): (String, String),
-        threads: usize,
+        (threads, scheduling): (usize, Option<Scheduling>),
         app: A,
         lane: EpollLane,
         generation: Arc<RuntimeGeneration>,
@@ -46,6 +47,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             name,
             bind,
             threads,
+            scheduling,
             app: Arc::new(app),
             lane: lane.0,
             generation,
@@ -57,6 +59,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             threads: self.threads,
             max_attempts: u8::try_from(MAX_HTTP_ATTEMPTS).expect("the attempt limit fits a byte"),
             drain: self.generation.retirement_deadline(),
+            scheduling: self.scheduling.clone(),
             ..Config::default()
         }
     }
@@ -198,5 +201,13 @@ impl<A: ServerApp + Send + Sync + 'static> PingoraService for EpollHttpService<A
 
     fn threads(&self) -> Option<usize> {
         Some(self.threads)
+    }
+
+    fn runtime_opts_override(&self, global: &RuntimeOpts) -> Option<RuntimeOpts> {
+        Some(RuntimeOpts {
+            connection_age: None,
+            worker_scaling: None,
+            ..global.clone()
+        })
     }
 }

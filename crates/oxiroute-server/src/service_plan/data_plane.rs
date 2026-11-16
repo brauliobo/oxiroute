@@ -35,7 +35,6 @@ pub(crate) struct ListenerPlane {
 pub(crate) struct EngineConditions {
     pub(crate) supported: bool,
     pub(crate) fast_lane: bool,
-    pub(crate) plain_scheduling: bool,
 }
 
 impl EngineConditions {
@@ -43,12 +42,11 @@ impl EngineConditions {
         Self {
             supported: oxiroute_epoll_h1::supported(),
             fast_lane: config.fast_lane_enabled(),
-            plain_scheduling: !config.aged_per_worker() && !config.dynamic_worker_scaling(),
         }
     }
 
     fn met(self) -> bool {
-        self.supported && self.fast_lane && self.plain_scheduling
+        self.supported && self.fast_lane
     }
 }
 
@@ -76,9 +74,6 @@ impl DataPlanePolicy {
             }
             Some(HttpDataPlane::Epoll) if !conditions.fast_lane => {
                 Err(ServicePlanError::EpollNeedsFastLane)
-            }
-            Some(HttpDataPlane::Epoll) if !conditions.plain_scheduling => {
-                Err(ServicePlanError::EpollNeedsPlainScheduling)
             }
             _ => Ok(Self {
                 setting,
@@ -119,7 +114,6 @@ mod tests {
     const MET: EngineConditions = EngineConditions {
         supported: true,
         fast_lane: true,
-        plain_scheduling: true,
     };
 
     fn policy(setting: Option<HttpDataPlane>, conditions: EngineConditions) -> DataPlanePolicy {
@@ -172,16 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn scheduling_the_engine_cannot_run_keeps_the_default_on_the_tokio_path() {
-        let conditions = EngineConditions {
-            plain_scheduling: false,
-            ..MET
-        };
-        let plane = policy(None, conditions).listener(Protocol::Http, &socket(), false);
-        assert!(!plane.epoll);
-    }
-
-    #[test]
     fn choosing_epoll_explicitly_is_refused_where_it_cannot_run() {
         let epoll = Some(HttpDataPlane::Epoll);
         let refused = |conditions| DataPlanePolicy::resolve(epoll, conditions);
@@ -199,13 +183,29 @@ mod tests {
             }),
             Err(ServicePlanError::EpollNeedsFastLane)
         ));
-        assert!(matches!(
-            refused(EngineConditions {
-                plain_scheduling: false,
-                ..MET
-            }),
-            Err(ServicePlanError::EpollNeedsPlainScheduling)
-        ));
+    }
+
+    fn scheduled(plane: Option<&str>) -> ConfigDraft {
+        let plane = plane.map_or_else(String::new, |plane| {
+            format!(r#""http_data_plane":"{plane}","#)
+        });
+        let draft = format!(
+            r#"{{{plane}"version":1,"connection_scheduling":"aged_per_worker","worker_scaling":"dynamic",
+            "connection_age_ms":5,"min_active_workers":1,"target_busy_percent":70,"scale_down_delay_ms":200,
+            "certificates":[],"listeners":[]}}"#
+        );
+        serde_json::from_str(&draft).expect("a scheduled draft")
+    }
+
+    #[test]
+    fn aged_scheduling_and_dynamic_scaling_do_not_leave_the_epoll_plane() {
+        for plane in [None, Some("epoll")] {
+            let config = scheduled(plane);
+            assert!(config.aged_per_worker() && config.dynamic_worker_scaling());
+            let policy = DataPlanePolicy::resolve(config.http_data_plane_choice(), MET)
+                .expect("scheduling is not a condition of the engine");
+            assert!(policy.listener(Protocol::Http, &socket(), false).epoll);
+        }
     }
 
     #[test]
@@ -213,7 +213,6 @@ mod tests {
         let nothing = EngineConditions {
             supported: false,
             fast_lane: false,
-            plain_scheduling: false,
         };
         assert!(DataPlanePolicy::resolve(Some(HttpDataPlane::Tokio), nothing).is_ok());
     }

@@ -781,11 +781,9 @@ where
 }
 
 fn least_loaded(pools: &[Pool], own: usize) -> usize {
-    let count = pools.len();
-    (0..count)
-        .map(|step| (own + step) % count)
-        .min_by_key(|index| pools[*index].load.load(Ordering::Relaxed))
-        .unwrap()
+    oxiroute_worker_scaling::least_loaded(own, pools.len(), |index| {
+        pools[index].load.load(Ordering::Relaxed)
+    })
 }
 
 /// Whether the calling connection should move to another worker: it sits on a released one, or on one holding more

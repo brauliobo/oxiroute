@@ -8,7 +8,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+oxiroute-aged-order = { path = "../oxiroute-aged-order" }
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
+oxiroute-worker-scaling = { path = "../oxiroute-worker-scaling" }
 rustix.workspace = true
 
 [lints.rust]

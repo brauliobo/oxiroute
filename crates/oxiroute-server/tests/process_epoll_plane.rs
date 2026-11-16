@@ -26,9 +26,7 @@ use tokio::{
 
 use fixture_support::fixture;
 use h1_wire::{Origin, STEP, Wire, find, status};
-use process_support::{
-    output_text, reserve_tcp_address, run_to_failure, serves_on_epoll, write_config,
-};
+use process_support::serves_on_epoll;
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
@@ -382,33 +380,35 @@ fn aged(config: &mut ConfigDraft) {
     config.connection_age_ms = Some(50);
 }
 
-async fn served_by_the_tokio_plane(edit: fn(&mut ConfigDraft)) {
+async fn served_by_the_epoll_plane(edit: fn(&mut ConfigDraft)) {
     let wire = Wire::over(Origin::start(OK).await, edit).await;
     let response = wire.exchange(GET).await;
     assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
-    assert_eq!(served(wire), 0);
+    assert_eq!(served(wire), expected_on_epoll(1));
 }
 
-#[tokio::test]
-async fn a_listener_with_dynamic_worker_scaling_is_served_by_the_tokio_plane() {
-    served_by_the_tokio_plane(scaled_dynamically).await;
-}
-
-#[tokio::test]
-async fn a_listener_with_aged_scheduling_and_a_connection_age_is_served_by_the_tokio_plane() {
-    served_by_the_tokio_plane(aged).await;
-}
-
-#[test]
-fn choosing_epoll_with_scheduling_it_cannot_run_is_refused() {
-    let mut config = h1_wire::config(reserve_tcp_address(), reserve_tcp_address());
-    scaled_dynamically(&mut config);
+fn explicitly_on_epoll(edit: fn(&mut ConfigDraft), config: &mut ConfigDraft) {
+    edit(config);
     config.http_data_plane = Some(HttpDataPlane::Epoll);
-    let directory = tempfile::tempdir().expect("config directory");
-    let path = directory.path().join("oxiroute.lua");
-    write_config(&path, &config.validate().expect("a valid configuration"));
-    let failure = run_to_failure(&path, None);
-    assert!(!failure.status.success());
-    let output = output_text(&failure);
-    assert!(output.contains("cannot honour worker_scaling"), "{output}");
+}
+
+#[tokio::test]
+async fn a_listener_with_dynamic_worker_scaling_is_served_by_the_epoll_plane() {
+    served_by_the_epoll_plane(scaled_dynamically).await;
+}
+
+#[tokio::test]
+async fn a_listener_with_aged_scheduling_and_a_connection_age_is_served_by_the_epoll_plane() {
+    served_by_the_epoll_plane(aged).await;
+}
+
+#[tokio::test]
+async fn choosing_epoll_with_dynamic_scaling_is_served_by_it() {
+    let wire = Wire::over(Origin::start(OK).await, |config| {
+        explicitly_on_epoll(scaled_dynamically, config);
+    })
+    .await;
+    let response = wire.exchange(GET).await;
+    assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
+    assert_eq!(served(wire), expected_on_epoll(1));
 }
