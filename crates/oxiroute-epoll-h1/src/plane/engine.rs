@@ -16,12 +16,14 @@ use super::{
     reactor::{Control, DRAINING, ListenerFd, Reactor, STOPPING},
     service::Service,
     sys,
+    tls::TlsRouter,
 };
 
 pub struct Listener<S: Service> {
     pub service: Arc<S>,
     pub timeouts: Timeouts,
     pub sockets: Vec<OwnedFd>,
+    pub tls: Option<Arc<dyn TlsRouter>>,
 }
 
 impl<S: Service> Listener<S> {
@@ -40,6 +42,7 @@ impl<S: Service> Listener<S> {
             service,
             timeouts,
             sockets,
+            tls: None,
         })
     }
 
@@ -56,7 +59,14 @@ impl<S: Service> Listener<S> {
             service,
             timeouts,
             sockets,
+            tls: None,
         })
+    }
+
+    #[must_use]
+    pub fn terminating_tls(mut self, router: Arc<dyn TlsRouter>) -> Self {
+        self.tls = Some(router);
+        self
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -97,6 +107,7 @@ impl Engine {
                 fds.push(ListenerFd {
                     service: Arc::clone(&listener.service),
                     timeouts: listener.timeouts,
+                    tls: listener.tls.clone(),
                     fd,
                 });
             }

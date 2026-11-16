@@ -1,8 +1,9 @@
-#![allow(dead_code, clippy::pedantic)]
+#![allow(dead_code, unused_imports, clippy::pedantic)]
 
 mod date;
 mod origin;
 mod service;
+mod tls;
 mod wire;
 
 use std::{
@@ -14,10 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_epoll_h1::{Config, Engine, Handoff, Listener, Timeouts};
+use oxiroute_epoll_h1::{Config, Engine, Handoff, Listener, Timeouts, TlsRouter};
 
 pub use origin::Origin;
 pub use service::{Guard, Knobs, Reference, Route};
+pub use tls::{Client, ClientSettings, Identity, Rig, Server, Settings, Tls};
 pub use wire::Wire;
 
 pub struct Fixture {
@@ -86,11 +88,31 @@ impl Fixture {
         Self::build((config, timeouts, knobs), origin, routes, true)
     }
 
+    pub fn terminating(server: Arc<Server>, timeouts: Timeouts) -> Self {
+        let origin = Origin::start();
+        let routes = vec![Route {
+            host: "test.example",
+            prefix: "/",
+            origin: origin.addr,
+        }];
+        let config = (test_config(), timeouts, Knobs::default());
+        Self::assemble(config, origin, routes, (true, Some(server)))
+    }
+
     fn build(
-        (config, timeouts, knobs): (Config, Timeouts, Knobs),
+        config: (Config, Timeouts, Knobs),
         origin: Origin,
         routes: Vec<Route>,
         accepting: bool,
+    ) -> Self {
+        Self::assemble(config, origin, routes, (accepting, None))
+    }
+
+    fn assemble(
+        (config, timeouts, knobs): (Config, Timeouts, Knobs),
+        origin: Origin,
+        routes: Vec<Route>,
+        (accepting, tls): (bool, Option<Arc<dyn TlsRouter>>),
     ) -> Self {
         let (sender, handoffs) = mpsc::channel();
         let (paused_sender, paused) = mpsc::channel();
@@ -102,6 +124,10 @@ impl Fixture {
             timeouts,
         )
         .expect("listeners");
+        let listener = match tls {
+            Some(router) => listener.terminating_tls(router),
+            None => listener,
+        };
         let addr = listener.local_addr().expect("listener address");
         let engine = if accepting {
             Engine::start(&config, vec![listener])

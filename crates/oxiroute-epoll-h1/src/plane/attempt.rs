@@ -176,6 +176,7 @@ impl<S: Service> Reactor<S> {
         let Client {
             buffers,
             flow,
+            link,
             peer,
             req_len,
             ..
@@ -183,7 +184,8 @@ impl<S: Service> Reactor<S> {
         let flow = flow.as_mut().expect("a serving client has a flow");
         let buffers: &mut Buffers = buffers;
         buffers.up_head.clear();
-        let request = Request::new(&buffers.req[..*req_len], &buffers.head, *peer);
+        let secure = link.encrypted();
+        let request = Request::new(&buffers.req[..*req_len], &buffers.head, *peer, secure);
         let exchange = flow.exchange.as_ref().expect("an exchange is served once");
         service.render_request(exchange, &request, &mut buffers.up_head);
         let limit = flow.timeouts.map(|timeouts| timeouts.write);

@@ -27,6 +27,7 @@ use super::{
     service::Service,
     slab::{Body, Slab, Token},
     sys,
+    tls::TlsRouter,
     upstream::IdlePool,
     wheel::Wheel,
 };
@@ -109,6 +110,7 @@ pub(crate) enum Step {
 pub(crate) struct ListenerFd<S: Service> {
     pub(crate) service: Arc<S>,
     pub(crate) timeouts: Timeouts,
+    pub(crate) tls: Option<Arc<dyn TlsRouter>>,
     pub(crate) fd: OwnedFd,
 }
 
@@ -120,6 +122,7 @@ pub(crate) struct Reactor<S: Service> {
     pub(crate) pool: IdlePool,
     pub(crate) buffers: BufferPool,
     pub(crate) services: Vec<(Shared<S>, Timeouts)>,
+    pub(crate) tls: Vec<Option<Arc<dyn TlsRouter>>>,
     pub(crate) response: Box<ResponseHead>,
     pub(crate) expired: Vec<u32>,
     pub(crate) clock: Clock,
@@ -152,6 +155,7 @@ impl<S: Service> Reactor<S> {
             pool: IdlePool::new(config.max_idle_upstreams, config.max_idle_per_target),
             buffers: BufferPool::default(),
             services: Vec::with_capacity(listeners.len()),
+            tls: Vec::with_capacity(listeners.len()),
             response: Box::new(ResponseHead::new()),
             expired: Vec::with_capacity(capacity),
             clock,
@@ -184,6 +188,7 @@ impl<S: Service> Reactor<S> {
         sys::prepare_listener(&listener.fd)?;
         self.services
             .push((Rc::new(listener.service), listener.timeouts));
+        self.tls.push(listener.tls);
         let token = self
             .slab
             .insert(Body::Listener {

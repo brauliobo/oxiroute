@@ -8,6 +8,7 @@ use super::{
     service::{Handoff, Request, Reuse, Routed, Service},
     slab::Token,
     sys::{self, Read, Wrote},
+    tls::Finish,
 };
 
 fn servable(head: &RequestHead) -> bool {
@@ -22,6 +23,7 @@ impl<S: Service> Reactor<S> {
     pub(crate) fn drive(&mut self, token: Token, client: &mut Client<S>) -> Step {
         loop {
             let step = match client.stage {
+                Stage::Handshake => Self::handshake(client),
                 Stage::Idle | Stage::Head => self.read_request(token, client),
                 Stage::Serving => self.pump(token, client),
                 Stage::Answering => self.flush_answer(token, client),
@@ -46,7 +48,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn begin_request(&mut self, token: Token, client: &mut Client<S>) -> Step {
-        if !client.link.ready.read {
+        if !client.link.can_read() {
             return Step::Wait;
         }
         self.lease_buffers(client);
@@ -95,7 +97,13 @@ impl<S: Service> Reactor<S> {
             return Step::Handoff;
         }
         let service = Rc::clone(&client.service);
-        let request = Request::new(&client.buffers.req[..client.req_len], head, client.peer);
+        let secure = client.link.encrypted();
+        let request = Request::new(
+            &client.buffers.req[..client.req_len],
+            head,
+            client.peer,
+            secure,
+        );
         let Routed::Serve(exchange) = service.route(&request, self.now) else {
             return Step::Handoff;
         };
@@ -156,7 +164,7 @@ impl<S: Service> Reactor<S> {
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
-        let prefix = client.buffers.req[..client.req_len].to_vec();
+        let prefix = client.buffers.request_prefix(client.req_len);
         self.release_buffers(&mut client);
         let Client {
             link,
@@ -167,9 +175,11 @@ impl<S: Service> Reactor<S> {
             served,
             ..
         } = client;
-        sys::unwatch(&self.epoll, &link.fd);
+        let (fd, tls) = link.into_parts();
+        sys::unwatch(&self.epoll, &fd);
         service.handoff(Handoff {
-            stream: TcpStream::from(link.fd),
+            stream: TcpStream::from(fd),
+            tls,
             prefix,
             peer,
             listener,
@@ -198,6 +208,11 @@ impl<S: Service> Reactor<S> {
     }
 
     fn linger(client: &mut Client<S>) -> Step {
+        match client.link.finish() {
+            Finish::Done => {}
+            Finish::Pending => return Step::Wait,
+            Finish::Failed => return Step::Close,
+        }
         loop {
             match client.link.recv(&mut client.buffers.req) {
                 Read::Data(_) => {}

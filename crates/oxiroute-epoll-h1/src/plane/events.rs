@@ -38,15 +38,16 @@ impl<S: Service> Reactor<S> {
         let Some(admission) = service.admit(peer) else {
             return;
         };
+        let (link, stage) = self.open_link(index, fd);
         let client = Box::new(Client {
-            link: Link::new(fd),
+            link,
             service,
             timeouts,
             listener: index,
             peer,
             admission,
             served: 0,
-            stage: Stage::Idle,
+            stage,
             deadline: None,
             buffers: Leased::none(),
             req_len: 0,
@@ -112,7 +113,12 @@ impl<S: Service> Reactor<S> {
         if let Some(flags) = flags {
             client.link.ready.apply(flags);
         }
-        self.resume(token, client, Step::Again);
+        let step = if client.link.flush() {
+            Step::Again
+        } else {
+            Step::Close
+        };
+        self.resume(token, client, step);
     }
 
     pub(crate) fn resume(&mut self, token: Token, mut client: Box<Client<S>>, step: Step) {
@@ -192,6 +198,7 @@ impl<S: Service> Reactor<S> {
             let failure = client.flow().failure.unwrap_or(Failure::ClientGone);
             self.end_exchange(&mut client, Some(failure));
         }
+        client.link.farewell();
         self.wheel.cancel(token.index);
         self.slab.remove(token);
         self.live -= 1;
@@ -237,7 +244,9 @@ impl<S: Service> Reactor<S> {
             Some(Body::Listener { .. }) => {
                 self.slab.remove(token);
             }
-            Some(Body::Client(client)) if client.stage == Stage::Idle => {
+            Some(Body::Client(client))
+                if matches!(client.stage, Stage::Idle | Stage::Handshake) =>
+            {
                 if let Some(client) = self.slab.take_client(token) {
                     self.close_client(token, client);
                 }
@@ -268,7 +277,7 @@ impl<S: Service> Reactor<S> {
 impl<S: Service> Reactor<S> {
     fn sync_level(&mut self, token: Token, client: &mut Client<S>) {
         let reading = match client.stage {
-            Stage::Idle | Stage::Head | Stage::Lingering => true,
+            Stage::Handshake | Stage::Idle | Stage::Head | Stage::Lingering => true,
             Stage::Serving => client
                 .flow
                 .as_ref()

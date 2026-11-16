@@ -14,6 +14,7 @@ mod serve;
 mod service;
 mod slab;
 mod sys;
+mod tls;
 mod upstream;
 mod wheel;
 
@@ -23,3 +24,4 @@ pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
     Response, Reuse, Routed, Selected, Service, Target,
 };
+pub use tls::TlsRouter;

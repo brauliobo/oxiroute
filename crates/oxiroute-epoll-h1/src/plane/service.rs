@@ -4,16 +4,33 @@ use std::{
 };
 
 use oxiroute_h1_head::{Connection, RequestHead, ResponseHead};
+use rustls::ServerConnection;
 
 pub struct Request<'a> {
     bytes: &'a [u8],
     head: &'a RequestHead,
     peer: SocketAddr,
+    secure: bool,
 }
 
 impl<'a> Request<'a> {
-    pub(crate) const fn new(bytes: &'a [u8], head: &'a RequestHead, peer: SocketAddr) -> Self {
-        Self { bytes, head, peer }
+    pub(crate) const fn new(
+        bytes: &'a [u8],
+        head: &'a RequestHead,
+        peer: SocketAddr,
+        secure: bool,
+    ) -> Self {
+        Self {
+            bytes,
+            head,
+            peer,
+            secure,
+        }
+    }
+
+    #[must_use]
+    pub const fn secure(&self) -> bool {
+        self.secure
     }
 
     #[must_use]
@@ -190,6 +207,7 @@ pub struct Outcome {
 
 pub struct Handoff<A> {
     pub stream: TcpStream,
+    pub tls: Option<Box<ServerConnection>>,
     pub prefix: Vec<u8>,
     pub peer: SocketAddr,
     pub listener: usize,

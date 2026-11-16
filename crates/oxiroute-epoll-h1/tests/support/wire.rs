@@ -4,8 +4,8 @@ use std::{
     time::Duration,
 };
 
-pub struct Wire {
-    pub stream: TcpStream,
+pub struct Wire<T = TcpStream> {
+    pub stream: T,
     pending: Vec<u8>,
 }
 
@@ -37,10 +37,7 @@ impl Wire {
             .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout");
         stream.set_nodelay(true).expect("nodelay");
-        Self {
-            stream,
-            pending: Vec::new(),
-        }
+        Self::over(stream)
     }
 
     pub fn silent_for(&mut self, limit: Duration) -> bool {
@@ -52,6 +49,15 @@ impl Wire {
             .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout");
         silent
+    }
+}
+
+impl<T: Read + Write> Wire<T> {
+    pub fn over(stream: T) -> Self {
+        Self {
+            stream,
+            pending: Vec::new(),
+        }
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
