@@ -284,8 +284,10 @@ delay. Selection, retries, health signals, connection limits, the access log, re
 are the lane's own, so a request is accounted identically on either plane. Every other connection (TLS, HTTP/2 and
 HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
 ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
-(`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
-cannot run it. The option is an ordinary reload.
+(`epoll`, `io_uring` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a
+platform that cannot run it. `io_uring` runs the same engine on io_uring, is never the default, and is rejected with
+the missing kernel capability named when the kernel or its sandbox cannot run it (`kernel.io_uring_disabled`, seccomp,
+an old kernel); it is never replaced by epoll silently. The option is an ordinary reload.
 
 An operator evacuation reports a request served by the epoll plane as `left running` (`data_plane`): it finishes where
 it is. An origin response that the plane's head codec does not scan (an obsolete folded header, an interim `1xx`

@@ -302,7 +302,7 @@ Current constraints:
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
-- Root `http_data_plane` is an optional string, `epoll` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
+- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
   HTTP/1.1 reverse-proxy listeners are served by the thread-per-core epoll data plane wherever the platform supports it
   (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
   Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
@@ -310,8 +310,13 @@ Current constraints:
   bytes already read. `tokio` forces the tokio/Pingora path for every request. `epoll` chooses the epoll data plane
   explicitly: the configuration is rejected when the platform does not support it and is never silently downgraded (the
   server performs that check when it prepares the generation; the value itself is checked when the configuration is
-  loaded). Changing the value is an ordinary reload: the plane belongs to the generation. Connections served by either
-  plane appear identically in status, metrics and access logs.
+  loaded). `io_uring` runs the same engine on io_uring completions instead of epoll readiness. It is opt-in and never
+  the default: the server probes the kernel when it prepares the generation and rejects the configuration, naming the
+  missing capability (a kernel without the needed operations or provided buffer rings, `kernel.io_uring_disabled`, a
+  seccomp or container policy), instead of falling back to epoll; like `epoll` it requires `http_fast_lane` not
+  `false`. Listeners and requests the engine does not serve take the tokio path under either value. Measurements are
+  in `benchmarks/reports/io-uring-http1/README.md`. Changing the value is an ordinary reload: the plane belongs to the
+  generation. Connections served by any plane appear identically in status, metrics and access logs.
 - Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
   every TLS listener. Omitted means one thread per 8 CPUs, at least 1 and at most 4. The accepted socket's whole server
   handshake (key exchange, certificate selection, ALPN and client-certificate verification, signature) runs on these
