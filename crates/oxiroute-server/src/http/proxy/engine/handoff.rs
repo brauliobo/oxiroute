@@ -2,6 +2,7 @@ use std::{io, sync::Arc};
 
 use log::warn;
 use oxiroute_epoll_h1::Handoff;
+use oxiroute_tls_rustls::TlsStream;
 use pingora::{
     apps::{ConnectionAdmission, ServerApp},
     protocols::{Stream, l4::stream::Stream as Socket},
@@ -13,14 +14,20 @@ use tokio::sync::mpsc::UnboundedReceiver;
 fn adopt(handoff: Handoff<ConnectionAdmission>) -> io::Result<Stream> {
     let Handoff {
         stream,
+        tls,
         prefix,
         peer,
         admission,
         ..
     } = handoff;
-    let mut socket = Socket::adopt(stream, peer, &prefix)?;
+    let Some(conn) = tls else {
+        let mut socket = Socket::adopt(stream, peer, &prefix)?;
+        socket.hold_admission(admission);
+        return Ok(Box::new(socket));
+    };
+    let mut socket = Socket::adopt(stream, peer, &[])?;
     socket.hold_admission(admission);
-    Ok(Box::new(socket))
+    Ok(Box::new(TlsStream::resume(socket, *conn, prefix)))
 }
 
 pub(super) async fn serve<A: ServerApp + Send + Sync + 'static>(

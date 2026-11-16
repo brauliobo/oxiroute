@@ -20,6 +20,7 @@ mod slab;
 mod spare;
 mod splice;
 mod sys;
+mod tls;
 mod upstream;
 mod wake;
 mod wheel;
@@ -35,3 +36,4 @@ pub use service::{
     Response, Reuse, Routed, Selected, Service, Target,
 };
 pub use wake::Waker;
+pub use tls::TlsRouter;

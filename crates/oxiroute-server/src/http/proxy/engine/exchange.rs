@@ -64,7 +64,13 @@ impl Exchange {
             return None;
         }
         let client_ip = Some(request.peer().ip());
-        let values = decide(false, &route, (buffer, client_ip), head, &authority)?;
+        let values = decide(
+            request.secure(),
+            &route,
+            (buffer, client_ip),
+            head,
+            &authority,
+        )?;
         let id = request_id(buffer, &lane, generated_request_id_bytes());
         debug!(target: LOG_TARGET, "served by the epoll data plane: request_id={}", id.to_str().unwrap_or_default());
         let ctx = front.begin(

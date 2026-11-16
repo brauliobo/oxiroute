@@ -1,5 +1,7 @@
 use std::{fmt, sync::Arc};
 
+#[cfg(target_os = "linux")]
+use oxiroute_epoll_h1::TlsRouter;
 use oxiroute_tls_rustls::ConfigRouter;
 use rustls::{
     ServerConfig, SupportedProtocolVersion,
@@ -65,6 +67,13 @@ impl ProfileRouter {
         config.alpn_protocols = vec![TLS_ALPN_PROTOCOL.to_vec()];
         config.send_tls13_tickets = 0;
         Some(Arc::new(config))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl TlsRouter for ProfileRouter {
+    fn config(&self, hello: &ClientHello<'_>) -> Option<Arc<ServerConfig>> {
+        self.route(hello)
     }
 }
 

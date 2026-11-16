@@ -352,6 +352,13 @@ nobody asked for, more than 256 headers, a head over about 1 MiB. The plane is s
 header that names more than four other fields is a `502`, and so is a first chunk whose size is not hexadecimal, where
 the tokio path closes the connection without an answer.
 
+A TLS listener is served by the epoll plane only when `http_data_plane = "epoll"` is set explicitly and its TLS profile
+uses the rustls backend. The plane then runs the handshake, record decryption and encryption on the event-loop thread
+(handshakes are not offloaded to `tls_handshake_threads`), with the profile's certificates, SNI selection, resumption,
+protocol versions and client-certificate policy. A connection that negotiates `h2` or another ALPN, and every request
+the plane does not serve, continues on the tokio path over the established TLS session together with the plaintext
+already read, with no second handshake.
+
 The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or plain proxy route (any body framing, `Expect`, access log) is
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls
 both lanes.

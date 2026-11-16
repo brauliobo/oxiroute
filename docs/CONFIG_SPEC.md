@@ -305,7 +305,9 @@ Current constraints:
 - Root `http_data_plane` is an optional string, `epoll` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
   HTTP/1.1 reverse-proxy listeners are served by the thread-per-core epoll data plane wherever the platform supports it
   (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
-  Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
+  TLS listeners stay on the tokio path unless `epoll` is chosen explicitly and the listener's TLS profile uses the rustls
+  backend: the epoll data plane then terminates TLS itself and serves HTTP/1.1 (ALPN `http/1.1` or none); an HTTP/2
+  connection continues on the tokio path over the same TLS session. Everything else (HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
   and fixed-response routes, other platforms) is served by the tokio/Pingora path, which receives the connection with the
   bytes already read. `tokio` forces the tokio/Pingora path for every request. The epoll plane runs one thread per
   `listener_workers` and honours `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with

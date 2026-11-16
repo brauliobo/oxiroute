@@ -51,19 +51,27 @@ pub(crate) fn peek(fd: &OwnedFd) -> Read {
 }
 
 pub(crate) fn write(fd: &OwnedFd, head: &[u8], body: &[u8]) -> Wrote {
+    if !head.is_empty() {
+        return write_vectored(fd, &[IoSlice::new(head), IoSlice::new(body)]);
+    }
     loop {
-        let sent = if head.is_empty() {
-            net::send(fd, body, SendFlags::NOSIGNAL)
-        } else {
-            let slices = [IoSlice::new(head), IoSlice::new(body)];
-            net::sendmsg(
-                fd,
-                &slices,
-                &mut SendAncillaryBuffer::default(),
-                SendFlags::NOSIGNAL,
-            )
+        return match net::send(fd, body, SendFlags::NOSIGNAL) {
+            Ok(count) => Wrote::Bytes(count),
+            Err(Errno::INTR) => continue,
+            Err(Errno::AGAIN) => Wrote::Block,
+            Err(_) => Wrote::Failed,
         };
-        return match sent {
+    }
+}
+
+pub(crate) fn write_vectored(fd: &OwnedFd, slices: &[IoSlice<'_>]) -> Wrote {
+    loop {
+        return match net::sendmsg(
+            fd,
+            slices,
+            &mut SendAncillaryBuffer::default(),
+            SendFlags::NOSIGNAL,
+        ) {
             Ok(count) => Wrote::Bytes(count),
             Err(Errno::INTR) => continue,
             Err(Errno::AGAIN) => Wrote::Block,

@@ -39,6 +39,33 @@ impl TlsProfilePlan {
         &self,
         handshake_threads: usize,
     ) -> Result<CustomTlsSettings, TlsBuildError> {
+        let router = self.rustls_router()?;
+        let mut settings = CustomTlsSettings::new(Arc::new(RustlsAcceptor::new(Arc::new(router))));
+        if handshake_threads > 0 {
+            settings.set_offload_threadpool(handshake_threads, 1);
+        }
+        Ok(settings)
+    }
+
+    /// Whether the epoll data plane can terminate TLS for this profile: only the rustls backend gives it a
+    /// configuration to drive.
+    #[must_use]
+    pub fn serves_on_epoll(&self) -> bool {
+        self.backend == TlsBackend::Rustls
+    }
+
+    /// The router the epoll data plane terminates this profile's connections with, sharing the configurations and
+    /// resumption state of the profile's other listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile does not use the rustls backend or rustls rejects its settings.
+    #[cfg(target_os = "linux")]
+    pub fn epoll_router(&self) -> Result<Arc<dyn oxiroute_epoll_h1::TlsRouter>, TlsBuildError> {
+        Ok(Arc::new(self.rustls_router()?))
+    }
+
+    fn rustls_router(&self) -> Result<ProfileRouter, TlsBuildError> {
         if self.backend != TlsBackend::Rustls {
             return Err(self.rustls_error("the profile selects the OpenSSL backend".into()));
         }
@@ -58,18 +85,13 @@ impl TlsProfilePlan {
         } else {
             Some(self.rustls_server_config(&provider, Vec::new(), &sessions)?)
         };
-        let router = ProfileRouter::new(
+        Ok(ProfileRouter::new(
             strict,
             lenient,
             protocols,
             self.tls_alpn_challenge_store.clone(),
             self.protocol_versions(),
-        );
-        let mut settings = CustomTlsSettings::new(Arc::new(RustlsAcceptor::new(Arc::new(router))));
-        if handshake_threads > 0 {
-            settings.set_offload_threadpool(handshake_threads, 1);
-        }
-        Ok(settings)
+        ))
     }
 
     fn protocol_versions(&self) -> &'static [&'static SupportedProtocolVersion] {

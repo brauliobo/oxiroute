@@ -718,13 +718,16 @@ fn serve_generation(
                 #[cfg(target_os = "linux")]
                 if let Some(lane) = epoll_lane {
                     let scheduling = engine_scheduling(config, &service_name);
-                    let service = EpollHttpService::new(
+                    let mut service = EpollHttpService::new(
                         (service_name, epoll_bind(&listener_bind)),
                         (workers, scheduling),
                         app,
                         lane,
                         Arc::clone(generation),
                     );
+                    if let Some(profile) = listener_tls.as_deref() {
+                        service = service.terminating_tls(profile.epoll_router()?);
+                    }
                     server.add_service(
                         RuntimeListenerService::new(service, reservation, Some(metrics))
                             .with_generation(Arc::clone(generation)),

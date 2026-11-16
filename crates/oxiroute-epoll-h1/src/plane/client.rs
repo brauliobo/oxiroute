@@ -69,6 +69,12 @@ impl Leased {
     pub(crate) fn release(&mut self) -> Option<Pooled> {
         self.0.take()
     }
+
+    pub(crate) fn request_prefix(&self, len: usize) -> Vec<u8> {
+        self.0
+            .as_ref()
+            .map_or_else(Vec::new, |pooled| pooled.0.req[..len].to_vec())
+    }
 }
 
 impl Deref for Leased {
@@ -107,6 +113,7 @@ impl Window {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Stage {
+    Handshake,
     Idle,
     Head,
     Serving,

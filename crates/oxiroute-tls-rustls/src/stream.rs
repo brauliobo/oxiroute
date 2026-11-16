@@ -49,6 +49,9 @@ pub struct TlsStream {
     pending: Vec<u8>,
     sent: usize,
     close_sent: bool,
+    /// Plaintext another reader took from this connection before it was handed over: it is read again first.
+    replay: Vec<u8>,
+    replayed: usize,
 }
 
 impl TlsStream {
@@ -68,7 +71,33 @@ impl TlsStream {
             pending: Vec::new(),
             sent: 0,
             close_sent: false,
+            replay: Vec::new(),
+            replayed: 0,
         }
+    }
+
+    /// Continues a connection whose handshake another acceptor completed: `replay` is the plaintext that acceptor
+    /// already read from it and the next reads return it first.
+    #[must_use]
+    pub fn resume(io: L4Stream, conn: ServerConnection, replay: Vec<u8>) -> Self {
+        let mut stream = Self::established(Pump::new(io, conn), Instant::now());
+        stream.replay = replay;
+        stream
+    }
+
+    fn read_replay(&mut self, buffer: &mut ReadBuf<'_>) -> bool {
+        let pending = &self.replay[self.replayed..];
+        if pending.is_empty() {
+            return false;
+        }
+        let count = pending.len().min(buffer.remaining());
+        buffer.put_slice(&pending[..count]);
+        self.replayed += count;
+        if self.replayed == self.replay.len() {
+            self.replay = Vec::new();
+            self.replayed = 0;
+        }
+        true
     }
 
     /// The rustls connection, for what a handshake leaves to read (negotiated suite, resumption, peer certificates).
@@ -151,7 +180,7 @@ impl AsyncRead for TlsStream {
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        if buffer.remaining() == 0 {
+        if buffer.remaining() == 0 || this.read_replay(buffer) {
             return Poll::Ready(Ok(()));
         }
         loop {
@@ -291,6 +320,9 @@ impl Peek for TlsStream {
     /// Ready while decrypted bytes wait or the connection has ended; otherwise the transport decides, so a connection
     /// with nothing to read is not decrypted again to find that out.
     fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.replayed < self.replay.len() {
+            return Poll::Ready(Ok(()));
+        }
         match self.pump.conn.reader().fill_buf() {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 self.pump.io.poll_read_ready(context)

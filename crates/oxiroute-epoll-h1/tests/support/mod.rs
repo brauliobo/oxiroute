@@ -3,6 +3,7 @@
 mod date;
 mod origin;
 mod service;
+mod tls;
 mod wire;
 
 use std::{
@@ -16,16 +17,18 @@ use std::{
 };
 
 use oxiroute_epoll_h1::{
-    Age, Config, Engine, Handoff, Listener, Policy, Scale, Scheduling, Timeouts,
+    Age, Config, Engine, Handoff, Listener, Policy, Scale, Scheduling, Timeouts, TlsRouter,
 };
 
 pub use origin::{Origin, await_head, reset, sized};
 pub use service::{Guard, KILL, Knobs, MOVE, Reference, Route};
+pub use tls::{Client, ClientSettings, Identity, Rig, Server, Settings, Tls};
 pub use wire::Wire;
 
 struct Start {
     accepting: bool,
     shared: bool,
+    tls: Option<Arc<dyn TlsRouter>>,
 }
 
 pub struct Fixture {
@@ -117,6 +120,21 @@ impl Fixture {
         Self::build((config, timeouts, knobs), origin, routes, true)
     }
 
+    pub fn terminating(server: Arc<Server>, timeouts: Timeouts) -> Self {
+        let origin = Origin::start();
+        let routes = vec![Route {
+            host: "test.example",
+            prefix: "/",
+            origin: origin.addr,
+        }];
+        let start = Start {
+            accepting: true,
+            shared: false,
+            tls: Some(server),
+        };
+        Self::build_with((test_config(), timeouts, Knobs::default()), origin, routes, start)
+    }
+
     pub fn on_shared_listener(config: Config, knobs: Knobs) -> Self {
         let origin = Origin::start();
         let routes = vec![Route {
@@ -131,6 +149,7 @@ impl Fixture {
             Start {
                 accepting: true,
                 shared: true,
+                tls: None,
             },
         )
     }
@@ -144,6 +163,7 @@ impl Fixture {
         let start = Start {
             accepting,
             shared: false,
+            tls: None,
         };
         Self::build_with(parts, origin, routes, start)
     }
@@ -152,7 +172,11 @@ impl Fixture {
         (config, timeouts, knobs): (Config, Timeouts, Knobs),
         origin: Origin,
         routes: Vec<Route>,
-        Start { accepting, shared }: Start,
+        Start {
+            accepting,
+            shared,
+            tls,
+        }: Start,
     ) -> Self {
         let (sender, handoffs) = mpsc::channel();
         let (paused_sender, paused) = mpsc::channel();
@@ -175,6 +199,10 @@ impl Fixture {
                 timeouts,
             )
             .expect("listeners")
+        };
+        let listener = match tls {
+            Some(router) => listener.terminating_tls(router),
+            None => listener,
         };
         let addr = listener.local_addr().expect("listener address");
         let engine = if accepting {

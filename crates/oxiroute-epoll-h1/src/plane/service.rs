@@ -4,6 +4,7 @@ use std::{
 };
 
 use oxiroute_h1_head::{Connection, RequestHead, ResponseHead};
+use rustls::ServerConnection;
 
 use super::wake::Waker;
 use super::pipes::SpliceUse;
@@ -14,6 +15,7 @@ pub struct Request<'a> {
     peer: SocketAddr,
     waker: &'a Waker,
     replayable: bool,
+    secure: bool,
 }
 
 impl<'a> Request<'a> {
@@ -21,6 +23,7 @@ impl<'a> Request<'a> {
         bytes: &'a [u8],
         head: &'a RequestHead,
         peer: SocketAddr,
+        secure: bool,
         (waker, replayable): (&'a Waker, bool),
     ) -> Self {
         Self {
@@ -29,6 +32,7 @@ impl<'a> Request<'a> {
             peer,
             waker,
             replayable,
+            secure,
         }
     }
 
@@ -40,6 +44,11 @@ impl<'a> Request<'a> {
     #[must_use]
     pub const fn replayable(&self) -> bool {
         self.replayable
+    }
+
+    #[must_use]
+    pub const fn secure(&self) -> bool {
+        self.secure
     }
 
     #[must_use]
@@ -220,6 +229,7 @@ pub struct Outcome {
 
 pub struct Handoff<A> {
     pub stream: TcpStream,
+    pub tls: Option<Box<ServerConnection>>,
     pub prefix: Vec<u8>,
     pub peer: SocketAddr,
     pub listener: usize,

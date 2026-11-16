@@ -12,6 +12,10 @@ oxiroute-aged-order = { path = "../oxiroute-aged-order" }
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
 oxiroute-worker-scaling = { path = "../oxiroute-worker-scaling" }
 rustix.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14.10"
 
 [lints.rust]
 unsafe_code = "forbid"

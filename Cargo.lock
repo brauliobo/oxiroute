@@ -2940,7 +2940,9 @@ dependencies = [
  "oxiroute-aged-order",
  "oxiroute-h1-head",
  "oxiroute-worker-scaling",
+ "rcgen",
  "rustix",
+ "rustls",
 ]
 
 [[package]]

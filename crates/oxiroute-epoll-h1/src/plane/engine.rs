@@ -18,6 +18,7 @@ use super::{
     service::Service,
     sys,
     wake::Waker,
+    tls::TlsRouter,
 };
 
 pub struct Listener<S: Service> {
@@ -25,6 +26,7 @@ pub struct Listener<S: Service> {
     pub timeouts: Timeouts,
     pub sockets: Vec<OwnedFd>,
     pub shared: bool,
+    pub tls: Option<Arc<dyn TlsRouter>>,
 }
 
 impl<S: Service> Listener<S> {
@@ -44,6 +46,7 @@ impl<S: Service> Listener<S> {
             timeouts,
             sockets,
             shared: false,
+            tls: None,
         })
     }
 
@@ -61,7 +64,14 @@ impl<S: Service> Listener<S> {
             timeouts,
             sockets,
             shared: true,
+            tls: None,
         })
+    }
+
+    #[must_use]
+    pub fn terminating_tls(mut self, router: Arc<dyn TlsRouter>) -> Self {
+        self.tls = Some(router);
+        self
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -149,6 +159,7 @@ impl Engine {
                 fds.push(ListenerFd {
                     service: Arc::clone(&listener.service),
                     timeouts: listener.timeouts,
+                    tls: listener.tls.clone(),
                     fd,
                     shared: listener.shared,
                 });

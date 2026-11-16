@@ -19,8 +19,8 @@ use oxiroute_config::{
 use tokio::{task::spawn_blocking, time::timeout};
 
 use support::{
-    PROXY_SERVER_NAME, PlainH1Origin, ProxyHarness, ReservedListener, fixture,
-    generate_test_only_client_chain, proxy_config,
+    PROXY_SERVER_NAME, PlainH1Origin, ProxyHarness, ReservedListener, curl, fixture,
+    generate_test_only_client_chain, proxy_config, run,
 };
 
 const LONG_TIMEOUT: Duration = Duration::from_mins(2);
@@ -50,45 +50,6 @@ async fn with_listener<T>(
     proxy.finish().await;
     origin.finish().await;
     result
-}
-
-/// Runs `command` to its end with `input` on its standard input; returns its success and its output (both streams).
-async fn run(mut command: Command, input: &'static [u8]) -> (bool, String) {
-    spawn_blocking(move || {
-        let program = command.get_program().to_owned();
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|error| {
-                panic!("{} is required by this test: {error}", program.display())
-            });
-        // The tool may stop reading before the input is written; that is not what the test looks at.
-        let _ = child.stdin.take().expect("piped stdin").write_all(input);
-        let output = child.wait_with_output().expect("tool output");
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        (output.status.success(), text)
-    })
-    .await
-    .expect("tool task")
-}
-
-fn curl(port: u16, flags: &[&str]) -> Command {
-    let mut command = Command::new("curl");
-    command
-        .args(["--silent", "--show-error", "--max-time", "15", "--cacert"])
-        .arg(fixture("ca-a.pem"))
-        .arg("--resolve")
-        .arg(format!("{PROXY_SERVER_NAME}:{port}:127.0.0.1"))
-        .args(["--write-out", "\n[%{http_code} http%{http_version}]"])
-        .args(flags)
-        .arg(format!("https://{PROXY_SERVER_NAME}:{port}/curl"));
-    command
 }
 
 fn s_client(port: u16, flags: &[&str]) -> Command {

@@ -1,6 +1,7 @@
 use oxiroute_config::{ConfigDraft, HttpDataPlane, ListenerBind, Protocol};
 
 use super::{HttpServicePlan, ServicePlanError};
+use crate::tls::TlsProfilePlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DataPlane {
@@ -17,8 +18,13 @@ impl DataPlane {
         }
     }
 
-    pub(crate) fn plan(listener: ListenerPlane, service: &HttpServicePlan) -> Self {
-        if listener.epoll && service.serves_on_engine() {
+    pub(crate) fn plan(
+        listener: ListenerPlane,
+        service: &HttpServicePlan,
+        tls: Option<&TlsProfilePlan>,
+    ) -> Self {
+        let terminable = tls.is_none_or(TlsProfilePlan::serves_on_epoll);
+        if listener.epoll && terminable && service.serves_on_engine() {
             Self::Epoll
         } else {
             Self::Tokio
@@ -92,7 +98,7 @@ impl DataPlanePolicy {
             epoll: self.setting != Some(HttpDataPlane::Tokio)
                 && self.conditions.met()
                 && protocol == Protocol::Http
-                && !tls
+                && (!tls || self.setting == Some(HttpDataPlane::Epoll))
                 && matches!(bind, ListenerBind::Socket { .. }),
         }
     }
@@ -144,9 +150,16 @@ mod tests {
     }
 
     #[test]
-    fn tls_http3_and_unix_listeners_stay_on_the_tokio_path() {
+    fn tls_listeners_use_epoll_only_when_it_is_chosen_explicitly() {
+        let explicit = policy(Some(HttpDataPlane::Epoll), MET);
+        assert!(explicit.listener(Protocol::Http, &socket(), true).epoll);
+        let default = policy(None, MET);
+        assert!(!default.listener(Protocol::Http, &socket(), true).epoll);
+    }
+
+    #[test]
+    fn http3_and_unix_listeners_stay_on_the_tokio_path() {
         let policy = policy(Some(HttpDataPlane::Epoll), MET);
-        assert!(!policy.listener(Protocol::Http, &socket(), true).epoll);
         assert!(!policy.listener(Protocol::Http3, &socket(), false).epoll);
         let unix = ListenerBind::Unix {
             path: "/run/example.sock".into(),

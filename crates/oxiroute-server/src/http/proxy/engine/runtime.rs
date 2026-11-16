@@ -2,7 +2,7 @@ use std::{io, os::fd::OwnedFd, sync::Arc};
 
 use async_trait::async_trait;
 use log::error;
-use oxiroute_epoll_h1::{Config, Engine, Listener, Scheduling};
+use oxiroute_epoll_h1::{Config, Engine, Listener, Scheduling, TlsRouter};
 use pingora::{
     apps::{AcceptGate, ServerApp},
     server::{ListenFds, RuntimeOpts, ShutdownWatch},
@@ -33,6 +33,7 @@ pub struct EpollHttpService<A> {
     app: Arc<A>,
     lane: Arc<LaneFront>,
     generation: Arc<RuntimeGeneration>,
+    tls: Option<Arc<dyn TlsRouter>>,
 }
 
 impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
@@ -51,7 +52,14 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             app: Arc::new(app),
             lane: lane.0,
             generation,
+            tls: None,
         }
+    }
+
+    #[must_use]
+    pub fn terminating_tls(mut self, router: Arc<dyn TlsRouter>) -> Self {
+        self.tls = Some(router);
+        self
     }
 
     fn engine_config(&self) -> Config {
@@ -73,8 +81,13 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
         ));
         let config = self.engine_config();
         let (threads, timeouts) = (self.threads, self.lane.engine_timeouts());
+        let tls = self.tls.clone();
         let engine = spawn_blocking(move || {
             let listener = Listener::shared(&socket, threads, front, timeouts)?;
+            let listener = match tls {
+                Some(router) => listener.terminating_tls(router),
+                None => listener,
+            };
             Engine::start_paused(&config, vec![listener])
         })
         .await

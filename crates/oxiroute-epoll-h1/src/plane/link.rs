@@ -1,8 +1,12 @@
 use std::os::fd::OwnedFd;
 
 use rustix::event::epoll::EventFlags;
+use rustls::ServerConnection;
 
-use super::sys::{self, Read, Wrote};
+use super::{
+    sys::{self, Read, Wrote},
+    tls::{Finish, Progress, Session, Transport},
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Ready {
@@ -20,16 +24,43 @@ impl Ready {
         self.hangup |= gone;
         self.closing |= gone || flags.contains(EventFlags::RDHUP);
     }
+
+    pub(crate) fn after_read(&mut self, read: Read, room: usize) {
+        match read {
+            Read::Data(count) if count == room => {}
+            Read::Data(_) => self.read = self.closing,
+            Read::Block => self.read = false,
+            Read::Eof | Read::Failed => {}
+        }
+    }
+
+    pub(crate) fn after_write(&mut self, wrote: Wrote, total: usize) {
+        match wrote {
+            Wrote::Bytes(count) if count == total => {}
+            Wrote::Bytes(_) | Wrote::Block => self.write = false,
+            Wrote::Failed => {}
+        }
+    }
 }
 
 pub(crate) struct Link {
     pub(crate) fd: OwnedFd,
     pub(crate) ready: Ready,
     pub(crate) interest: (bool, bool),
+    tls: Option<Box<Session>>,
+    shut: bool,
 }
 
 impl Link {
     pub(crate) const fn new(fd: OwnedFd) -> Self {
+        Self::with(fd, None)
+    }
+
+    pub(crate) fn secure(fd: OwnedFd, session: Session) -> Self {
+        Self::with(fd, Some(Box::new(session)))
+    }
+
+    const fn with(fd: OwnedFd, tls: Option<Box<Session>>) -> Self {
         Self {
             fd,
             ready: Ready {
@@ -39,20 +70,34 @@ impl Link {
                 closing: false,
             },
             interest: (true, true),
+            tls,
+            shut: false,
         }
     }
 
+    pub(crate) const fn encrypted(&self) -> bool {
+        self.tls.is_some()
+    }
+
+    pub(crate) fn can_read(&self) -> bool {
+        self.ready.read || self.tls.as_ref().is_some_and(|tls| tls.has_plaintext())
+    }
+
+    fn secured(&mut self) -> Option<(&mut Session, Transport<'_>)> {
+        let Self { fd, ready, tls, .. } = self;
+        tls.as_deref_mut()
+            .map(|tls| (tls, Transport::new(fd, ready)))
+    }
+
     pub(crate) fn recv(&mut self, buf: &mut [u8]) -> Read {
+        if let Some((tls, mut io)) = self.secured() {
+            return tls.recv(&mut io, buf);
+        }
         if !self.ready.read {
             return Read::Block;
         }
         let read = sys::read(&self.fd, buf);
-        match read {
-            Read::Data(count) if count == buf.len() => {}
-            Read::Data(_) => self.ready.read = self.ready.closing,
-            Read::Block => self.ready.read = false,
-            Read::Eof | Read::Failed => {}
-        }
+        self.ready.after_read(read, buf.len());
         read
     }
 
@@ -70,16 +115,48 @@ impl Link {
     }
 
     pub(crate) fn send(&mut self, head: &[u8], body: &[u8]) -> Wrote {
+        if let Some((tls, mut io)) = self.secured() {
+            return tls.send(&mut io, head, body);
+        }
         if !self.ready.write {
             return Wrote::Block;
         }
         let wrote = sys::write(&self.fd, head, body);
-        match wrote {
-            Wrote::Bytes(count) if count == head.len() + body.len() => {}
-            Wrote::Bytes(_) | Wrote::Block => self.ready.write = false,
-            Wrote::Failed => {}
-        }
+        self.ready.after_write(wrote, head.len() + body.len());
         wrote
+    }
+
+    pub(crate) fn handshake(&mut self) -> Progress {
+        let (tls, mut io) = self
+            .secured()
+            .expect("only an encrypted link has a handshake");
+        tls.advance(&mut io)
+    }
+
+    pub(crate) fn flush(&mut self) -> bool {
+        self.secured()
+            .is_none_or(|(tls, mut io)| tls.flush(&mut io))
+    }
+
+    pub(crate) fn finish(&mut self) -> Finish {
+        let finish = self
+            .secured()
+            .map_or(Finish::Done, |(tls, mut io)| tls.finish(&mut io));
+        if finish == Finish::Done && !self.shut {
+            self.shut = true;
+            sys::shutdown_write(&self.fd);
+        }
+        finish
+    }
+
+    pub(crate) fn farewell(&mut self) {
+        if let Some((tls, mut io)) = self.secured() {
+            tls.finish(&mut io);
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (OwnedFd, Option<Box<ServerConnection>>) {
+        (self.fd, self.tls.and_then(|tls| tls.into_connection()))
     }
 }
 

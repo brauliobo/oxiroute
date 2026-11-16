@@ -71,7 +71,9 @@ impl<S: Service> Reactor<S> {
     ) -> Option<Box<Client<S>>> {
         let thread = match &self.schedule {
             Some(schedule)
-                if client.stage == Stage::Idle && schedule.placement.wants_relocation() =>
+                if client.stage == Stage::Idle
+                    && !client.link.encrypted()
+                    && schedule.placement.wants_relocation() =>
             {
                 schedule.placement.relocation()
             }

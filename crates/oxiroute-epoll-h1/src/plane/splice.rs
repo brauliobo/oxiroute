@@ -71,6 +71,7 @@ impl<S: Service> Reactor<S> {
     }
 
     fn piped(&mut self, client: &mut Client<S>) -> bool {
+        let encrypted = client.link.encrypted();
         let flow = client.flow.as_mut().expect("a serving client has a flow");
         let Down::Relaying(relay) = &mut flow.down else {
             return false;
@@ -79,14 +80,14 @@ impl<S: Service> Reactor<S> {
             return false;
         }
         if matches!(relay.carry, Carry::Undecided) {
-            (relay.carry, flow.splice) = self.carry_of(relay.mode);
+            (relay.carry, flow.splice) = self.carry_of(relay.mode, encrypted);
         }
         matches!(relay.carry, Carry::Piped(_))
     }
 
-    fn carry_of(&mut self, mode: Mode) -> (Carry, SpliceUse) {
+    fn carry_of(&mut self, mode: Mode, encrypted: bool) -> (Carry, SpliceUse) {
         match (self.pipes.as_mut(), mode) {
-            (Some(pipes), Mode::Length(left)) if pipes.wants(left) => match pipes.lease() {
+            (Some(pipes), Mode::Length(left)) if !encrypted && pipes.wants(left) => match pipes.lease() {
                 Ok(pipe) => (Carry::Piped(Piped { pipe, left }), SpliceUse::Spliced),
                 Err(lack) => (Carry::Buffered, lack),
             },
