@@ -4,6 +4,7 @@ members = [
     "crates/oxiroute-cache",
     "crates/oxiroute-acme",
     "crates/oxiroute-allocator",
+    "crates/oxiroute-compress",
     "crates/oxiroute-config",
     "crates/oxiroute-config-source",
     "crates/oxiroute-cpu",

@@ -1,0 +1,21 @@
+[package]
+name = "oxiroute-compress"
+description = "HTTP content-coding negotiation and one-shot body compression for OxiRoute"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+brotli = { version = "9.1.1", default-features = false, features = ["std"] }
+http.workspace = true
+libdeflater = "1.26.1"
+thiserror.workspace = true
+zstd = { version = "0.14.3", default-features = false }
+
+[dev-dependencies]
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-ng"] }
+
+[lints]
+workspace = true
