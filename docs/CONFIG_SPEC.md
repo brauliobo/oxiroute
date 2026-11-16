@@ -302,28 +302,33 @@ Current constraints:
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
-- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects the default: plain-HTTP (non-TLS)
-  HTTP/1.1 reverse-proxy listeners are served by the thread-per-core epoll data plane wherever the platform supports it
-  (Linux), for the requests and routes the compiled fast lane can serve (it requires `http_fast_lane` not `false`).
-  Everything else (TLS listeners, HTTP/2, HTTP/3, upgrades, chunked request bodies, `Expect`, ineligible routes, static
-  and fixed-response routes, other platforms) is served by the tokio/Pingora path, which receives the connection with the
-  bytes already read. `tokio` forces the tokio/Pingora path for every request. The epoll plane runs one thread per
-  `listener_workers` and honours `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with
-  its `connection_age_ms` and `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its
-  ready connections newest first and the oldest first once it has waited the age, a new connection goes to the thread
-  with the fewest open connections, and a dynamically scaled listener keeps its connections on the active threads.
-  `epoll` chooses the epoll data plane explicitly: the configuration is rejected when the platform does not support it
-  or when `http_fast_lane` is `false`, and is never silently downgraded (the server performs
-  that check when it prepares the generation; the value itself is checked when the configuration is loaded). The epoll
-  `io_uring` runs the same engine on io_uring completions instead of epoll readiness. It is opt-in and never the
-  default: the server probes the kernel when it prepares the generation and rejects the configuration, naming the
-  missing capability (a kernel without the needed operations or provided buffer rings, `kernel.io_uring_disabled`, a
-  seccomp or container policy), instead of falling back to epoll; like `epoll` it requires `http_fast_lane` not
-  `false`. Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
-  plane serves requests that a client sends back to back on one connection without waiting for the answers (pipelining)
-  one after the other, where the classic path closes such a connection after the first answer. Changing the value is an
-  ordinary reload: the plane belongs to the generation. Connections served by either plane appear identically in
-  status, metrics and access logs.
+- Root `http_data_plane` is an optional string, `epoll`, `io_uring` or `tokio`. Omitted selects, for each listener, the
+  best available plane in this order: `io_uring`, then `epoll`, then `tokio`. The server evaluates the chain once when
+  it prepares a generation, as a plan-time decision and not a runtime fallback. A plane is skipped for a listener when
+  the platform, kernel or sandbox cannot run it (`kernel.io_uring_disabled`, a seccomp or container policy, a missing
+  operation or buffer ring, no epoll), when `http_fast_lane` is `false`, when the generation uses
+  `connection_scheduling = "aged_per_worker"` and the plane does not run it (`io_uring` does not), or when the listener
+  is not a plain-HTTP (non-TLS) HTTP/1.1 socket listener (TLS, HTTP/2, HTTP/3, Unix sockets) or its service has no route
+  the plane serves. The first plane that remains serves the listener; `tokio` ends the chain and serves everything.
+  The server logs once per listener, at info level, the plane it chose and why each better plane was skipped. The
+  engine planes serve the requests and routes the compiled fast lane can serve; everything else (upgrades, chunked
+  request bodies, `Expect`, ineligible routes, static and fixed-response routes) is served by the tokio/Pingora path,
+  which receives the connection with the bytes already read. Explicit values keep their meaning: `tokio` forces the
+  tokio/Pingora path for every request, and `epoll` or `io_uring` reject the configuration, naming the missing
+  capability, when the platform, kernel or sandbox cannot run that plane or when `http_fast_lane` is `false`
+  (`io_uring` is also rejected with `aged_per_worker`), and are never silently downgraded; listeners the plane does not
+  serve (TLS, HTTP/3, Unix sockets) take the tokio path under either value. The server performs these checks when it
+  prepares the generation; the value itself is checked when the configuration is loaded. The probe of the kernel
+  runs once per process and leaves no ring open. The epoll plane runs one thread per `listener_workers` and honours
+  `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with its `connection_age_ms` and
+  `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its ready connections newest
+  first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
+  connections, and a dynamically scaled listener keeps its connections on the active threads. The `io_uring` plane runs
+  the same engine on io_uring completions instead of epoll readiness. The epoll and io_uring planes serve requests that
+  a client sends back to back on one connection without waiting for the answers (pipelining) one after the other, where
+  the classic path closes such a connection after the first answer. Measurements of the planes are in
+  `benchmarks/reports/io-uring-http1/README.md`. Changing the value is an ordinary reload: the plane belongs to the
+  generation. Connections served by any plane appear identically in status, metrics and access logs.
 - Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
   every TLS listener. Omitted means one thread per 8 CPUs, at least 1 and at most 4. The accepted socket's whole server
   handshake (key exchange, certificate selection, ALPN and client-certificate verification, signature) runs on these

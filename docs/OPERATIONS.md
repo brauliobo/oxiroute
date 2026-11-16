@@ -318,15 +318,19 @@ delay. Selection, retries, health signals, connection limits, the access log, re
 are the lane's own, so a request is accounted identically on either plane. Every other connection (TLS, HTTP/2 and
 HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
 ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
-(`epoll`, `io_uring` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform
-that cannot run it and with `http_fast_lane = false`. `io_uring` runs the same engine on io_uring, is never the default, and is
-rejected with the missing kernel capability named when the kernel or its sandbox cannot run it (`kernel.io_uring_disabled`,
-seccomp, an old kernel); it is never replaced by epoll silently. The plane honours `connection_scheduling = "aged_per_worker"` with
-`connection_age_ms` and `worker_scaling = "dynamic"` on its own threads: a thread serves its ready connections newest
-first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
-connections, and with dynamic scaling the threads that leave the active set stop accepting and hand their idle
-keep-alive connections to an active thread between two requests. The `oxiroute_aged_queue_*` and
-`oxiroute_worker_scaling_*` metrics are the same on both planes. The option is an ordinary reload.
+(`epoll`, `io_uring` or `tokio`). Omitted picks, per listener, the first available plane of the chain `io_uring`,
+`epoll`, `tokio`, decided once when the generation is prepared; the server logs at info level, once per listener, the
+plane chosen and why each better plane was skipped (`kernel.io_uring_disabled`, a seccomp or container policy, a
+missing kernel operation, `http_fast_lane = false`, `aged_per_worker` scheduling for `io_uring`, or a TLS, HTTP/3 or
+Unix-socket listener). An explicit `epoll` or `io_uring` is rejected, naming the missing capability, on a platform,
+kernel or sandbox that cannot run it and with `http_fast_lane = false`, and is never replaced silently; `tokio` forces
+the tokio path. The engine threads are named `uring-h1-N` or `epoll-h1-N` after their plane. The plane honours
+`connection_scheduling = "aged_per_worker"` with `connection_age_ms` and `worker_scaling = "dynamic"` on its own
+threads (epoll only): a thread serves its ready connections newest first and the oldest first once it has waited the
+age, a new connection goes to the thread with the fewest open connections, and with dynamic scaling the threads that
+leave the active set stop accepting and hand their idle keep-alive connections to an active thread between two
+requests. The `oxiroute_aged_queue_*` and `oxiroute_worker_scaling_*` metrics are the same on every plane. The option
+is an ordinary reload.
 
 A client that sends requests back to back on one connection without waiting for the answers is served in order by the
 epoll plane; the classic path closes such a connection after the first answer. When a thread of the plane panics or
