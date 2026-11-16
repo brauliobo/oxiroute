@@ -1,6 +1,10 @@
-use std::os::fd::OwnedFd;
+use std::{io, os::fd::OwnedFd};
 
-use rustix::io::Errno;
+use rustix::{
+    fs::{Mode, OFlags},
+    io::Errno,
+    net::{SocketFlags, acceptfrom_with},
+};
 
 use super::Ring;
 use crate::{
@@ -12,7 +16,8 @@ use crate::{
 
 impl Ring {
     /// Adopts a listening socket. It accepts nothing until [`Ring::set_accepting`] enables it.
-    pub fn listen(&mut self, fd: OwnedFd, tag: u64) -> Handle {
+    pub fn listen(&mut self, fd: OwnedFd, tag: u64) -> io::Result<Handle> {
+        rustix::io::ioctl_fionbio(&fd, true)?;
         let handle = self.adopt(fd, tag);
         let accepts = usize::from(self.config.accepts);
         if let Some(slot) = self.slot(handle) {
@@ -23,7 +28,7 @@ impl Ring {
                 held: Vec::new(),
             });
         }
-        handle
+        Ok(handle)
     }
 
     /// Turns accepting on or off. Connections accepted while it is off wait inside the ring and are delivered
@@ -113,15 +118,14 @@ impl Ring {
         acceptor.flying[usize::from(meta.sub)] = None;
         acceptor.spare.push(storage);
         let enabled = acceptor.enabled;
-        let failed = Self::errno(done.result).is_some_and(|error| error != Errno::CANCELED);
-        if failed {
-            self.stalled_accepts.push(meta.handle);
-        }
+        let failure = Self::errno(done.result).filter(|error| *error != Errno::CANCELED);
         if let Some(fd) = done.accepted.filter(|_| !closing) {
             self.deliver(meta.handle, enabled, Event::Accepted { tag, fd, peer });
         }
-        if !failed {
-            self.post_accepts(meta.handle);
+        match failure {
+            Some(Errno::MFILE | Errno::NFILE) => self.await_connection(meta.handle),
+            Some(_) => self.stalled_accepts.push(meta.handle),
+            None => self.post_accepts(meta.handle),
         }
     }
 
@@ -137,7 +141,63 @@ impl Ring {
         }
     }
 
-    pub(crate) fn retry_stalled_accepts(&mut self) {
+    pub(crate) fn spare_descriptor() -> Option<OwnedFd> {
+        rustix::fs::open("/dev/null", OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).ok()
+    }
+
+    /// Out of descriptors: an accept fails before it looks at the queue, so retrying would spin. The listener is
+    /// polled for a waiting connection instead, which `connection_waits` sheds.
+    fn await_connection(&mut self, handle: Handle) {
+        let polling = self
+            .slot_any(handle)
+            .is_none_or(|slot| slot.poll.is_some() || slot.closing);
+        if polling {
+            return;
+        }
+        let meta = Self::meta(Kind::Poll, 0, handle);
+        match (
+            self.with_fd(handle, |queue, fd| queue.poll_in(fd, meta)),
+            self.slot_any(handle),
+        ) {
+            (Some(Ok(key)), Some(slot)) => {
+                slot.poll = Some(key);
+                slot.inflight += 1;
+            }
+            _ => self.stalled_accepts.push(handle),
+        }
+    }
+
+    /// A connection waits while the process is out of descriptors: the spare one is given up so it can be
+    /// accepted and closed at once, and the spare is taken back. Without a spare the listener waits for a
+    /// descriptor to free.
+    pub(crate) fn connection_waits(&mut self, handle: Handle) {
+        let enabled = self
+            .slot_any(handle)
+            .and_then(|slot| slot.acceptor.as_ref())
+            .is_some_and(|acceptor| acceptor.enabled);
+        if !enabled {
+            return;
+        }
+        if let Some(free) = Self::spare_descriptor() {
+            self.spare.get_or_insert(free);
+            return self.post_accepts(handle);
+        }
+        if self.spare.take().is_none() {
+            return self.stalled_accepts.push(handle);
+        }
+        let waiting = self
+            .slot_any(handle)
+            .and_then(|slot| slot.fd.as_ref())
+            .map(|fd| acceptfrom_with(fd, SocketFlags::NONBLOCK | SocketFlags::CLOEXEC));
+        drop(waiting);
+        self.spare = Self::spare_descriptor();
+        self.post_accepts(handle);
+    }
+
+    pub(crate) fn recover_accepts(&mut self) {
+        if self.spare.is_none() {
+            self.spare = Self::spare_descriptor();
+        }
         for handle in std::mem::take(&mut self.stalled_accepts) {
             self.post_accepts(handle);
         }

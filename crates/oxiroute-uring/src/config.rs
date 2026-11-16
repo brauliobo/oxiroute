@@ -21,7 +21,7 @@ pub struct Config {
     pub send_limit: usize,
     /// Accept operations kept in flight per listener.
     pub accepts: u8,
-    /// How long a closed socket may keep flushing an accepted send before it is cancelled.
+    /// How long a closed socket may wait for the peer to take an accepted send before the connection is reset.
     pub flush: Duration,
     pub taskrun: Taskrun,
 }
@@ -34,7 +34,7 @@ impl Default for Config {
             buffer_size: 16 * 1024,
             send_limit: 32 * 1024,
             accepts: 8,
-            flush: Duration::from_secs(1),
+            flush: Duration::from_mins(1),
             taskrun: Taskrun::Defer,
         }
     }

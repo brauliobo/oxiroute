@@ -674,10 +674,11 @@ async fn the_connect_time_is_logged_when_the_origin_closes_before_answering(plan
 
 on_every_plane!(the_connect_time_is_logged_when_the_origin_closes_before_answering);
 
-#[tokio::test]
-async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it() {
+async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
+    plane: HttpDataPlane,
+) {
     let origin = replying_origin(OK).await;
-    let proxy = Proxy::start(origin.address, HttpDataPlane::Epoll, |config| {
+    let proxy = Proxy::start(origin.address, plane, |config| {
         config.log_filter = None;
     })
     .await;
@@ -699,4 +700,19 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it()
         sleep(Duration::from_millis(20)).await;
     }
     answer_one_request(&mut proxy.connect().await).await;
+}
+
+#[tokio::test]
+async fn descriptors_exhausted_at_accept_neither_spin_nor_stop_the_epoll_listener() {
+    descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(HttpDataPlane::Epoll)
+        .await;
+}
+
+#[tokio::test]
+async fn descriptors_exhausted_at_accept_neither_spin_nor_stop_the_io_uring_listener() {
+    if oxiroute_epoll_h1::io_uring_support().is_err() {
+        return;
+    }
+    descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(HttpDataPlane::IoUring)
+        .await;
 }

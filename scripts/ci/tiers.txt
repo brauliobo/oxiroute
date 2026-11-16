@@ -164,6 +164,7 @@ oxiroute-tls-rustls                                   core
 oxiroute-tls-rustls::kernel                           core
 oxiroute-tls-rustls::loopback                         core
 oxiroute-uring                                        core
+oxiroute-uring::descriptors                           uring
 oxiroute-uring::ring                                  uring
 oxiroute-worker-scaling                               core
 oxiroute-worker-scaling::controller                   core

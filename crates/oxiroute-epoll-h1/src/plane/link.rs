@@ -45,6 +45,22 @@ impl Ready {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Delivery {
+    Batched,
+    Immediate,
+}
+
+impl Delivery {
+    pub(crate) const fn of(keepalive: bool) -> Self {
+        if keepalive {
+            Self::Batched
+        } else {
+            Self::Immediate
+        }
+    }
+}
+
 pub(crate) enum Io {
     Fd(OwnedFd),
     Ring(RingSocket),
@@ -142,7 +158,7 @@ impl Link {
         self.ready.hangup || self.has_input()
     }
 
-    pub(crate) fn send(&mut self, head: &[u8], body: &[u8]) -> Wrote {
+    pub(crate) fn send(&mut self, (head, body): (&[u8], &[u8]), delivery: Delivery) -> Wrote {
         if let Some((tls, mut io)) = self.secured() {
             return tls.send(&mut io, head, body);
         }
@@ -151,7 +167,7 @@ impl Link {
         }
         let wrote = match &self.io {
             Io::Fd(fd) => sys::write(fd, head, body),
-            Io::Ring(socket) => socket.write(head, body),
+            Io::Ring(socket) => socket.write(head, body, delivery),
         };
         self.ready.after_write(wrote, head.len() + body.len());
         wrote

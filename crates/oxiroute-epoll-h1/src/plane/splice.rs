@@ -87,10 +87,12 @@ impl<S: Service> Reactor<S> {
 
     fn carry_of(&mut self, mode: Mode, encrypted: bool) -> (Carry, SpliceUse) {
         match (self.pipes.as_mut(), mode) {
-            (Some(pipes), Mode::Length(left)) if !encrypted && pipes.wants(left) => match pipes.lease() {
-                Ok(pipe) => (Carry::Piped(Piped { pipe, left }), SpliceUse::Spliced),
-                Err(lack) => (Carry::Buffered, lack),
-            },
+            (Some(pipes), Mode::Length(left)) if !encrypted && pipes.wants(left) => {
+                match pipes.lease() {
+                    Ok(pipe) => (Carry::Piped(Piped { pipe, left }), SpliceUse::Spliced),
+                    Err(lack) => (Carry::Buffered, lack),
+                }
+            }
             _ => (Carry::Buffered, SpliceUse::Unused),
         }
     }

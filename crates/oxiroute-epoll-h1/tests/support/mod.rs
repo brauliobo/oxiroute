@@ -137,7 +137,12 @@ impl Fixture {
             shared: false,
             tls: Some(server),
         };
-        Self::build_with((test_config(), timeouts, Knobs::default()), origin, routes, start)
+        Self::build_with(
+            (test_config(), timeouts, Knobs::default()),
+            origin,
+            routes,
+            start,
+        )
     }
 
     pub fn on_shared_listener(config: Config, knobs: Knobs) -> Self {

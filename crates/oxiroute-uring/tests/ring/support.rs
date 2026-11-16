@@ -74,7 +74,10 @@ impl Harness {
     pub fn listener(&mut self) -> (Handle, SocketAddr) {
         let socket = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = socket.local_addr().expect("address");
-        let handle = self.ring.listen(OwnedFd::from(socket), LISTENER);
+        let handle = self
+            .ring
+            .listen(OwnedFd::from(socket), LISTENER)
+            .expect("listen");
         self.ring.set_accepting(handle, true);
         self.baseline = self.ring.in_flight();
         (handle, address)
@@ -122,6 +125,10 @@ impl Harness {
         }
         bytes
     }
+}
+
+pub fn shrink_send_buffer(stream: &TcpStream) {
+    rustix::net::sockopt::set_socket_recv_buffer_size(stream, 65536).expect("receive buffer");
 }
 
 pub fn client(address: SocketAddr) -> TcpStream {

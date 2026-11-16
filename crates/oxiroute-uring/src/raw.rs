@@ -24,7 +24,11 @@ use std::{
 };
 
 use io_uring::{IoUring, cqueue, opcode, squeue, types};
-use rustix::{event::PollFlags, io::Errno, net::SocketFlags};
+use rustix::{
+    event::PollFlags,
+    io::Errno,
+    net::{RecvFlags, SendFlags, SocketFlags},
+};
 
 use crate::{addr::Address, config::Taskrun};
 
@@ -291,13 +295,11 @@ impl Queue {
         &mut self,
         fd: BorrowedFd<'_>,
         bytes: Vec<u8>,
-        from: usize,
         meta: u64,
     ) -> io::Result<u64> {
-        let flags = i32::from(rustix::net::SendFlags::NOSIGNAL.bits() as u16);
-        let pointer = bytes.as_ptr().wrapping_add(from);
-        let length = u32::try_from(bytes.len() - from).map_err(io::Error::other)?;
-        let entry = opcode::Send::new(types::Fd(fd.as_raw_fd()), pointer, length)
+        let flags = i32::from((SendFlags::NOSIGNAL.bits() | RecvFlags::WAITALL.bits()) as u16);
+        let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
+        let entry = opcode::Send::new(types::Fd(fd.as_raw_fd()), bytes.as_ptr(), length)
             .flags(flags)
             .build();
         let flight = Flight {

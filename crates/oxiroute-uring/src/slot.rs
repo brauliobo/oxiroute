@@ -80,7 +80,7 @@ pub(crate) enum Reader {
 #[derive(Debug)]
 pub(crate) enum Writer {
     Idle,
-    Flying { key: u64, from: usize },
+    Flying { key: u64 },
     Broken,
 }
 

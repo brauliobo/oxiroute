@@ -6,8 +6,8 @@ use std::{
 use oxiroute_h1_head::{Connection, RequestHead, ResponseHead};
 use rustls::ServerConnection;
 
-use super::wake::Waker;
 use super::pipes::SpliceUse;
+use super::wake::Waker;
 
 pub struct Request<'a> {
     bytes: &'a [u8],

@@ -18,8 +18,8 @@ use super::{
     schedule::{Fleet, Plan},
     service::Service,
     sys,
-    wake::Waker,
     tls::TlsRouter,
+    wake::Waker,
 };
 
 pub struct Listener<S: Service> {
