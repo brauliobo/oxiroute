@@ -49,6 +49,15 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
         }
     }
 
+    fn engine_config(&self) -> Config {
+        Config {
+            threads: self.threads,
+            max_attempts: u8::try_from(MAX_HTTP_ATTEMPTS).expect("the attempt limit fits a byte"),
+            drain: self.generation.retirement_deadline(),
+            ..Config::default()
+        }
+    }
+
     async fn launch(&self, socket: OwnedFd, shutdown: &ShutdownWatch) -> io::Result<Engine> {
         let (handoffs, queue) = unbounded_channel();
         let front = Arc::new(EngineFront::new(
@@ -56,11 +65,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             Arc::clone(&self.lane),
             handoffs,
         ));
-        let config = Config {
-            threads: self.threads,
-            max_attempts: u8::try_from(MAX_HTTP_ATTEMPTS).expect("the attempt limit fits a byte"),
-            ..Config::default()
-        };
+        let config = self.engine_config();
         let (threads, timeouts) = (self.threads, self.lane.engine_timeouts());
         let engine = spawn_blocking(move || {
             let listener = Listener::shared(&socket, threads, front, timeouts)?;

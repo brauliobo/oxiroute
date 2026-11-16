@@ -223,6 +223,11 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
             format!("HTTP/1.1 {number} Status\r\nContent-Length: 0\r\n\r\n").as_bytes(),
         ),
         "head" => write(stream, b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"),
+        "slowbody" => {
+            let _ = write(stream, b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab");
+            thread::sleep(Duration::from_millis(number as u64));
+            write(stream, b"cd")
+        }
         "delay" => {
             thread::sleep(Duration::from_millis(number as u64));
             write(stream, &ok(b"late", ""))

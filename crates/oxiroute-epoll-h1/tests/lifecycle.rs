@@ -2,7 +2,13 @@
 
 mod support;
 
-use std::{net::TcpStream, sync::atomic::Ordering, thread, time::Duration};
+use std::{
+    io::Read as _,
+    net::TcpStream,
+    sync::atomic::Ordering,
+    thread,
+    time::{Duration, Instant},
+};
 
 use oxiroute_epoll_h1::{Failure, Timeouts};
 use support::{Fixture, Knobs, Wire, eventually, test_config};
@@ -137,6 +143,35 @@ fn a_connection_beyond_the_capacity_is_closed_and_the_others_go_on() {
     assert!(extra.ended());
     wires[0].get("/size/2");
     assert_eq!(wires[0].reply().body.len(), 2);
+}
+
+#[test]
+fn a_request_that_finishes_during_the_drain_closes_its_connection() {
+    let mut fixture = Fixture::with(test_config(), Timeouts::default(), recorded());
+    let mut wire = fixture.wire();
+    wire.get("/slowbody/400");
+    let mut seen = Vec::new();
+    while !seen.ends_with(b"ab") {
+        let mut chunk = [0_u8; 256];
+        let count = wire
+            .stream
+            .read(&mut chunk)
+            .expect("the head and its first bytes");
+        assert_ne!(count, 0, "closed inside the response");
+        seen.extend_from_slice(&chunk[..count]);
+    }
+    let drained = Instant::now();
+    fixture.engine().drain();
+    let mut rest = Vec::new();
+    wire.stream
+        .read_to_end(&mut rest)
+        .expect("the engine closes the connection once the response is whole");
+    assert_eq!(rest, b"cd");
+    assert!(
+        drained.elapsed() < Duration::from_secs(2),
+        "the connection waited for the drain deadline"
+    );
+    fixture.drain_and_join();
 }
 
 #[test]

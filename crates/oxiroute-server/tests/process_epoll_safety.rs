@@ -9,13 +9,16 @@ mod config_support;
 mod fixture_support;
 #[path = "support/h1_wire.rs"]
 mod h1_wire;
+#[path = "support/http.rs"]
+mod http_support;
 #[path = "support/process.rs"]
 mod process_support;
 
 use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
-use oxiroute_config::{ConfigDraft, HttpDataPlane};
-use process_support::{ServerProcess, reserve_tcp_address};
+use http_support::http_request;
+use oxiroute_config::{ConfigDraft, HttpDataPlane, Management};
+use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rustix::net::sockopt::set_socket_linger;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -28,6 +31,7 @@ use tokio::{
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
 const SERVED_ON_EPOLL: &str = "served by the epoll data plane";
 const STEP: Duration = Duration::from_secs(10);
+const TOKEN: &str = "5b1f0c6e8a3d4f27b9c0e1d2a3f4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2";
 
 macro_rules! on_both_planes {
     ($scenario:ident) => {
@@ -78,6 +82,8 @@ impl Drop for Scripted {
 
 struct Proxy {
     address: SocketAddr,
+    management: SocketAddr,
+    config: ConfigDraft,
     server: ServerProcess,
 }
 
@@ -87,16 +93,60 @@ impl Proxy {
         plane: HttpDataPlane,
         edit: impl FnOnce(&mut ConfigDraft),
     ) -> Self {
-        let address = reserve_tcp_address();
+        let (address, management) = (reserve_tcp_address(), reserve_tcp_address());
         let mut config = h1_wire::config(address, origin);
+        config.management = Some(Management {
+            bind: management,
+            ui_dir: None,
+            token_file: None,
+        });
         config.log_filter = Some("oxiroute::epoll=debug".into());
         config.http_data_plane = Some(plane);
         config.http_services[0].upstream_io_timeout_ms = 30_000;
         edit(&mut config);
-        let config = config.validate().expect("valid epoll safety config");
-        let mut server = ServerProcess::start_with_env(&config, None, &[]);
+        let validated = config
+            .clone()
+            .validate()
+            .expect("valid epoll safety config");
+        let mut server = ServerProcess::start_with_env(&validated, Some(TOKEN), &[]);
         server.wait_for_tcp(address).await;
-        Self { address, server }
+        server.wait_for_tcp(management).await;
+        Self {
+            address,
+            management,
+            config,
+            server,
+        }
+    }
+
+    async fn revision(&self) -> String {
+        let authorization = format!("Bearer {TOKEN}");
+        let response = http_request(
+            self.management,
+            "GET",
+            "/api/v1/generations",
+            &[("Authorization", &authorization)],
+            &[],
+        )
+        .await;
+        response.json()["generation"]["activeRevision"]
+            .as_str()
+            .expect("active revision")
+            .to_owned()
+    }
+
+    async fn reload(&mut self) {
+        let before = self.revision().await;
+        self.config.max_connections = Some(self.config.max_connections.unwrap_or(1_000) + 1);
+        let validated = self.config.clone().validate().expect("valid reload config");
+        write_config(&self.server.config_path, &validated);
+        timeout(STEP, async {
+            while self.revision().await == before {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the reloaded generation activated");
     }
 
     async fn connect(&self) -> TcpStream {
@@ -147,8 +197,12 @@ async fn read_until(stream: &mut TcpStream, needle: &str) -> String {
 }
 
 async fn read_to_end(stream: &mut TcpStream) -> String {
+    read_to_end_within(stream, STEP).await
+}
+
+async fn read_to_end_within(stream: &mut TcpStream, limit: Duration) -> String {
     let mut rest = Vec::new();
-    let _ = timeout(STEP, stream.read_to_end(&mut rest))
+    let _ = timeout(limit, stream.read_to_end(&mut rest))
         .await
         .expect("the proxy ended the connection in time");
     String::from_utf8_lossy(&rest).into_owned()
@@ -190,3 +244,35 @@ async fn a_body_ended_by_an_origin_reset_is_not_completed(plane: HttpDataPlane) 
 }
 
 on_both_planes!(a_body_ended_by_an_origin_reset_is_not_completed);
+
+async fn a_response_in_flight_survives_the_replacement_of_its_generation(plane: HttpDataPlane) {
+    const SECONDS: usize = 36;
+    let origin = Scripted::start(|mut stream| async move {
+        read_head(&mut stream).await;
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {SECONDS}\r\n\r\n");
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .expect("origin head");
+        for _ in 0..SECONDS {
+            if stream.write_all(b"y").await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await;
+    let mut proxy = Proxy::start(origin.address, plane, |config| {
+        config.http_services[0].upstream_io_timeout_ms = 120_000;
+    })
+    .await;
+    let mut client = proxy.connect().await;
+    client.write_all(GET).await.unwrap();
+    read_until(&mut client, "\r\n\r\ny").await;
+    proxy.reload().await;
+    let rest = read_to_end_within(&mut client, Duration::from_secs(60)).await;
+    assert_eq!(rest.len(), SECONDS - 1, "the response was cut: {rest:?}");
+    assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
+}
+
+on_both_planes!(a_response_in_flight_survives_the_replacement_of_its_generation);

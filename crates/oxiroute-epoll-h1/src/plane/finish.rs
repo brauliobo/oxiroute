@@ -15,7 +15,7 @@ impl<S: Service> Reactor<S> {
         let reusable = flow.upload_done && matches!(flow.down, Down::Finished { reusable: true });
         let (upstream, failure) = (flow.upstream.take(), flow.failure);
         let (keepalive, unread, request_end) = (
-            flow.keepalive && failure.is_none(),
+            flow.keepalive && failure.is_none() && self.drain_deadline.is_none(),
             flow.body_unread > 0,
             flow.request_end,
         );
