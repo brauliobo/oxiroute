@@ -1,7 +1,7 @@
 //! The classic request write: `RequestHeader` edits through the real `HeaderMap` calls, then `header_to_h1_wire`
 //! behind the request line of `http_req_header_to_wire` (vendored `v1/client.rs`).
 
-use super::classic_request::ClassicRequest;
+use super::request::ClassicRequest;
 use http::header::{HeaderName, HeaderValue};
 use oxiroute_h1_head::{Edits, Name, Value};
 

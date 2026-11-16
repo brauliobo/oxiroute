@@ -121,8 +121,7 @@ mod request;
 mod response;
 mod tables;
 mod tolerant;
-mod write_request;
-mod write_response;
+mod write;
 
 pub use canonical::{Canonical, HeadRead, canonicalize_response, read_response_head};
 pub use class::{Class, classify};
@@ -144,5 +143,4 @@ pub use request::*;
 pub use response::{ResponseFacts, ResponseHead, scan_response, scan_response_lenient};
 pub use tables::is_header_value;
 pub use tolerant::MAX_NOMINATED;
-pub use write_request::write_request;
-pub use write_response::{Automatic, write_response};
+pub use write::{Automatic, write_request, write_response};

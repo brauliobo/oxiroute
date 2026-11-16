@@ -1,7 +1,7 @@
 //! The classic response parse, from `vendor/pingora-core/src/protocols/http/v1/client.rs` (`read_response`,
 //! `parse_resp_buffer`, `validate_response`, `ResponseFacts`).
 
-use super::classic_request::{Classic, Facts, is_hop_by_hop};
+use super::request::{Classic, Facts, is_hop_by_hop};
 use http::header::{self, HeaderName, HeaderValue};
 use httparse::Status;
 use pingora_http::ResponseHeader;

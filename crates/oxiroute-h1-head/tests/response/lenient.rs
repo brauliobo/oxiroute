@@ -3,7 +3,7 @@
 //! classic path accepts is read the same, what it refuses is refused, and every proper prefix of an accepted head is
 //! partial.
 
-use crate::common::classic_response::{ClassicResponse, classic_response, framing_length};
+use crate::common::classic::response::{ClassicResponse, classic_response, framing_length};
 use crate::common::request_corpus::crlf;
 use crate::common::{MUTATION_ALPHABET, Rng, mutate};
 use oxiroute_h1_head::{
@@ -99,7 +99,7 @@ struct Verdict {
 }
 
 fn classify_with_classic(raw: &[u8]) -> Verdict {
-    use crate::common::classic_request::Classic;
+    use crate::common::classic::request::Classic;
     let classic = match classic_response(raw) {
         Ok(classic) => classic,
         Err(Classic::Partial) => {
@@ -181,7 +181,7 @@ fn assert_reads_as_classic(raw: &[u8], classic: &ClassicResponse) {
     assert_eq!(facts.transfer_encoding, classic.facts.transfer_encoding);
     if facts.transfer_encoding {
         let chunked =
-            crate::common::classic_request::is_chunked_encoding_from_headers(&classic.header.headers);
+            crate::common::classic::request::is_chunked_encoding_from_headers(&classic.header.headers);
         assert_eq!(facts.chunked_final, chunked, "{shown:?}");
         assert_eq!(facts.content_length, None);
     } else {

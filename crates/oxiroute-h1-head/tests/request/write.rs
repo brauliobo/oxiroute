@@ -1,10 +1,11 @@
 //! `write_request` against the classic write: `RequestHeader` edited through the real `HeaderMap` calls and
 //! serialised by `header_to_h1_wire`.
 
+#[path = "../common/mod.rs"]
 mod common;
 
-use common::classic_request::classic_request;
-use common::classic_write::{Kind, OwnedEdit, lend, wire};
+use common::classic::request::classic_request;
+use common::classic::write::{Kind, OwnedEdit, lend, wire};
 use common::{Rng, request_corpus};
 use oxiroute_h1_head::{RequestHead, Scan, names, scan_request, write_request};
 

@@ -1,9 +1,10 @@
 //! Differential tests of `scan_request` against the classic parse: `Head` must imply the classic path accepts the
 //! same bytes and reads the same method, target, version, header list and facts.
 
+#[path = "../common/mod.rs"]
 mod common;
 
-use common::classic_request::{ClassicRequest, classic_request};
+use common::classic::request::{ClassicRequest, classic_request};
 use common::request_corpus::{Expect, corpus, crlf};
 use common::{MUTATION_ALPHABET, Rng, mutate};
 use oxiroute_h1_head::{
@@ -70,7 +71,7 @@ fn assert_same_as_classic(buf: &[u8], head: &RequestHead, classic: &ClassicReque
         .header
         .headers
         .get(http::header::CONTENT_LENGTH)
-        .and_then(|v| common::classic_request::buf_to_content_length(v.as_bytes()));
+        .and_then(|v| common::classic::request::buf_to_content_length(v.as_bytes()));
     assert_eq!(
         facts.content_length, classic_cl,
         "content-length of {shown:?}"

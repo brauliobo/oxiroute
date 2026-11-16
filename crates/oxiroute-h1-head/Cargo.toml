@@ -36,3 +36,11 @@ inline_always = "allow"
 too_many_lines = "allow"
 similar_names = "allow"
 struct_excessive_bools = "allow"
+
+[[test]]
+name = "request_scan"
+path = "tests/request/scan.rs"
+
+[[test]]
+name = "request_write"
+path = "tests/request/write.rs"
