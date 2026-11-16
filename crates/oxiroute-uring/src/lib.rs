@@ -1,7 +1,7 @@
 //! A narrow, safe `io_uring` API for the HTTP/1 data plane.
 //!
 //! This is the only crate of the workspace that is permitted to contain `unsafe`, and all of it is in `raw`
-//! (the workspace rule `unsafe_code = "forbid"` stays in force for every other crate; `scripts/verify-unsafe-containment.sh`
+//! (the workspace rule `unsafe_code = "forbid"` stays in force for every other crate; `scripts/verify/unsafe_containment.sh`
 //! enforces that). The rest of the crate is safe code over that module.
 //!
 //! The API is owned-buffer and completion based. A [`Ring`] adopts sockets and answers with plain-data

@@ -6,7 +6,7 @@
 # The fix for a failure is never to widen this list: move the unsafe code behind the narrow safe API of oxiroute-uring.
 set -euo pipefail
 
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "${repo}"
 
 cargo metadata --format-version 1 --no-deps --locked > "${TMPDIR:-/tmp}/oxiroute-unsafe-metadata.$$.json"

@@ -109,7 +109,7 @@ shared memory), and no safe crate provides the operations it needs, so `oxiroute
 in and the engine stays unsafe-free. All unsafe code lives in `crates/oxiroute-uring/src/raw.rs`, behind a safe API
 that owns every buffer for as long as the kernel may use it; each unsafe block carries a `SAFETY` comment, and
 `unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks` and `multiple_unsafe_ops_per_block` are denied.
-`scripts/verify-unsafe-containment.sh` runs in CI and fails when another crate stops forbidding unsafe, when unsafe
+`scripts/verify/unsafe_containment.sh` runs in CI and fails when another crate stops forbidding unsafe, when unsafe
 appears outside `raw.rs`, when a block lacks its `SAFETY` comment, or when another crate depends on `io-uring` or
 references io_uring system calls.
 
