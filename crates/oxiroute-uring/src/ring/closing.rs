@@ -38,20 +38,19 @@ impl Ring {
         if let Connect::Flying(key) = slot.connect {
             targets.push(key);
         }
-        let parked = match slot.reader {
-            Reader::Parked { buffer, .. } => Some(buffer),
-            _ => None,
+        let parked = match std::mem::replace(&mut slot.reader, Reader::Idle) {
+            Reader::Parked { chunk, .. } => Some(chunk),
+            reader => {
+                slot.reader = reader;
+                None
+            }
         };
-        if parked.is_some() {
-            slot.reader = Reader::Idle;
-        }
         for key in targets {
             let _ = self.queue.cancel(key);
         }
         self.cancel_accepts(handle);
-        if let Some(buffer) = parked {
-            self.queue.buffers().give(buffer);
-            self.rearm_starved();
+        if let Some(chunk) = parked {
+            self.discard(chunk);
         }
         true
     }

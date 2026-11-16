@@ -4,7 +4,7 @@ use super::Ring;
 use crate::{
     event::{Event, Read},
     raw::Completion,
-    slot::{Handle, Kind, Reader},
+    slot::{Chunk, Handle, Kind, Reader},
 };
 
 impl Ring {
@@ -45,55 +45,107 @@ impl Ring {
         let Some(slot) = self.slot(handle) else {
             return Read::Failed;
         };
-        match slot.reader {
-            Reader::Eof => Read::Eof,
-            Reader::Broken => Read::Failed,
-            Reader::Parked { buffer, taken, len } if !dst.is_empty() => {
+        match std::mem::replace(&mut slot.reader, Reader::Idle) {
+            Reader::Parked { chunk, taken, len } if !dst.is_empty() => {
                 let room = dst.len().min(len - taken);
-                let copied = self
-                    .queue
-                    .buffers()
-                    .copy_out(buffer, taken, &mut dst[..room]);
-                self.consumed(handle, buffer, taken + copied, len);
+                let copied = self.copy_out(&chunk, taken, &mut dst[..room]);
+                self.consumed(handle, (chunk, taken + copied, len));
                 Read::Data(copied)
             }
-            _ => Read::Block,
+            reader => {
+                slot.reader = reader;
+                match slot.reader {
+                    Reader::Eof => Read::Eof,
+                    Reader::Broken => Read::Failed,
+                    _ => Read::Block,
+                }
+            }
         }
     }
 
-    fn consumed(&mut self, handle: Handle, buffer: u16, taken: usize, len: usize) {
-        let Some(slot) = self.slot(handle) else {
-            return;
-        };
+    fn copy_out(&mut self, chunk: &Chunk, from: usize, dst: &mut [u8]) -> usize {
+        match chunk {
+            Chunk::Ring(buffer) => self.queue.buffers().copy_out(*buffer, from, dst),
+            Chunk::Heap(bytes) => {
+                dst.copy_from_slice(&bytes[from..from + dst.len()]);
+                dst.len()
+            }
+        }
+    }
+
+    fn consumed(&mut self, handle: Handle, (chunk, taken, len): (Chunk, usize, usize)) {
         if taken < len {
-            slot.reader = Reader::Parked { buffer, taken, len };
+            if let Some(slot) = self.slot(handle) {
+                slot.reader = Reader::Parked { chunk, taken, len };
+            }
             return;
         }
-        slot.reader = Reader::Idle;
-        self.queue.buffers().give(buffer);
+        self.discard(chunk);
         self.arm_recv(handle);
+    }
+
+    pub(crate) fn discard(&mut self, chunk: Chunk) {
+        match chunk {
+            Chunk::Ring(buffer) => self.give_buffer(buffer),
+            Chunk::Heap(bytes) => self.give_spill(bytes),
+        }
+    }
+
+    /// Moves a chunk out of the provided buffers when few are left, so bytes nobody reads for a while can never pin
+    /// the pool and stop every other socket from receiving.
+    fn parked(&mut self, buffer: u16, len: usize) -> Chunk {
+        if self.available > self.config.buffers / 8 {
+            return Chunk::Ring(buffer);
+        }
+        let mut bytes = self.spills.pop().unwrap_or_default();
+        bytes.resize(len, 0);
+        self.queue.buffers().copy_out(buffer, 0, &mut bytes);
+        self.give_buffer(buffer);
+        Chunk::Heap(bytes)
+    }
+
+    fn give_spill(&mut self, mut bytes: Vec<u8>) {
+        bytes.clear();
+        if self.spills.len() < 256 {
+            self.spills.push(bytes);
+        }
+    }
+
+    pub(crate) fn give_buffer(&mut self, buffer: u16) {
+        self.queue.buffers().give(buffer);
+        self.available += 1;
         self.rearm_starved();
     }
 
+    /// Arms the receives of starved sockets, as many as there are buffers. A starved socket had data when the
+    /// pool was empty (receives wait for readiness before they select a buffer), so each one takes a buffer.
     pub(crate) fn rearm_starved(&mut self) {
-        while let Some(handle) = self.starved.pop_front() {
+        let mut budget = self.available;
+        while budget > 0 {
+            let Some(handle) = self.starved.pop_front() else {
+                return;
+            };
             let Some(slot) = self.slot(handle) else {
                 continue;
             };
             if matches!(slot.reader, Reader::Starved) {
                 slot.reader = Reader::Idle;
-                return self.arm_recv(handle);
+                self.arm_recv(handle);
+                budget -= 1;
             }
         }
     }
 
     pub(crate) fn received(&mut self, handle: Handle, done: &Completion) {
         let closing = self.slot_any(handle).is_none_or(|slot| slot.closing);
+        let taken = done.buffer.filter(|_| done.result >= 0);
+        if taken.is_some() {
+            self.available = self.available.saturating_sub(1);
+        }
         let received = usize::try_from(done.result).ok().filter(|len| *len > 0);
-        let data = done.buffer.zip(received).filter(|_| !closing);
-        if let Some(buffer) = done.buffer.filter(|_| data.is_none()) {
-            self.queue.buffers().give(buffer);
-            self.rearm_starved();
+        let data = taken.zip(received).filter(|_| !closing);
+        if let Some(buffer) = taken.filter(|_| data.is_none()) {
+            self.give_buffer(buffer);
         }
         if closing {
             if let Some(slot) = self.slot_any(handle) {
@@ -101,24 +153,28 @@ impl Ring {
             }
             return;
         }
-        let Some(slot) = self.slot_any(handle) else {
-            return;
-        };
         match data {
             Some((buffer, len)) => {
-                slot.reader = Reader::Parked {
-                    buffer,
-                    taken: 0,
-                    len,
-                };
+                let chunk = self.parked(buffer, len);
+                if let Some(slot) = self.slot_any(handle) {
+                    slot.reader = Reader::Parked {
+                        chunk,
+                        taken: 0,
+                        len,
+                    };
+                }
                 self.emit(handle, |tag| Event::Readable { tag });
             }
             None if done.result == 0 => {
-                slot.reader = Reader::Eof;
+                if let Some(slot) = self.slot_any(handle) {
+                    slot.reader = Reader::Eof;
+                }
                 self.emit(handle, |tag| Event::Eof { tag });
             }
             None => {
-                slot.reader = Reader::Idle;
+                if let Some(slot) = self.slot_any(handle) {
+                    slot.reader = Reader::Idle;
+                }
                 self.receive_failed(handle, Self::errno(done.result));
             }
         }
@@ -126,6 +182,7 @@ impl Ring {
 
     fn receive_failed(&mut self, handle: Handle, error: Option<Errno>) {
         match error {
+            Some(Errno::NOBUFS) if self.available > 0 => self.arm_recv(handle),
             Some(Errno::NOBUFS) => {
                 if let Some(slot) = self.slot_any(handle) {
                     slot.reader = Reader::Starved;

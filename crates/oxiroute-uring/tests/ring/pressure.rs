@@ -122,3 +122,108 @@ fn many_slow_peers_hold_no_more_than_one_buffer_each_and_the_rest_still_flow() {
     assert_eq!(harness.ring.read(handle, &mut bytes), Read::Data(9));
     assert_eq!(harness.ring.send(handle, b"ok", b""), Sent::Queued(2));
 }
+
+fn reset(peer: TcpStream) {
+    rustix::net::sockopt::set_socket_linger(&peer, Some(std::time::Duration::ZERO))
+        .expect("linger");
+    drop(peer);
+}
+
+#[test]
+fn a_starved_socket_that_fails_does_not_strand_the_starved_sockets_behind_it() {
+    let mut harness = Harness::new(Config {
+        buffers: 2,
+        ..small()
+    });
+    let mut connections = connect_all(&mut harness, 12);
+    for (_, _, peer) in &connections[..2] {
+        write_all(peer, b"hold");
+    }
+    for _ in 0..4 {
+        harness.pump(25);
+    }
+    let (_, _, broken) = connections.remove(2);
+    reset(broken);
+    for (_, _, peer) in &connections[2..] {
+        write_all(peer, b"data");
+    }
+    for _ in 0..4 {
+        harness.pump(25);
+    }
+    let mut bytes = [0_u8; 16];
+    for (_, handle, _) in &connections[..2] {
+        assert_eq!(harness.ring.read(*handle, &mut bytes), Read::Data(4));
+    }
+    let mut waiting: Vec<_> = connections[2..]
+        .iter()
+        .map(|(tag, handle, _)| (*tag, *handle))
+        .collect();
+    while !waiting.is_empty() {
+        let Event::Readable { tag } = harness.until("a readable socket", |event| {
+            matches!(event, Event::Readable { tag } if waiting.iter().any(|(candidate, _)| candidate == tag))
+        }) else {
+            unreachable!()
+        };
+        let at = waiting
+            .iter()
+            .position(|(candidate, _)| *candidate == tag)
+            .expect("waiting");
+        let (_, handle) = waiting.remove(at);
+        assert_eq!(harness.ring.read(handle, &mut bytes), Read::Data(4));
+    }
+}
+
+#[test]
+fn connections_reset_by_the_peer_do_not_leak_receive_buffers() {
+    let mut harness = Harness::new(Config {
+        buffers: 2,
+        ..small()
+    });
+    let (_listener, address) = harness.listener();
+    for round in 0..300_u64 {
+        let peer = client(address);
+        let (handle, _) = harness.accept(10 + round);
+        write_all(&peer, b"about to be reset");
+        harness.pump(1);
+        reset(peer);
+        harness.pump(1);
+        if round % 2 == 1 {
+            let mut bytes = [0_u8; 32];
+            let _ = harness.ring.read(handle, &mut bytes);
+        }
+        harness.ring.close(handle);
+        harness.settle();
+    }
+    let peer = client(address);
+    let (handle, _) = harness.accept(1);
+    write_all(&peer, b"still served");
+    harness.readable(1);
+    let mut bytes = [0_u8; 32];
+    assert_eq!(harness.ring.read(handle, &mut bytes), Read::Data(12));
+}
+
+#[test]
+fn bytes_nobody_reads_never_pin_the_whole_buffer_pool() {
+    let mut harness = Harness::new(Config {
+        buffers: 8,
+        ..small()
+    });
+    let unread = connect_all(&mut harness, 32);
+    for (_, _, peer) in &unread {
+        write_all(peer, b"unread");
+    }
+    for _ in 0..6 {
+        harness.pump(25);
+    }
+    let (_listener, address) = harness.listener();
+    let fresh = client(address);
+    let (handle, _) = harness.accept(9000);
+    write_all(&fresh, b"gets through");
+    harness.readable(9000);
+    let mut bytes = [0_u8; 32];
+    assert_eq!(harness.ring.read(handle, &mut bytes), Read::Data(12));
+    for (_, handle, _) in &unread {
+        assert_eq!(harness.ring.read(*handle, &mut bytes), Read::Data(6));
+        assert_eq!(&bytes[..6], b"unread");
+    }
+}

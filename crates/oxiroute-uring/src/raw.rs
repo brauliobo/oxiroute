@@ -29,6 +29,7 @@ use rustix::{event::PollFlags, io::Errno, net::SocketFlags};
 use crate::{addr::Address, config::Taskrun};
 
 const BUFFER_GROUP: u16 = 0;
+const RECV_POLL_FIRST: u16 = 1;
 const ENTRY_WORDS: usize = 8;
 const PAGE_WORDS: usize = 2048;
 const TAIL_WORD: usize = 7;
@@ -273,6 +274,7 @@ impl Queue {
     pub(crate) fn recv(&mut self, fd: BorrowedFd<'_>, meta: u64) -> io::Result<u64> {
         let entry = opcode::Recv::new(types::Fd(fd.as_raw_fd()), std::ptr::null_mut(), 0)
             .buf_group(BUFFER_GROUP)
+            .ioprio(RECV_POLL_FIRST)
             .build()
             .flags(squeue::Flags::BUFFER_SELECT);
         self.plain(entry, meta)

@@ -56,13 +56,20 @@ impl Meta {
     }
 }
 
+/// Received bytes waiting for the caller: still in a provided buffer, or moved to the heap when the pool runs low.
+#[derive(Debug)]
+pub(crate) enum Chunk {
+    Ring(u16),
+    Heap(Vec<u8>),
+}
+
 #[derive(Debug)]
 pub(crate) enum Reader {
     Idle,
     Armed(u64),
     Starved,
     Parked {
-        buffer: u16,
+        chunk: Chunk,
         taken: usize,
         len: usize,
     },
