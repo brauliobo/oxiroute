@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use oxiroute_tls_rustls::RustlsAcceptor;
+use oxiroute_tls_rustls::{KernelTls, RustlsAcceptor};
 use pingora::listeners::{CustomTlsSettings, tls::cipher_list_names};
 use rustls::{
     ServerConfig, SupportedCipherSuite, SupportedProtocolVersion,
@@ -17,7 +17,7 @@ use self::{
     router::ProfileRouter,
     session::{SessionCache, TimedTicketer},
 };
-use super::{ALPN, TLS13_TICKETS, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
+use super::{ALPN, KtlsMode, TLS13_TICKETS, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
 use crate::tls::provider::{aws_lc_provider, with_cipher_list, with_key_exchange_groups};
 
 mod resolver;
@@ -71,7 +71,12 @@ impl TlsProfilePlan {
             self.tls_alpn_challenge_store.clone(),
             self.protocol_versions(),
         );
-        let mut settings = CustomTlsSettings::new(Arc::new(RustlsAcceptor::new(Arc::new(router))));
+        let acceptor = RustlsAcceptor::new(Arc::new(router));
+        let acceptor = match self.rustls_kernel {
+            Some(kernel) => acceptor.with_kernel_tls(kernel),
+            None => acceptor,
+        };
+        let mut settings = CustomTlsSettings::new(Arc::new(acceptor));
         if handshake_threads > 0 {
             settings.set_offload_threadpool(handshake_threads, 1);
         }
@@ -155,6 +160,7 @@ impl TlsProfilePlan {
             config.ticketer = Arc::clone(tickets);
         }
         config.send_tls13_tickets = sessions.tls13_tickets;
+        config.enable_secret_extraction = self.rustls_kernel.is_some();
         Ok(Arc::new(config))
     }
 
@@ -199,6 +205,27 @@ impl TlsProfilePlan {
         TlsBuildError::RustlsSettings {
             profile: self.name.clone(),
             detail,
+        }
+    }
+}
+
+/// What the kernel offers a rustls profile for kernel TLS: the first large static file of a connection is sent with
+/// `sendfile(2)` and the kernel encrypts the rest of it. A kernel that cannot do it leaves the profile in user space,
+/// exactly as `ktls = "off"`, and the operator hears it once per generation, here.
+pub(super) fn kernel_tls(profile: &str, mode: KtlsMode, backend: TlsBackend) -> Option<KernelTls> {
+    if mode == KtlsMode::Off || backend != TlsBackend::Rustls {
+        return None;
+    }
+    match oxiroute_tls_rustls::probe() {
+        Ok(kernel) => {
+            log::info!("TLS profile `{profile}`: kernel TLS is active for large static files");
+            Some(kernel)
+        }
+        Err(unavailable) => {
+            log::info!(
+                "TLS profile `{profile}`: kernel TLS is not available, TLS stays in user space: {unavailable}"
+            );
+            None
         }
     }
 }

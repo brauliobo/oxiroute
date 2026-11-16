@@ -13,7 +13,7 @@ use std::{fs, os::unix::fs::PermissionsExt as _};
 
 use oxiroute_config::{
     AlpnProtocol, HttpRouteAction, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersionPolicy,
-    KtlsMode,
+    KtlsMode, TlsBackend,
 };
 use pingora::protocols::l4::ktls::probe;
 use support::{
@@ -55,6 +55,14 @@ fn kernel_available() -> bool {
 }
 
 fn serving(root: std::path::PathBuf, ktls: KtlsMode) -> (ProxyHarness, std::net::TcpListener) {
+    serving_on(root, ktls, TlsBackend::Openssl)
+}
+
+fn serving_on(
+    root: std::path::PathBuf,
+    ktls: KtlsMode,
+    backend: TlsBackend,
+) -> (ProxyHarness, std::net::TcpListener) {
     let unused_origin = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused origin");
     let reserved = ReservedListener::new();
     let mut config = proxy_config(
@@ -65,6 +73,7 @@ fn serving(root: std::path::PathBuf, ktls: KtlsMode) -> (ProxyHarness, std::net:
         HttpVersionPolicy::default(),
     );
     config.tls_profiles[0].policy.ktls = ktls;
+    config.tls_profiles[0].policy.backend = backend;
     config.http_services[0].routes[0].action = HttpRouteAction::StaticFiles {
         root_directory: root,
         path_mapping: HttpStaticPathMapping::Root,
@@ -99,10 +108,20 @@ fn static_root(body: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[tokio::test]
 async fn large_files_arrive_intact_over_kernel_tls_and_the_connection_serves_the_next_request() {
+    large_files_over_kernel_tls(TlsBackend::Openssl).await;
+}
+
+#[tokio::test]
+async fn rustls_large_files_arrive_intact_over_kernel_tls_and_the_connection_serves_the_next_request()
+ {
+    large_files_over_kernel_tls(TlsBackend::Rustls).await;
+}
+
+async fn large_files_over_kernel_tls(backend: TlsBackend) {
     timeout(TEST_TIMEOUT, async {
         let body = pattern(BIG);
         let (_directory, root) = static_root(&body);
-        let (proxy, _origin) = serving(root, KtlsMode::Auto);
+        let (proxy, _origin) = serving_on(root, KtlsMode::Auto, backend);
         let before = kernel_tx_sockets();
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
@@ -247,4 +266,123 @@ async fn a_host_without_kernel_tls_serves_auto_exactly_like_off() {
     })
     .await
     .expect("auto without kernel TLS test timed out");
+}
+
+#[tokio::test]
+async fn rustls_tls_1_2_clients_get_large_files_from_the_kernel() {
+    timeout(TEST_TIMEOUT, async {
+        let body = pattern(BIG);
+        let (_directory, root) = static_root(&body);
+        let (proxy, _origin) = serving_on(root, KtlsMode::Auto, TlsBackend::Rustls);
+        let before = kernel_tx_sockets();
+        let config = tls_client_config_with_versions(
+            &fixture("ca-a.pem"),
+            &[b"http/1.1"],
+            &[&rustls::version::TLS12],
+        )
+        .expect("TLS 1.2 client");
+        let mut stream = tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, config)
+            .await
+            .expect("TLS 1.2 connection to OxiRoute");
+        for round in 0..3 {
+            let response = h1_request(&mut stream, "/big.bin", round == 2)
+                .await
+                .expect("static response");
+            assert!(response.body == body, "round {round}: body differs");
+        }
+        if kernel_available() {
+            assert!(
+                kernel_tx_sockets() > before,
+                "the kernel did not encrypt the TLS 1.2 connection"
+            );
+        }
+        drop(stream);
+        proxy.finish().await;
+    })
+    .await
+    .expect("rustls TLS 1.2 kernel TLS test timed out");
+}
+
+#[tokio::test]
+async fn rustls_a_key_update_before_the_first_large_file_is_followed() {
+    timeout(TEST_TIMEOUT, async {
+        let body = pattern(BIG);
+        let (_directory, root) = static_root(&body);
+        let (proxy, _origin) = serving_on(root, KtlsMode::Auto, TlsBackend::Rustls);
+        let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+            .await
+            .expect("TLS connection to OxiRoute");
+        let small = h1_request(&mut stream, "/small.txt", false)
+            .await
+            .expect("small response");
+        assert_eq!(small.body, b"small");
+        stream
+            .get_mut()
+            .1
+            .refresh_traffic_keys()
+            .expect("client key update");
+        let big = h1_request(&mut stream, "/big.bin", true)
+            .await
+            .expect("large response");
+        assert!(big.body == body, "the body differs");
+        drop(stream);
+        proxy.finish().await;
+    })
+    .await
+    .expect("rustls key update before conversion test timed out");
+}
+
+#[tokio::test]
+async fn rustls_a_key_update_after_the_conversion_closes_the_connection() {
+    if !kernel_available() {
+        eprintln!("skipped: the connection is never converted without kernel TLS");
+        return;
+    }
+    timeout(TEST_TIMEOUT, async {
+        let body = pattern(BIG);
+        let (_directory, root) = static_root(&body);
+        let (proxy, _origin) = serving_on(root, KtlsMode::Auto, TlsBackend::Rustls);
+        let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+            .await
+            .expect("TLS connection to OxiRoute");
+        let big = h1_request(&mut stream, "/big.bin", false)
+            .await
+            .expect("large response");
+        assert!(big.body == body, "the body differs");
+        stream
+            .get_mut()
+            .1
+            .refresh_traffic_keys()
+            .expect("client key update");
+        assert!(
+            h1_request(&mut stream, "/small.txt", true).await.is_err(),
+            "the kernel cannot follow a key update, the connection must end"
+        );
+        drop(stream);
+        proxy.finish().await;
+    })
+    .await
+    .expect("rustls key update after conversion test timed out");
+}
+
+#[tokio::test]
+async fn rustls_with_ktls_off_serves_the_same_bytes_from_user_space() {
+    timeout(TEST_TIMEOUT, async {
+        let body = pattern(BIG);
+        let (_directory, root) = static_root(&body);
+        let (proxy, _origin) = serving_on(root, KtlsMode::Off, TlsBackend::Rustls);
+        let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+            .await
+            .expect("TLS connection to OxiRoute");
+        for round in 0..2 {
+            let response = h1_request(&mut stream, "/big.bin", round == 1)
+                .await
+                .expect("static response");
+            assert!(response.body == body, "round {round}: body differs");
+        }
+        drop(stream);
+        proxy.finish().await;
+    })
+    .await
+    .expect("rustls ktls off test timed out");
 }
