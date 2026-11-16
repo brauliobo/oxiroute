@@ -208,7 +208,13 @@ impl Exchange {
             route: &self.route,
             protocol: HTTP1,
         };
-        front.account(&mut self.ctx, &request, self.error.as_deref(), &progress);
+        front.account(
+            &mut self.ctx,
+            &request,
+            self.error.as_deref(),
+            &progress,
+            outcome.ended,
+        );
     }
 
     fn relayed(&mut self, pending: Pending, outcome: &Outcome) {

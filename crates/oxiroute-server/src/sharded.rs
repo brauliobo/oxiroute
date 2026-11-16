@@ -9,7 +9,10 @@
 //! and store instead of a locked read-modify-write (readers only ever load). The threads after them
 //! share the last [`SHARED`] slots round robin and add atomically.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::{
+    cell::Cell,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 /// Threads that own a slot.
 const OWNED: usize = 16;
@@ -19,16 +22,29 @@ pub(crate) const SHARDS: usize = OWNED + SHARED;
 
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
+const UNASSIGNED: usize = usize::MAX;
+
 std::thread_local! {
-    static SLOT: usize = match NEXT_SLOT.fetch_add(1, Ordering::Relaxed) {
-        thread if thread < OWNED => thread,
-        thread => OWNED + (thread - OWNED) % SHARED,
-    };
+    static SLOT: Cell<usize> = const { Cell::new(UNASSIGNED) };
 }
 
 /// The slot number of the calling thread, below [`SHARDS`].
+#[inline]
 pub(crate) fn local_index() -> usize {
-    SLOT.with(|slot| *slot)
+    match SLOT.get() {
+        UNASSIGNED => assign_slot(),
+        slot => slot,
+    }
+}
+
+#[cold]
+fn assign_slot() -> usize {
+    let slot = match NEXT_SLOT.fetch_add(1, Ordering::Relaxed) {
+        thread if thread < OWNED => thread,
+        thread => OWNED + (thread - OWNED) % SHARED,
+    };
+    SLOT.set(slot);
+    slot
 }
 
 /// Adds `value` to `counter`, a cell of the calling thread's slot.
@@ -41,18 +57,6 @@ pub(crate) fn add(counter: &AtomicU64, value: u64) {
         );
     } else {
         counter.fetch_add(value, Ordering::Relaxed);
-    }
-}
-
-/// Adds one to `counter`, a cell of the calling thread's slot, and returns the new value.
-#[inline]
-pub(crate) fn next(counter: &AtomicU64) -> u64 {
-    if local_index() < OWNED {
-        let number = counter.load(Ordering::Relaxed).wrapping_add(1);
-        counter.store(number, Ordering::Relaxed);
-        number
-    } else {
-        counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
     }
 }
 
@@ -152,14 +156,12 @@ mod tests {
     #[test]
     fn owners_and_sharers_add_up_across_threads() {
         let counters = Sharded::new(|| AtomicU64::new(0));
-        let numbers = Sharded::new(|| AtomicU64::new(0));
         let threads = SHARDS * 3;
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 scope.spawn(|| {
                     for _ in 0..1000 {
                         add(counters.local(), 3);
-                        next(numbers.local());
                     }
                 });
             }
@@ -171,18 +173,6 @@ mod tests {
                 .sum()
         };
         assert_eq!(total(&counters), 3000 * threads as u64);
-        assert_eq!(total(&numbers), 1000 * threads as u64);
-    }
-
-    #[test]
-    fn a_thread_that_owns_its_slot_numbers_in_sequence() {
-        std::thread::spawn(|| {
-            let numbers = Sharded::new(|| AtomicU64::new(0));
-            let first = next(numbers.local());
-            assert_eq!(next(numbers.local()), first + 1);
-        })
-        .join()
-        .expect("thread");
     }
 
     #[test]

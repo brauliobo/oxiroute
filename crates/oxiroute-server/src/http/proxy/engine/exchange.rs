@@ -2,12 +2,11 @@ use std::{net::IpAddr, sync::Arc, time::Instant};
 
 use http::{HeaderValue, Method};
 use log::debug;
-use oxiroute_config::UpstreamConnectionReuse;
 use oxiroute_epoll_h1::{AttemptTimeouts, Failure, Request, Reuse, Selected, Target};
 use oxiroute_h1_head::RequestHead;
 use pingora::{Error, upstreams::peer::Peer as _};
 
-use super::{LOG_TARGET, lease::EngineLease, outcome::Pending};
+use super::{LOG_TARGET, lease::EngineLease, outcome::Pending, plan::EnginePlan, routes::Routes};
 use crate::{
     http::{
         action::HttpRoutePlan,
@@ -49,13 +48,19 @@ pub(super) struct Exchange {
 }
 
 impl Exchange {
-    pub(super) fn begin(front: &LaneFront, request: &Request<'_>, now: Instant) -> Option<Self> {
+    pub(super) fn begin(
+        front: &LaneFront,
+        routes: &Routes,
+        request: &Request<'_>,
+        now: Instant,
+    ) -> Option<Self> {
         let (buffer, head) = (request.bytes(), request.head());
         let lane = head::adopt(buffer, head)?;
         let method = Method::from_bytes(lane.method(buffer)).ok()?;
         let target = lane.target(buffer)?;
-        let (route, authority, _) = front.resolve(&method, &target)?;
-        if !(route.engine && LaneFront::takes_body(&route, &lane)) {
+        let (route, authority) = routes.resolve(front, &method, &target)?;
+        let connection_close = route.engine.as_ref()?.connection_close;
+        if !LaneFront::takes_body(&route, &lane) {
             return None;
         }
         let client_ip = Some(request.peer().ip());
@@ -90,7 +95,7 @@ impl Exchange {
             values,
             idempotency,
             host: HostEdit::AsSent,
-            connection_close: false,
+            connection_close,
             replayable: request.replayable(),
             reasoned: false,
             pending: None,
@@ -103,6 +108,13 @@ impl Exchange {
         self.ctx
             .evacuation()
             .is_some_and(crate::http::evacuation::Evacuation::cancelled)
+    }
+
+    fn plan(route: &HttpRoutePlan) -> &EnginePlan {
+        route
+            .engine
+            .as_ref()
+            .expect("the route was selected for the epoll data plane")
     }
 
     pub(super) fn forward<'a>(&'a self, buffer: &'a [u8], head: &'a RequestHead) -> Forward<'a> {
@@ -130,7 +142,8 @@ impl Exchange {
         self.error = None;
         self.ctx.arm_evacuation_for_engine(self.replayable);
         let first = !self.ctx.has_attempted();
-        match self.ctx.next_attempt_now(upstream_host) {
+        let attempt = &Self::plan(&self.route).attempt;
+        match self.ctx.next_attempt_now(attempt, upstream_host) {
             Err(error) => self.refuse(error),
             Ok(None) => self.decline(first),
             Ok(Some(allowed)) => self.attach(&allowed, first),
@@ -165,11 +178,6 @@ impl Exchange {
             return self.decline(first);
         };
         self.host = host_edit(&mut self.ctx);
-        self.connection_close = self
-            .ctx
-            .pool
-            .as_ref()
-            .is_some_and(|pool| pool.connection_reuse() == UpstreamConnectionReuse::Never);
         let reuse = if self.connection_close {
             Reuse::Never
         } else {

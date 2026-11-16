@@ -1,6 +1,6 @@
 mod plan;
 
-pub(crate) use plan::serves;
+pub(crate) use plan::{EnginePlan, plan};
 
 #[cfg(target_os = "linux")]
 mod exchange;
@@ -12,6 +12,8 @@ mod lease;
 mod outcome;
 #[cfg(target_os = "linux")]
 mod render;
+#[cfg(target_os = "linux")]
+mod routes;
 #[cfg(target_os = "linux")]
 mod runtime;
 #[cfg(target_os = "linux")]

@@ -83,7 +83,7 @@ async fn request_preparation_fixture(
     ));
     let route = Arc::new(HttpRoutePlan {
         access: None,
-        engine: false,
+        engine: None,
         lane: crate::http::proxy::lane::LaneRoute::Classic,
         edits: crate::http::proxy::lane::RouteEdits::default(),
         action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {

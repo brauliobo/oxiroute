@@ -42,7 +42,7 @@ fn service(specs: &[Spec]) -> HttpServicePlan {
         routes.push(Route::new(host, path, methods, id.clone()).expect("route"));
         plans.push(Arc::new(HttpRoutePlan {
             access: None,
-            engine: false,
+            engine: None,
             lane: spec.lane,
             edits: crate::http::proxy::lane::RouteEdits::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
@@ -228,7 +228,7 @@ fn static_service(root: &std::path::Path) -> (HttpServicePlan, Arc<HttpRoutePlan
     .expect("blueprint");
     let route = Arc::new(HttpRoutePlan {
         access: None,
-        engine: false,
+        engine: None,
         lane: LaneRoute::Static,
         edits: crate::http::proxy::lane::RouteEdits::default(),
         action: HttpActionPlan::Static(

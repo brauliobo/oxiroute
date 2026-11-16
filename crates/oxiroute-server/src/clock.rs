@@ -29,6 +29,16 @@ pub(crate) async fn promptly<F: Future>(
         .map(|output| (output, true))
 }
 
+/// `later` minus `earlier`, without any arithmetic when they are the same reading: the steps of a request that run
+/// straight after one another share their reading, and most of what a request measures is time between two of them.
+pub(crate) fn since(later: Instant, earlier: Instant) -> Duration {
+    if later == earlier {
+        Duration::ZERO
+    } else {
+        later.saturating_duration_since(earlier)
+    }
+}
+
 /// How long a thread trusts the wall clock reading it derived its offsets from.
 const REANCHOR: Duration = Duration::from_secs(1);
 
@@ -63,6 +73,15 @@ pub(crate) fn wall_ms(now: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_time_between_readings_is_zero_for_one_reading_and_their_difference_otherwise() {
+        let first = Instant::now();
+        let second = first + Duration::from_millis(7);
+        assert_eq!(since(first, first), Duration::ZERO);
+        assert_eq!(since(second, first), Duration::from_millis(7));
+        assert_eq!(since(first, second), Duration::ZERO);
+    }
 
     #[test]
     fn wall_time_from_a_reading_follows_the_system_clock() {

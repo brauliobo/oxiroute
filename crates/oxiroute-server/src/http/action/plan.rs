@@ -1,6 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::http::proxy::lane::{LaneRoute, RouteEdits};
+use crate::http::proxy::{
+    engine::EnginePlan,
+    lane::{LaneRoute, RouteEdits},
+};
 use crate::http::request_id::REQUEST_ID_HEADER;
 use crate::label::Label;
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, DATE, LOCATION, TRANSFER_ENCODING};
@@ -10,8 +13,8 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
     pub(crate) lane: LaneRoute,
-    /// Whether the epoll data plane serves requests of the route; the tokio path serves the others.
-    pub(crate) engine: bool,
+    /// What the epoll data plane serves the route with; the tokio path serves a route without one.
+    pub(crate) engine: Option<EnginePlan>,
     /// What the fast lane edits on a proxied route: compiled with the route.
     pub(crate) edits: RouteEdits,
     pub(crate) policy: RoutePolicyPlan,

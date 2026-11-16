@@ -78,7 +78,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
     );
     let route = HttpRoutePlan {
         access: None,
-        engine: false,
+        engine: None,
         lane: crate::http::proxy::lane::LaneRoute::Classic,
         edits: crate::http::proxy::lane::RouteEdits::default(),
         action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {

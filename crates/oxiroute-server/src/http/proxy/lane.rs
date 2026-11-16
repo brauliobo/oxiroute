@@ -6,6 +6,7 @@
 //! The lane exists for requests whose cost is the layers around them; it never grows the grammar, it refuses a
 //! superset of what the classic parser refuses.
 
+mod accounting;
 pub(in crate::http::proxy) mod buffers;
 mod direct;
 pub(in crate::http::proxy) mod head;
@@ -269,14 +270,17 @@ impl LaneFront {
         if authority.as_str().contains('@') {
             return None;
         }
-        if self
-            .challenge
-            .as_ref()
-            .is_some_and(|store| store.holds(target.path))
-        {
+        if self.holds_challenge(target.path) {
             return None;
         }
         Some(authority)
+    }
+
+    /// Whether `path` is the one of a live challenge of the certificate authority, which the lane never serves.
+    pub(in crate::http::proxy) fn holds_challenge(&self, path: &str) -> bool {
+        self.challenge
+            .as_ref()
+            .is_some_and(|store| store.holds(path))
     }
 
     fn pick(
