@@ -6,6 +6,7 @@ mod service;
 mod wire;
 
 use std::{
+    io,
     net::SocketAddr,
     sync::{
         Arc,
@@ -124,6 +125,16 @@ impl Fixture {
 
     pub fn engine(&self) -> &Engine {
         self.engine.as_ref().expect("engine runs")
+    }
+
+    pub fn take_engine(&mut self) -> Engine {
+        self.engine.take().expect("engine runs")
+    }
+
+    pub fn stop_after_failure(&mut self) -> io::Result<()> {
+        let engine = self.take_engine();
+        engine.stop();
+        engine.join()
     }
 
     pub fn stop(&mut self) {

@@ -53,6 +53,7 @@ pub struct Knobs {
     pub idle_upstream: Duration,
     pub pause_in_route: Option<Duration>,
     pub admit_limit: Option<usize>,
+    pub panic_in_route: bool,
 }
 
 impl Default for Knobs {
@@ -69,6 +70,7 @@ impl Default for Knobs {
             idle_upstream: Duration::from_secs(30),
             pause_in_route: None,
             admit_limit: None,
+            panic_in_route: false,
         }
     }
 }
@@ -199,6 +201,10 @@ impl Service for Reference {
     }
 
     fn route(&self, request: &Request<'_>, _now: Instant) -> Routed<Exchange> {
+        assert!(
+            !(self.knobs.panic_in_route && request.target() == b"/panic"),
+            "injected panic"
+        );
         if request.head().facts.hop_by_hop != 0 || request.target().starts_with(b"/handoff") {
             return Routed::Handoff;
         }

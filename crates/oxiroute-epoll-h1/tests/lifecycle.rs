@@ -388,3 +388,28 @@ fn failures(fixture: &Fixture) -> Vec<Option<Failure>> {
         .map(|outcome| outcome.failure)
         .collect()
 }
+
+#[test]
+fn a_panicking_engine_thread_is_reported_to_its_supervisor() {
+    let knobs = Knobs {
+        panic_in_route: true,
+        ..Knobs::default()
+    };
+    let mut fixture = Fixture::with(test_config(), Timeouts::default(), knobs);
+    fixture.wire().get("/panic");
+    let error = fixture
+        .engine()
+        .wait_for_failure()
+        .expect("the panic is reported");
+    assert!(error.to_string().contains("panicked"), "{error}");
+    assert!(fixture.stop_after_failure().is_err());
+}
+
+#[test]
+fn engine_threads_that_end_cleanly_report_no_failure() {
+    let mut fixture = Fixture::start();
+    let engine = fixture.take_engine();
+    engine.stop();
+    assert!(engine.wait_for_failure().is_none());
+    engine.join().expect("engine stops cleanly");
+}

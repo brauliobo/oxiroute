@@ -8,7 +8,10 @@ use pingora::{
     server::{ListenFds, ShutdownWatch},
     services::{Service as PingoraService, ServiceReadyNotifier},
 };
-use tokio::{sync::mpsc::unbounded_channel, task::spawn_blocking};
+use tokio::{
+    sync::mpsc::unbounded_channel,
+    task::{JoinHandle, spawn_blocking},
+};
 
 use super::{handoff, service::EngineFront};
 use crate::{MAX_HTTP_ATTEMPTS, RuntimeGeneration, http::proxy::lane::LaneFront};
@@ -83,6 +86,8 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
 
     async fn supervise(&self, engine: Engine, mut shutdown: ShutdownWatch) {
         let engine = Arc::new(engine);
+        let mut threads = Self::watch(&engine);
+        let mut running = true;
         let mut gate = self
             .app
             .accept_gate()
@@ -114,9 +119,26 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
                         break;
                     }
                 }
+                ended = &mut threads, if running => {
+                    running = false;
+                    if let Some(error) = ended.unwrap_or_else(|error| Some(io::Error::other(error))) {
+                        self.fail(&error);
+                        break;
+                    }
+                }
             }
         }
         Self::stop(engine).await;
+    }
+
+    fn watch(engine: &Arc<Engine>) -> JoinHandle<Option<io::Error>> {
+        let engine = Arc::clone(engine);
+        spawn_blocking(move || engine.wait_for_failure())
+    }
+
+    fn fail(&self, error: &io::Error) {
+        error!("listener `{}` lost an epoll thread: {error}", self.name);
+        self.generation.mark_runtime_failed();
     }
 
     async fn accept(engine: &Arc<Engine>, accepting: bool) {
