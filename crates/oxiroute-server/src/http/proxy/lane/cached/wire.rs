@@ -3,12 +3,14 @@
 //! after the others when it does not, in the order the classic path adds them: `Age`, `Content-Length`, the request id,
 //! `Date`, `Connection`.
 
+use std::time::Duration;
+
 use bytes::{BufMut as _, BytesMut};
 use http::{
-    HeaderName, StatusCode,
+    HeaderMap, HeaderName, StatusCode,
     header::{AGE, CONNECTION, CONTENT_LENGTH, DATE},
 };
-use oxiroute_cache::FreshHit;
+use oxiroute_cache::{CachedResponse, FreshHit};
 use pingora::{http::titled_header_name_str, protocols::http::date::put_cached_date};
 
 use crate::http::request_id::REQUEST_ID_HEADER;
@@ -22,12 +24,43 @@ const fn body_forbidden(status: StatusCode) -> bool {
     )
 }
 
+/// What the lane answers with: a stored response as it is, or the response the cache's compression made of it.
+#[derive(Clone, Copy)]
+pub(super) struct Representation<'a> {
+    pub(super) status: StatusCode,
+    pub(super) headers: &'a HeaderMap,
+    pub(super) body: &'a [u8],
+    pub(super) age: Duration,
+}
+
+impl<'a> From<&'a FreshHit> for Representation<'a> {
+    fn from(hit: &'a FreshHit) -> Self {
+        Self {
+            status: hit.status(),
+            headers: hit.headers(),
+            body: hit.body(),
+            age: hit.age(),
+        }
+    }
+}
+
+impl<'a> From<&'a CachedResponse> for Representation<'a> {
+    fn from(response: &'a CachedResponse) -> Self {
+        Self {
+            status: response.status,
+            headers: &response.headers,
+            body: &response.body,
+            age: response.age,
+        }
+    }
+}
+
 /// The body the response carries: none for `HEAD` and for the statuses without one.
-pub(super) fn body_sent(hit: &FreshHit, head: bool) -> &[u8] {
-    if head || body_forbidden(hit.status()) {
+pub(super) fn body_sent(served: Representation<'_>, head: bool) -> &[u8] {
+    if head || body_forbidden(served.status) {
         &[]
     } else {
-        hit.body()
+        served.body
     }
 }
 
@@ -50,10 +83,10 @@ impl Owned {
         }
     }
 
-    fn put(self, out: &mut BytesMut, hit: &FreshHit, automatic: &str) {
+    fn put(self, out: &mut BytesMut, served: Representation<'_>, automatic: &str) {
         match self {
-            Self::Age => put_age(out, hit),
-            Self::Length => put_length(out, hit),
+            Self::Age => put_age(out, served),
+            Self::Length => put_length(out, served),
             Self::Date => put_date(out),
             Self::Connection => put_connection(out, automatic),
         }
@@ -73,34 +106,34 @@ impl Written {
         self.0 |= 1 << owned as u8;
     }
 
-    fn put_missing(&self, out: &mut BytesMut, hit: &FreshHit, automatic: &str, owned: [Owned; 2]) {
+    fn put_missing(&self, out: &mut BytesMut, served: Representation<'_>, automatic: &str, owned: [Owned; 2]) {
         for field in owned.into_iter().filter(|field| !self.has(*field)) {
-            field.put(out, hit, automatic);
+            field.put(out, served, automatic);
         }
     }
 }
 
 /// The status line, the headers and the blank line of the response to a request with the given id; `automatic` is the
 /// `Connection` value.
-pub(super) fn put(out: &mut BytesMut, hit: &FreshHit, (id, automatic): (&[u8], &str)) {
-    let status = hit.status();
+pub(super) fn put(out: &mut BytesMut, served: Representation<'_>, (id, automatic): (&[u8], &str)) {
+    let status = served.status;
     out.put_slice(b"HTTP/1.1 ");
     out.put_slice(status.as_str().as_bytes());
     out.put_u8(b' ');
     out.put_slice(status.canonical_reason().unwrap_or_default().as_bytes());
     out.put_slice(CRLF);
     let mut written = Written::default();
-    for (name, value) in hit.headers() {
+    for (name, value) in served.headers {
         if let Some(owned) = Owned::named(name) {
-            owned.put(out, hit, automatic);
+            owned.put(out, served, automatic);
             written.mark(owned);
         } else {
             put_field(out, name, value.as_bytes());
         }
     }
-    written.put_missing(out, hit, automatic, [Owned::Age, Owned::Length]);
+    written.put_missing(out, served, automatic, [Owned::Age, Owned::Length]);
     put_field(out, &REQUEST_ID_HEADER, id);
-    written.put_missing(out, hit, automatic, [Owned::Date, Owned::Connection]);
+    written.put_missing(out, served, automatic, [Owned::Date, Owned::Connection]);
     out.put_slice(CRLF);
 }
 
@@ -115,16 +148,16 @@ fn put_field(out: &mut BytesMut, name: &HeaderName, value: &[u8]) {
     out.put_slice(CRLF);
 }
 
-fn put_age(out: &mut BytesMut, hit: &FreshHit) {
+fn put_age(out: &mut BytesMut, served: Representation<'_>) {
     out.put_slice(b"Age: ");
-    put_decimal(out, hit.age().as_secs());
+    put_decimal(out, served.age.as_secs());
     out.put_slice(CRLF);
 }
 
-fn put_length(out: &mut BytesMut, hit: &FreshHit) {
-    if !body_forbidden(hit.status()) {
+fn put_length(out: &mut BytesMut, served: Representation<'_>) {
+    if !body_forbidden(served.status) {
         out.put_slice(b"Content-Length: ");
-        put_decimal(out, hit.body().len() as u64);
+        put_decimal(out, served.body.len() as u64);
         out.put_slice(CRLF);
     }
 }

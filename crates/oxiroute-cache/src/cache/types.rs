@@ -89,6 +89,12 @@ impl FreshHit {
     pub const fn age(&self) -> Duration {
         self.age
     }
+
+    /// The hit as a snapshot, for a caller that transforms the response: the headers are copied, with the `Age`.
+    #[must_use]
+    pub fn response(&self) -> CachedResponse {
+        super::flight::response_snapshot(&self.entry, self.age)
+    }
 }
 
 /// Cache lookup result and wire-facing cache status.

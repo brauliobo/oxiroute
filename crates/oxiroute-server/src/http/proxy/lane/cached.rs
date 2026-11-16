@@ -10,11 +10,13 @@ use std::{net::IpAddr, time::Instant};
 
 use bytes::{BufMut as _, BytesMut};
 use http::{Method, uri::Authority};
-use oxiroute_cache::{FreshHit, RequestKeyInput};
+use http::HeaderMap;
+use oxiroute_cache::{CachedResponse, FreshHit, RequestKeyInput};
 use oxiroute_h1_head::RequestHead;
 use pingora::{apps::Http1Connection, protocols::Stream};
 use tokio::io::AsyncWriteExt as _;
 
+use self::wire::Representation;
 use super::{LaneFront, Served, buffers, head as request_head, local::Exchange, proxy};
 use crate::{
     http::{
@@ -54,9 +56,9 @@ impl Cached<'_> {
             .expect("a cached route has a cache plan")
     }
 
-    /// The hit the lane answers, already counted as served; `None` leaves the request to the classic path with the
-    /// cache as it was.
-    fn answer(&self) -> Option<FreshHit> {
+    /// The hit the lane answers with the request's headers, already counted as served; `None` leaves the request to
+    /// the classic path with the cache as it was.
+    fn answer(&self) -> Option<(FreshHit, HeaderMap)> {
         let request = self.request;
         let method = Method::from_bytes(request.method(self.buffer)).ok()?;
         let plan = self.plan();
@@ -83,7 +85,17 @@ impl Cached<'_> {
             return None;
         }
         cache.record_hit(&hit);
-        Some(hit)
+        Some((hit, headers))
+    }
+
+    /// The hit as the route's cache compression serves it to this request; `None` serves the hit as stored.
+    async fn coded(&self, hit: &FreshHit, headers: &HeaderMap) -> Option<CachedResponse> {
+        let plan = self.plan();
+        if plan.compresses() {
+            Some(plan.encode(headers, hit.response()).await)
+        } else {
+            None
+        }
     }
 }
 
@@ -105,9 +117,13 @@ impl LaneFront {
             return Served::Handoff;
         };
         buffers::give_write(values.into_buffer());
-        let Some(hit) = cached.answer() else {
+        let Some((hit, request_headers)) = cached.answer() else {
             return Served::Handoff;
         };
+        let coded = cached.coded(&hit, &request_headers).await;
+        let served = coded
+            .as_ref()
+            .map_or_else(|| Representation::from(&hit), Representation::from);
         let _ = self.metrics.record_cache_event(CacheEvent::Hit);
         let started = Instant::now();
         connection.begin_request();
@@ -133,7 +149,7 @@ impl LaneFront {
             id,
             started,
         };
-        self.write_hit(stream, connection, exchange, &hit).await
+        self.write_hit(stream, connection, exchange, served).await
     }
 
     async fn write_hit(
@@ -141,17 +157,17 @@ impl LaneFront {
         stream: &mut Stream,
         connection: &mut Http1Connection,
         exchange: Exchange<'_>,
-        hit: &FreshHit,
+        served: Representation<'_>,
     ) -> Served {
         let automatic = if connection.will_keepalive() {
             "keep-alive"
         } else {
             "close"
         };
-        let body = wire::body_sent(hit, exchange.request.is_head);
+        let body = wire::body_sent(served, exchange.request.is_head);
         let inline = body.len() <= INLINE_BODY;
         let mut out = BytesMut::with_capacity(512 + if inline { body.len() } else { 0 });
-        wire::put(&mut out, hit, (exchange.id, automatic));
+        wire::put(&mut out, served, (exchange.id, automatic));
         if inline {
             out.put_slice(body);
         }
@@ -164,7 +180,7 @@ impl LaneFront {
                 stream.flush().await
             })
             .await;
-        let (status, sent_bytes) = (hit.status().as_u16(), body.len() as u64);
+        let (status, sent_bytes) = (served.status.as_u16(), body.len() as u64);
         self.conclude(stream, connection, exchange, sent, status, sent_bytes)
             .await
     }

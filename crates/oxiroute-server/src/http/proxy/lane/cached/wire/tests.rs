@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use oxiroute_cache::{Cache, CacheConfig, FillJoin, FreshHit, RequestKeyInput, ResponseTiming};
 
-use super::{body_sent, put};
+use super::{Representation, body_sent, put};
 
 fn hit(status: StatusCode, response: &[(&str, &str)], body: &'static [u8]) -> FreshHit {
     let cache = Cache::new(CacheConfig::default()).expect("cache");
@@ -52,7 +52,7 @@ fn hit(status: StatusCode, response: &[(&str, &str)], body: &'static [u8]) -> Fr
 
 fn written(hit: &FreshHit) -> String {
     let mut out = BytesMut::new();
-    put(&mut out, hit, (b"rq-1", "keep-alive"));
+    put(&mut out, Representation::from(hit), (b"rq-1", "keep-alive"));
     let text = String::from_utf8(out.to_vec()).expect("text");
     text.split_inclusive("\r\n")
         .map(|line| {
@@ -105,13 +105,13 @@ fn a_status_without_a_body_has_no_length_and_sends_no_body() {
         "HTTP/1.1 204 No Content\r\nCache-Control: public, max-age=60\r\nAge: 0\r\n\
          x-request-id: rq-1\r\nDate: <date>\r\nConnection: keep-alive\r\n\r\n"
     );
-    assert_eq!(body_sent(&hit, false), b"");
+    assert_eq!(body_sent(Representation::from(&hit), false), b"");
 }
 
 #[test]
 fn a_head_request_keeps_the_length_of_the_body_it_does_not_send() {
     let hit = hit(StatusCode::OK, &[], b"body");
     assert!(written(&hit).contains("Content-Length: 4\r\n"));
-    assert_eq!(body_sent(&hit, true), b"");
-    assert_eq!(body_sent(&hit, false), b"body");
+    assert_eq!(body_sent(Representation::from(&hit), true), b"");
+    assert_eq!(body_sent(Representation::from(&hit), false), b"body");
 }

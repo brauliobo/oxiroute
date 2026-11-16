@@ -143,6 +143,10 @@ impl CacheCompression {
 }
 
 impl HttpCachePlan {
+    pub(crate) const fn compresses(&self) -> bool {
+        self.compression.is_some()
+    }
+
     pub(crate) async fn encode(
         &self,
         request: &HeaderMap,
