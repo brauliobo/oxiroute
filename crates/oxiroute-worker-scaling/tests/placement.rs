@@ -71,3 +71,18 @@ fn a_crowded_worker_sheds_to_a_clearly_lighter_one_only() {
     assert!(scaling.wants_relocation(0, loads[0]));
     assert_eq!(scaling.relocation(0, |worker| loads[worker]), None);
 }
+
+#[test]
+fn the_least_loaded_worker_wins_and_a_tie_goes_to_the_first_in_order() {
+    let loads = [3, 1, 4, 1];
+    assert_eq!(
+        oxiroute_worker_scaling::least_loaded(0, 4, |worker| loads[worker]),
+        1
+    );
+    assert_eq!(
+        oxiroute_worker_scaling::least_loaded(3, 4, |worker| loads[worker]),
+        3
+    );
+    assert_eq!(oxiroute_worker_scaling::least_loaded(2, 4, |_| 5), 2);
+    assert_eq!(oxiroute_worker_scaling::least_loaded(0, 0, |_| 0), 0);
+}

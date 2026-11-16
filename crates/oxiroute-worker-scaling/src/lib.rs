@@ -16,4 +16,4 @@ mod controller;
 mod scaling;
 
 pub use controller::{Controller, Policy};
-pub use scaling::{Scaling, Stats, Workers, process_stats};
+pub use scaling::{Scaling, Stats, Workers, least_loaded, process_stats};

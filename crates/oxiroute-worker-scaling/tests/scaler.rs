@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
@@ -14,6 +14,7 @@ use oxiroute_worker_scaling::{Policy, Scaling, Workers};
 struct Fake {
     busy_ns: Vec<AtomicU64>,
     connections: Vec<AtomicUsize>,
+    changes: Mutex<Vec<(usize, usize)>>,
 }
 
 impl Fake {
@@ -21,6 +22,7 @@ impl Fake {
         Arc::new(Self {
             busy_ns: (0..workers).map(|_| AtomicU64::new(0)).collect(),
             connections: (0..workers).map(|_| AtomicUsize::new(0)).collect(),
+            changes: Mutex::new(Vec::new()),
         })
     }
 }
@@ -36,6 +38,10 @@ impl Workers for Fake {
 
     fn connections(&self, worker: usize) -> usize {
         self.connections[worker].load(Ordering::Relaxed)
+    }
+
+    fn active_changed(&self, previous: usize, active: usize) {
+        self.changes.lock().unwrap().push((previous, active));
     }
 }
 
@@ -82,6 +88,28 @@ fn idle_connections_are_packed_and_busy_ones_spread_again() {
     done.store(true, Ordering::Relaxed);
     busy.join().unwrap();
     scaling.stop();
+}
+
+#[test]
+fn the_workers_hear_of_every_change_of_the_active_count() {
+    let workers = Fake::new(4);
+    workers.connections[0].store(8, Ordering::Relaxed);
+    let scaling = Arc::new(Scaling::new("scaler-test-changes", policy(), 4));
+    scaling.start(workers.clone());
+    wait_for("the light load to be packed", || scaling.active() == 1);
+    scaling.stop();
+    let changes = workers.changes.lock().unwrap().clone();
+    assert_eq!(
+        changes.first().map(|change| change.0),
+        Some(4),
+        "{changes:?}"
+    );
+    assert_eq!(
+        changes.last().map(|change| change.1),
+        Some(1),
+        "{changes:?}"
+    );
+    assert!(changes.iter().all(|(previous, active)| previous != active));
 }
 
 #[test]
