@@ -47,6 +47,7 @@ mod reload;
 mod serving;
 mod soak;
 mod static_files;
+mod transport;
 mod workers;
 
 #[allow(clippy::wildcard_imports)]

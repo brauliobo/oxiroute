@@ -311,6 +311,23 @@ Current constraints:
   replaced generation finishes its handshakes on its own threads (as with `listener_workers`). The count does not bound how
   many handshakes wait: `max_connections` and the handshake timeout do. It does not change certificate selection,
   protocols, ciphers or session resumption.
+- Root `http3_congestion_control` is optional: `cubic` (the default) or `bbr`. It selects the congestion controller of
+  every QUIC connection of the `http3` and `forward_http3` listeners. `cubic` halves its rate at every packet loss, so on a
+  link with random loss or a long round trip its throughput falls with the loss rate and the round trip time; `bbr`
+  estimates the bottleneck bandwidth and keeps it up through random loss. Downloading 10 MiB over a path with a 40 ms round
+  trip and 0.5% loss took 0.3 s with `bbr` and 15 s with `cubic`; with a 100 ms round trip and 1% loss, 0.8 s against 65 s.
+  `bbr` costs on other paths: on a loss-free LAN it ramps up more slowly (a 48 MiB download took about 2.7 times as long as
+  with `cubic`, with twice the CPU per MiB), and through a 100 Mbit/s bottleneck with a 300-packet queue it was 10 to 15%
+  faster but the bottleneck dropped at least as many packets as it forwarded, and the CPU per MiB doubled. It does not share a
+  bottleneck fairly with `cubic` or TCP flows, so it is for listeners that serve clients over lossy or high-latency paths.
+  The setting belongs to the generation: changing it is an ordinary reload, new connections of the new generation use the
+  new controller.
+- Root `http3_segmentation_offload` is an optional boolean (default `true`). With it the QUIC endpoints of `http3` and
+  `forward_http3` listeners hand the kernel several datagrams in one `sendmsg` call (UDP generic segmentation offload,
+  `UDP_SEGMENT`). On a LAN it halves the CPU cost of a bulk download (about 3.1 to 1.4 ms per MiB) and raises its rate by
+  about 60%; 1 KiB responses gain about 10% in request rate. `false` sends one datagram per call, for a NIC, driver,
+  virtual network or traffic shaper that mishandles segmented datagrams: a shaper that drops a whole segmented batch turns
+  random loss into bursts of up to 64 KiB.
 - Root `connection_scheduling` is optional: `work_stealing` (the default) lets the workers of a listener
   share their ready connections; `aged_per_worker` gives every worker its own queue and its own I/O driver, places
   each new connection on the worker with the fewest open connections, and serves the newest ready connection first

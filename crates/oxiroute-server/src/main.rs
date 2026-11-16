@@ -468,6 +468,7 @@ fn serve_generation(
     });
 
     let workers = listener_workers(config);
+    let http3_transport = config.effective_http3_transport();
     let handshake_threads = tls_handshake_threads(config);
     let plan = generation.plan();
     let services = generation.services().to_vec();
@@ -775,6 +776,7 @@ fn serve_generation(
                     Arc::clone(generation),
                     metrics,
                     shutdown.clone(),
+                    http3_transport,
                 )
                 .inspect_err(|_| {
                     generation.mark_runtime_failed();
@@ -799,6 +801,7 @@ fn serve_generation(
                     downstream_timeouts,
                     &shutdown,
                     workers,
+                    http3_transport,
                 )
                 .inspect_err(|_| {
                     generation.mark_runtime_failed();

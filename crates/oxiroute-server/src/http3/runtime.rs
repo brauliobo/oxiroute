@@ -28,6 +28,7 @@ impl Http3Runtime {
     ///
     /// Returns an error unless the QUIC endpoint, TLS configuration, and H3 accept loop all reach
     /// their startup boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_forward(
         listener_name: String,
         reservation: ListenerReservation,
@@ -36,6 +37,7 @@ impl Http3Runtime {
         generation: Arc<RuntimeGeneration>,
         metrics: ListenerMetrics,
         shutdown: watch::Receiver<bool>,
+        http3_transport: Http3Transport,
     ) -> Result<Self, Box<dyn Error>> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let startup_listener_name = listener_name.clone();
@@ -51,6 +53,7 @@ impl Http3Runtime {
                     metrics,
                     shutdown,
                     ready_tx,
+                    http3_transport,
                 );
                 if let Err(error) = result {
                     generation.mark_runtime_failed();
@@ -108,12 +111,14 @@ impl Http3Runtime {
         downstream_timeouts: DownstreamTimeoutPolicy,
         shutdown: &watch::Receiver<bool>,
         workers: usize,
+        http3_transport: Http3Transport,
     ) -> Result<Self, Box<dyn Error>> {
         let server_config = Arc::new(server_config(
             tls,
             downstream_timeouts
                 .keepalive_timeout_ms
                 .map(Duration::from_millis),
+            http3_transport,
         )?);
         let endpoints = reservation.quic_endpoints(&server_config, workers)?;
         metrics.mark_listening();
@@ -191,10 +196,11 @@ fn run_forward(
     metrics: ListenerMetrics,
     shutdown: watch::Receiver<bool>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+    http3_transport: Http3Transport,
 ) -> Result<(), Box<dyn Error>> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let server_config = Arc::new(server_config(&tls, None)?);
+        let server_config = Arc::new(server_config(&tls, None, http3_transport)?);
         let endpoint = reservation
             .quic_endpoints(&server_config, 1)?
             .swap_remove(0);
@@ -296,6 +302,7 @@ pub(super) fn h3_crypto_provider(
 fn server_config(
     tls: &Arc<TlsProfilePlan>,
     idle_timeout: Option<Duration>,
+    http3_transport: Http3Transport,
 ) -> io::Result<ServerConfig> {
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
@@ -337,8 +344,21 @@ fn server_config(
         .allow_spin(false)
         .datagram_receive_buffer_size(None)
         .datagram_send_buffer_size(0);
+    configure_transport(&mut transport, http3_transport);
     config.transport_config(Arc::new(transport));
     Ok(config)
+}
+
+fn configure_transport(transport: &mut TransportConfig, settings: Http3Transport) {
+    transport.enable_segmentation_offload(settings.segmentation_offload);
+    match settings.congestion_control {
+        CongestionControl::Cubic => {
+            transport.congestion_controller_factory(Arc::new(CubicConfig::default()))
+        }
+        CongestionControl::Bbr => {
+            transport.congestion_controller_factory(Arc::new(BbrConfig::default()))
+        }
+    };
 }
 
 /// How long H3 requests may keep running once their endpoint stops accepting: the generation's
