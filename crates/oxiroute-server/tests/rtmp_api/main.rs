@@ -65,8 +65,7 @@ use config_support::{empty_config, loopback_address, rtmp_recorder, runtime_plan
 use fixture_support::{fixture, write_file_with_mode};
 use http_support::{HttpResponse, http_request, raw_http_request};
 
-mod config_apply;
-mod config_requests;
+mod config;
 mod events;
 mod helpers;
 mod status;
