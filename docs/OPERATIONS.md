@@ -192,10 +192,14 @@ request; the break-even is one large file per 200 small requests.
 
 The `rustls` backend converts TLS 1.2 and TLS 1.3 connections (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305) and the
 kernel then encrypts and decrypts both directions. A connection stays in user space when the peer has sent plaintext
-that was not read yet, half a record, or the next request ahead of the conversion; a later large file asks again. After
-the conversion a TLS 1.3 `KeyUpdate` or a renegotiation from the client ends the connection, because the kernel cannot
-follow it without the traffic secret that rustls does not hand out; clients that rekey on long downloads should use
-the `openssl` backend or `ktls = "off"`.
+that was not read yet, half a record, or the next request ahead of the conversion; a later large file asks again.
+
+The kernel does not change keys by itself, so the server does it for converted connections: a TLS 1.3 `KeyUpdate` from
+the client is followed (and answered when it asks for an answer), and the key the server sends with rolls with a
+`KeyUpdate` after 2^23 records, half of the AES-GCM confidentiality limit of RFC 8446. TLS 1.3 connections are
+converted only when the kernel accepts a second key on a running connection (Linux 6.14 and newer, checked at start);
+older kernels still convert TLS 1.2 and keep TLS 1.3 in user space. A TLS 1.2 connection cannot change keys: it ends at
+2^24 records with AES-GCM, as it does in user space, and a renegotiation request from the client ends it.
 
 ## TLS backend
 
