@@ -1,7 +1,7 @@
 use super::{
     client::{Client, Down, Mode, Relay, Wait},
     link::Link,
-    pipes::{Carry, Piped, unread},
+    pipes::{Carry, Piped},
     reactor::Reactor,
     service::{Failure, Service},
     slab::Token,
@@ -108,12 +108,11 @@ impl<S: Service> Reactor<S> {
         let Some(origin) = self.slab.upstream_mut(upstream) else {
             return;
         };
-        let drained = origin.link.ready.read && matches!(unread(&origin.link.fd), Read::Block);
+        let trailing = origin.link.has_input();
         let Down::Relaying(relay) = &mut client.flow().down else {
             return;
         };
-        origin.link.ready.read &= !drained;
-        relay.reusable &= !origin.link.ready.read;
+        relay.reusable &= !trailing;
         relay.complete = true;
         if let (Carry::Piped(piped), Some(pipes)) = (
             std::mem::replace(&mut relay.carry, Carry::Buffered),

@@ -36,6 +36,19 @@ pub(crate) fn read(fd: &OwnedFd, buf: &mut [u8]) -> Read {
     }
 }
 
+pub(crate) fn peek(fd: &OwnedFd) -> Read {
+    let mut byte = [0_u8; 1];
+    loop {
+        return match net::recv(fd, &mut byte[..], RecvFlags::PEEK | RecvFlags::DONTWAIT) {
+            Ok((_, 0)) => Read::Eof,
+            Ok(_) => Read::Data(1),
+            Err(Errno::INTR) => continue,
+            Err(Errno::AGAIN) => Read::Block,
+            Err(_) => Read::Failed,
+        };
+    }
+}
+
 pub(crate) fn write(fd: &OwnedFd, head: &[u8], body: &[u8]) -> Wrote {
     loop {
         let sent = if head.is_empty() {

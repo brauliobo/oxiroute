@@ -2,7 +2,6 @@ use std::{cell::Cell, io, os::fd::OwnedFd, rc::Rc};
 
 use rustix::{
     io::Errno,
-    net::{self, RecvFlags},
     pipe::{PipeFlags, SpliceFlags, fcntl_setpipe_size, pipe_with, splice},
 };
 
@@ -129,19 +128,6 @@ impl Pipes {
         if pipe.pending == 0 {
             self.idle.push(pipe);
         }
-    }
-}
-
-pub(crate) fn unread(fd: &OwnedFd) -> Read {
-    let mut byte = [0_u8; 1];
-    loop {
-        return match net::recv(fd, &mut byte[..], RecvFlags::PEEK | RecvFlags::DONTWAIT) {
-            Ok((_, 0)) => Read::Eof,
-            Ok(_) => Read::Data(1),
-            Err(Errno::INTR) => continue,
-            Err(Errno::AGAIN) => Read::Block,
-            Err(_) => Read::Failed,
-        };
     }
 }
 

@@ -61,7 +61,7 @@ fn bodies_from_one_byte_to_sixteen_mebibytes_arrive_intact_over_one_upstream_con
             "{len}"
         );
     }
-    assert!(fixture.origin.accepted() <= 2);
+    assert_eq!(fixture.origin.accepted(), 1);
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn spliced_and_small_responses_alternate_on_pooled_connections() {
         assert!(fetch(&mut wire, &format!("/size/{len}")) == sized(len));
         assert_eq!(fetch(&mut wire, "/size/10"), sized(10));
     }
-    assert!(fixture.origin.accepted() <= 3);
+    assert_eq!(fixture.origin.accepted(), 1);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn a_slow_origin_delivers_the_body_in_pieces() {
     let mut wire = fixture.wire();
     assert!(fetch(&mut wire, "/slow/500000") == sized(500_000));
     assert!(fetch(&mut wire, "/size/100000") == sized(100_000));
-    assert!(fixture.origin.accepted() <= 2);
+    assert_eq!(fixture.origin.accepted(), 1);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn a_client_reset_mid_body_leaves_nothing_in_the_next_response() {
     let fixture = fixture(1);
     for round in 0..20 {
         let mut gone = fixture.wire();
-        gone.get("/size/3000000");
+        gone.get("/size/24000000");
         let mut chunk = vec![0_u8; 65536];
         gone.stream.read_exact(&mut chunk).expect("first bytes");
         rustix::net::sockopt::set_socket_linger(&gone.stream, Some(Duration::ZERO))
@@ -185,7 +185,7 @@ fn bytes_after_the_declared_body_are_never_forwarded_nor_left_in_a_pooled_connec
     let mut wire = fixture.wire();
     assert!(fetch(&mut wire, "/extra/100000") == sized(100_000));
     assert_eq!(fetch(&mut wire, "/size/100"), sized(100));
-    assert!(fixture.origin.accepted() >= 2);
+    assert_eq!(fixture.origin.accepted(), 2);
 }
 
 #[test]

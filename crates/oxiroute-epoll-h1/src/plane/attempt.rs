@@ -66,8 +66,8 @@ impl<S: Service> Reactor<S> {
 
     fn checkout(&mut self, key: u64) -> Option<Token> {
         while let Some(token) = self.pool.take(key) {
-            let upstream = self.slab.upstream(token)?;
-            if upstream.link.ready.closing || upstream.link.ready.read {
+            let upstream = self.slab.upstream_mut(token)?;
+            if upstream.link.ready.closing || upstream.link.has_input() {
                 self.close_upstream_detached(token);
                 continue;
             }
