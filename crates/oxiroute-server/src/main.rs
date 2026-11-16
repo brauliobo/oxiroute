@@ -53,7 +53,7 @@ use pingora::{
     protocols::{ALPN, Stream, http::v2::server::default_h2_options},
     proxy::http_proxy,
     server::{
-        RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
+        RunArgs, RuntimeOpts, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
         configuration::{ServerConf, WorkerScalingConf},
     },
     services::{
@@ -716,9 +716,10 @@ fn serve_generation(
                 );
                 #[cfg(target_os = "linux")]
                 if let Some(lane) = epoll_lane {
+                    let scheduling = engine_scheduling(config, &service_name);
                     let service = EpollHttpService::new(
                         (service_name, epoll_bind(&listener_bind)),
-                        workers,
+                        (workers, scheduling),
                         app,
                         lane,
                         Arc::clone(generation),
