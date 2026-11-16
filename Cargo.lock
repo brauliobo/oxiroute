@@ -2800,9 +2800,11 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bcrypt",
+ "brotli",
  "bytes",
  "clap",
  "env_logger",
+ "flate2",
  "futures-util",
  "h2",
  "h3",
@@ -2821,6 +2823,7 @@ dependencies = [
  "oxiroute-aged-executor",
  "oxiroute-allocator",
  "oxiroute-cache",
+ "oxiroute-compress",
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
@@ -2854,6 +2857,7 @@ dependencies = [
  "tokio-tungstenite",
  "x509-parser",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]

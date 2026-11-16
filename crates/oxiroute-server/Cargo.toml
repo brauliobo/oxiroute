@@ -44,6 +44,7 @@ oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-cache = { path = "../oxiroute-cache" }
+oxiroute-compress = { path = "../oxiroute-compress" }
 oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-h3 = { path = "../oxiroute-h3" }
@@ -74,12 +75,15 @@ oxiroute-supervisor-master = { path = "../oxiroute-supervisor-master" }
 oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
 
 [dev-dependencies]
+brotli = { version = "9.1.1", default-features = false, features = ["std"] }
+flate2 = "1.1.11"
 rml_rtmp.workspace = true
 rustls.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-util", "time"] }
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
+zstd = { version = "0.14.3", default-features = false }
 
 [features]
 # jemalloc heap profiling (see crates/oxiroute-allocator); for memory investigations only.

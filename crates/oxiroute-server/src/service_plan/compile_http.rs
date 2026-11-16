@@ -220,6 +220,7 @@ pub(super) fn acquire_cache_policy(
             }
         })
         .transpose()?;
+    let compression = acquire_cache_compression(policy, &cache, unavailable)?;
     Ok(Some(Arc::new(HttpCachePlan {
         cache,
         timeline: policy.timeline.clone(),
@@ -228,7 +229,27 @@ pub(super) fn acquire_cache_policy(
         surrogate_header: policy.surrogate_header.clone(),
         surrogate_limits: policy.surrogate_limits,
         purge_access,
+        compression,
     })))
+}
+
+fn acquire_cache_compression(
+    policy: &CachePolicyBlueprint,
+    backend: &HttpCacheBackend,
+    unavailable: impl Fn(&'static str) -> ServicePlanError,
+) -> Result<Option<CacheCompression>, ServicePlanError> {
+    let Some(compression) = &policy.compression else {
+        return Ok(None);
+    };
+    match backend {
+        HttpCacheBackend::Memory(cache) => Ok(Some(CacheCompression::new(
+            compression.clone(),
+            Arc::clone(cache),
+        ))),
+        HttpCacheBackend::Disk(_) => Err(unavailable(
+            "http_services[].routes[].action.policy.cache.compression_on_disk_store",
+        )),
+    }
 }
 
 pub(super) fn acquire_access_log(

@@ -16,6 +16,10 @@ use crate::{
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 
+mod compression;
+
+pub(crate) use compression::{CacheCompression, CompressionPolicy};
+
 const MAX_COLLAPSED_FILL_WAITS: u8 = 2;
 
 pub(crate) struct HttpCachePlan {
@@ -26,6 +30,7 @@ pub(crate) struct HttpCachePlan {
     pub(crate) surrogate_header: Option<HeaderName>,
     pub(crate) surrogate_limits: Option<(usize, usize)>,
     pub(crate) purge_access: Option<CachePurgeAccess>,
+    pub(crate) compression: Option<CacheCompression>,
 }
 
 #[derive(Clone)]
@@ -528,6 +533,7 @@ impl CacheTransaction {
                     self.trace(CacheTraceEvent::LookupHit);
                     self.record(CacheEvent::Hit);
                     self.state = CacheTransactionState::Completed;
+                    let response = self.plan.encode(&self.request.headers, response).await;
                     return CacheStart::Hit(response);
                 }
                 Lookup::Miss {
@@ -672,7 +678,8 @@ impl CacheTransaction {
             return None;
         }
         let key = self.revalidation.as_ref()?.key.clone();
-        self.plan.cache.stale_if_error(&key).await.ok().flatten()
+        let stale = self.plan.cache.stale_if_error(&key).await.ok().flatten()?;
+        Some(self.plan.encode(&self.request.headers, stale).await)
     }
 
     pub(crate) fn prepare_response(
@@ -719,12 +726,26 @@ impl CacheTransaction {
             self.complete_without_store();
             false
         };
-        if admitted
-            && let Ok(Lookup::Hit { response, .. }) = self.plan.cache.lookup(&self.request).await
-        {
-            return response;
-        }
-        revalidation.response
+        let refreshed = if admitted {
+            self.plan.cache.lookup(&self.request).await.ok()
+        } else {
+            None
+        };
+        let response = match refreshed {
+            Some(Lookup::Hit { response, .. }) => response,
+            _ => revalidation.response,
+        };
+        self.plan.encode(&self.request.headers, response).await
+    }
+
+    pub(crate) async fn precompress(
+        &self,
+        entry: &mut PreparedEntry,
+        status: http::StatusCode,
+        headers: &HeaderMap,
+        body: &Bytes,
+    ) {
+        self.plan.precompress(entry, status, headers, body).await;
     }
 
     pub(crate) async fn admit(

@@ -1357,6 +1357,54 @@ route or forward service using purge must also configure bearer authorization.
 Range requests and `If-Match`, `If-Unmodified-Since`, `If-Range`, or streamed/upgraded responses
 are not admitted to the cache.
 
+### Cache compression
+
+A reverse HTTP cache policy may set `compression`. Without it the cache stores and serves bodies as
+the origin sent them. With it, a compressible response is compressed once per content coding and the
+coded body is kept with the cached entry, so a hit sends stored bytes instead of compressing again.
+
+| Field              | Default                                             | Meaning                                                                 |
+|--------------------|-----------------------------------------------------|-------------------------------------------------------------------------|
+| `codings`          | `zstd`, `br`, `gzip`                                | Offered codings, most preferred first; equal client weights follow this order. |
+| `precompress`      | none                                                | Offered codings compressed when the response is stored, after it was sent. |
+| `content_types`    | HTML, plain text, CSS, JavaScript, JSON, XML, SVG   | Exact media types (parameters ignored, ASCII case-insensitive), 1 through 64. |
+| `min_length_bytes` | `256`                                               | Smaller bodies are served as stored.                                    |
+| `gzip_level`       | `6`                                                 | 1 through 12 (libdeflate).                                              |
+| `brotli_level`     | `5`                                                 | 0 through 11.                                                           |
+| `zstd_level`       | `7`                                                 | -7 through 19.                                                          |
+
+- `Accept-Encoding` follows RFC 9110: quality values, `identity`, `*` (which does not cover an
+  explicitly listed coding), repeated field lines, and `x-gzip` as `gzip`. The offered coding with the
+  highest quality wins, equal qualities resolve in `codings` order, and a coding is chosen only when
+  its quality is not below that of `identity` (which counts as acceptable but least preferred unless
+  listed). A malformed element is ignored. A request that names no offered coding, or that excludes
+  all of them, receives the stored body.
+- A variant is built on the first request that negotiates its coding, off the async executor, and
+  concurrent first requests share one compression. Compression that does not shrink the body is not
+  stored and the body is served as stored. Variant bytes count toward the entry charge and the store
+  `max_bytes`: a variant that would push an entry past `max_object_bytes`, or that cannot fit after
+  evicting the least recently used entries, is not stored and the body is served as stored. Purging,
+  replacing, evicting or revalidating an entry releases its variants; a revalidated entry builds them
+  again.
+- Only `200` responses that carry no `Content-Encoding`, no `Cache-Control: no-transform`, and a
+  listed media type of at least `min_length_bytes` take part. Such a response carries
+  `Vary: Accept-Encoding` on every hit, whichever coding is chosen. The first response of a fill is
+  passed through as the origin sent it.
+- A coded response has `Content-Encoding`, a `Content-Length` of the coded body and, when the origin
+  sent an `ETag`, the weak form of it (`"v"` becomes `W/"v"`, a weak tag is kept) for every coding, so
+  a validator held by a client still matches at the origin. Requests with `Range`, `If-Range`,
+  `If-Match` or `If-Unmodified-Since` skip the cache, and so do conditional requests
+  (`If-None-Match`, `If-Modified-Since`): the origin answers them and no variant is used. `HEAD`
+  gets the headers of the coded `GET`.
+- Variants live in the memory store only. A cache policy with `compression` that references a disk
+  store, and a forward proxy cache with `compression`, are rejected when the configuration is
+  prepared. The policy cannot be combined with a service `gzip` policy, as before.
+- HTTP/3 hits use variants built lazily; `precompress` runs on the HTTP/1 and HTTP/2 fill path.
+- Defaults come from measurement on 64 KiB HTML, JSON and text bodies, and compress once per entry
+  and coding: zstd 7 compresses better than gzip 6 for similar CPU, brotli 5 is the smallest and the
+  slowest (about 4 ms for 64 KiB). Raise levels when entries are large and long-lived; lower
+  `brotli_level` when first-request latency matters.
+
 This schema is pre-release and may change without compatibility code until a public release
 persists it.
 

@@ -15,6 +15,7 @@ use crate::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },
+    http::cache::CompressionPolicy,
 };
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub(crate) struct CachePolicyBlueprint {
     pub(crate) surrogate_header: Option<HeaderName>,
     pub(crate) surrogate_limits: Option<(usize, usize)>,
     pub(crate) purge_authorization: Option<CachePurgeAuthorization>,
+    pub(crate) compression: Option<CompressionPolicy>,
 }
 
 #[derive(Clone)]
