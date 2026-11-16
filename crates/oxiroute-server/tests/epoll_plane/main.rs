@@ -412,3 +412,50 @@ async fn choosing_epoll_with_dynamic_scaling_is_served_by_it() {
     assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
     assert_eq!(served(wire), usize::from(oxiroute_epoll_h1::supported()));
 }
+
+fn engine_threads(pid: u32) -> Vec<String> {
+    std::fs::read_dir(format!("/proc/{pid}/task"))
+        .expect("task table")
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
+        .map(|name| name.trim().to_owned())
+        .filter(|name| name.contains("-h1-"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_listener_that_chooses_io_uring_runs_its_engine_on_a_ring() {
+    if oxiroute_epoll_h1::io_uring_support().is_err() {
+        return;
+    }
+    let wire = Wire::over(Origin::start(OK).await, |config| {
+        logged(config);
+        config.http_data_plane = Some(oxiroute_config::HttpDataPlane::IoUring);
+    })
+    .await;
+    let response = wire.exchange(GET).await;
+    assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
+    let threads = engine_threads(wire.server.pid());
+    assert!(!threads.is_empty(), "no engine thread");
+    assert!(
+        threads.iter().all(|name| name.starts_with("uring-h1-")),
+        "{threads:?}"
+    );
+    assert_eq!(served(wire), 1);
+}
+
+#[tokio::test]
+async fn a_listener_without_a_choice_runs_its_engine_on_epoll() {
+    if !oxiroute_epoll_h1::supported() || process_support::suite_data_plane().is_some() {
+        return;
+    }
+    let wire = Wire::over(Origin::start(OK).await, logged).await;
+    let response = wire.exchange(GET).await;
+    assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
+    let threads = engine_threads(wire.server.pid());
+    assert!(!threads.is_empty(), "no engine thread");
+    assert!(
+        threads.iter().all(|name| name.starts_with("epoll-h1-")),
+        "{threads:?}"
+    );
+}

@@ -6,6 +6,7 @@ use super::{HttpServicePlan, ServicePlanError};
 pub enum DataPlane {
     Tokio,
     Epoll,
+    IoUring,
 }
 
 impl DataPlane {
@@ -14,21 +15,21 @@ impl DataPlane {
         match self {
             Self::Tokio => "tokio",
             Self::Epoll => "epoll",
+            Self::IoUring => "io_uring",
         }
     }
 
     pub(crate) fn plan(listener: ListenerPlane, service: &HttpServicePlan) -> Self {
-        if listener.epoll && service.serves_on_engine() {
-            Self::Epoll
-        } else {
-            Self::Tokio
+        match listener.engine {
+            Some(engine) if service.serves_on_engine() => engine,
+            _ => Self::Tokio,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ListenerPlane {
-    epoll: bool,
+    engine: Option<DataPlane>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,17 +57,31 @@ pub(crate) struct DataPlanePolicy {
     conditions: EngineConditions,
 }
 
+#[cfg(target_os = "linux")]
+fn io_uring_unavailable() -> Option<String> {
+    oxiroute_epoll_h1::io_uring_support()
+        .err()
+        .map(|missing| missing.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn io_uring_unavailable() -> Option<String> {
+    Some("only Linux provides io_uring".to_owned())
+}
+
 impl DataPlanePolicy {
     pub(crate) fn of(config: &ConfigDraft) -> Result<Self, ServicePlanError> {
         Self::resolve(
             config.http_data_plane_choice(),
             EngineConditions::of(config),
+            io_uring_unavailable,
         )
     }
 
     pub(crate) fn resolve(
         setting: Option<HttpDataPlane>,
         conditions: EngineConditions,
+        io_uring_unavailable: impl FnOnce() -> Option<String>,
     ) -> Result<Self, ServicePlanError> {
         match setting {
             Some(HttpDataPlane::Epoll) if !conditions.supported => {
@@ -75,10 +90,27 @@ impl DataPlanePolicy {
             Some(HttpDataPlane::Epoll) if !conditions.fast_lane => {
                 Err(ServicePlanError::EpollNeedsFastLane)
             }
+            Some(HttpDataPlane::IoUring) if !conditions.fast_lane => {
+                Err(ServicePlanError::IoUringNeedsFastLane)
+            }
+            Some(HttpDataPlane::IoUring) => match io_uring_unavailable() {
+                Some(missing) => Err(ServicePlanError::IoUringUnsupported { missing }),
+                None => Ok(Self {
+                    setting,
+                    conditions,
+                }),
+            },
             _ => Ok(Self {
                 setting,
                 conditions,
             }),
+        }
+    }
+
+    const fn engine(self) -> DataPlane {
+        match self.setting {
+            Some(HttpDataPlane::IoUring) => DataPlane::IoUring,
+            _ => DataPlane::Epoll,
         }
     }
 
@@ -88,12 +120,13 @@ impl DataPlanePolicy {
         bind: &ListenerBind,
         tls: bool,
     ) -> ListenerPlane {
+        let on_engine = self.setting != Some(HttpDataPlane::Tokio)
+            && self.conditions.met()
+            && protocol == Protocol::Http
+            && !tls
+            && matches!(bind, ListenerBind::Socket { .. });
         ListenerPlane {
-            epoll: self.setting != Some(HttpDataPlane::Tokio)
-                && self.conditions.met()
-                && protocol == Protocol::Http
-                && !tls
-                && matches!(bind, ListenerBind::Socket { .. }),
+            engine: on_engine.then(|| self.engine()),
         }
     }
 }
@@ -116,14 +149,29 @@ mod tests {
         fast_lane: true,
     };
 
+    fn available() -> Option<String> {
+        None
+    }
+
     fn policy(setting: Option<HttpDataPlane>, conditions: EngineConditions) -> DataPlanePolicy {
-        DataPlanePolicy::resolve(setting, conditions).expect("a valid policy")
+        DataPlanePolicy::resolve(setting, conditions, available).expect("a valid policy")
+    }
+
+    fn refused(
+        setting: Option<HttpDataPlane>,
+        conditions: EngineConditions,
+    ) -> Result<DataPlanePolicy, ServicePlanError> {
+        DataPlanePolicy::resolve(setting, conditions, available)
+    }
+
+    fn engine(plane: ListenerPlane) -> Option<DataPlane> {
+        plane.engine
     }
 
     #[test]
     fn plain_http_listeners_default_to_epoll_where_it_is_supported() {
         let plane = policy(None, MET).listener(Protocol::Http, &socket(), false);
-        assert!(plane.epoll);
+        assert_eq!(engine(plane), Some(DataPlane::Epoll));
     }
 
     #[test]
@@ -133,26 +181,30 @@ mod tests {
             ..MET
         };
         let plane = policy(None, conditions).listener(Protocol::Http, &socket(), false);
-        assert!(!plane.epoll);
+        assert_eq!(engine(plane), None);
     }
 
     #[test]
     fn tokio_forces_the_tokio_path_everywhere() {
         let plane =
             policy(Some(HttpDataPlane::Tokio), MET).listener(Protocol::Http, &socket(), false);
-        assert!(!plane.epoll);
+        assert_eq!(engine(plane), None);
     }
 
     #[test]
     fn tls_http3_and_unix_listeners_stay_on_the_tokio_path() {
         let policy = policy(Some(HttpDataPlane::Epoll), MET);
-        assert!(!policy.listener(Protocol::Http, &socket(), true).epoll);
-        assert!(!policy.listener(Protocol::Http3, &socket(), false).epoll);
+        let on = |protocol, tls| engine(policy.listener(protocol, &socket(), tls));
+        assert_eq!(on(Protocol::Http, true), None);
+        assert_eq!(on(Protocol::Http3, false), None);
         let unix = ListenerBind::Unix {
             path: "/run/example.sock".into(),
             mode: None,
         };
-        assert!(!policy.listener(Protocol::Http, &unix, false).epoll);
+        assert_eq!(
+            engine(policy.listener(Protocol::Http, &unix, false)),
+            None
+        );
     }
 
     #[test]
@@ -162,25 +214,30 @@ mod tests {
             ..MET
         };
         let plane = policy(None, conditions).listener(Protocol::Http, &socket(), false);
-        assert!(!plane.epoll);
+        assert_eq!(engine(plane), None);
     }
 
     #[test]
     fn choosing_epoll_explicitly_is_refused_where_it_cannot_run() {
         let epoll = Some(HttpDataPlane::Epoll);
-        let refused = |conditions| DataPlanePolicy::resolve(epoll, conditions);
         assert!(matches!(
-            refused(EngineConditions {
-                supported: false,
-                ..MET
-            }),
+            refused(
+                epoll,
+                EngineConditions {
+                    supported: false,
+                    ..MET
+                }
+            ),
             Err(ServicePlanError::EpollUnsupported)
         ));
         assert!(matches!(
-            refused(EngineConditions {
-                fast_lane: false,
-                ..MET
-            }),
+            refused(
+                epoll,
+                EngineConditions {
+                    fast_lane: false,
+                    ..MET
+                }
+            ),
             Err(ServicePlanError::EpollNeedsFastLane)
         ));
     }
@@ -202,9 +259,9 @@ mod tests {
         for plane in [None, Some("epoll")] {
             let config = scheduled(plane);
             assert!(config.aged_per_worker() && config.dynamic_worker_scaling());
-            let policy = DataPlanePolicy::resolve(config.http_data_plane_choice(), MET)
-                .expect("scheduling is not a condition of the engine");
-            assert!(policy.listener(Protocol::Http, &socket(), false).epoll);
+            let policy = policy(config.http_data_plane_choice(), MET);
+            let planned = policy.listener(Protocol::Http, &socket(), false);
+            assert_eq!(engine(planned), Some(DataPlane::Epoll));
         }
     }
 
@@ -214,6 +271,60 @@ mod tests {
             supported: false,
             fast_lane: false,
         };
-        assert!(DataPlanePolicy::resolve(Some(HttpDataPlane::Tokio), nothing).is_ok());
+        assert!(refused(Some(HttpDataPlane::Tokio), nothing).is_ok());
+    }
+
+    #[test]
+    fn io_uring_listeners_run_the_engine_on_io_uring() {
+        let plane =
+            policy(Some(HttpDataPlane::IoUring), MET).listener(Protocol::Http, &socket(), false);
+        assert_eq!(engine(plane), Some(DataPlane::IoUring));
+    }
+
+    #[test]
+    fn io_uring_is_never_the_default() {
+        for supported in [true, false] {
+            let conditions = EngineConditions { supported, ..MET };
+            let plane = policy(None, conditions).listener(Protocol::Http, &socket(), false);
+            assert_ne!(engine(plane), Some(DataPlane::IoUring));
+        }
+    }
+
+    #[test]
+    fn io_uring_listeners_that_the_engine_cannot_serve_stay_on_tokio() {
+        let policy = policy(Some(HttpDataPlane::IoUring), MET);
+        let on = |protocol, tls| engine(policy.listener(protocol, &socket(), tls));
+        assert_eq!(on(Protocol::Http, true), None);
+        assert_eq!(on(Protocol::Http3, false), None);
+    }
+
+    #[test]
+    fn choosing_io_uring_names_the_capability_the_kernel_lacks() {
+        let missing = || Some("the kernel does not support the io_uring Accept operation".into());
+        let refused = DataPlanePolicy::resolve(Some(HttpDataPlane::IoUring), MET, missing);
+        let Err(ServicePlanError::IoUringUnsupported { missing }) = refused else {
+            panic!("io_uring must be refused");
+        };
+        assert!(missing.contains("Accept operation"));
+    }
+
+    #[test]
+    fn choosing_io_uring_is_refused_without_the_fast_lane() {
+        let conditions = EngineConditions {
+            fast_lane: false,
+            ..MET
+        };
+        assert!(matches!(
+            refused(Some(HttpDataPlane::IoUring), conditions),
+            Err(ServicePlanError::IoUringNeedsFastLane)
+        ));
+    }
+
+    #[test]
+    fn nothing_but_choosing_io_uring_probes_the_kernel() {
+        for setting in [None, Some(HttpDataPlane::Epoll), Some(HttpDataPlane::Tokio)] {
+            let probe = || panic!("the kernel must not be probed for {setting:?}");
+            assert!(DataPlanePolicy::resolve(setting, MET, probe).is_ok());
+        }
     }
 }

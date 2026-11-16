@@ -10,6 +10,7 @@ use crate::plane::wake::Waker;
 
 pub(crate) struct Arrival<A> {
     pub(crate) fd: OwnedFd,
+    pub(crate) unread: Vec<u8>,
     pub(crate) peer: SocketAddr,
     pub(crate) listener: usize,
     pub(crate) admission: A,

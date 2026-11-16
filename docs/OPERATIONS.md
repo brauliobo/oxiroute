@@ -318,8 +318,10 @@ delay. Selection, retries, health signals, connection limits, the access log, re
 are the lane's own, so a request is accounted identically on either plane. Every other connection (TLS, HTTP/2 and
 HTTP/3, upgrades, requests with `Expect` or a chunked body, routes that do not qualify, a pool that has no server
 ready) is handed to the tokio path with the bytes already read. The root option `http_data_plane` chooses the plane
-(`epoll` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform that
-cannot run it and with `http_fast_lane = false`. The plane honours `connection_scheduling = "aged_per_worker"` with
+(`epoll`, `io_uring` or `tokio`; omitted means epoll where the platform supports it); `epoll` is rejected on a platform
+that cannot run it and with `http_fast_lane = false`. `io_uring` runs the same engine on io_uring, is never the default,
+and is rejected with the missing kernel capability named when the kernel or its sandbox cannot run it
+(`kernel.io_uring_disabled`, seccomp, an old kernel); it is never replaced by epoll silently. The plane honours `connection_scheduling = "aged_per_worker"` with
 `connection_age_ms` and `worker_scaling = "dynamic"` on its own threads: a thread serves its ready connections newest
 first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
 connections, and with dynamic scaling the threads that leave the active set stop accepting and hand their idle

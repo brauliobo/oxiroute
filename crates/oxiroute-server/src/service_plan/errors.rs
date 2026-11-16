@@ -165,6 +165,10 @@ pub enum ServicePlanError {
     EpollUnsupported,
     #[error("http_data_plane \"epoll\" needs http_fast_lane, which is turned off")]
     EpollNeedsFastLane,
+    #[error("http_data_plane \"io_uring\" cannot run here: {missing}")]
+    IoUringUnsupported { missing: String },
+    #[error("http_data_plane \"io_uring\" needs http_fast_lane, which is turned off")]
+    IoUringNeedsFastLane,
     #[error("L4 service `{service}` references unknown pool `{pool}`")]
     UnknownL4Pool { service: String, pool: String },
     #[error("L4 service `{service}` references TLS-enabled upstream pool `{pool}`")]

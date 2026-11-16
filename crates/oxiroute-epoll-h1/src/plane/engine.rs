@@ -183,7 +183,7 @@ impl Engine {
             let control = Arc::clone(&control);
             let (ready, exits) = (ready_tx.clone(), exit_tx.clone());
             let handle = thread::Builder::new()
-                .name(format!("epoll-h1-{index}"))
+                .name(format!("{}-h1-{index}", config.driver.thread_prefix()))
                 .spawn(move || supervised(parts, control, (&ready, &exits)))?;
             engine.threads.push(handle);
         }

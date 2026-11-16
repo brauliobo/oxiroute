@@ -102,7 +102,7 @@ fn family(address: &SocketAddr) -> AddressFamily {
     }
 }
 
-pub(crate) fn connect(address: &SocketAddr) -> io::Result<Connecting> {
+pub(crate) fn unconnected(address: &SocketAddr) -> io::Result<OwnedFd> {
     let fd = net::socket_with(
         family(address),
         SocketType::STREAM,
@@ -110,6 +110,11 @@ pub(crate) fn connect(address: &SocketAddr) -> io::Result<Connecting> {
         None,
     )?;
     sockopt::set_tcp_nodelay(&fd, true)?;
+    Ok(fd)
+}
+
+pub(crate) fn connect(address: &SocketAddr) -> io::Result<Connecting> {
+    let fd = unconnected(address)?;
     match net::connect(&fd, address) {
         Ok(()) => Ok(Connecting {
             fd,

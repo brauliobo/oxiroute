@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
+use std::{net::{SocketAddr, TcpStream}, os::fd::OwnedFd, rc::Rc, time::Duration};
 
 use rustix::event::epoll::EventFlags;
 
@@ -6,10 +6,9 @@ use super::{
     client::{Client, Leased, Stage, Wait},
     clock::Moment,
     config::Trigger,
-    link::Link,
     reactor::{DRAINING, Reactor, Step},
     schedule::Arrival,
-    service::{Failure, Service},
+    service::{Failure, Handoff, Service},
     slab::{Body, Token},
     sys::{self, Accepted},
     upstream::Phase,
@@ -31,6 +30,13 @@ impl<S: Service> Reactor<S> {
         }
     }
 
+    pub(crate) fn accepted(&mut self, listener: Token, fd: OwnedFd, peer: Option<SocketAddr>) {
+        if let Some(Body::Listener { index, .. }) = self.slab.body(listener) {
+            let index = *index;
+            self.admit(fd, peer, index);
+        }
+    }
+
     fn admit(&mut self, fd: OwnedFd, peer: Option<SocketAddr>, index: usize) {
         let Some(peer) = peer.filter(|_| self.drain_deadline.is_none()) else {
             return;
@@ -41,6 +47,7 @@ impl<S: Service> Reactor<S> {
         let wait = self.services[index].1.first_request;
         self.place(Arrival {
             fd,
+            unread: Vec::new(),
             peer,
             listener: index,
             admission,
@@ -52,19 +59,28 @@ impl<S: Service> Reactor<S> {
         if self.drain_deadline.is_some() {
             return self.left();
         }
+        if arrival.unread.len() > self.config.request_buffer {
+            return self.surrender(arrival);
+        }
         let Arrival {
             fd,
+            unread,
             peer,
             listener,
             admission,
             wait,
         } = arrival;
+        let token = self.slab.insert(Body::Busy);
+        let Ok(link) = self.driver.open(fd, token) else {
+            self.slab.remove(token);
+            return self.left();
+        };
         let (service, timeouts) = (
             Rc::clone(&self.services[listener].0),
             self.services[listener].1,
         );
         let client = Box::new(Client {
-            link: Link::new(fd),
+            link,
             service,
             timeouts,
             listener,
@@ -77,23 +93,45 @@ impl<S: Service> Reactor<S> {
             resp_len: 0,
             flow: None,
         });
-        let token = self.slab.insert(Body::Client(client));
-        let Some(Body::Client(client)) = self.slab.body(token) else {
-            return;
-        };
-        let flags = sys::interest_flags(self.config.trigger, true, true);
-        if sys::watch(&self.epoll, &client.link.fd, token.to_u64(), flags).is_err() {
-            return self.drop_unwatched(token);
-        }
+        self.slab.put_client(token, client);
         self.live += 1;
         self.arm_client(token, wait);
+        self.replay(token, &unread);
     }
 
-    fn drop_unwatched(&mut self, token: Token) {
+    fn surrender(&mut self, arrival: Arrival<S::Admission>) {
+        let Arrival {
+            fd,
+            unread,
+            peer,
+            listener,
+            admission,
+            ..
+        } = arrival;
         self.left();
-        if let Body::Client(mut client) = self.slab.remove(token) {
-            self.release_buffers(&mut client);
+        self.services[listener].0.handoff(Handoff {
+            stream: TcpStream::from(fd),
+            prefix: unread,
+            peer,
+            listener,
+            admission,
+        });
+    }
+
+    fn replay(&mut self, token: Token, unread: &[u8]) {
+        if unread.is_empty() {
+            return;
         }
+        let Some(mut client) = self.slab.take_client(token) else {
+            return;
+        };
+        self.lease_buffers(&mut client);
+        client.buffers.req[..unread.len()].copy_from_slice(unread);
+        client.req_len = unread.len();
+        client.stage = Stage::Head;
+        let deadline = client.timeouts.request.map(|limit| self.moment.after(limit));
+        self.set_deadline(token, deadline, &mut client.deadline);
+        self.resume(token, client, Step::Again);
     }
 
     fn arm_client(&mut self, token: Token, limit: Option<Duration>) {
@@ -259,6 +297,7 @@ impl<S: Service> Reactor<S> {
         match self.slab.body(token) {
             Some(Body::Listener { .. }) => {
                 self.slab.remove(token);
+                self.driver.remove_listener(token);
             }
             Some(Body::Client(client)) if client.stage == Stage::Idle => {
                 if let Some(client) = self.slab.take_client(token) {
@@ -306,6 +345,9 @@ impl<S: Service> Reactor<S> {
     }
 
     fn sync_level(&mut self, token: Token, client: &mut Client<S>) {
+        let Some(epoll) = self.driver.level() else {
+            return;
+        };
         let reading = match client.stage {
             Stage::Idle | Stage::Head | Stage::Lingering => true,
             Stage::Serving => client
@@ -315,13 +357,7 @@ impl<S: Service> Reactor<S> {
             Stage::Answering => false,
         };
         let write = !client.link.ready.write;
-        rewatch(
-            &self.epoll,
-            self.config.trigger,
-            token,
-            &mut client.link,
-            (reading, write),
-        );
+        epoll.rewatch(token, &mut client.link, (reading, write));
         let Some(flow) = client.flow.as_ref() else {
             return;
         };
@@ -331,27 +367,7 @@ impl<S: Service> Reactor<S> {
         };
         if let Some(origin) = self.slab.upstream_mut(upstream) {
             let write = !origin.link.ready.write;
-            rewatch(
-                &self.epoll,
-                self.config.trigger,
-                upstream,
-                &mut origin.link,
-                (reading, write),
-            );
+            epoll.rewatch(upstream, &mut origin.link, (reading, write));
         }
-    }
-}
-
-fn rewatch(
-    epoll: &OwnedFd,
-    trigger: Trigger,
-    token: Token,
-    link: &mut Link,
-    interest: (bool, bool),
-) {
-    if link.interest != interest {
-        link.interest = interest;
-        let flags = sys::interest_flags(trigger, interest.0, interest.1);
-        let _ = sys::rewatch(epoll, &link.fd, token.to_u64(), flags);
     }
 }
