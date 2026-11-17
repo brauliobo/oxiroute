@@ -168,8 +168,9 @@ A change is an ordinary reload; connections already open keep the windows they w
 
 ## TLS handshake cost
 
-A full TLS 1.3 handshake costs about 1.7 million user instructions with an ECDSA P-256 certificate (about 200 us of CPU
-on a current core) and 4.6 million with an RSA-2048 certificate, because the RSA signature is 3.1 million against 0.2
+A full TLS 1.3 handshake costs about 0.66 million user instructions on the default rustls backend and about 1.7 million
+on the OpenSSL backend with an ECDSA P-256 certificate (about 200 us of CPU on a current core with OpenSSL), and 4.6 million
+with an RSA-2048 certificate on OpenSSL, because the RSA signature is 3.1 million against 0.2
 million. Prefer ECDSA certificates on listeners that take many new connections (`key_type = "ecdsa_p256"` is the default
 of the managed and self-signed sources; a Certbot or file certificate takes the key it was issued with, so request an
 ECDSA certificate from Certbot with `--key-type ecdsa`). A profile serves one certificate per name, so the choice is

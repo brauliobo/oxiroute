@@ -1055,7 +1055,7 @@ The current certificate and profile rules are:
   kTLS transmit offload and `sendfile`; later responses on that connection are encrypted by the
   kernel too (a few percent more instructions for small responses, many fewer cycles for large
   files). If the kernel cannot (the `tls` kernel module is not loaded, the kernel is older than 6.5,
-  or the cipher is refused, or the profile runs on the rustls backend), TLS stays in user space exactly as with `"off"` and the server logs one
+  or the cipher is refused), TLS stays in user space exactly as with `"off"` and the server logs one
   `info` line per generation and profile. The host needs the `tls` kernel module loaded at boot (a
   file in `/etc/modules-load.d/`, or `modprobe tls`) and kernel 6.5 or newer; a service without
   permission to autoload the module simply stays in user space. Set `"off"` to keep TLS in user
@@ -1131,7 +1131,7 @@ The current certificate and profile rules are:
   as a warning that names `policy.cipher_list` and `policy.backend` and points to "Serving legacy clients" in the operations
   guide. A macro is not rejected: OpenSSL evaluates it, and a macro that leaves no TLS 1.2 suite rustls implements selects the
   OpenSSL backend when `backend` is omitted and is an error when `backend = "rustls"` is explicit.
-  Kernel TLS (`ktls`), FIPS and the DHE suites exist on the OpenSSL backend only. Upstream TLS, ACME and RTMPS use
+  FIPS and the DHE suites exist on the OpenSSL backend only; kernel TLS (`ktls`) works on both. Upstream TLS, ACME and RTMPS use
   OpenSSL whatever the setting, and HTTP/3 uses its own stack. Changing the setting is an ordinary reload: new
   connections of the new generation use the new library and connections of the replaced generation finish as they were
   accepted.
