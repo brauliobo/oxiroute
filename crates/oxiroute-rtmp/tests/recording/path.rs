@@ -268,7 +268,9 @@ fn america_new_york_policy_is_deterministic_across_historical_dst_and_standard_t
     let policy = RecordingPathPolicy::new("-%Y-%m-%d_%H-%M-%S.mp4", false)
         .expect("path policy")
         .with_segment_policy(
-            RecordingTimezone::Iana("America/New_York".parse().expect("IANA timezone")),
+            RecordingTimezone::Iana(
+                jiff::tz::TimeZone::get("America/New_York").expect("IANA timezone"),
+            ),
             RecordingTimeBasis::SegmentStart,
             RecordingSegmentNaming::NginxCompatible,
         );

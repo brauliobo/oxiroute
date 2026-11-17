@@ -716,6 +716,17 @@ pub enum RtmpRecorderTimezone {
     Iana(String),
 }
 
+impl RtmpRecorderTimezone {
+    /// Resolves an exact IANA time zone name from the bundled time zone database.
+    #[must_use]
+    pub fn iana_time_zone(name: &str) -> Option<jiff::tz::TimeZone> {
+        jiff::tz::db()
+            .get(name)
+            .ok()
+            .filter(|timezone| timezone.iana_name() == Some(name))
+    }
+}
+
 impl Serialize for RtmpRecorderTimezone {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

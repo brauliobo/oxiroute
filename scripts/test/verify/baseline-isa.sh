@@ -43,6 +43,7 @@ rejects() { # PATTERN verify-arguments...
 }
 
 legacy_memchr=_ZN6memchr4arch6x86_644avx26finder17h0123456789abcdefE
+v0_teddy=_RNvNtNtCs1234_12aho_corasick6packed5teddy4find
 legacy_app=_ZN8oxiroute6server4pump17h0123456789abcdefE
 legacy_cpu=_ZN12oxiroute_cpu8dispatch4find17h0123456789abcdefE
 
@@ -51,7 +52,7 @@ accepts "${root}/clean"
 ok 'a binary without AVX passes'
 
 # One function per allowed family (scripts/verify/baseline-isa.sh), each with an instruction of its class.
-fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${legacy_cpu}=vzeroupper; shlx %rax, %rbx, %rcx" \
+fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${v0_teddy}=vmovups (%rax), %ymm0" "${legacy_cpu}=vzeroupper; shlx %rax, %rbx, %rcx" \
   '_ZN12oxiroute_cpu8dispatch5sse4217h0123456789abcdefE=vpxor %xmm0, %xmm0, %xmm0' \
   'aws_lc_0_1_0_sha256_block_data_order_avx2=vpaddd %ymm0, %ymm1, %ymm2' \
   'Lcurve25519_x25519_scalarloop=mulx %rax, %rbx, %rcx' 'Lp256_montjscalarmul_p256_montjadd=mulx %rax, %rbx, %rcx' \
@@ -64,10 +65,10 @@ fixture dispatched "${legacy_memchr}=vpxor %ymm0, %ymm0, %ymm0" "${legacy_cpu}=v
   'je_malloc_x=andn %rax, %rbx, %rcx' '__strchr_avx2=vpcmpeqb (%rdi), %ymm0, %ymm1' \
   'se_fma=vfmadd231ps %xmm0, %xmm1, %xmm2' 'Lcurve25519_x25519_midloop.cold.0=mulx %rax, %rbx, %rcx'
 accepts "${root}/dispatched"
-for family in 'aws-lc 9' 'isa-named 2' 'jemalloc-glibc 1' 'openssl 2' 'oxiroute-cpu 2' 'ring 1' 'rust-dispatch 1' 'zlib-ng 2' 'zstd 1'; do
+for family in 'aws-lc 9' 'isa-named 2' 'jemalloc-glibc 1' 'openssl 2' 'oxiroute-cpu 2' 'ring 1' 'rust-dispatch 2' 'zlib-ng 2' 'zstd 1'; do
   grep -q "${family% *} ${family#* }" "${root}/out" || { cat "${root}/out" >&2; die "dispatched count of ${family% *}"; }
 done
-grep -q 'baseline ISA ok (21 dispatched functions: ' "${root}/out" || die 'dispatched function count'
+grep -q 'baseline ISA ok (22 dispatched functions: ' "${root}/out" || die 'dispatched function count'
 ok 'every allowed family passes and is counted by origin'
 
 for leak in 'vpxor %xmm0, %xmm0, %xmm0' 'mulx %rax, %rbx, %rcx' 'lzcnt %rax, %rbx' 'movbe (%rax), %rbx' \
@@ -180,9 +181,11 @@ if ((${#a64_cc[@]} > 0)); then
 
   fixture_a64 a64_dispatched '__aarch64_ldadd8_acq_rel=ldaddal x1, x2, [x0]' '__aarch64_cas4_sync=casal w1, w2, [x0]' \
     'aws_lc_0_1_0_aes_hw_ctr32_encrypt_blocks=aese v0.16b, v1.16b' 'ring_core_0_17_8__gcm_init_clmul=pmull v0.1q, v1.1d, v2.1d' \
-    'sha256_block_data_order=sha256h q0, q1, v2.4s' '_ZN9crc32fast11specialized7aarch649calculate17h0123456789abcdefE=crc32x w0, w1, x2'
+    'sha256_block_data_order=sha256h q0, q1, v2.4s' '_armv8_sve_probe=ptrue p0.s' '_vpsm4_ex_set_key=aese v0.16b, v1.16b' \
+    'sm4_v8_encrypt=sm4e v0.4s, v1.4s' 'unroll8_eor3_aes_gcm_enc_128_kernel=eor3 v0.16b, v1.16b, v2.16b, v3.16b' \
+    'asm_sha1_hmac_aescbc_dec=sha1su0 v0.4s, v1.4s, v2.4s' 'asm_aescbc_sha256_hmac=aese v0.16b, v1.16b' '_ZN9crc32fast11specialized7aarch649calculate17h0123456789abcdefE=crc32x w0, w1, x2'
   accepts "${root}/a64_dispatched"
-  for family in 'outline-atomics 2' 'aws-lc 1' 'ring 1' 'openssl 1' 'rust-dispatch 1'; do
+  for family in 'outline-atomics 2' 'aws-lc 1' 'ring 1' 'openssl 7' 'rust-dispatch 1'; do
     grep -q "${family% *} ${family#* }" "${root}/out" || { cat "${root}/out" >&2; die "AArch64 dispatched count of ${family% *}"; }
   done
   ok 'AArch64 outline atomics and the run-time dispatched crypto and CRC code pass and are counted by origin'

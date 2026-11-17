@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::DateTime;
 use http::header::HeaderValue;
 use std::cell::RefCell;
 use std::time::{Duration, SystemTime};
 
-fn to_date_string(epoch_sec: i64) -> String {
-    let dt = DateTime::from_timestamp(epoch_sec, 0).unwrap();
-    dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+fn to_date_string(epoch_sec: u64) -> String {
+    httpdate::fmt_http_date(SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_sec))
 }
 
 struct CacheableDate {
@@ -33,7 +31,7 @@ impl CacheableDate {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
         CacheableDate {
-            h1_date: HeaderValue::from_str(&to_date_string(d.as_secs() as i64)).unwrap(),
+            h1_date: HeaderValue::from_str(&to_date_string(d.as_secs())).unwrap(),
             epoch: d,
         }
     }
@@ -41,7 +39,7 @@ impl CacheableDate {
     pub fn update(&mut self, d_now: Duration) {
         if d_now.as_secs() != self.epoch.as_secs() {
             self.epoch = d_now;
-            self.h1_date = HeaderValue::from_str(&to_date_string(d_now.as_secs() as i64)).unwrap();
+            self.h1_date = HeaderValue::from_str(&to_date_string(d_now.as_secs())).unwrap();
         }
     }
 
@@ -94,7 +92,7 @@ mod test {
             SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as i64,
+                .as_secs(),
         ))
         .unwrap()
     }

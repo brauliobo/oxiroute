@@ -1728,7 +1728,7 @@ Recorder fields are:
 | `root_directory` | yes | none | Normalized absolute UTF-8 directory path, at most 4096 bytes. |
 | `suffix_template` | no | `".flv"` | At most 128 bytes; only UTC `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, and `%%`; no NUL or path separator. |
 | `append_unix_seconds` | no | `false` | Appends `-<segment-start Unix seconds>` before the suffix. |
-| `timezone` | no | `"utc"` | `"utc"` or an explicit IANA name such as `"America/Argentina/Buenos_Aires"`; historical DST comes from `chrono-tz`. nginx imports require one uniquely consumed captured-host timezone overlay. |
+| `timezone` | no | `"utc"` | `"utc"` or an explicit IANA name such as `"America/Argentina/Buenos_Aires"`; historical DST comes from the time zone database bundled in `jiff`. nginx imports require one uniquely consumed captured-host timezone overlay. |
 | `time_basis` | no | `"segment_start"` | `"segment_start"` renders suffix time fields from the current segment's opening timestamp; `"segment_end"` uses its closing timestamp. |
 | `segment_naming` | no | `"safe_unique"` | Sequenced safe names or `"nginx_compatible"`, which rerenders the suffix and `record_unique` seconds for every segment; publication remains no-replace and collision-safe. |
 | `rotation_interval_ms` | no | `null` | `null` or `1` through `2147483647`. |

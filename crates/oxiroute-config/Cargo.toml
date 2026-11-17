@@ -8,8 +8,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-chrono-tz.workspace = true
 http.workspace = true
+jiff.workspace = true
 oxiroute-cpu = { path = "../oxiroute-cpu", features = ["std"] }
 serde.workspace = true
 thiserror.workspace = true

@@ -235,9 +235,10 @@ pub(crate) fn recorder_path(value: &RtmpRecorder) -> RecordingPathPolicy {
         .with_segment_policy(
             match &value.timezone {
                 RtmpRecorderTimezone::Utc => RecordingTimezone::Utc,
-                RtmpRecorderTimezone::Iana(name) => {
-                    RecordingTimezone::Iana(name.parse().expect("validated IANA recorder timezone"))
-                }
+                RtmpRecorderTimezone::Iana(name) => RecordingTimezone::Iana(
+                    RtmpRecorderTimezone::iana_time_zone(name)
+                        .expect("validated IANA recorder timezone"),
+                ),
             },
             match value.time_basis {
                 RtmpRecorderTimeBasis::SegmentStart => RecordingTimeBasis::SegmentStart,

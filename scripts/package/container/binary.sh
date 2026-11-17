@@ -18,11 +18,12 @@ src=/work/src
 target=$(package_target "${ARCH}")
 export CARGO_HOME=/cache/cargo RUSTUP_HOME=/cache/rustup
 export PATH=${CARGO_HOME}/bin:${PATH}
+export OBJDUMP=/opt/rh/gcc-toolset-14/root/usr/bin/objdump
 
 install_build_dependencies() {
   refresh_index
   install_packages gcc gcc-c++ make cmake perl perl-IPC-Cmd perl-FindBin pkgconf-pkg-config python3 openssl \
-    util-linux tar gzip findutils binutils httpd-tools
+    util-linux tar gzip findutils binutils gcc-toolset-14-binutils httpd-tools
 }
 
 install_rust() {
