@@ -205,14 +205,19 @@ impl Proxy {
         self.managed("/api/v1/monitoring").await["process"]["openFileDescriptors"].as_u64()
     }
 
-    fn limit_descriptors(&self, limit: u64) {
+    fn set_descriptor_limit(&self, current: Option<u64>) {
         let pid = Pid::from_raw(i32::try_from(self.server.pid()).expect("a process id"));
         let maximum = getrlimit(Resource::Nofile).maximum;
-        let new = Rlimit {
-            current: Some(limit),
-            maximum,
-        };
+        let new = Rlimit { current, maximum };
         prlimit(pid, Resource::Nofile, new).expect("limit the descriptors of the server");
+    }
+
+    fn limit_descriptors(&self, limit: u64) {
+        self.set_descriptor_limit(Some(limit));
+    }
+
+    fn lift_descriptor_limit(&self) {
+        self.set_descriptor_limit(getrlimit(Resource::Nofile).maximum);
     }
 
     fn cpu_ticks(&self) -> u64 {
@@ -698,11 +703,9 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
         spent < 45,
         "the server spent {spent} ticks of 150 while it could not accept"
     );
-    drop(held);
-    while proxy.descriptors().await.is_none_or(|open| open > idle) {
-        sleep(Duration::from_millis(20)).await;
-    }
+    proxy.lift_descriptor_limit();
     answer_one_request(&mut proxy.connect().await).await;
+    drop(held);
 }
 
 #[tokio::test]
