@@ -81,6 +81,7 @@ oxiroute-cpu::lanes                                   core
 oxiroute-cpu::scan                                    core
 oxiroute-cpu::shared                                  core
 oxiroute-epoll-h1                                     core
+oxiroute-epoll-h1::bodies                             engine
 oxiroute-epoll-h1::deadlines                          engine
 oxiroute-epoll-h1::framing                            engine
 oxiroute-epoll-h1::handoff                            engine

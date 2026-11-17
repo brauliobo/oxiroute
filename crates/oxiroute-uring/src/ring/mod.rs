@@ -1,4 +1,5 @@
 mod closing;
+mod forwarding;
 mod listening;
 mod reading;
 mod writing;
@@ -17,9 +18,26 @@ use rustix::io::Errno;
 use crate::{
     config::Config,
     event::Event,
-    raw::{Completion, Queue},
+    raw::{Completion, POOLS, Queue},
     slot::{Handle, Kind, Meta, Slot},
 };
+
+/// How many buffers of a pool the ring holds, and the sockets waiting for one to come back.
+struct Pool {
+    count: u16,
+    available: u16,
+    starved: VecDeque<Handle>,
+}
+
+impl Pool {
+    fn new((count, _): (u16, u32)) -> Self {
+        Self {
+            count,
+            available: count,
+            starved: VecDeque::new(),
+        }
+    }
+}
 
 /// One `io_uring` per thread, used only from the thread that created it (`Ring` is neither `Send` nor `Sync`).
 ///
@@ -34,10 +52,9 @@ pub struct Ring {
     pending: Vec<Event>,
     completions: Vec<Completion>,
     stagings: Vec<Vec<u8>>,
-    starved: VecDeque<Handle>,
+    pools: [Pool; POOLS],
     stalled_accepts: Vec<Handle>,
     spare: Option<OwnedFd>,
-    available: u16,
     spills: Vec<Vec<u8>>,
     zombies: VecDeque<(Instant, Handle)>,
     _single_issuer: PhantomData<Rc<()>>,
@@ -46,12 +63,7 @@ pub struct Ring {
 impl Ring {
     pub fn new(config: &Config) -> io::Result<Self> {
         config.validate()?;
-        let queue = Queue::new(
-            config.entries,
-            config.taskrun,
-            config.buffers,
-            config.buffer_size,
-        )?;
+        let queue = Queue::new(config.entries, config.taskrun, config.pools())?;
         Ok(Self {
             queue,
             config: config.clone(),
@@ -60,10 +72,9 @@ impl Ring {
             pending: Vec::new(),
             completions: Vec::new(),
             stagings: Vec::new(),
-            starved: VecDeque::new(),
+            pools: config.pools().map(Pool::new),
             stalled_accepts: Vec::new(),
             spare: Self::spare_descriptor(),
-            available: config.buffers,
             spills: Vec::new(),
             zombies: VecDeque::new(),
             _single_issuer: PhantomData,
@@ -100,6 +111,12 @@ impl Ring {
         }
     }
 
+    pub(crate) fn slot_ref(&self, handle: Handle) -> Option<&Slot> {
+        self.slots
+            .get(handle.index as usize)
+            .filter(|slot| slot.live && slot.generation == handle.generation)
+    }
+
     pub(crate) fn slot(&mut self, handle: Handle) -> Option<&mut Slot> {
         self.slots
             .get_mut(handle.index as usize)
@@ -118,7 +135,9 @@ impl Ring {
     }
 
     /// Hands queued operations to the kernel, waits for a completion or until `timeout` passes (`None` waits
-    /// without limit) and appends what happened to `events`.
+    /// without limit) and appends what happened to `events`: every completion that is ready by then, because
+    /// deferred task work hands the kernel's completions over a few per entry and the caller serves one batch
+    /// in one order.
     pub fn wait(&mut self, timeout: Option<Duration>, events: &mut Vec<Event>) -> io::Result<()> {
         let timeout = if self.pending.is_empty() {
             self.bounded(timeout)
@@ -155,7 +174,7 @@ impl Ring {
         };
         slot.inflight -= 1;
         match meta.kind {
-            Kind::Recv => self.received(meta.handle, &done),
+            Kind::Recv => self.received(meta.handle, meta.sub, &done),
             Kind::Send => self.sent(meta.handle, done),
             Kind::Accept => self.accepted(meta, done),
             Kind::Connect => self.connected_to(meta.handle, done.result),

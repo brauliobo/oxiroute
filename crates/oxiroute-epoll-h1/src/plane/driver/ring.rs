@@ -1,6 +1,6 @@
 use std::{cell::RefCell, io, net::SocketAddr, os::fd::OwnedFd, rc::Rc, time::Duration};
 
-use oxiroute_uring::{Event, Handle, Read as Received, Released, Ring, Sent};
+use oxiroute_uring::{Event, Handle, Peek, Read as Received, Released, Ring, Sent};
 use rustix::event::epoll::EventFlags;
 
 use super::Polled;
@@ -20,6 +20,14 @@ pub(crate) struct RingSocket {
     handle: Handle,
 }
 
+fn wrote(sent: Sent) -> Wrote {
+    match sent {
+        Sent::Queued(count) => Wrote::Bytes(count),
+        Sent::Busy => Wrote::Block,
+        Sent::Failed => Wrote::Failed,
+    }
+}
+
 impl Drop for RingSocket {
     fn drop(&mut self) {
         self.ring.borrow_mut().close(self.handle);
@@ -36,26 +44,32 @@ impl RingSocket {
         }
     }
 
-    pub(crate) fn peek(&self) -> Read {
-        match self.ring.borrow_mut().peek(self.handle) {
-            Received::Data(count) => Read::Data(count),
-            Received::Eof => Read::Eof,
-            Received::Block => Read::Block,
-            Received::Failed => Read::Failed,
-        }
-    }
-
     pub(crate) fn write(&self, head: &[u8], body: &[u8], delivery: Delivery) -> Wrote {
         let mut ring = self.ring.borrow_mut();
-        let sent = match delivery {
+        wrote(match delivery {
             Delivery::Batched => ring.send(self.handle, head, body),
             Delivery::Immediate => ring.send_now(self.handle, head, body),
-        };
-        match sent {
-            Sent::Queued(count) => Wrote::Bytes(count),
-            Sent::Busy => Wrote::Block,
-            Sent::Failed => Wrote::Failed,
-        }
+        })
+    }
+
+    pub(crate) fn peek<R>(&self, view: impl FnOnce(&[u8]) -> R) -> Peek<R> {
+        self.ring.borrow().peek(self.handle, view)
+    }
+
+    pub(crate) fn forward(
+        &self,
+        source: &Self,
+        (head, count): (&[u8], usize),
+        delivery: Delivery,
+    ) -> (Wrote, usize) {
+        let now = delivery == Delivery::Immediate;
+        let mut ring = self.ring.borrow_mut();
+        let forwarded = ring.forward((source.handle, self.handle), head, count, now);
+        (wrote(forwarded.sent), forwarded.left)
+    }
+
+    pub(crate) fn skip(&self, count: usize) -> usize {
+        self.ring.borrow_mut().skip(self.handle, count)
     }
 
     pub(crate) fn shutdown_write(&self) {

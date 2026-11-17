@@ -169,6 +169,11 @@ impl<T: Read + Write> Wire<T> {
         }
     }
 
+    pub fn rest(&mut self) -> Vec<u8> {
+        while self.fill() {}
+        std::mem::take(&mut self.pending)
+    }
+
     pub fn ended(&mut self) -> bool {
         self.pending.is_empty() && !self.fill()
     }

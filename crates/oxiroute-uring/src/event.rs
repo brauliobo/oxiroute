@@ -54,6 +54,22 @@ pub enum Read {
     Failed,
 }
 
+/// What `Ring::peek` found: the received bytes the caller has not taken, or why there are none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Peek<R> {
+    Held(R),
+    Eof,
+    Block,
+    Failed,
+}
+
+/// The outcome of `Ring::forward`: what happened to the send, and how many received bytes of the source are left.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Forwarded {
+    pub sent: Sent,
+    pub left: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Sent {
     /// The bytes were staged; the ring completes the write on its own.

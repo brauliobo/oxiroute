@@ -102,8 +102,8 @@ impl Window {
         Self { start, end }
     }
 
-    pub(crate) const fn is_empty(self) -> bool {
-        self.start == self.end
+    pub(crate) const fn len(self) -> usize {
+        self.end - self.start
     }
 
     pub(crate) fn consume(&mut self, count: usize) {
@@ -151,9 +151,35 @@ pub(crate) enum Mode {
     UntilClose,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Cargo {
+    Held(Window),
+    Lent(usize),
+}
+
+impl Cargo {
+    pub(crate) const fn len(self) -> usize {
+        match self {
+            Self::Held(window) => window.len(),
+            Self::Lent(count) => count,
+        }
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn consume(&mut self, count: usize) {
+        match self {
+            Self::Held(window) => window.consume(count),
+            Self::Lent(left) => *left -= count,
+        }
+    }
+}
+
 pub(crate) struct Relay {
     pub(crate) mode: Mode,
-    pub(crate) window: Window,
+    pub(crate) cargo: Cargo,
     pub(crate) head_pos: usize,
     pub(crate) complete: bool,
     pub(crate) reusable: bool,

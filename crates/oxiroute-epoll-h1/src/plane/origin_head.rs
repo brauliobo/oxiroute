@@ -1,14 +1,16 @@
 use std::rc::Rc;
 
 use oxiroute_h1_head::{Connection, HeadRead, ResponseHead, read_response_head};
+use oxiroute_uring::Peek;
 
 use super::{
     chunked::{ChunkScanner, HEADER_ROOM},
-    client::{Buffers, Client, Down, Flow, HEAD_INITIAL, Mode, Relay, Wait, Window},
-    link::Delivery,
+    client::{Buffers, Cargo, Client, Down, Flow, HEAD_INITIAL, Mode, Relay, Wait, Window},
+    link::{Delivery, Link},
     pipes::Carry,
     reactor::Reactor,
-    relay::absorb,
+    region::Region,
+    relay::{absorb, pull_lent},
     service::{Answered, Failure, Framing, Recovery, Response, Service},
     slab::Token,
     sys::{Read, Wrote},
@@ -136,6 +138,24 @@ fn pending<'a>(spill: &'a [u8], resp: &'a [u8], len: usize) -> &'a [u8] {
     }
 }
 
+fn take_head(link: &mut Link, heads: &mut Heads, resp: &mut Region) -> Read {
+    let room = resp.usable();
+    let found = link.peek(|bytes| match heads.read(bytes) {
+        HeadRead::Head { raw_len, .. } if raw_len <= room => {
+            resp[..raw_len].copy_from_slice(&bytes[..raw_len]);
+            Some(raw_len)
+        }
+        _ => None,
+    });
+    match found {
+        Peek::Held(Some(head_len)) => {
+            link.skip(head_len);
+            Read::Data(head_len)
+        }
+        _ => resp.recv(link, 0, usize::MAX),
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Next {
     Partial,
@@ -166,7 +186,7 @@ impl<S: Service> Reactor<S> {
             match self.next_head(client) {
                 Next::Refused => return Err(Failure::BadResponse),
                 Next::TooLarge => return Err(Failure::ResponseHeadTooLarge),
-                Next::Final => return self.open_response(token, client).map(|()| true),
+                Next::Final => return self.open_response(token, client, upstream).map(|()| true),
                 Next::Interim => {
                     self.queue_interim(client);
                     progressed = true;
@@ -306,7 +326,12 @@ impl<S: Service> Reactor<S> {
             return Err(Failure::UpstreamClosed);
         };
         let start = if spilled { HEADER_ROOM } else { *resp_len };
-        match buffers.resp.recv(&mut origin.link, start, usize::MAX) {
+        let read = if start == 0 && origin.link.lends() {
+            take_head(&mut origin.link, &mut self.response, &mut buffers.resp)
+        } else {
+            buffers.resp.recv(&mut origin.link, start, usize::MAX)
+        };
+        match read {
             Read::Data(count) => {
                 if spilled {
                     flow.origin
@@ -324,7 +349,12 @@ impl<S: Service> Reactor<S> {
         }
     }
 
-    fn open_response(&mut self, token: Token, client: &mut Client<S>) -> Result<(), Failure> {
+    fn open_response(
+        &mut self,
+        token: Token,
+        client: &mut Client<S>,
+        upstream: Token,
+    ) -> Result<(), Failure> {
         let service = Rc::clone(&client.service);
         let Client {
             buffers,
@@ -385,13 +415,18 @@ impl<S: Service> Reactor<S> {
             .leftover(&mut buffers.resp, *resp_len, self.response.raw_len);
         let mut relay = Relay {
             mode,
-            window: Window::default(),
+            cargo: Cargo::Held(Window::default()),
             head_pos: 0,
             complete: false,
             reusable,
             carry: Carry::Undecided,
         };
         absorb(&mut relay, &mut buffers.resp, leftover, &mut flow.sent)?;
+        if let Some(origin) = self.slab.upstream_mut(upstream).filter(|origin| {
+            relay.cargo.is_empty() && origin.link.lends() && !matches!(relay.mode, Mode::UntilClose)
+        }) {
+            pull_lent(&mut origin.link, &mut relay, &mut flow.sent)?;
+        }
         flow.status = Some(head.status);
         flow.down = Down::Relaying(relay);
         let limit = flow.timeouts.map(|timeouts| timeouts.body);

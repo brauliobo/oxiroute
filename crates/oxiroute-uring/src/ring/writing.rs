@@ -26,17 +26,14 @@ impl Ring {
         self.send_with(handle, (head, body), true)
     }
 
-    fn send_with(&mut self, handle: Handle, (head, body): (&[u8], &[u8]), now: bool) -> Sent {
-        let Some(slot) = self.slot(handle).filter(|slot| !slot.closing) else {
-            return Sent::Failed;
-        };
-        match slot.writer {
-            Writer::Broken => return Sent::Failed,
-            Writer::Flying { .. } => {
-                slot.want_write = true;
-                return Sent::Busy;
-            }
-            Writer::Idle => {}
+    pub(crate) fn send_with(
+        &mut self,
+        handle: Handle,
+        (head, body): (&[u8], &[u8]),
+        now: bool,
+    ) -> Sent {
+        if let Err(refused) = self.writable(handle) {
+            return refused;
         }
         let total = head.len() + body.len();
         if total == 0 {
@@ -61,8 +58,22 @@ impl Ring {
         }
     }
 
-    fn write_now(&mut self, handle: Handle, head: &[u8], body: &[u8]) -> Option<usize> {
-        let fd = self.slot(handle)?.fd.as_ref()?;
+    pub(crate) fn writable(&mut self, handle: Handle) -> Result<(), Sent> {
+        let Some(slot) = self.slot(handle).filter(|slot| !slot.closing) else {
+            return Err(Sent::Failed);
+        };
+        match slot.writer {
+            Writer::Broken => Err(Sent::Failed),
+            Writer::Flying { .. } => {
+                slot.want_write = true;
+                Err(Sent::Busy)
+            }
+            Writer::Idle => Ok(()),
+        }
+    }
+
+    pub(crate) fn write_now(&self, handle: Handle, head: &[u8], body: &[u8]) -> Option<usize> {
+        let fd = self.slot_ref(handle)?.fd.as_ref()?;
         let slices = [IoSlice::new(head), IoSlice::new(body)];
         loop {
             let sent = rustix::net::sendmsg(
@@ -99,14 +110,18 @@ impl Ring {
         let key = self
             .with_fd(handle, |queue, fd| queue.send(fd, staging, meta))
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))??;
+        self.flying(handle, key);
+        Ok(())
+    }
+
+    pub(crate) fn flying(&mut self, handle: Handle, key: u64) {
         if let Some(slot) = self.slot_any(handle) {
             slot.writer = Writer::Flying { key };
             slot.inflight += 1;
         }
-        Ok(())
     }
 
-    fn send_broke(&mut self, handle: Handle) -> Sent {
+    pub(crate) fn send_broke(&mut self, handle: Handle) -> Sent {
         if let Some(slot) = self.slot(handle) {
             slot.writer = Writer::Broken;
         }
@@ -114,19 +129,28 @@ impl Ring {
     }
 
     pub(crate) fn sent(&mut self, handle: Handle, done: Completion) {
-        let Memory::Bytes(staging) = done.memory else {
-            return;
-        };
         let Some(slot) = self.slot_any(handle) else {
             return;
         };
         slot.writer = Writer::Idle;
-        let complete = usize::try_from(done.result).is_ok_and(|written| written == staging.len());
-        self.give_staging(staging);
+        let payload = done.memory.payload();
+        let complete = usize::try_from(done.result).is_ok_and(|written| written == payload);
+        self.reclaim(done.memory);
         if complete {
             self.send_finished(handle);
         } else {
             self.send_failed(handle);
+        }
+    }
+
+    fn reclaim(&mut self, memory: Memory) {
+        match memory {
+            Memory::Bytes(staging) => self.give_staging(staging),
+            Memory::Lent(lent) => {
+                self.give_buffer(lent.lease);
+                self.give_staging(lent.head);
+            }
+            Memory::None | Memory::Address(_) => {}
         }
     }
 

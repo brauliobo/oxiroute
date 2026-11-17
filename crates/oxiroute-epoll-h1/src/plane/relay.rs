@@ -1,6 +1,8 @@
+use oxiroute_uring::Peek;
+
 use super::{
     chunked::{HEADER_ROOM, LAST_CHUNK, Step as ChunkStep, write_chunk_header},
-    client::{Buffers, Client, Down, Flow, Mode, RESPONSE_TAIL, Relay, Wait, Window},
+    client::{Buffers, Cargo, Client, Down, Flow, Mode, RESPONSE_TAIL, Relay, Wait, Window},
     link::{Delivery, Link},
     reactor::Reactor,
     service::{Failure, Service},
@@ -144,87 +146,178 @@ impl<S: Service> Reactor<S> {
                 Spliced::Blocked => return Ok(progressed),
                 Spliced::Buffered => {}
             }
-            let Client {
-                link,
-                buffers,
-                flow,
-                ..
-            } = &mut *client;
+            let Down::Relaying(relay) = &client.flow().down else {
+                return Ok(progressed);
+            };
+            let fetching = relay.cargo.is_empty() && !relay.complete;
+            if fetching && self.pull(token, client, upstream)? == Pulled::Data {
+                progressed = true;
+            }
+            let Client { buffers, flow, .. } = &mut *client;
             let flow = flow.as_mut().expect("a serving client has a flow");
-            let delivery = Delivery::of(flow.keepalive);
             let Down::Relaying(relay) = &mut flow.down else {
                 return Ok(progressed);
             };
-            let pending = relay.head_pos < buffers.down_head.len() || !relay.window.is_empty();
-            if pending {
-                let head = &buffers.down_head[relay.head_pos..];
-                let body = &buffers.resp[relay.window.start..relay.window.end];
-                match link.send((head, body), delivery) {
-                    Wrote::Bytes(sent) => {
-                        let from_head = sent.min(head.len());
-                        relay.head_pos += from_head;
-                        relay.window.consume(sent - from_head);
-                        progressed = true;
-                        if sent < head.len() + body.len() {
-                            {
-                                self.relay_blocked(token, client);
-                                return Ok(true);
-                            }
-                        }
-                    }
-                    Wrote::Block => {
-                        self.relay_blocked(token, client);
-                        return Ok(progressed);
-                    }
-                    Wrote::Failed => return Err(Failure::ClientGone),
+            if relay.head_pos < buffers.down_head.len() || !relay.cargo.is_empty() {
+                match self.push(token, client, upstream)? {
+                    Pushed::All => progressed = true,
+                    Pushed::Part => return Ok(true),
+                    Pushed::Nothing => return Ok(progressed),
                 }
                 continue;
             }
-            if relay.complete {
-                flow.down = Down::Finished {
-                    reusable: relay.reusable,
-                };
-                return Ok(true);
+            if !relay.complete {
+                return Ok(progressed);
             }
-            let Some(origin) = self.slab.upstream_mut(upstream) else {
-                return Err(Failure::UpstreamClosed);
+            flow.down = Down::Finished {
+                reusable: relay.reusable,
             };
-            let first = if matches!(relay.mode, Mode::UntilClose) {
-                HEADER_ROOM
-            } else {
-                0
-            };
-            let read = buffers.resp.recv(&mut origin.link, first, usize::MAX);
-            match read {
-                Read::Data(count) => {
-                    absorb(
-                        relay,
-                        &mut buffers.resp,
-                        Window::new(first, first + count),
-                        &mut flow.sent,
-                    )?;
-                    progressed = true;
-                    let limit = flow.timeouts.map(|timeouts| timeouts.body);
-                    self.wait_for(token, client, Wait::Body, limit);
-                }
-                Read::Block => {
-                    let limit = flow.timeouts.map(|timeouts| timeouts.body);
-                    self.wait_for(token, client, Wait::Body, limit);
-                    return Ok(progressed);
-                }
-                Read::Eof if matches!(relay.mode, Mode::UntilClose) => {
-                    buffers.resp[..LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
-                    relay.window = Window::new(0, LAST_CHUNK.len());
-                    relay.complete = true;
-                }
-                Read::Eof | Read::Failed => return Err(Failure::UpstreamClosed),
-            }
+            return Ok(true);
         }
+    }
+
+    fn push(
+        &mut self,
+        token: Token,
+        client: &mut Client<S>,
+        upstream: Token,
+    ) -> Result<Pushed, Failure> {
+        let Client {
+            link,
+            buffers,
+            flow,
+            ..
+        } = &mut *client;
+        let flow = flow.as_mut().expect("a serving client has a flow");
+        let delivery = Delivery::of(flow.keepalive);
+        let Down::Relaying(relay) = &mut flow.down else {
+            return Ok(Pushed::Nothing);
+        };
+        let head = &buffers.down_head[relay.head_pos..];
+        let wrote = match relay.cargo {
+            Cargo::Held(window) => {
+                link.send((head, &buffers.resp[window.start..window.end]), delivery)
+            }
+            Cargo::Lent(count) => {
+                let Some(origin) = self.slab.upstream_mut(upstream) else {
+                    return Err(Failure::UpstreamClosed);
+                };
+                link.forward(&mut origin.link, (head, count), delivery)
+            }
+        };
+        let total = head.len() + relay.cargo.len();
+        match wrote {
+            Wrote::Bytes(sent) => {
+                let from_head = sent.min(head.len());
+                relay.head_pos += from_head;
+                relay.cargo.consume(sent - from_head);
+                if sent == total {
+                    return Ok(Pushed::All);
+                }
+                self.relay_blocked(token, client);
+                Ok(Pushed::Part)
+            }
+            Wrote::Block => {
+                self.relay_blocked(token, client);
+                Ok(Pushed::Nothing)
+            }
+            Wrote::Failed => Err(Failure::ClientGone),
+        }
+    }
+
+    fn pull(
+        &mut self,
+        token: Token,
+        client: &mut Client<S>,
+        upstream: Token,
+    ) -> Result<Pulled, Failure> {
+        let Some(origin) = self.slab.upstream_mut(upstream) else {
+            return Err(Failure::UpstreamClosed);
+        };
+        let Client { buffers, flow, .. } = &mut *client;
+        let flow = flow.as_mut().expect("a serving client has a flow");
+        let Down::Relaying(relay) = &mut flow.down else {
+            return Ok(Pulled::Blocked);
+        };
+        let pulled = if origin.link.lends() && !matches!(relay.mode, Mode::UntilClose) {
+            pull_lent(&mut origin.link, relay, &mut flow.sent)?
+        } else {
+            pull_copied(&mut origin.link, relay, buffers, &mut flow.sent)?
+        };
+        let awaiting_body = flow.wait == Wait::Body;
+        if pulled == Pulled::Data || (pulled == Pulled::Blocked && !awaiting_body) {
+            let limit = flow.timeouts.map(|timeouts| timeouts.body);
+            self.wait_for(token, client, Wait::Body, limit);
+        }
+        Ok(pulled)
     }
 
     pub(super) fn relay_blocked(&mut self, token: Token, client: &mut Client<S>) {
         let limit = client.timeouts.write;
         self.wait_for(token, client, Wait::ClientWrite, limit);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Pushed {
+    All,
+    Part,
+    Nothing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Pulled {
+    Data,
+    Blocked,
+    Ended,
+}
+
+pub(crate) fn pull_lent(
+    link: &mut Link,
+    relay: &mut Relay,
+    sent: &mut u64,
+) -> Result<Pulled, Failure> {
+    match link.peek(|bytes| relay.frame(bytes)) {
+        Peek::Held(framed) => {
+            let take = framed?;
+            relay.cargo = Cargo::Lent(take);
+            *sent += take as u64;
+            Ok(Pulled::Data)
+        }
+        Peek::Block => Ok(Pulled::Blocked),
+        Peek::Eof | Peek::Failed => Err(Failure::UpstreamClosed),
+    }
+}
+
+fn pull_copied(
+    link: &mut Link,
+    relay: &mut Relay,
+    buffers: &mut Buffers,
+    sent: &mut u64,
+) -> Result<Pulled, Failure> {
+    let start = if matches!(relay.mode, Mode::UntilClose) {
+        HEADER_ROOM
+    } else {
+        0
+    };
+    match buffers.resp.recv(link, start, usize::MAX) {
+        Read::Data(count) => {
+            absorb(
+                relay,
+                &mut buffers.resp,
+                Window::new(start, start + count),
+                sent,
+            )?;
+            Ok(Pulled::Data)
+        }
+        Read::Block => Ok(Pulled::Blocked),
+        Read::Eof if matches!(relay.mode, Mode::UntilClose) => {
+            buffers.resp[..LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
+            relay.cargo = Cargo::Held(Window::new(0, LAST_CHUNK.len()));
+            relay.complete = true;
+            Ok(Pulled::Ended)
+        }
+        Read::Eof | Read::Failed => Err(Failure::UpstreamClosed),
     }
 }
 
@@ -253,6 +346,35 @@ fn read_body<S: Service>(
     read
 }
 
+impl Relay {
+    pub(crate) fn frame(&mut self, data: &[u8]) -> Result<usize, Failure> {
+        let count = data.len();
+        let take = match &mut self.mode {
+            Mode::Empty => {
+                self.complete = true;
+                0
+            }
+            Mode::Length(remaining) => {
+                let take = usize::try_from(*remaining).map_or(count, |left| left.min(count));
+                *remaining -= take as u64;
+                self.complete = *remaining == 0;
+                take
+            }
+            Mode::Chunked(scanner) => {
+                let progress = scanner.feed(data).map_err(|_| Failure::BadResponse)?;
+                self.complete = progress != ChunkStep::Pending;
+                match progress {
+                    ChunkStep::Done(end) => end,
+                    ChunkStep::Pending => count,
+                }
+            }
+            Mode::UntilClose => count,
+        };
+        self.reusable &= take == count;
+        Ok(take)
+    }
+}
+
 pub(crate) fn absorb(
     relay: &mut Relay,
     resp: &mut [u8],
@@ -260,43 +382,23 @@ pub(crate) fn absorb(
     sent: &mut u64,
 ) -> Result<(), Failure> {
     let count = data.end - data.start;
-    match &mut relay.mode {
-        Mode::Empty => {
-            relay.window = Window::new(data.start, data.start);
-            relay.complete = true;
-            relay.reusable &= count == 0;
-        }
-        Mode::Length(remaining) => {
-            let take = usize::try_from(*remaining).map_or(count, |remaining| remaining.min(count));
-            *remaining -= take as u64;
-            relay.window = Window::new(data.start, data.start + take);
-            relay.complete = *remaining == 0;
-            relay.reusable &= take == count;
-            *sent += take as u64;
-        }
-        Mode::Chunked(scanner) => {
-            let progress = scanner
-                .feed(&resp[data.start..data.end])
-                .map_err(|_| Failure::BadResponse)?;
-            let take = match progress {
-                ChunkStep::Done(end) => end,
-                ChunkStep::Pending => count,
-            };
-            relay.window = Window::new(data.start, data.start + take);
-            relay.complete = progress != ChunkStep::Pending;
-            relay.reusable &= take == count;
-            *sent += take as u64;
-        }
-        Mode::UntilClose => {
-            relay.window = if count == 0 {
-                Window::new(data.start, data.start)
-            } else {
-                let start = write_chunk_header(resp, data.start, count);
-                resp[data.end..data.end + TAIL_ROOM].copy_from_slice(b"\r\n");
-                Window::new(start, data.end + TAIL_ROOM)
-            };
-            *sent += count as u64;
-        }
+    if matches!(relay.mode, Mode::UntilClose) {
+        relay.cargo = Cargo::Held(wrap_until_close(resp, data));
+        *sent += count as u64;
+        return Ok(());
     }
+    let take = relay.frame(&resp[data.start..data.end])?;
+    relay.cargo = Cargo::Held(Window::new(data.start, data.start + take));
+    *sent += take as u64;
     Ok(())
+}
+
+fn wrap_until_close(resp: &mut [u8], data: Window) -> Window {
+    let count = data.end - data.start;
+    if count == 0 {
+        return Window::new(data.start, data.start);
+    }
+    let start = write_chunk_header(resp, data.start, count);
+    resp[data.end..data.end + TAIL_ROOM].copy_from_slice(b"\r\n");
+    Window::new(start, data.end + TAIL_ROOM)
 }

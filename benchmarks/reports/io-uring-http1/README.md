@@ -83,16 +83,53 @@ rate.
 - Keep-alive at 32 and 256 connections and with two workers did not change (167.6k against 171.0k before at 32,
   inside the noise of the shared host; cycles per request equal). At 256 connections it stays well ahead of the epoll
   engine (151.0k against 108.3k) and nginx (133.0k).
-- 64 KiB bodies are the weak row: 28.6k against 46.6k for the epoll engine, with 46.5k instructions and 30.9k user
-  cycles per request against 15.3k and 11.6k. The extra user time is two copies of the body (the provided receive
-  buffer into the engine's buffer, the engine's buffer into the ring's staging buffer for the send; `memcpy` is 9% of
-  samples and absent from the epoll profile) and four times as many receive completions, because the provided
-  buffers are 16 KiB. Provided buffers of 64 KiB raised it to 35.9k against 44.4k for epoll in a same-session pair of
-  non-LTO builds, at four times the receive pool. Removing the copies needs the engine to relay buffers the ring owns
-  instead of copying through its own, which is a change of the engine's relay, not of the ring.
+- 64 KiB bodies were the weak row (28.6k against 46.6k for the epoll engine, 46.5k instructions per request against
+  15.3k). The extra user time was two copies of the body and four times as many receive completions. The engine now
+  frames the body in place in the buffer the ring received it into and the ring sends the response head and that
+  buffer in one `sendmsg`; the buffer returns to the ring when the send completes, so the body is not copied.
+  Sockets that receive full 16 KiB completions switch to a second pool of 64 KiB buffers. The plane now serves 55.4k
+  req/s against 46.0k for the epoll engine and 35.1k for nginx (1 worker), 3.1k against 3.0k at 1 MiB, and 89.8k
+  against 45.7k at 64 KiB with 2 workers. Instructions per request fell from 46.7k to 20.4k.
+- A wait for completions now keeps entering the ring until the completion queue stops growing: with `DEFER_TASKRUN`
+  the kernel hands over only a few deferred completions per entry, which delivered batched completions to the engine
+  in the wrong order and failed the scheduling order tests on this driver.
 - The io_uring plane replaces about 4 system calls per request with 0.06 (it submits and reaps in batches); the
-  user-space instruction count does not fall because the copies remain.
-- Memory: the receive buffer pool of the ring costs 1 to 3 MB more than the epoll engine at 16 KiB buffers.
+  user-space instruction count stays higher than epoll's at small bodies (18.2k against 14.2k at 1 KiB).
+- Memory: the second pool is allocated but not touched until a socket streams. Idle cost per connection is 10.1 kB
+  against 13.7 kB before. Resident set at 64 KiB bodies is 36.4 MB (22.5 MB proportional) against 33.5 MB (19.1 MB)
+  before, and 37.1 MB proportional against 29.1 MB before at 1024 keep-alive connections with 1 KiB bodies (single
+  samples, not yet explained).
+
+## Body relay after the copy removal
+
+Pooled clean attempts, 1 worker unless stated, same method as above. `before` is the io_uring plane without the change.
+
+| scenario | plane | clean/attempts | req/s | p50 us | p99 us | instr/req | cycles/req |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 KiB, 32 conns | engine epoll | 3/4 | 45,995 | 680 | 1,066 | 15,659 | 11,446 |
+| 64 KiB, 32 conns | engine io_uring | 3/4 | 55,408 | 541 | 1,027 | 20,417 | 10,184 |
+| 64 KiB, 32 conns | engine io_uring before | 3/3 | 28,632 | 1,082 | 1,655 | 46,744 | 30,801 |
+| 64 KiB, 32 conns | tokio plane | 3/3 | 46,089 | 660 | 1,240 | 26,389 | 24,906 |
+| 64 KiB, 32 conns | nginx | 3/5 | 35,092 | 869 | 1,404 | 38,192 | 28,271 |
+| 1 MiB, 32 conns | engine epoll | 3/4 | 3,005 | 10,041 | 16,928 | 37,799 | 53,665 |
+| 1 MiB, 32 conns | engine io_uring | 3/4 | 3,084 | 9,647 | 16,068 | 53,482 | 48,473 |
+| 1 MiB, 32 conns | engine io_uring before | 3/5 | 1,736 | 17,780 | 26,299 | 497,816 | 407,281 |
+| 1 MiB, 32 conns | tokio plane | 3/5 | 3,709 | 8,613 | 27,404 | 39,270 | 81,961 |
+| 1 MiB, 32 conns | nginx | 3/4 | 1,898 | 16,872 | 31,670 | 262,019 | 209,834 |
+| 1 KiB, 32 conns | engine epoll | 3/3 | 169,566 | 185 | 256 | 14,151 | 7,813 |
+| 1 KiB, 32 conns | engine io_uring | 3/3 | 164,150 | 186 | 356 | 18,175 | 8,534 |
+| 1 KiB, 32 conns | engine io_uring before | 3/8 | 167,210 | 181 | 358 | 16,679 | 8,209 |
+| 1 KiB, 256 conns | engine epoll | 3/3 | 127,414 | 1,929 | 3,654 | 17,059 | 10,485 |
+| 1 KiB, 256 conns | engine io_uring | 3/5 | 141,952 | 1,724 | 3,056 | 18,755 | 9,153 |
+| 1 KiB, 256 conns | engine io_uring before | 3/6 | 147,514 | 1,566 | 3,435 | 17,382 | 9,713 |
+| 64 KiB, 2 workers, 64 conns | engine epoll | 3/3 | 45,682 | 1,366 | 2,086 | 15,856 | 11,459 |
+| 64 KiB, 2 workers, 64 conns | engine io_uring | 3/5 | 89,756 | 616 | 2,079 | 20,609 | 11,864 |
+| 64 KiB, 2 workers, 64 conns | engine io_uring before | 3/6 | 51,499 | 1,189 | 2,192 | 46,677 | 34,951 |
+| 64 KiB, 2 workers, 64 conns | tokio plane | 3/3 | 86,042 | 705 | 1,719 | 26,574 | 26,174 |
+| 64 KiB, 2 workers, 64 conns | nginx | 3/5 | 64,069 | 936 | 2,070 | 37,985 | 28,097 |
+
+The 1 KiB rows are within the noise of the shared host (PSI some avg10 up to 9). A confirmation run of the final build
+at 64 KiB gave 55.2k req/s for io_uring against 43.6k for epoll.
 
 ## Reproducing
 

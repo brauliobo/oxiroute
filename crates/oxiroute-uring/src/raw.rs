@@ -17,6 +17,7 @@ use std::{
     io,
     mem::ManuallyDrop,
     net::SocketAddr,
+    ops::Range,
     os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
     ptr::NonNull,
     sync::atomic::{AtomicU16, Ordering},
@@ -30,14 +31,15 @@ use rustix::{
     net::{RecvFlags, SendFlags, SocketFlags},
 };
 
-use crate::{addr::Address, config::Taskrun};
+use crate::{addr::Address, config::Taskrun, slot::Lease};
 
-const BUFFER_GROUP: u16 = 0;
 const RECV_POLL_FIRST: u16 = 1;
 const ENTRY_WORDS: usize = 8;
 const PAGE_WORDS: usize = 2048;
 const TAIL_WORD: usize = 7;
 const DRAIN_ROUNDS: usize = 64;
+pub(crate) const POOLS: usize = 2;
+const SEND_FLAGS: u32 = SendFlags::NOSIGNAL.bits() | RecvFlags::WAITALL.bits();
 
 #[cfg(not(target_endian = "little"))]
 compile_error!("the provided-buffer ring layout is written for little-endian targets");
@@ -112,6 +114,21 @@ impl Buffers {
         self.word(0, TAIL_WORD).store(self.tail, Ordering::Release);
     }
 
+    fn address(&self, bid: u16, from: usize) -> *mut u8 {
+        self.data
+            .as_ptr()
+            .wrapping_add(usize::from(bid) * self.size as usize)
+            .wrapping_add(from)
+    }
+
+    pub(crate) fn view(&self, bid: u16, from: usize, len: usize) -> &[u8] {
+        let len = len.min((self.size as usize).saturating_sub(from));
+        // SAFETY: `bid < count` and `from + len <= size`, so the range lies inside the data area; the kernel
+        // finished writing this buffer before its completion was reaped and does not touch it again until `give`
+        // returns it to the ring, which needs `&mut self` and so cannot happen while the returned slice lives.
+        unsafe { std::slice::from_raw_parts(self.address(bid, from), len) }
+    }
+
     pub(crate) fn copy_out(&self, bid: u16, from: usize, dst: &mut [u8]) -> usize {
         let size = self.size as usize;
         let count = dst.len().min(size.saturating_sub(from));
@@ -136,10 +153,34 @@ impl Drop for Buffers {
     }
 }
 
+pub(crate) struct Lent {
+    pub(crate) head: Vec<u8>,
+    pub(crate) lease: Lease,
+    iov: [libc::iovec; 2],
+    msg: libc::msghdr,
+}
+
+impl Lent {
+    pub(crate) fn payload(&self) -> usize {
+        self.iov.iter().map(|part| part.iov_len).sum()
+    }
+}
+
 pub(crate) enum Memory {
     None,
     Bytes(Vec<u8>),
+    Lent(Box<Lent>),
     Address(Box<Address>),
+}
+
+impl Memory {
+    pub(crate) fn payload(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::Lent(lent) => lent.payload(),
+            Self::None | Self::Address(_) => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,7 +239,7 @@ pub(crate) struct Completion {
 pub(crate) struct Queue {
     ring: IoUring,
     flights: Flights,
-    buffers: ManuallyDrop<Buffers>,
+    buffers: ManuallyDrop<[Buffers; POOLS]>,
     scratch: Vec<(u64, i32, u32)>,
 }
 
@@ -207,7 +248,11 @@ fn flag(flags: SocketFlags) -> i32 {
 }
 
 impl Queue {
-    pub(crate) fn new(entries: u32, taskrun: Taskrun, count: u16, size: u32) -> io::Result<Self> {
+    pub(crate) fn new(
+        entries: u32,
+        taskrun: Taskrun,
+        pools: [(u16, u32); POOLS],
+    ) -> io::Result<Self> {
         let mut builder = IoUring::builder();
         builder.setup_single_issuer();
         match taskrun {
@@ -215,18 +260,24 @@ impl Queue {
             Taskrun::Cooperative => builder.setup_coop_taskrun(),
         };
         let ring = builder.build(entries)?;
-        let mut buffers = Buffers::new(count, size)?;
-        // SAFETY: the page array is heap allocated, never moves, and is owned by `Queue`, which unregisters the
-        // ring in `Drop` before the pages are freed (or leaks both when completions cannot be drained).
-        unsafe {
-            ring.submitter().register_buf_ring_with_flags(
-                buffers.pages.as_ptr() as usize as u64,
-                count,
-                BUFFER_GROUP,
-                0,
-            )?;
+        let [small, large] = pools;
+        let mut buffers = [
+            Buffers::new(small.0, small.1)?,
+            Buffers::new(large.0, large.1)?,
+        ];
+        for (group, pool) in buffers.iter_mut().enumerate() {
+            // SAFETY: the page array is heap allocated, never moves, and is owned by `Queue`, which unregisters
+            // the ring in `Drop` before the pages are freed (or leaks both when completions cannot be drained).
+            unsafe {
+                ring.submitter().register_buf_ring_with_flags(
+                    pool.pages.as_ptr() as usize as u64,
+                    pool.count,
+                    group as u16,
+                    0,
+                )?;
+            }
+            pool.fill();
         }
-        buffers.fill();
         Ok(Self {
             ring,
             flights: Flights::default(),
@@ -241,8 +292,12 @@ impl Queue {
         Ok(probe)
     }
 
-    pub(crate) fn buffers(&mut self) -> &mut Buffers {
-        &mut self.buffers
+    pub(crate) fn buffers(&mut self, pool: u8) -> &mut Buffers {
+        &mut self.buffers[usize::from(pool)]
+    }
+
+    pub(crate) fn held(&self, pool: u8) -> &Buffers {
+        &self.buffers[usize::from(pool)]
     }
 
     pub(crate) fn in_flight(&self) -> usize {
@@ -275,9 +330,9 @@ impl Queue {
         self.push(entry, flight)
     }
 
-    pub(crate) fn recv(&mut self, fd: BorrowedFd<'_>, meta: u64) -> io::Result<u64> {
+    pub(crate) fn recv(&mut self, fd: BorrowedFd<'_>, pool: u8, meta: u64) -> io::Result<u64> {
         let entry = opcode::Recv::new(types::Fd(fd.as_raw_fd()), std::ptr::null_mut(), 0)
-            .buf_group(BUFFER_GROUP)
+            .buf_group(u16::from(pool))
             .ioprio(RECV_POLL_FIRST)
             .build()
             .flags(squeue::Flags::BUFFER_SELECT);
@@ -297,15 +352,50 @@ impl Queue {
         bytes: Vec<u8>,
         meta: u64,
     ) -> io::Result<u64> {
-        let flags = i32::from((SendFlags::NOSIGNAL.bits() | RecvFlags::WAITALL.bits()) as u16);
         let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
         let entry = opcode::Send::new(types::Fd(fd.as_raw_fd()), bytes.as_ptr(), length)
-            .flags(flags)
+            .flags(SEND_FLAGS.cast_signed())
             .build();
         let flight = Flight {
             meta,
             op: Op::Plain,
             memory: Memory::Bytes(bytes),
+        };
+        self.push(entry, flight)
+    }
+
+    pub(crate) fn send_lent(
+        &mut self,
+        fd: BorrowedFd<'_>,
+        (head, lease, range): (Vec<u8>, Lease, Range<usize>),
+        meta: u64,
+    ) -> io::Result<u64> {
+        let body = self.buffers[usize::from(lease.pool)].address(lease.buffer, range.start);
+        let part = |base: *mut u8, len: usize| libc::iovec {
+            iov_base: base.cast(),
+            iov_len: len,
+        };
+        // SAFETY: `msghdr` is plain data for which all-zero bytes mean no name, no control data and no flags.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iovlen = 2;
+        let iov = [
+            part(head.as_ptr().cast_mut(), head.len()),
+            part(body, range.len()),
+        ];
+        let mut lent = Box::new(Lent {
+            head,
+            lease,
+            iov,
+            msg,
+        });
+        lent.msg.msg_iov = lent.iov.as_mut_ptr();
+        let entry = opcode::SendMsg::new(types::Fd(fd.as_raw_fd()), &raw const lent.msg)
+            .flags(SEND_FLAGS)
+            .build();
+        let flight = Flight {
+            meta,
+            op: Op::Plain,
+            memory: Memory::Lent(lent),
         };
         self.push(entry, flight)
     }
@@ -358,15 +448,35 @@ impl Queue {
     }
 
     pub(crate) fn wait(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.enter(1, timeout)?;
+        let mut posted = self.posted();
+        while posted > 0 {
+            self.enter(1, Some(Duration::ZERO))?;
+            let now = self.posted();
+            if now == posted {
+                break;
+            }
+            posted = now;
+        }
+        Ok(())
+    }
+
+    fn posted(&mut self) -> usize {
+        let mut completions = self.ring.completion();
+        completions.sync();
+        completions.len()
+    }
+
+    fn enter(&mut self, want: usize, timeout: Option<Duration>) -> io::Result<()> {
         let waited = match timeout {
             Some(timeout) => {
                 let span = types::Timespec::new()
                     .sec(timeout.as_secs())
                     .nsec(timeout.subsec_nanos());
                 let args = types::SubmitArgs::new().timespec(&span);
-                self.ring.submitter().submit_with_args(1, &args)
+                self.ring.submitter().submit_with_args(want, &args)
             }
-            None => self.ring.submit_and_wait(1),
+            None => self.ring.submit_and_wait(want),
         };
         match waited {
             Ok(_) => Ok(()),
@@ -434,7 +544,9 @@ impl Drop for Queue {
             std::mem::forget(std::mem::take(&mut self.flights));
             return;
         }
-        let _ = self.ring.submitter().unregister_buf_ring(BUFFER_GROUP);
+        for group in 0..POOLS {
+            let _ = self.ring.submitter().unregister_buf_ring(group as u16);
+        }
         // SAFETY: the buffers are dropped exactly once here, after the ring stopped using them; the early return
         // above leaks them instead when completions are still outstanding.
         unsafe { ManuallyDrop::drop(&mut self.buffers) };

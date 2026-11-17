@@ -165,6 +165,8 @@ pub fn probe(config: &Config) -> Result<(), Missing> {
         entries: 8,
         buffers: 2,
         buffer_size: 4096,
+        large_buffers: 2,
+        large_buffer_size: 4096,
         accepts: 1,
         ..config.clone()
     };

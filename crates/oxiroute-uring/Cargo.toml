@@ -9,6 +9,7 @@ version.workspace = true
 
 [dependencies]
 io-uring = "0.7.16"
+libc = "0.2"
 rustix.workspace = true
 
 [lints.rust]

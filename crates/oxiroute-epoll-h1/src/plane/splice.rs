@@ -129,7 +129,7 @@ impl<S: Service> Reactor<S> {
 
 impl Relay {
     fn flushed(&self, down_head: &[u8]) -> bool {
-        self.head_pos >= down_head.len() && self.window.is_empty() && !self.complete
+        self.head_pos >= down_head.len() && self.cargo.is_empty() && !self.complete
     }
 }
 
