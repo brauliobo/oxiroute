@@ -194,7 +194,21 @@ test_layout_comes_from_packaging_arch() {
   ! grep -rn 'enable\|restart' "${repo}/packaging/deb/debian/rules" | grep -v 'no-enable' || fail 'the deb enables a service'
 }
 
+test_first_release_with_packages_has_no_upgrade_source() {
+  mkdir -p "${scratch}/bin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ $2 == list ]] && { echo v6.5.2; exit 0; }' \
+    '[[ $2 == view ]] && { echo oxiroute-6.5.2.tar.gz; exit 0; }' \
+    'exit 1' > "${scratch}/bin/gh"
+  chmod +x "${scratch}/bin/gh"
+  local found
+  found=$(PATH="${scratch}/bin:${PATH}" "${here}/previous.sh" deb x86_64 v7.1.0 "${scratch}/previous") ||
+    fail 'a release history without packages fails the lookup of the previous package'
+  [[ -z ${found} ]] || fail "a release without packages was offered as upgrade source: ${found}"
+}
+
 test_complete_release_is_accepted_and_summed
+test_first_release_with_packages_has_no_upgrade_source
 test_every_missing_asset_is_refused
 test_plain_build_is_refused
 test_stale_checksum_is_refused

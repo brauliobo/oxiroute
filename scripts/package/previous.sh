@@ -23,7 +23,10 @@ package_asset_of() {
   local name
   while read -r name; do
     # shellcheck disable=SC2053
-    [[ ${name} == ${pattern} ]] && { echo "${name}"; return; }
+    if [[ ${name} == ${pattern} ]]; then
+      echo "${name}"
+      return
+    fi
   done < <(gh release view "$1" --json assets --jq '.assets[].name')
 }
 
