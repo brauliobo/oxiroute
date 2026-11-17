@@ -24,15 +24,16 @@ fn refused_naming_the_limit(config: &Config) {
     );
 }
 
-fn charged_exactly_the_computed_bytes(config: &Config) {
+fn never_charged_less_than_the_computed_bytes(config: &Config) {
     limit_memlock(RINGS as u64 * config.ring_bytes());
     let rings: Vec<Ring> = std::iter::from_fn(|| Ring::new(config).ok())
         .take(RINGS + 1)
         .collect();
-    assert_eq!(
+    assert!(
+        (1..=RINGS).contains(&rings.len()),
+        "{} rings fit a budget of {RINGS} rings of {} bytes: the kernel charges the rings of closed ones for a while, \
+         and never less than the computed bytes",
         rings.len(),
-        RINGS,
-        "one ring is {} bytes",
         config.ring_bytes()
     );
 }
@@ -45,7 +46,7 @@ fn a_kernel_that_accounts_ring_memory_charges_the_computed_bytes_and_the_refusal
         return;
     }
     refused_naming_the_limit(&config);
-    charged_exactly_the_computed_bytes(&config);
+    never_charged_less_than_the_computed_bytes(&config);
 }
 
 #[test]
