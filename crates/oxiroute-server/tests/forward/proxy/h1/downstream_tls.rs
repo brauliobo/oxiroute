@@ -97,8 +97,8 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
         },
         header_policy: ForwardHeaderPolicy::default(),
         connect_timeout_ms: 1_000,
-        idle_timeout_ms: 100,
-        lifetime_timeout_ms: 100,
+        idle_timeout_ms: 1_000,
+        lifetime_timeout_ms: 1_000,
         max_request_body_bytes: Some(64 * 1024),
         max_header_bytes: 8_192,
         max_connections: 1,
@@ -119,12 +119,14 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
-    server.wait_for_tcp(proxy_address).await;
-
-    let stalled = TcpStream::connect(proxy_address)
-        .await
-        .expect("stalled TLS connection");
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut stalled = server.connect_when_bound(proxy_address).await;
+    timeout(
+        Duration::from_secs(30),
+        stalled.read_to_end(&mut Vec::new()),
+    )
+    .await
+    .expect("stalled TLS connection close")
+    .expect("stalled TLS connection read");
 
     let mut invalid = TcpStream::connect(proxy_address)
         .await
@@ -213,7 +215,6 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
         .expect("CONNECT response");
     assert_eq!(&pong, b"pong");
 
-    drop(stalled);
     drop(connect);
     server.shutdown();
     origin_task.await.expect("origin task");
