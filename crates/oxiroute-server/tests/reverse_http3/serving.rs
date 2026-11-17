@@ -401,7 +401,7 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
             .send_request(request)
             .await
             .expect("send cache H3 request");
-        stream.finish().await.expect("finish cache H3 request");
+        support::h3::finish_unless_answered(&mut stream).await;
         let response = stream.recv_response().await.expect("cache H3 response");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(recv_chunk(&mut stream).await.as_ref(), b"cached");
@@ -660,7 +660,7 @@ pub(super) async fn reverse_h3_characterizes_http_policy_parity_and_early_origin
         )
         .await
         .expect("send redirect request");
-    redirect.finish().await.expect("finish redirect request");
+    support::h3::finish_unless_answered(&mut redirect).await;
     let response = redirect.recv_response().await.expect("redirect response");
     assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
     assert_eq!(

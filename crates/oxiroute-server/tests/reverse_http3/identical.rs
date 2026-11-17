@@ -85,7 +85,7 @@ async fn seen_by_h3_client(
         .body(())
         .expect("request");
     let mut stream = sender.send_request(request).await.expect("send request");
-    stream.finish().await.expect("finish request");
+    support::h3::finish_unless_answered(&mut stream).await;
     let response = stream.recv_response().await.expect("response");
     let fields = response
         .headers()

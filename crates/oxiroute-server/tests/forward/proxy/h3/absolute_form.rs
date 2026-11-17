@@ -159,10 +159,7 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
         )
         .await
         .expect("send malformed H3 request");
-    malformed
-        .finish()
-        .await
-        .expect("finish malformed H3 request");
+    support::h3::finish_unless_answered(&mut malformed).await;
     assert_eq!(
         malformed
             .recv_response()
@@ -186,10 +183,7 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
         )
         .await
         .expect("send oversized H3 request");
-    oversized
-        .finish()
-        .await
-        .expect("finish oversized H3 request");
+    support::h3::finish_unless_answered(&mut oversized).await;
     assert_eq!(
         oversized
             .recv_response()
@@ -377,7 +371,7 @@ async fn h3_cache_serves_a_second_absolute_form_get_without_origin_contact() {
             .send_request(request)
             .await
             .expect("send cache H3 request");
-        stream.finish().await.expect("finish cache H3 request");
+        support::h3::finish_unless_answered(&mut stream).await;
         let response = stream.recv_response().await.expect("cache H3 response");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(recv_chunk(&mut stream).await.as_ref(), b"cached");

@@ -30,7 +30,7 @@ async fn fetch_candidate_body(endpoint: &quinn::Endpoint, listener_address: Sock
         .send_request(fixed_request("/candidate"))
         .await
         .expect("send candidate H3 request");
-    stream.finish().await.expect("finish candidate H3 request");
+    support::h3::finish_unless_answered(&mut stream).await;
     let response = stream.recv_response().await.expect("candidate H3 response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = recv_body(&mut stream).await;

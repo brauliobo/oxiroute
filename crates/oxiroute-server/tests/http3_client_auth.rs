@@ -500,7 +500,7 @@ async fn reverse_request(connection: quinn::Connection) {
         )
         .await
         .expect("send reverse H3 request");
-    stream.finish().await.expect("finish reverse H3 request");
+    support::h3::finish_unless_answered(&mut stream).await;
     assert_eq!(
         stream
             .recv_response()

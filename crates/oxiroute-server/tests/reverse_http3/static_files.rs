@@ -114,7 +114,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send static GET");
-    success.finish().await.expect("finish static GET");
+    support::h3::finish_unless_answered(&mut success).await;
     let response = success.recv_response().await.expect("static GET response");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "10");
@@ -133,10 +133,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send conditional static GET");
-    not_modified
-        .finish()
-        .await
-        .expect("finish conditional static GET");
+    support::h3::finish_unless_answered(&mut not_modified).await;
     let response = not_modified
         .recv_response()
         .await
@@ -160,10 +157,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send precondition static GET");
-    precondition_failed
-        .finish()
-        .await
-        .expect("finish precondition static GET");
+    support::h3::finish_unless_answered(&mut precondition_failed).await;
     let response = precondition_failed
         .recv_response()
         .await
@@ -186,7 +180,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send static HEAD");
-    head.finish().await.expect("finish static HEAD");
+    support::h3::finish_unless_answered(&mut head).await;
     let response = head.recv_response().await.expect("static HEAD response");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "10");
@@ -203,7 +197,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send static range");
-    range.finish().await.expect("finish static range");
+    support::h3::finish_unless_answered(&mut range).await;
     let response = range.recv_response().await.expect("static range response");
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -224,10 +218,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         )
         .await
         .expect("send stale If-Range static GET");
-    stale_if_range
-        .finish()
-        .await
-        .expect("finish stale If-Range static GET");
+    support::h3::finish_unless_answered(&mut stale_if_range).await;
     let response = stale_if_range
         .recv_response()
         .await

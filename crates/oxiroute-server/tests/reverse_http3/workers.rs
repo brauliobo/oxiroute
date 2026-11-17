@@ -75,7 +75,7 @@ async fn answer_to_new_client(listener: SocketAddr) -> u16 {
         )
         .await
         .expect("send H3 request");
-    stream.finish().await.expect("finish H3 request");
+    support::h3::finish_unless_answered(&mut stream).await;
     let status = stream.recv_response().await.expect("H3 response").status();
     recv_body(&mut stream).await;
     drop(sender);

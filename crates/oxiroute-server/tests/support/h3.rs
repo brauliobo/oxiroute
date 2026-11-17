@@ -74,14 +74,24 @@ where
     chunk.copy_to_bytes(chunk.remaining())
 }
 
-pub async fn finish_unless_answered<S>(stream: &mut RequestStream<S, Bytes>)
+pub async fn try_finish_unless_answered<S>(
+    stream: &mut RequestStream<S, Bytes>,
+) -> Result<(), StreamError>
 where
     S: h3::quic::SendStream<Bytes>,
 {
     match stream.finish().await {
-        Ok(()) => {}
-        Err(StreamError::RemoteTerminate { code, .. }) if code == Code::H3_NO_ERROR => {}
-        Err(error) => panic!("finish H3 request: {error:?}"),
+        Err(StreamError::RemoteTerminate { code, .. }) if code == Code::H3_NO_ERROR => Ok(()),
+        other => other,
+    }
+}
+
+pub async fn finish_unless_answered<S>(stream: &mut RequestStream<S, Bytes>)
+where
+    S: h3::quic::SendStream<Bytes>,
+{
+    if let Err(error) = try_finish_unless_answered(stream).await {
+        panic!("finish H3 request: {error:?}");
     }
 }
 

@@ -105,7 +105,7 @@ async fn one_request(sender: &mut Sender, index: usize) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut stream = timeout(Duration::from_secs(10), async {
         let mut stream = sender.send_request(request).await?;
-        stream.finish().await?;
+        support::h3::try_finish_unless_answered(&mut stream).await?;
         Ok::<_, h3::error::StreamError>(stream)
     })
     .await
@@ -252,7 +252,7 @@ pub(super) async fn reverse_h3_soak_serves_mixed_routes_across_a_reload() {
         .send_request(fixed_request("/fixed/after"))
         .await
         .expect("request after reload");
-    stream.finish().await.expect("finish request");
+    support::h3::finish_unless_answered(&mut stream).await;
     stream.recv_response().await.expect("response after reload");
     assert_eq!(recv_body(&mut stream).await, Bytes::from_static(b"ok-v2"));
 
