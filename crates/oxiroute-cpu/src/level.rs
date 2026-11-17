@@ -236,6 +236,29 @@ mod tests {
     }
 
     #[test]
+    fn a_ceiling_never_selects_beyond_the_features_present() {
+        let features: [&[&str]; 3] = [
+            &["avx512f", "avx512bw", "f16c", "fma"],
+            &[
+                "sse2",
+                "avx512f",
+                "avx512bw",
+                "avx512vl",
+                "avx512vbmi",
+                "gfni",
+            ],
+            Level::Avx2.features(),
+        ];
+        let expected = [Level::Scalar, Level::Sse2, Level::Avx2];
+        for (present, &capability) in features.iter().zip(&expected) {
+            let mask = mask_of(|f| present.contains(&f));
+            for ceiling in Level::ALL {
+                assert_eq!(select(mask, ceiling), ceiling.min(capability));
+            }
+        }
+    }
+
+    #[test]
     fn every_declared_feature_has_a_detector() {
         #[cfg(all(target_arch = "x86_64", feature = "std"))]
         Level::ALL
