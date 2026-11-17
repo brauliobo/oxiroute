@@ -13,7 +13,9 @@
 # overrides). --run executes `BIN version` natively on an aarch64 host (the host CPU is then not the baseline) and under
 # `qemu-aarch64 -cpu cortex-a53` (ISA_QEMU_CPUS, QEMU_AARCH64) elsewhere.
 #
-# Static check (always): `objdump -d -C` of BIN is split per function symbol. A function containing a VEX/EVEX
+# Static check (always): `objdump -d -C` of BIN is split per function symbol. The compiler's default Rust symbol mangling
+# is v0, which GNU objdump demangles from binutils 2.41 (the 2.35 of almalinux:9 lists `_RNv...` names that match no
+# family): OBJDUMP names one that does (scripts/package/container/binary.sh). A function containing a VEX/EVEX
 # instruction (every v* mnemonic but verr/verw/vm*, the AVX-512 mask instructions), BMI1/BMI2 (andn bextr blsi blsmsk
 # blsr bzhi mulx pdep pext rorx sarx shlx shrx), lzcnt, movbe, adcx or adox passes only when its demangled symbol matches
 # DISPATCHED_SYMBOL_PATTERNS below; any other function is listed (first 20, with the first offending mnemonic) and fails.
@@ -67,9 +69,12 @@ family aws-lc '^_*aws_lc' '^L(bignum|curve25519|edwards25519|p256|p384|p521|secp
   '^(GFMUL$|partial_fold|iv_len_12_init_IV|skip_iv_len_12_init_IV|hw_x86_64_)' '^[.]'
 family ring '^_*ring_core'
 # OpenSSL (vendored by openssl-sys) and its perlasm: capability vector OPENSSL_ia32cap_P, tested by the C callers
-#  AArch64 perlasm: capability vector OPENSSL_armcap_P (aes_v8_*, gcm_*_v8, sha*_block_armv8, SHA3_*, KeccakF1600)
+#  AArch64 perlasm: capability vector OPENSSL_armcap_P (aes_v8_*, gcm_*_v8, sha*_block_armv8, SHA3_*, KeccakF1600), tested by
+#  the C callers (HWSM4_CAPABLE, VPSM4_EX_CAPABLE, HWAES_CBC_HMAC_SHA*_ETM_CAPABLE, IS_CPU_SUPPORT_UNROLL8_EOR3); the
+#  _armv8_*_probe routines run only inside arm_probe_for() (crypto/armcap.c), which catches the SIGILL of a missing extension
 family openssl '^_*(OPENSSL|ossl|CRYPTO|aesni|aes_hw|aes_v8|aes_gcm|vpaes|bn_|ecp_nistz256|x25519|gcm_|sha[0-9]+_|SHA3_)' \
-  '^_*(chacha20|ChaCha20|poly1305|rsaz|md5_|keccak|Keccak|mulx|sqrx)'
+  '^_*(chacha20|ChaCha20|poly1305|rsaz|md5_|keccak|Keccak|mulx|sqrx)' \
+  '^_*(armv8_[a-z0-9]+_probe$|sm4_v8_|vpsm4_ex_|unroll8_eor3_aes_gcm_|asm_(aescbc_|sha[0-9]+_hmac_aescbc))'
 # zlib-ng (libz-ng-sys): its per-ISA files (arch/x86/*_avx2.c, *_avx512.c) are chosen by init_functable() only when the
 # CPU has the feature (functable.c: has_avx2 && has_bmi2 ...); chunkcopy_safe is the static inline of inflate_p.h that
 # the AVX2 and AVX-512 builds of inflate_fast inline
@@ -227,10 +232,10 @@ report_leaks() {
 allow_list() { printf '%s\n' "${DISPATCHED_SYMBOL_PATTERNS[@]}"; }
 
 x86_64_static_check() {
-  local disasm=${symbols:-${bin}}
-  [[ $(objdump -f "${disasm}") == *i386:x86-64* ]] || fail 'not an x86-64 ELF binary'
+  local disasm=${symbols:-${bin}} objdump_x86=${OBJDUMP:-objdump}
+  [[ $("${objdump_x86}" -f "${disasm}") == *i386:x86-64* ]] || fail 'not an x86-64 ELF binary'
   require_symbols "${disasm}"
-  report_leaks "$(objdump -d -C --no-show-raw-insn "${disasm}" | ALLOW=$(allow_list) awk "${awk_program}")" \
+  report_leaks "$("${objdump_x86}" -d -C --no-show-raw-insn "${disasm}" | ALLOW=$(allow_list) awk "${awk_program}")" \
     'AVX/BMI/FMA-class instructions'
 }
 
