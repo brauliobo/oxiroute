@@ -217,7 +217,7 @@ struct Outcome {
 
 async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
     let before = wire.origin.requests().len();
-    let mut stream = TcpStream::connect(wire.proxy).await.expect("connect");
+    let mut stream = wire.connect().await;
     let mut bytes = Vec::new();
     let mut unanswered = Vec::new();
     let mut closed = false;

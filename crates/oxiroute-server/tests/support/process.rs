@@ -1,8 +1,7 @@
 #![allow(clippy::missing_panics_doc, clippy::must_use_candidate)]
 
 use std::{
-    fs,
-    io::Read,
+    fs::{self, File},
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -56,6 +55,7 @@ pub fn build_ui() -> PathBuf {
 
 pub struct ServerProcess {
     child: Child,
+    stderr_path: PathBuf,
     pub config_path: PathBuf,
     pub token_path: Option<PathBuf>,
     _directory: TempDir,
@@ -94,9 +94,17 @@ impl ServerProcess {
         let config_path = directory.path().join("oxiroute.lua");
         write_config(&config_path, config);
         let token_path = token.map(|token| write_token(directory.path(), token, 0o600));
-        let child = spawn_server(&config_path, token_path.as_deref(), direct, environment);
+        let stderr_path = directory.path().join("oxiroute.stderr");
+        let stderr = File::create(&stderr_path).expect("server standard error file");
+        let child = spawn_server(
+            (&config_path, token_path.as_deref()),
+            (Stdio::null(), stderr.into()),
+            direct,
+            environment,
+        );
         Self {
             child,
+            stderr_path,
             config_path,
             token_path,
             _directory: directory,
@@ -154,9 +162,13 @@ impl ServerProcess {
 
     pub fn assert_running(&mut self) {
         if let Some(status) = self.child.try_wait().expect("inspect server process") {
-            let stderr = read_pipe(self.child.stderr.take());
-            panic!("server exited early with {status}: {stderr}");
+            panic!("server exited early with {status}: {}", self.stderr());
         }
+    }
+
+    /// Everything the server has written to standard error so far.
+    pub fn stderr(&self) -> String {
+        fs::read_to_string(&self.stderr_path).expect("server standard error")
     }
 
     pub fn shutdown(mut self) {
@@ -191,7 +203,7 @@ impl ServerProcess {
     #[allow(dead_code)]
     pub fn shutdown_output(mut self) -> String {
         self.stop();
-        read_pipe(self.child.stderr.take())
+        self.stderr()
     }
 
     pub fn wait_for_exit(mut self) {
@@ -293,7 +305,8 @@ pub fn write_token(directory: &Path, token: &str, mode: u32) -> PathBuf {
 }
 
 pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
-    let mut child = spawn_server(config_path, token_path, true, &[]);
+    let piped = (Stdio::piped(), Stdio::piped());
+    let mut child = spawn_server((config_path, token_path), piped, true, &[]);
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
         if child.try_wait().expect("inspect failing server").is_some() {
@@ -316,8 +329,8 @@ pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
 }
 
 fn spawn_server(
-    config_path: &Path,
-    token_path: Option<&Path>,
+    (config_path, token_path): (&Path, Option<&Path>),
+    (stdout, stderr): (Stdio, Stdio),
     direct: bool,
     environment: &[(&str, &str)],
 ) -> Child {
@@ -326,8 +339,8 @@ fn spawn_server(
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")
         .envs(environment.iter().copied())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(stdout)
+        .stderr(stderr);
     if direct && token_path.is_some() {
         command.env("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME", "1");
     }
@@ -335,14 +348,6 @@ fn spawn_server(
         command.env("OXIROUTE_MANAGEMENT_TOKEN_FILE", token_path);
     }
     command.spawn().expect("spawn built OxiRoute server")
-}
-
-fn read_pipe(pipe: Option<impl Read>) -> String {
-    let mut output = String::new();
-    if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_string(&mut output);
-    }
-    output
 }
 
 fn workspace_root() -> PathBuf {

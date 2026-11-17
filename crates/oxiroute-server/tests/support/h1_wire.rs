@@ -374,7 +374,7 @@ impl Wire {
     /// the connection or goes quiet for a moment after the first bytes of the response. A process pays for what
     /// it sets up on its first request, so the first bytes are awaited for as long as a step may take.
     pub async fn exchange(&self, request: &[u8]) -> String {
-        let mut stream = TcpStream::connect(self.proxy).await.expect("connect");
+        let mut stream = self.connect().await;
         stream.write_all(request).await.expect("write request");
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
@@ -394,6 +394,17 @@ impl Wire {
         .await
         .expect("response");
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    pub async fn connect(&self) -> TcpStream {
+        match TcpStream::connect(self.proxy).await {
+            Ok(stream) => stream,
+            Err(error) => panic!(
+                "connect to {}: {error}; the server wrote: {}",
+                self.proxy,
+                self.server.stderr()
+            ),
+        }
     }
 
     pub fn finish(self) {
