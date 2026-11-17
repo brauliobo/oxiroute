@@ -388,13 +388,14 @@ async fn downstream_h2_flow_control_backpressures_a_large_grpc_stream() {
             min: HttpVersion::Http2,
             max: HttpVersion::Http2,
         };
-        let config = proxy_config(
+        let mut config = proxy_config(
             reserved.address,
             origin.address,
             vec![AlpnProtocol::H2],
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
+        config.http_services[0].upstream_io_timeout_ms = 30_000;
         let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
