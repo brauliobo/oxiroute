@@ -152,8 +152,9 @@ async fn serve_plain_h1(
     requests: Arc<AtomicUsize>,
     http_bytes: Arc<AtomicUsize>,
 ) -> Result<(), BoxError> {
+    let mut pending = Vec::new();
     loop {
-        match read_until_headers_observed(&mut stream, &http_bytes).await {
+        match read_request_observed(&mut stream, &http_bytes, &mut pending).await {
             Ok(_) => {
                 requests.fetch_add(1, Ordering::SeqCst);
                 write_h1_response(&mut stream, body).await?;
@@ -175,4 +176,65 @@ where
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(body).await?;
     stream.flush().await
+}
+
+async fn read_request_observed<S>(
+    stream: &mut S,
+    observed_bytes: &AtomicUsize,
+    pending: &mut Vec<u8>,
+) -> io::Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 1024];
+    let end = loop {
+        if let Some(end) = request_end(pending) {
+            break end;
+        }
+        let count = stream.read(&mut buffer).await?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "stream ended before the end of the HTTP request",
+            ));
+        }
+        observed_bytes.fetch_add(count, Ordering::SeqCst);
+        pending.extend_from_slice(&buffer[..count]);
+    };
+    let head_end = find_header_end(pending).expect("a complete request has a head") + 4;
+    let head = pending[..head_end].to_vec();
+    pending.drain(..end);
+    Ok(head)
+}
+
+fn request_end(bytes: &[u8]) -> Option<usize> {
+    let body_start = find_header_end(bytes)? + 4;
+    let head = String::from_utf8_lossy(&bytes[..body_start]).to_ascii_lowercase();
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+            .map(str::trim)
+    };
+    if header("transfer-encoding").is_some_and(|value| value.contains("chunked")) {
+        return chunked_end(bytes, body_start);
+    }
+    let length = header("content-length").map_or(0, |value| value.parse().unwrap_or(0));
+    (bytes.len() >= body_start + length).then_some(body_start + length)
+}
+
+fn chunked_end(bytes: &[u8], mut at: usize) -> Option<usize> {
+    loop {
+        let line_end = at + bytes[at..].windows(2).position(|pair| pair == b"\r\n")?;
+        let size =
+            usize::from_str_radix(std::str::from_utf8(&bytes[at..line_end]).ok()?, 16).ok()?;
+        at = line_end + 2;
+        if size == 0 {
+            let trailers_end = find_header_end(&bytes[at - 2..])?;
+            return Some(at - 2 + trailers_end + 4);
+        }
+        at += size + 2;
+        if at > bytes.len() {
+            return None;
+        }
+    }
 }

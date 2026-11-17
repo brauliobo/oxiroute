@@ -255,8 +255,9 @@ async fn serve_tls_h1(
     body: &'static [u8],
     observations: Arc<OriginObservations>,
 ) -> Result<(), BoxError> {
+    let mut pending = Vec::new();
     loop {
-        match read_until_headers_observed(&mut stream, &observations.http_bytes).await {
+        match read_request_observed(&mut stream, &observations.http_bytes, &mut pending).await {
             Ok(request) => {
                 observations.http_requests.fetch_add(1, Ordering::SeqCst);
                 observations
@@ -270,29 +271,6 @@ async fn serve_tls_h1(
             Err(error) => return Err(error.into()),
         }
     }
-}
-
-async fn read_until_headers_observed<S>(
-    stream: &mut S,
-    observed_bytes: &AtomicUsize,
-) -> io::Result<Vec<u8>>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut bytes = Vec::with_capacity(1024);
-    let mut buffer = [0_u8; 1024];
-    while find_header_end(&bytes).is_none() {
-        let count = stream.read(&mut buffer).await?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "stream ended before HTTP headers",
-            ));
-        }
-        observed_bytes.fetch_add(count, Ordering::SeqCst);
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    Ok(bytes)
 }
 
 type H2Accepted = (Request<h2::RecvStream>, h2::server::SendResponse<Bytes>);
