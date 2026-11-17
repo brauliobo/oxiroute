@@ -12,9 +12,10 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../lib/nextest.sh"
 
 printf 'runner image: %s %s\n' "${ImageOS:-unknown}" "${ImageVersion:-}"
 printf 'kernel: %s\n' "$(uname -r)"
-if [[ ${plane} == io_uring ]]; then
-  sysctl=/proc/sys/kernel/io_uring_disabled
-  printf 'kernel.io_uring_disabled: %s\n' "$(cat "${sysctl}" 2>/dev/null || printf 'absent')"
-fi
+printf 'limits: locked-memory=%s open-files=%s address-space=%s\n' "$(ulimit -l)" "$(ulimit -n)" "$(ulimit -v)"
+for setting in /proc/sys/kernel/io_uring_disabled /proc/sys/vm/overcommit_memory /proc/sys/vm/max_map_count \
+  /proc/sys/fs/pipe-user-pages-soft /sys/fs/cgroup/memory.max; do
+  printf '%s: %s\n' "${setting}" "$(cat "${setting}" 2>/dev/null || printf 'absent')"
+done
 
 OXIROUTE_TEST_HTTP_DATA_PLANE=${plane} run_filter 'binary_id(=oxiroute::plane_probe)' --no-tests=fail
