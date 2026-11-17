@@ -161,8 +161,21 @@ fn serve(mut stream: TcpStream, heads: &Mutex<Vec<String>>, flaky: &AtomicUsize)
     }
 }
 
+const SIZED_PIECE: usize = 64 * 1024;
+
+fn sized_between(from: usize, to: usize) -> Vec<u8> {
+    (from..to).map(|index| b'a' + (index % 23) as u8).collect()
+}
+
 pub fn sized(len: usize) -> Vec<u8> {
-    (0..len).map(|index| b'a' + (index % 23) as u8).collect()
+    sized_between(0, len)
+}
+
+fn stream_sized(stream: &mut TcpStream, len: usize) -> bool {
+    write(stream, &head_of(len))
+        && (0..len)
+            .step_by(SIZED_PIECE)
+            .all(|from| write(stream, &sized_between(from, len.min(from + SIZED_PIECE))))
 }
 
 fn ok(body: &[u8], extra: &str) -> Vec<u8> {
@@ -235,7 +248,7 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
     let segment = path.rsplit('/').next().unwrap_or("");
     let number = segment.parse::<usize>().unwrap_or(0);
     match path.split('/').nth(1).unwrap_or("") {
-        "size" => write(stream, &ok(&sized(number), "")),
+        "size" => stream_sized(stream, number),
         "slow" => dribble(stream, number),
         "cut" => cut(stream, number),
         "hang" => hang(stream, number),
