@@ -358,15 +358,35 @@ impl Queue {
     }
 
     pub(crate) fn wait(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.enter(1, timeout)?;
+        let mut posted = self.posted();
+        while posted > 0 {
+            self.enter(1, Some(Duration::ZERO))?;
+            let now = self.posted();
+            if now == posted {
+                break;
+            }
+            posted = now;
+        }
+        Ok(())
+    }
+
+    fn posted(&mut self) -> usize {
+        let mut completions = self.ring.completion();
+        completions.sync();
+        completions.len()
+    }
+
+    fn enter(&mut self, want: usize, timeout: Option<Duration>) -> io::Result<()> {
         let waited = match timeout {
             Some(timeout) => {
                 let span = types::Timespec::new()
                     .sec(timeout.as_secs())
                     .nsec(timeout.subsec_nanos());
                 let args = types::SubmitArgs::new().timespec(&span);
-                self.ring.submitter().submit_with_args(1, &args)
+                self.ring.submitter().submit_with_args(want, &args)
             }
-            None => self.ring.submit_and_wait(1),
+            None => self.ring.submit_and_wait(want),
         };
         match waited {
             Ok(_) => Ok(()),

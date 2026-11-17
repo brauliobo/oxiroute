@@ -118,7 +118,9 @@ impl Ring {
     }
 
     /// Hands queued operations to the kernel, waits for a completion or until `timeout` passes (`None` waits
-    /// without limit) and appends what happened to `events`.
+    /// without limit) and appends what happened to `events`: every completion that is ready by then, because
+    /// deferred task work hands the kernel's completions over a few per entry and the caller serves one batch
+    /// in one order.
     pub fn wait(&mut self, timeout: Option<Duration>, events: &mut Vec<Event>) -> io::Result<()> {
         let timeout = if self.pending.is_empty() {
             self.bounded(timeout)
