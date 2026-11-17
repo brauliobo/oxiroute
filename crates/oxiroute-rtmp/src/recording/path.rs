@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
-use chrono::{Datelike as _, TimeZone as _, Timelike as _, Utc};
-use chrono_tz::Tz;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use sha2::{Digest as _, Sha256};
 
 /// Maximum accepted byte length of a recording suffix template.
@@ -161,11 +161,11 @@ pub struct RecordingPathPolicy {
     segment_naming: RecordingSegmentNaming,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum RecordingTimezone {
     #[default]
     Utc,
-    Iana(Tz),
+    Iana(TimeZone),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -287,7 +287,7 @@ impl RecordingPathPolicy {
         stream_name: &[u8],
         at_unix_seconds: u64,
     ) -> Result<String, RecordingPathError> {
-        let date_time = match self.timezone {
+        let date_time = match &self.timezone {
             RecordingTimezone::Utc => RecordingDateTime::from_unix_seconds(at_unix_seconds)?,
             RecordingTimezone::Iana(timezone) => zoned_date_time(at_unix_seconds, timezone)?,
         };
@@ -457,15 +457,16 @@ impl RecordingPathPolicy {
     }
 }
 
-fn zoned_date_time(seconds: u64, timezone: Tz) -> Result<RecordingDateTime, RecordingPathError> {
-    let seconds = i64::try_from(seconds).map_err(|_| invalid_date_time("year", 10_000))?;
-    let utc = Utc
-        .timestamp_opt(seconds, 0)
-        .single()
-        .ok_or_else(|| invalid_date_time("year", 10_000))?;
-    let local = utc.with_timezone(&timezone);
+fn zoned_date_time(
+    seconds: u64,
+    timezone: &TimeZone,
+) -> Result<RecordingDateTime, RecordingPathError> {
+    let out_of_range = || invalid_date_time("year", 10_000);
+    let instant = Timestamp::from_second(i64::try_from(seconds).map_err(|_| out_of_range())?)
+        .map_err(|_| out_of_range())?;
+    let local = timezone.to_datetime(instant);
     RecordingDateTime::new(
-        u16::try_from(local.year()).map_err(|_| invalid_date_time("year", 10_000))?,
+        u16::try_from(local.year()).map_err(|_| out_of_range())?,
         u8::try_from(local.month()).expect("calendar month fits u8"),
         u8::try_from(local.day()).expect("calendar day fits u8"),
         u8::try_from(local.hour()).expect("calendar hour fits u8"),

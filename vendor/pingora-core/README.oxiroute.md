@@ -122,7 +122,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `Connector::release_boxed_http_session`: the 640-byte session is built in its box and handed back in it, so it is not moved
   into every future that returns it. They behave as `reused_http_session` and `release_http_session`.
 - `protocols/http/date.rs` adds `get_cached_date_at(now)`, `get_cached_date` for a caller that has the wall-clock time already
-  (no clock read of its own).
+  (no clock read of its own). `protocols/http/date.rs` formats the HTTP date with `httpdate` (already a dependency) and the
+  `chrono` dependency, which RUSTSEC-2026-0543 reports unmaintained, is removed.
 - `listeners/l4.rs` sets `TCP_NODELAY` on the listening socket and no longer on every accepted stream: Linux copies
   it to the accepted socket. Keepalive and DSCP settings are still applied per accepted stream.
 - `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread; a taken buffer is empty with that capacity

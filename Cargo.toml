@@ -51,8 +51,6 @@ atomic-waker = "1.1"
 base64 = "0.23"
 bcrypt = "0.19"
 bytes = "1.12"
-chrono = "0.4.45"
-chrono-tz = "0.10.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 env_logger = "0.11"
 futures-util = "0.3.34"
@@ -67,6 +65,7 @@ hyper = { version = "1.12", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 log = "0.4.35"
+jiff = { version = "0.2.39", default-features = false, features = ["std", "tzdb-bundle-always"] }
 local-ip-address = "0.6.13"
 kdl = { version = "=6.7.1", default-features = false }
 libc = "0.2.191"

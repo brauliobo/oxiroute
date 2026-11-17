@@ -28,8 +28,8 @@ pub(super) fn validate_rtmp_recorder(
         ));
     }
     if let crate::model::RtmpRecorderTimezone::Iana(name) = &recorder.timezone {
-        let parsed = name.parse::<chrono_tz::Tz>();
-        if name.len() > 64 || parsed.is_err() || name.eq_ignore_ascii_case("utc") {
+        let unknown = crate::model::RtmpRecorderTimezone::iana_time_zone(name).is_none();
+        if name.len() > 64 || unknown || name.eq_ignore_ascii_case("utc") {
             return Err(invalid(
                 "timezone",
                 "must be `utc` or an exact IANA timezone name of at most 64 bytes",

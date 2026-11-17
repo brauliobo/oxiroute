@@ -299,9 +299,7 @@ fn hourly_zone_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names(
         .expect("path policy")
         .with_segment_policy(
             RecordingTimezone::Iana(
-                "America/Argentina/Buenos_Aires"
-                    .parse()
-                    .expect("IANA timezone"),
+                jiff::tz::TimeZone::get("America/Argentina/Buenos_Aires").expect("IANA timezone"),
             ),
             RecordingTimeBasis::SegmentStart,
             RecordingSegmentNaming::NginxCompatible,

@@ -38,7 +38,7 @@ const allowedCrateSymbols = new Set([
   'validate_callback_url_intrinsic',
 ])
 const allowedCargoDependencies = new Set([
-  'bytes', 'chrono', 'chrono-tz', 'http', 'openssl', 'oxiroute-tls-client', 'rml_rtmp', 'rustix', 'sha2',
+  'bytes', 'http', 'jiff', 'openssl', 'oxiroute-tls-client', 'rml_rtmp', 'rustix', 'sha2',
   'thiserror',
   'uuid',
 ])

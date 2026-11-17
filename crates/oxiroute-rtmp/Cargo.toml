@@ -13,9 +13,8 @@ fuzzing = []
 
 [dependencies]
 bytes.workspace = true
-chrono.workspace = true
-chrono-tz.workspace = true
 http.workspace = true
+jiff.workspace = true
 openssl.workspace = true
 oxiroute-tls-client = { path = "../oxiroute-tls-client" }
 rml_rtmp.workspace = true
