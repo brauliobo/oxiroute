@@ -30,7 +30,12 @@ plane_lanes() {
   esac
 }
 
+raise_memlock() {
+  sudo -n prlimit --pid $$ --memlock=unlimited:unlimited
+}
+
 for plane in "${planes[@]}"; do
+  [[ ${plane} != io_uring || -z ${OXIROUTE_RAISE_MEMLOCK:-} ]] || raise_memlock
   "${repo_dir}/scripts/ci/probe.sh" "${plane}"
   OXIROUTE_TEST_HTTP_DATA_PLANE=${plane} plane_lanes "${plane}"
 done

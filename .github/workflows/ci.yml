@@ -164,6 +164,8 @@ jobs:
         uses: ./.github/actions/archive
 
       - name: Run the plane-sensitive tiers on ${{ matrix.plane }}
+        env:
+          OXIROUTE_RAISE_MEMLOCK: ${{ matrix.plane == 'io_uring' && '1' || '' }}
         run: ./scripts/test/planes.sh ${{ matrix.plane }}
 
   tls:

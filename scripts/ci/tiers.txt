@@ -186,6 +186,9 @@ oxiroute::config_check                                core
 oxiroute::epoll_plane                                 planes
 oxiroute::epoll_responses                             core
 oxiroute::epoll_safety                                core
+oxiroute::reverse_http3_golden  slow  reverse_http3_matches_the_golden_corpus
+oxiroute::supervised  slow  h3_flows::supervised_worker_crash_with_active_h3_request_is_reaped_and_releases_listener
+oxiroute::process_management  slow  management::built_management_ui_and_authenticated_config_lifecycle_run_over_real_tcp
 oxiroute::epoll_safety  slow  a_partial_request_head_is_closed_at_the_default_read_limit
 oxiroute::epoll_safety  slow  a_response_in_flight_survives_the_replacement_of_its_generation
 oxiroute::epoll_scheduling                            planes
