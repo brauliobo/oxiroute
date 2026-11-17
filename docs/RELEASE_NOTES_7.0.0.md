@@ -8,35 +8,38 @@ HTTP/3 congestion controller. It is a major release because four defaults change
 release retains conservative compatibility claims: the [compatibility matrix](COMPATIBILITY.md) is authoritative.
 
 The performance figures below come from the [7.0 report](../benchmarks/reports/7.0/README.md), which states the
-host class, CPU pinning, tools, run counts and noise flags of every table. They were measured on an integration build
-without profile guidance, on a shared 16-core desktop CPU with one worker per proxy and loopback traffic; the
-profile-guided release binaries were not measured. They are not capacity guarantees.
+host class, CPU pinning, tools, run counts and noise flags of every table. The headline HTTP/1.1, cache, TLS handshake
+and HTTP/3 figures were re-measured on 2026-11-17 on the final tree without profile guidance; figures marked as earlier
+come from the integration build measured on 2026-11-16 and 2026-11-17. All ran on a shared 16-core desktop CPU with
+one worker per proxy and loopback traffic; the profile-guided release binaries were not measured. They are not
+capacity guarantees.
 
 ## Headlines
 
 - **A per-core epoll data plane serves plain HTTP/1.1 proxy routes.** One thread per `listener_workers`, with the same
   routing, limits, logs and metrics as before. HTTP/1.1 keep-alive with a 1 KiB response, 32 connections, one worker:
-  173,925 requests per second (3/3 clean runs) against 127,338 on the tokio plane and 138,608 for nginx (one clean run,
-  indicative); a repeat on a busier host gave 163,952, 116,855 and 132,472. User instructions per request fall from
-  25.7k in 6.5.2 (23.9k on the tokio plane) to 14.7k (nginx 19.9k).
-- **Large bodies are spliced.** A 64 KiB response: 88,879 requests per second against 49,791 on the tokio plane and
-  36,195 for nginx (3/3 clean each).
-- **New connections are cheaper.** One request per connection: 89,608 requests per second against 71,537 on the tokio
-  plane, 72,726 for nginx and 65,738 for HAProxy.
+  169,706 requests per second (2/2 clean runs) against 128,043 on the tokio plane and 134,205 for nginx (one clean run,
+  indicative; HAProxy 121,704). User instructions per request fall from 25.7k in 6.5.2 (23.9k on the tokio plane) to
+  14.7k (nginx 19.9k).
+- **Large bodies are spliced.** A 64 KiB response: 87,002 requests per second against 48,338 on the tokio plane and
+  35,542 for nginx (2/2 clean each).
+- **New connections are cheaper.** One request per connection: 88,643 requests per second against 71,366 on the tokio
+  plane, 74,708 for nginx and 67,016 for HAProxy.
 - **High connection counts hold their rate.** A request start is paced (8 per pass over ready events), so the requests
-  in flight no longer grow with the connection count. 1,024 connections: 164,201 requests per second against 109,769
-  before, nginx 85,379; 2,048 connections: 131,046 against 55,289, nginx 59,882. At 1,024 connections the final build
-  measured 169,040 against nginx 108,036.
+  in flight no longer grow with the connection count. 1,024 connections (earlier pass): 164,201 requests per second against
+  109,769 before, nginx 85,379; 2,048 connections: 131,046 against 55,289, nginx 59,882. At 1,024 connections the final
+  tree measured 170,641 against nginx 99,152.
 - **TLS handshakes cost 2.5 times fewer instructions.** rustls with aws-lc is the default backend: a full TLS 1.3
-  handshake costs 664,806 user instructions against 1,650,828 with OpenSSL (nginx 1,559,000), and runs at 14,865
-  handshakes per second against 5,821 (nginx 5,098). Keep-alive TLS 1.3 gains about 15% (105,040 against 91,429
-  requests per second).
+  handshake costs 665,649 user instructions (nginx 1,559,140; 1,650,828 with OpenSSL in the earlier pass) and runs at
+  16,108 handshakes per second against 5,397 for nginx and 4,751 for HAProxy (earlier pass: OpenSSL 5,821). Keep-alive
+  TLS 1.3 gained about 15% over OpenSSL in the earlier pass (105,040 against 91,429 requests per second); the final
+  tree measured 108,694 against 101,283 for nginx (one clean OxiRoute run, indicative).
 - **Kernel TLS and `sendfile` work with rustls.** A 1 MiB static file over TLS 1.3: 4,169 requests per second against
   2,195 for nginx without kernel TLS. rustls connections follow client key updates and roll keys before the AES-GCM
   record limit.
 - **The cache serves hits on the fast lane from a sharded store, and keeps compressed variants.** A 1 KiB hit runs at
-  223,853 requests per second against 113,185 before (A/B on one host) and 238,757 against 127,842 for nginx; a 64 KiB
-  hit is level with nginx (101,260 against 100,708). A cache policy can now store a body once per coding (`zstd`,
+  231,274 requests per second against 128,691 for nginx (one clean nginx run, indicative), and 223,853 against 113,185
+  before (A/B on one host, earlier pass); a 64 KiB hit is level with nginx (97,425 against 99,966). A cache policy can now store a body once per coding (`zstd`,
   `br`, `gzip`) and serve hits with the best coding the client accepts; no throughput claim is made for that feature
   beyond the report's single-invocation rows.
 - **Memory.** Idle PSS is 13.0 MB (63.8 MB before), 24.2 MB with 1,024 connections held (82.1 MB before); the
@@ -79,9 +82,9 @@ profile-guided release binaries were not measured. They are not capacity guarant
   `connection_scheduling = "aged_per_worker"`).
 - `io_uring` is opt-in (`http_data_plane = "io_uring"`) and is never part of the default order. It lives in the new
   `oxiroute-uring` crate, the only place with `unsafe` for it; `scripts/verify/unsafe_containment.sh` enforces that.
-  It matches epoll at 1 KiB keep-alive with 32 connections (173,785 against 173,925) and is within 4% at 256, costs
-  2.7k to 4.4k more user instructions per request, and is slower at 64 KiB (60,815 against 88,879), so epoll stays the
-  default.
+  It matches epoll at 1 KiB keep-alive with 32 connections (170,511 against 169,706), is 2% below at 256 and 12% below
+  at 1,024 connections, costs 4.1k to 5.9k more user instructions per request, and is slower at 64 KiB (58,404 against
+  87,002), so epoll stays the default.
 - `connection_scheduling = "aged_per_worker"` (and `auto` from two workers) and `worker_scaling = "dynamic"` now run
   on the epoll plane's own threads and keep their defaults (`work_stealing`, `static`).
 
@@ -204,9 +207,10 @@ the binary package's checksum is pinned after the release assets exist.
 
 ## Known limits
 
-- **Measurement conditions.** The performance tables are from an integration build without profile guidance, one worker
-  per proxy, loopback, closed loop, on a shared host. Cells with fewer than two clean runs are marked indicative; the
-  nginx column of the 32-connection lane has one clean run in each invocation. The nginx and HAProxy harness is a local
+- **Measurement conditions.** The performance tables are from builds without profile guidance (the final tree for the
+  headline rows, the integration build for rows marked earlier), one worker per proxy, loopback, closed loop, on a
+  shared host. Rows with fewer than two clean runs are marked indicative; the nginx row of the 32-connection lane and
+  the HTTP/3 rows have one clean run. The nginx and HAProxy harness is a local
   script that is not in the checkout, so those columns cannot be reproduced from the repository; the OxiRoute
   instruction counts reproduce with `benchmarks/r2-data-path`. nginx and HAProxy were not tuned.
 - **io_uring.** It does not beat epoll at 1 KiB keep-alive requests, uses more user instructions per request, is slower

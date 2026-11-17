@@ -90,19 +90,19 @@ Start with [configuration examples](docs/reference/CONFIGURATION.md), then consu
 
 Medians of an HTTP/1.1 reverse proxy with a 1 KiB response, keep-alive, one worker per proxy, on a 16-core desktop
 CPU shared with other jobs (proxy pinned to 2 CPUs, origin and load generator on separate CPUs, loopback, closed
-loop; up to three 4 s runs per cell after a 2 s warm-up). The OxiRoute rows are the 7.0.0 integration build
-(release profile, no profile guidance); nginx is 1.30.
+loop; two 4 s runs per row after a 2 s warm-up). Measured on 2026-11-17 on the final 7.0.0 tree (release profile, no
+profile guidance); nginx is 1.30.
 
 | Measure | OxiRoute epoll plane (default) | OxiRoute tokio plane | nginx |
 | --- | ---: | ---: | ---: |
-| Requests/second, 32 connections | 173,925 | 127,338 | 138,608 (one clean run, indicative) |
-| Requests/second, 1,024 connections | 169,040 | 118,891 | 108,036 |
-| Requests/second, 64 KiB response | 88,879 | 49,791 | 36,195 |
-| Requests/second, new connection per request | 89,608 | 71,537 | 72,726 |
-| p99 latency, 32 connections, µs | 216 | 294 | 410 (indicative) |
-| User instructions/request, 32 connections | 14,651 | 23,864 | 19,918 |
+| Requests/second, 32 connections | 169,706 | 128,043 | 134,205 (one clean run, indicative) |
+| Requests/second, 1,024 connections | 170,641 | 116,555 | 99,152 |
+| Requests/second, 64 KiB response | 87,002 | 48,338 | 35,542 |
+| Requests/second, new connection per request | 88,643 | 71,366 | 74,708 |
+| p99 latency, 32 connections, µs | 302 | 303 | 403 (indicative) |
+| User instructions/request, 32 connections | 14,712 | 23,862 | 19,877 |
 
-The run counts, ranges, TLS, cache, HTTP/3 and memory results and the conditions are in the
+The run counts, ranges, PSI per row, TLS, cache and HTTP/3 results and the conditions are in the
 [7.0 report](benchmarks/reports/7.0/README.md) and [Benchmark evidence](docs/BENCHMARKS.md). The nginx comparison
 uses a local harness that is not part of this checkout; the OxiRoute instruction counts reproduce with the checked-in
 [R2 harness](benchmarks/r2-data-path/README.md). The profile-guided release binaries were not measured, and other
