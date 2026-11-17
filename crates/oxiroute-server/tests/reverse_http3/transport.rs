@@ -31,14 +31,14 @@ async fn downloaded_with(control: Option<CongestionControl>, offload: Option<boo
 }
 
 #[tokio::test]
-pub(super) async fn cubic_with_segmentation_offload_is_the_default_transport() {
+pub(super) async fn bbr_with_segmentation_offload_is_the_default_transport() {
     assert_eq!(downloaded_with(None, None).await, 200);
 }
 
 #[tokio::test]
-pub(super) async fn bbr_serves_a_large_body() {
+pub(super) async fn cubic_serves_a_large_body() {
     assert_eq!(
-        downloaded_with(Some(CongestionControl::Bbr), None).await,
+        downloaded_with(Some(CongestionControl::Cubic), None).await,
         200
     );
 }
@@ -49,9 +49,9 @@ pub(super) async fn disabled_segmentation_offload_serves_a_large_body() {
 }
 
 #[tokio::test]
-pub(super) async fn bbr_without_segmentation_offload_serves_a_large_body() {
+pub(super) async fn cubic_without_segmentation_offload_serves_a_large_body() {
     assert_eq!(
-        downloaded_with(Some(CongestionControl::Bbr), Some(false)).await,
+        downloaded_with(Some(CongestionControl::Cubic), Some(false)).await,
         200
     );
 }

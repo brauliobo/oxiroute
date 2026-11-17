@@ -4,8 +4,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CongestionControl {
-    #[default]
     Cubic,
+    #[default]
     Bbr,
 }
 

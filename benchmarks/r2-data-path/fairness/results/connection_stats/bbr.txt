@@ -1,0 +1,3 @@
+QS t=0.0 cwnd=242869 rtt_us=476 lost=0 cong=0 dgrams=8 tx=8 bytes=4438 sent_pk=9
+QS t=0.1 cwnd=5808 rtt_us=15 lost=0 cong=0 dgrams=13701 tx=4532 bytes=19863425 sent_pk=13702
+QS t=0.2 cwnd=5808 rtt_us=15 lost=0 cong=0 dgrams=27777 tx=9224 bytes=40301777 sent_pk=27778

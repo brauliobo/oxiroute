@@ -343,17 +343,28 @@ Current constraints:
   replaced generation finishes its handshakes on its own threads (as with `listener_workers`). The count does not bound how
   many handshakes wait: `max_connections` and the handshake timeout do. It does not change certificate selection,
   protocols, ciphers or session resumption.
-- Root `http3_congestion_control` is optional: `cubic` (the default) or `bbr`. It selects the congestion controller of
+- Root `http3_congestion_control` is optional: `bbr` (the default) or `cubic`. It selects the congestion controller of
   every QUIC connection of the `http3` and `forward_http3` listeners. `cubic` halves its rate at every packet loss, so on a
   link with random loss or a long round trip its throughput falls with the loss rate and the round trip time; `bbr`
-  estimates the bottleneck bandwidth and keeps it up through random loss. Downloading 10 MiB over a path with a 40 ms round
-  trip and 0.5% loss took 0.3 s with `bbr` and 15 s with `cubic`; with a 100 ms round trip and 1% loss, 0.8 s against 65 s.
-  `bbr` costs on other paths: on a loss-free LAN it ramps up more slowly (a 48 MiB download took about 2.7 times as long as
-  with `cubic`, with twice the CPU per MiB), and through a 100 Mbit/s bottleneck with a 300-packet queue it was 10 to 15%
-  faster but the bottleneck dropped at least as many packets as it forwarded, and the CPU per MiB doubled. It does not share a
-  bottleneck fairly with `cubic` or TCP flows, so it is for listeners that serve clients over lossy or high-latency paths.
-  The setting belongs to the generation: changing it is an ordinary reload, new connections of the new generation use the
-  new controller.
+  estimates the bottleneck bandwidth and keeps it up through random loss. Measured in a private network namespace,
+  downloading 10 MiB over a 40 ms round trip with 0.5% loss took a median 0.37 s with `bbr` and 15.0 s with `cubic`; with a
+  100 ms round trip and 1% loss, 0.80 s against 61.8 s; without loss at 40 ms, 0.31 s against 0.55 s. The same measurements
+  show what `bbr` costs, and `cubic` is the better choice where they matter:
+  - Sharing a bottleneck: against a `cubic` HTTP/3 flow or a TCP flow on a shared 100 Mbit/s link (20 and 80 ms round trip,
+    buffers of 0.5, 1 and 4 times the bandwidth-delay product) the `bbr` flow took 99.3% to 99.7% of the link, Jain's
+    fairness index was 0.50 and the other flow kept 0.3% to 0.7%; `bbr` is not fair to other flows. Two `cubic` flows, or
+    `cubic` against TCP, shared with an index of 0.90 to 0.98.
+  - Loss and CPU at a bottleneck: through such a link `bbr` alone lost 28% to 70% of the packets it sent (`cubic`: under
+    0.1%) and spent 1.7 times the CPU per MiB (0.8 to 2.0 times across the cells).
+  - LAN bulk: a loss-free LAN 48 MiB download ran at 226 MiB/s with `bbr` and 1,100 MiB/s with `cubic`, at 3 times the
+    CPU per MiB. The window of quinn's BBR never leaves its floor of 4 datagrams when the round trip is tens of
+    microseconds. A LAN 1 KiB request rate and its p99 do not change (247,000 against 237,000 requests per second,
+    p99 219 and 263 microseconds).
+  Choose `cubic` for listeners that serve LAN or data-center clients, that carry large transfers beside TCP or `cubic`
+  traffic through a shared bottleneck, or where the CPU per MiB matters more than the rate on lossy paths. The method,
+  the raw records and the lane to repeat them are in `benchmarks/r2-data-path/README.md` (BBR measurements). The setting
+  belongs to the generation: changing it is an ordinary reload, new connections of the new generation use the new
+  controller.
 - Root `http3_segmentation_offload` is an optional boolean (default `true`). With it the QUIC endpoints of `http3` and
   `forward_http3` listeners hand the kernel several datagrams in one `sendmsg` call (UDP generic segmentation offload,
   `UDP_SEGMENT`). On a LAN it halves the CPU cost of a bulk download (about 3.1 to 1.4 ms per MiB) and raises its rate by

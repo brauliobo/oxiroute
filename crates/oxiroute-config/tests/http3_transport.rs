@@ -11,13 +11,13 @@ fn draft(extra: &Value) -> serde_json::Result<ConfigDraft> {
 }
 
 #[test]
-fn absence_is_cubic_with_segmentation_offload_and_stays_out_of_the_canonical_form() {
+fn absence_is_bbr_with_segmentation_offload_and_stays_out_of_the_canonical_form() {
     let config = draft(&json!({})).unwrap().validate().unwrap();
 
     assert_eq!(
         config.as_draft().effective_http3_transport(),
         Http3Transport {
-            congestion_control: CongestionControl::Cubic,
+            congestion_control: CongestionControl::Bbr,
             segmentation_offload: true
         }
     );
@@ -29,7 +29,7 @@ fn absence_is_cubic_with_segmentation_offload_and_stays_out_of_the_canonical_for
 #[test]
 fn both_options_are_taken_as_written() {
     let config = draft(&json!({
-        "http3_congestion_control": "bbr",
+        "http3_congestion_control": "cubic",
         "http3_segmentation_offload": false
     }))
     .unwrap()
@@ -39,12 +39,12 @@ fn both_options_are_taken_as_written() {
     assert_eq!(
         config.as_draft().effective_http3_transport(),
         Http3Transport {
-            congestion_control: CongestionControl::Bbr,
+            congestion_control: CongestionControl::Cubic,
             segmentation_offload: false
         }
     );
     let canonical = serde_json::to_value(&config).unwrap();
-    assert_eq!(canonical["http3_congestion_control"], "bbr");
+    assert_eq!(canonical["http3_congestion_control"], "cubic");
     assert_eq!(canonical["http3_segmentation_offload"], false);
 }
 
