@@ -6,6 +6,8 @@ mod config_support;
 mod fixture_support;
 #[path = "../support/h1_wire.rs"]
 mod h1_wire;
+#[path = "../support/h3.rs"]
+mod h3_support;
 #[allow(dead_code)]
 #[path = "../support/process.rs"]
 mod process_support;

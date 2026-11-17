@@ -9,7 +9,10 @@ use std::{
 };
 
 use bytes::{Buf as _, Bytes};
-use h3::client::RequestStream;
+use h3::{
+    client::RequestStream,
+    error::{Code, StreamError},
+};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::pki_types::{CertificateDer, pem::PemObject as _};
 use tokio::time::{sleep, timeout};
@@ -69,6 +72,17 @@ where
         .expect("H3 response body")
         .expect("H3 response data");
     chunk.copy_to_bytes(chunk.remaining())
+}
+
+pub async fn finish_unless_answered<S>(stream: &mut RequestStream<S, Bytes>)
+where
+    S: h3::quic::SendStream<Bytes>,
+{
+    match stream.finish().await {
+        Ok(()) => {}
+        Err(StreamError::RemoteTerminate { code, .. }) if code == Code::H3_NO_ERROR => {}
+        Err(error) => panic!("finish H3 request: {error:?}"),
+    }
 }
 
 pub fn drive_client<C>(mut driver: h3::client::Connection<C, Bytes>) -> tokio::task::JoinHandle<()>

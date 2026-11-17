@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use h3_support::finish_unless_answered;
 
 #[tokio::test]
 pub(super) async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
@@ -58,7 +59,7 @@ pub(super) async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
         .body(())
         .expect("H3 request");
     let mut stream = sender.send_request(request).await.expect("send H3 request");
-    stream.finish().await.expect("finish H3 request");
+    finish_unless_answered(&mut stream).await;
     let response = stream.recv_response().await.expect("H3 response");
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = stream
@@ -266,10 +267,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
         )
         .await
         .expect("send candidate H3 request");
-    candidate_stream
-        .finish()
-        .await
-        .expect("finish candidate H3 request");
+    finish_unless_answered(&mut candidate_stream).await;
     let response = candidate_stream
         .recv_response()
         .await
@@ -696,7 +694,7 @@ pub(super) async fn assert_h3_fixed_response(address: SocketAddr, expected: &'st
         .body(())
         .expect("H3 request");
     let mut stream = sender.send_request(request).await.expect("send H3 request");
-    stream.finish().await.expect("finish H3 request");
+    finish_unless_answered(&mut stream).await;
     let response = stream.recv_response().await.expect("H3 response");
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = stream
