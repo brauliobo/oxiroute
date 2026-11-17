@@ -28,7 +28,7 @@ use tokio::{
 
 use h1_wire::{Origin, Wire};
 use http_support::http_request;
-use process_support::{reserve_tcp_address, serves_on_epoll, suite_data_plane};
+use process_support::{reserve_tcp_address, serves_on_epoll};
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
@@ -63,16 +63,12 @@ async fn ask(stream: &mut TcpStream) {
     assert!(response.starts_with(b"HTTP/1.1 200 OK"));
 }
 
-fn engine_threads(pid: u32) -> u64 {
-    let prefix = match suite_data_plane() {
-        Some(HttpDataPlane::IoUring) => "uring-h1-",
-        _ => "epoll-h1-",
-    };
+fn epoll_threads(pid: u32) -> u64 {
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).expect("task list");
     tasks
         .flatten()
         .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
-        .filter(|name| name.starts_with(prefix))
+        .filter(|name| name.starts_with("epoll-h1-"))
         .count() as u64
 }
 
@@ -162,7 +158,7 @@ async fn an_aged_listener_with_dynamic_scaling_packs_its_connections_and_reports
         "oxiroute_connection_scheduling_info{mode=\"aged_per_worker\",age_ms=\"adaptive\"} 1"
     ));
     assert_eq!(
-        engine_threads(wire.server.pid()),
+        epoll_threads(wire.server.pid()),
         if serves_on_epoll() { WORKERS } else { 0 }
     );
     assert!(requests > 0);
