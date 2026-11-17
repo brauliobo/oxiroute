@@ -230,6 +230,7 @@ jobs:
         run: |
           ./scripts/test/verify/binary-paths.sh
           ./scripts/test/verify/baseline-isa.sh
+          ./scripts/test/stage_time.sh
           ./benchmarks/scripts/test-pgo.sh
 
       - name: Build and verify the source archive from the commit under test

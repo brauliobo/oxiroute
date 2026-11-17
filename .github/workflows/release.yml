@@ -164,6 +164,7 @@ jobs:
       - name: Test the package scripts, the release asset set and the profile scripts
         run: |
           scripts/package/main.sh selftest
+          scripts/test/stage_time.sh
           benchmarks/scripts/test-pgo.sh
 
   archive:
