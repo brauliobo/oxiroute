@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use config_support::{empty_config, socket_bind};
 use http_support::raw_http_request;
-use process_support::{ServerProcess, reserve_tcp_address};
+use process_support::{ServerProcess, accept_queue, reserve_tcp_address};
 
 const SEQUENTIAL_REQUESTS: usize = 300;
 const REQUEST: &[u8] = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -85,6 +85,18 @@ async fn http_listener_with_one_connection_never_rejects_sequential_close_reques
     }];
 
     assert_sequential_requests_are_admitted(config, address).await;
+}
+
+#[test]
+fn the_accept_queue_of_a_listener_counts_the_connections_nobody_accepted() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a listener");
+    let address = listener.local_addr().expect("listener address");
+    assert_eq!(accept_queue::pending_accepts(address), Some(0));
+    let _first = std::net::TcpStream::connect(address).expect("first connection");
+    let _second = std::net::TcpStream::connect(address).expect("second connection");
+    assert_eq!(accept_queue::pending_accepts(address), Some(2));
+    listener.accept().expect("accept one");
+    assert_eq!(accept_queue::pending_accepts(address), Some(1));
 }
 
 /// Every request reconnects the instant the previous `Connection: close` response reached EOF, so

@@ -9,3 +9,10 @@ slow-timeout = { period = "30s", terminate-after = 6 }
 [[profile.default.overrides]]
 filter = "binary_id(=oxiroute::lane_differential) | binary_id(=oxiroute::reverse_http3_golden) | binary_id(=oxiroute::supervised)"
 priority = 100
+
+[test-groups]
+idle-connection-herd = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary_id(=oxiroute::epoll_safety) & test(~more_idle_connections_than_a_thread_cap)"
+test-group = "idle-connection-herd"

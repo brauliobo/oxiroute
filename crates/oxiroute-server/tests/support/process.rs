@@ -26,6 +26,8 @@ pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 static UI_BUILD: OnceLock<()> = OnceLock::new();
 
+#[path = "accept_queue.rs"]
+pub mod accept_queue;
 #[path = "ports.rs"]
 pub mod ports;
 
@@ -124,7 +126,7 @@ impl ServerProcess {
             assert!(Instant::now() < deadline, "server did not bind {address}");
             sleep(RETRY_DELAY).await;
         };
-        while pending_accepts(address).is_some_and(|pending| pending > 0) {
+        while accept_queue::pending_accepts(address).is_some_and(|pending| pending > 0) {
             self.assert_running();
             assert!(
                 Instant::now() < deadline,
@@ -228,26 +230,6 @@ impl Drop for ServerProcess {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// Connections the kernel completed for the listening socket at `address` that nothing has accepted yet; `None` when
-/// the address has no IPv4 listener to read it from.
-fn pending_accepts(address: SocketAddr) -> Option<u64> {
-    let SocketAddr::V4(address) = address else {
-        return None;
-    };
-    let local = format!(
-        "{:08X}:{:04X}",
-        u32::from_le_bytes(address.ip().octets()),
-        address.port()
-    );
-    let table = fs::read_to_string("/proc/net/tcp").expect("kernel TCP table");
-    table.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        let listening = fields.nth(1) == Some(local.as_str()) && fields.nth(1) == Some("0A");
-        let queues = fields.next()?.split_once(':')?;
-        listening.then(|| u64::from_str_radix(queues.1, 16).expect("hex accept queue"))
-    })
 }
 
 const DATA_PLANE_ENV: &str = "OXIROUTE_TEST_HTTP_DATA_PLANE";
