@@ -160,6 +160,34 @@ impl ServerProcess {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn thread_names(&self) -> Vec<String> {
+        let tasks = fs::read_dir(format!("/proc/{}/task", self.child.id()));
+        let tasks = tasks.expect("the threads of the server");
+        let names = tasks
+            .flatten()
+            .filter_map(|task| fs::read_to_string(task.path().join("comm")).ok());
+        names.map(|name| name.trim_end().to_owned()).collect()
+    }
+
+    /// Returns once the server runs a thread whose name starts with `prefix`.
+    #[allow(dead_code)]
+    pub async fn wait_for_thread(&mut self, prefix: &str) {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        while !self
+            .thread_names()
+            .iter()
+            .any(|name| name.starts_with(prefix))
+        {
+            self.assert_running();
+            assert!(
+                Instant::now() < deadline,
+                "server did not start a thread named {prefix}"
+            );
+            sleep(RETRY_DELAY).await;
+        }
+    }
+
     pub fn assert_running(&mut self) {
         if let Some(status) = self.child.try_wait().expect("inspect server process") {
             panic!("server exited early with {status}: {}", self.stderr());

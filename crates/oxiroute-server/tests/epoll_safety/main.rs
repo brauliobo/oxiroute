@@ -42,6 +42,7 @@ use tokio::{
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
+const CONFIG_WATCHER_THREAD: &str = "oxiroute-config";
 const SERVED_ON_EPOLL: &str = "served by the epoll data plane";
 const STEP: Duration = Duration::from_secs(10);
 const TOKEN: &str = "5b1f0c6e8a3d4f27b9c0e1d2a3f4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2";
@@ -131,6 +132,7 @@ impl Proxy {
         let mut server = ServerProcess::start_with_env(&validated, Some(TOKEN), &[]);
         server.wait_for_tcp(address).await;
         server.wait_for_tcp(management).await;
+        server.wait_for_thread(CONFIG_WATCHER_THREAD).await;
         Self {
             address,
             management,
@@ -239,13 +241,8 @@ impl Proxy {
     }
 
     fn engine_threads(&self) -> usize {
-        let tasks = std::fs::read_dir(format!("/proc/{}/task", self.server.pid()))
-            .expect("the threads of the server");
-        tasks
-            .flatten()
-            .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
-            .filter(|name| name.contains("-h1-"))
-            .count()
+        let names = self.server.thread_names();
+        names.iter().filter(|name| name.contains("-h1-")).count()
     }
 
     fn served_on_epoll(self) -> usize {
