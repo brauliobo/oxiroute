@@ -406,9 +406,11 @@ async fn answer_one_request(client: &mut TcpStream) {
     read_until(client, "ok").await;
 }
 
+const CLIENTS: usize = 17_000;
+const DESCRIPTORS_FOR_IDLE_CLIENTS: u64 = CLIENTS as u64 + 1_000;
+
 async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataPlane) {
-    const CLIENTS: usize = 17_000;
-    raise_descriptor_limit(100_000);
+    raise_descriptor_limit(DESCRIPTORS_FOR_IDLE_CLIENTS);
     let origin = Scripted::start(|mut stream| async move {
         while !read_head(&mut stream).await.is_empty() {
             stream.write_all(OK).await.expect("origin answer");
