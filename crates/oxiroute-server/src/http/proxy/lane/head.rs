@@ -127,18 +127,18 @@ pub(in crate::http::proxy) fn authority(host: &str) -> Option<Authority> {
 /// The request line of a head: what routes a request, read before the header fields.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::http::proxy) struct Line {
-    line: RequestLine,
+    request: RequestLine,
     path: Span,
     query: Option<Span>,
 }
 
 impl Line {
     pub(super) fn fields_start(&self) -> usize {
-        self.line.fields_start()
+        self.request.fields_start()
     }
 
     pub(super) fn method<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
-        self.line.method.of(buf)
+        self.request.method.of(buf)
     }
 
     /// The path of the target, which is ASCII (the scanner refuses the rest).
@@ -149,9 +149,13 @@ impl Line {
 
 /// `None` when the request line is partial or refused: the classic path reads the request.
 pub(in crate::http::proxy) fn line(buf: &[u8]) -> Option<Line> {
-    let line = scan_request_line(buf).ok()?;
-    let (path, query) = split_target(line.target, buf);
-    Some(Line { line, path, query })
+    let request = scan_request_line(buf).ok()?;
+    let (path, query) = split_target(request.target, buf);
+    Some(Line {
+        request,
+        path,
+        query,
+    })
 }
 
 /// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape. `head`
@@ -180,7 +184,7 @@ fn scan_with(
     head: &mut RequestHead,
     expect_is_plain: bool,
 ) -> Option<Request> {
-    if scan_request_fields(buf, line.line, head) != Scan::Head {
+    if scan_request_fields(buf, line.request, head) != Scan::Head {
         return None;
     }
     describe(buf, (line.path, line.query), head, expect_is_plain)

@@ -42,11 +42,10 @@ pub(crate) enum TlsServing {
 impl TlsServing {
     fn admits(self, chosen: bool, terminable: bool) -> Result<(), Skip> {
         match self {
-            Self::Always => Ok(()),
             Self::Never => Err(Skip::Tls),
             Self::WhenChosen if !terminable => Err(Skip::TlsBackend),
             Self::WhenChosen if !chosen => Err(Skip::TlsNotChosen),
-            Self::WhenChosen => Ok(()),
+            Self::Always | Self::WhenChosen => Ok(()),
         }
     }
 }

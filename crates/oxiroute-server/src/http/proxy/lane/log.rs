@@ -17,6 +17,7 @@ use super::proxy::Progress;
 use crate::{
     http::{
         action::{AccessLog, HttpRoutePlan},
+        evacuation::Evacuation,
         policy::normalized_request_host,
         proxy::{
             HttpRequestContext,
@@ -167,9 +168,7 @@ impl<'a> Line<'a> {
             id: request.id.as_bytes(),
             id_generated: request.id_generated,
             elapsed,
-            evacuations: ctx
-                .evacuation()
-                .map_or(0, |evacuation| evacuation.redispatches()),
+            evacuations: ctx.evacuation().map_or(0, Evacuation::redispatches),
             host: ctx.authority.as_ref(),
             idempotency: request.idempotency,
             method: request.method,

@@ -6,11 +6,11 @@ mod config_support;
 mod fixture_support;
 #[path = "../support/h1_wire.rs"]
 mod h1_wire;
-#[path = "../support/ports.rs"]
-mod ports_support;
 #[allow(dead_code)]
 #[path = "../support/process.rs"]
 mod process_support;
+
+use process_support::ports as ports_support;
 
 use std::{
     fs,

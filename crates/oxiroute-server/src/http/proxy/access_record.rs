@@ -3,6 +3,7 @@ use pingora::proxy::Session;
 use http::{HeaderName, HeaderValue, Method};
 
 use super::{HttpActionPlan, HttpRequestContext, normalized_request_host};
+use crate::http::evacuation::Evacuation;
 use crate::label::Label;
 use crate::{
     http::request_id::{idempotency_header_or_default, idempotency_tag},
@@ -74,9 +75,7 @@ pub(super) fn access_line<'a>(
         connect_ms: trace.connect.map(|duration| Count(duration.as_millis())),
         correlation_id: Correlation(request_id),
         duration_ms: Count(elapsed.as_millis()),
-        evacuations: ctx
-            .evacuation()
-            .map_or(0, |evacuation| evacuation.redispatches()),
+        evacuations: ctx.evacuation().map_or(0, Evacuation::redispatches),
         header_ms: trace.header.map(|duration| Count(duration.as_millis())),
         host: ctx
             .authority
