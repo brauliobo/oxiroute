@@ -15,7 +15,7 @@ and failure behavior. Use the
 | Publish or record media | [RTMP guide](user/RTMP.md) | [RTMP contract](RTMP_SPEC.md) |
 | Integrate the management API | [API reference](reference/API.md) | [API/UI contract](API_UI_SPEC.md), [CLI](reference/CLI.md) |
 | Contribute code | [Developer guide](developer/README.md) | [Architecture](developer/ARCHITECTURE.md), [testing](developer/TESTING.md) |
-| Evaluate speed or resource use | [Benchmarks](BENCHMARKS.md) | Workload definitions, historical measurements, and reproduction limits |
+| Evaluate speed or resource use | [Benchmarks](BENCHMARKS.md) | [7.0 report](../benchmarks/reports/7.0/README.md): workloads, run counts, and reproduction limits |
 | Package or release | [Releasing](developer/RELEASING.md) | [Arch packaging](../packaging/arch/README.md) |
 
 ## Guides and explanations
@@ -25,7 +25,7 @@ and failure behavior. Use the
 - [Architecture](developer/ARCHITECTURE.md): configuration resolution, generations, and runtime boundaries.
 - [Testing](developer/TESTING.md): focused commands, required gates, and what each layer proves.
 - [Environment variables](developer/ENV_TO_CONFIG.md): runtime inputs and their configuration equivalents.
-- [Benchmarks](BENCHMARKS.md): what was measured and what the results establish.
+- [Benchmarks](BENCHMARKS.md): what was measured and what the results establish; the [7.0 report](../benchmarks/reports/7.0/README.md) holds the full tables.
 - [Documentation maintenance](developer/DOCUMENTATION.md): language, examples, and evidence policy.
 - [Documentation research and design](developer/DOCUMENTATION_DESIGN.md): rationale and external sources for this structure.
 
@@ -58,5 +58,5 @@ The [reference index](reference/README.md) collects the command, configuration, 
 
 `stable` describes the named behavior, not overall production maturity or complete parity with another
 product. Roadmaps and product specifications contain future requirements; use the compatibility
-matrix and the current runtime evidence when making deployment decisions. Historical performance
-notes describe their recorded binaries and workloads, not a current-release guarantee.
+matrix and the current runtime evidence when making deployment decisions. Performance
+tables describe their recorded builds, host and workloads, not a guarantee for another deployment.

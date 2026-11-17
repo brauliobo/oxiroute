@@ -285,7 +285,8 @@ Current constraints:
   workers of a listener share its socket, its connection pools, its pool queues and its limits, and
   a connection is served by whichever worker is free, so keep-alive reuse, `max_connections`,
   queueing, drain, retirement and evacuation behave as with one worker. One worker serves a
-  listener on one core (about 60 000 small requests per second); raise the value for a listener that
+  listener on one core (about 170 000 small proxied requests per second on the epoll plane and 125 000 on the
+  tokio path, see [benchmarks](BENCHMARKS.md)); raise the value for a listener that
   saturates its core, to at most the cores you can give it, because every extra worker adds
   cross-thread wake-ups per request. A reverse `http3` listener runs one QUIC endpoint per worker
   (see below). The management, statistics, RTMP, `udp` and `forward_http3` listeners keep their
