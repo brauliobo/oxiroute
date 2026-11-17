@@ -88,25 +88,26 @@ Start with [configuration examples](docs/reference/CONFIGURATION.md), then consu
 
 ## Measured performance
 
-Medians of an HTTP/1.1 reverse proxy with a 1 KiB response, keep-alive, one worker per proxy, on a 16-core desktop
-CPU shared with other jobs (proxy pinned to 2 CPUs, origin and load generator on separate CPUs, loopback, closed
-loop; two 4 s runs per row after a 2 s warm-up). Measured on 2026-11-17 on the final 7.0.0 tree (release profile, no
-profile guidance); nginx is 1.30.
+A **maintainer-recorded evaluation of the 7.0.0 tree** (measured 2026-11-17 on a release build without profile
+guidance, not the shipped profile-guided binaries) reported these medians for an HTTP/1.1 reverse proxy with a
+1 KiB response:
 
-| Measure | OxiRoute epoll plane (default) | OxiRoute tokio plane | nginx |
+| Measure | OxiRoute 7.0 | nginx | HAProxy |
 | --- | ---: | ---: | ---: |
-| Requests/second, 32 connections | 169,706 | 128,043 | 134,205 (one clean run, indicative) |
-| Requests/second, 1,024 connections | 170,641 | 116,555 | 99,152 |
-| Requests/second, 64 KiB response | 87,002 | 48,338 | 35,542 |
-| Requests/second, new connection per request | 88,643 | 71,366 | 74,708 |
-| p99 latency, 32 connections, µs | 302 | 303 | 403 (indicative) |
-| User instructions/request, 32 connections | 14,712 | 23,862 | 19,877 |
+| Requests/second | 169,706 | 134,205 | 121,704 |
+| p99 latency, µs | 302 | 403 | 368 |
+| Proxy CPU time/request, µs | 5.9 | 7.4 | 8.2 |
 
-The run counts, ranges, PSI per row, TLS, cache and HTTP/3 results and the conditions are in the
-[7.0 report](benchmarks/reports/7.0/README.md) and [Benchmark evidence](docs/BENCHMARKS.md). The nginx comparison
-uses a local harness that is not part of this checkout; the OxiRoute instruction counts reproduce with the checked-in
-[R2 harness](benchmarks/r2-data-path/README.md). The profile-guided release binaries were not measured, and other
-workloads differ.
+One worker per proxy, 32 keep-alive connections, loopback, CPU pinning, interleaved runs on a shared
+host; two 4-second measured runs after 2-second warm-ups, except nginx, which has one clean run and is
+indicative. This workload put OxiRoute above nginx and HAProxy in throughput. Other workloads differ.
+The [7.0 report](benchmarks/reports/7.0/README.md) adds 64 KiB, 1,024-connection, TLS, cache, HTTP/3, tokio-plane,
+io_uring and memory results.
+
+These are summary records: the raw runs, exact binary identity and complete reproducibility
+bundle are not published here. They cannot serve as an independently validated release baseline or
+production sizing guarantee. [Benchmark evidence](docs/BENCHMARKS.md) includes ranges, additional
+workloads, memory measurements, caveats and the requirements for a publishable comparison.
 
 ## Develop
 
