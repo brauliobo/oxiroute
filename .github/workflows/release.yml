@@ -4,8 +4,8 @@ name: Release archive, binaries and packages
 # if missing). scripts/package/ is the single owner of the asset set (families, architectures, names, matrices):
 #   - the source archive and its provenance (archive);
 #   - ONE binary per architecture, built in a container of the oldest supported glibc (almalinux:9, 2.34) by the reusable
-#     workflow release-binary.yml, in parallel on a native runner of each architecture: binary-x86_64 (profile-guided and
-#     BOLT-laid-out) and binary-aarch64 (profile-guided, no BOLT: scripts/install-bolt.sh pins amd64 packages and no BOLT
+#     workflow release-binary.yml, in parallel on a native runner of each architecture: binary-x86_64 (profile-guided, BOLT-laid-out only
+#     on request) and binary-aarch64 (profile-guided, no BOLT: scripts/install-bolt.sh pins amd64 packages and no BOLT
 #     replay is verified on aarch64). binary-extras builds the x86_64 abort (and on request x86-64-v3) flavours, which are
 #     tarballs only. binary-tests runs the workspace tests against the shipped x86_64 binaries;
 #   - .deb (Debian 12 and 13, Ubuntu 22.04 and 24.04), .rpm for the RHEL family 9 (AlmaLinux 9, Rocky Linux 9, AlmaLinux 10)
@@ -33,11 +33,16 @@ on:
       - scripts/verify-binary-paths.sh
       - scripts/verify/glibc_floor.sh
       - benchmarks/scripts/pgo.sh
+      - benchmarks/scripts/bolt.sh
+      - benchmarks/scripts/test-pgo.sh
+      - scripts/lib/stage/**
+      - scripts/test-release-binary.sh
       - docs/user/INSTALL.md
       - docs/MANAGEMENT_CLI.md
       - .github/workflows/release.yml
       - .github/workflows/release-binary.yml
       - .github/workflows/release-packages.yml
+      - .github/workflows/release-profile.yml
   workflow_dispatch:
     inputs:
       tag:
@@ -55,9 +60,9 @@ on:
         default: true
         type: boolean
       bolt:
-        description: Lay out the x86_64 release binaries with BOLT after profile-guided optimization (false skips the stage)
+        description: Lay out the x86_64 release binaries with BOLT after profile-guided optimization (opt-in, a tag does it only when the repository variable RELEASE_BOLT is 1)
         required: false
-        default: true
+        default: false
         type: boolean
       abort_flavour:
         description: Also build and publish the fail-fast panic=abort flavour (a tag always publishes it)
@@ -115,9 +120,6 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: '[[ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" == false ]]'
 
-      - name: Test the package scripts and the release asset set
-        run: scripts/package/main.sh selftest
-
       - name: Select the version, the assets and the matrices
         id: what
         env:
@@ -125,7 +127,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
           ABORT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.abort_flavour) && '0' || env.RELEASE == 'true' && '1' || '0' }}
           V3: ${{ (github.event_name == 'workflow_dispatch' && inputs.v3_flavour) && '1' || '0' }}
-          BOLT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.bolt) && '0' || env.RELEASE == 'true' && '1' || '0' }}
+          BOLT: ${{ (github.event_name == 'workflow_dispatch' && inputs.bolt) && '1' || (github.ref_type == 'tag' && vars.RELEASE_BOLT == '1') && '1' || '0' }}
         run: |
           if [[ "${RELEASE}" == true ]]; then
             version="${TAG#v}"
@@ -148,6 +150,21 @@ jobs:
       - name: Verify version metadata, package checksums and release notes
         if: env.RELEASE == 'true'
         run: ./scripts/verify-release-version.sh "${{ steps.what.outputs.version }}"
+
+  selftest:
+    name: Test the package scripts and the release asset set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Test the package scripts, the release asset set and the profile scripts
+        run: |
+          scripts/package/main.sh selftest
+          benchmarks/scripts/test-pgo.sh
 
   archive:
     name: Verify release archive and provenance
@@ -416,6 +433,7 @@ jobs:
     name: Publish the release assets
     needs:
       - changes
+      - selftest
       - archive
       - binary-x86_64
       - binary-aarch64
@@ -436,7 +454,7 @@ jobs:
     steps:
       - name: Require every job to have succeeded (only a job that has nothing to build may be skipped)
         env:
-          MUST_SUCCEED: ${{ needs.archive.result }} ${{ needs.binary-x86_64.result }} ${{ needs.binary-aarch64.result }} ${{ needs.packages-x86_64.result }} ${{ needs.packages-aarch64.result }}
+          MUST_SUCCEED: ${{ needs.selftest.result }} ${{ needs.archive.result }} ${{ needs.binary-x86_64.result }} ${{ needs.binary-aarch64.result }} ${{ needs.packages-x86_64.result }} ${{ needs.packages-aarch64.result }}
           EXTRAS: ${{ needs.binary-extras.result }}:${{ needs.changes.outputs.has_extras }}
           TESTS: ${{ needs.binary-tests.result }}:${{ needs.changes.outputs.has_tests }}
         run: |

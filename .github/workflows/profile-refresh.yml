@@ -1,0 +1,38 @@
+name: Profile refresh
+
+# Keeps the PGO profiles of main in the cache so that a tag build almost always finds its profile and skips the instrumented
+# build (release-profile.yml). Every night, and on demand, it computes the profile key of main for each architecture and flavour:
+# a key that is stored is restored (which renews the cache entry before GitHub evicts it after seven days without access), a new
+# key trains once. Run it by hand after the commit that bumps the version or changes the toolchain pin and before tagging.
+# docs/developer/RELEASING.md, "The profile".
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: profile-refresh-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  profile:
+    name: ${{ matrix.arch }} ${{ matrix.flavour }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, flavour: unwind }
+          - { arch: x86_64, runner: ubuntu-24.04, flavour: abort }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, flavour: unwind }
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-profile.yml
+    with:
+      ref: ${{ github.sha }}
+      arch: ${{ matrix.arch }}
+      runner: ${{ matrix.runner }}
+      flavour: ${{ matrix.flavour }}
