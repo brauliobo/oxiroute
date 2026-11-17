@@ -1,0 +1,20 @@
+Source: oxiroute
+Section: net
+Priority: optional
+Maintainer: OxiRoute maintainers <noreply@example.invalid>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/brauliobo/oxiroute
+Rules-Requires-Root: no
+
+Package: oxiroute
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, ca-certificates, procps, systemd
+Suggests: certbot
+Description: Pingora-based HTTP, TCP and RTMP proxy runtime
+ OxiRoute routes HTTP, TCP, UDP and RTMP services from one typed configuration.
+ It ships a management CLI (oxiroute, alias oxr), a browser dashboard and a
+ systemd service.
+ .
+ The package enables and starts nothing: edit /etc/oxiroute/oxiroute.kdl, then
+ run "systemctl enable --now oxiroute.service".

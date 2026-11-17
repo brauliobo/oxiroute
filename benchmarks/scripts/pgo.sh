@@ -4,7 +4,13 @@
 #   pgo.sh train        instrumented build, replay the R2 data-path lanes (no perf needed), merge into $PGO_PROFILE
 #   pgo.sh gen          the instrumented build alone, and pgo.sh lane NAME replays one lane of it (train = gen, every
 #                       lane of PGO_LANES, merge; the two steps let a long training be split and resumed)
+#   pgo.sh key TOOLCHAIN  the identity of the profile a build would train: the toolchain, target, cargo profile, lane mix and
+#                       the git blobs of the sources that shape the hot path (key_inputs below, without tests, benches and
+#                       documents); equal keys mean a stored profile
+#                       is the one `train` would produce, so the release workflow reuses it instead of training again
 #   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
+#   pgo.sh tool         build the load tool of the lanes (train and smoke need it; a build that does not train builds it
+#                       beside the profile-use build)
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
 #   pgo.sh rustflags    print the path-remapping rustc flags every build here appends to RUSTFLAGS
@@ -13,7 +19,8 @@
 # The profile is bound to the exact compiler: rustc mangles every symbol with a hash of its own version, and the
 # profile is keyed by symbol name, so a different rustc (or a different cargo command line, e.g. without --target)
 # matches nothing and the build would silently fall back to plain optimisation. `build` therefore counts the functions
-# the compiler could not match and fails above PGO_MAX_MISSING_PCT. Train with the toolchain that builds.
+# the compiler could not match and fails above PGO_MAX_MISSING_PCT with status 3: the profile is stale for this build and
+# must be trained again (never published as a plain build). Train with the toolchain that builds.
 # llvm-profdata must read the compiler's raw-profile format: use the rustup `llvm-tools` component
 # (`rustup component add llvm-tools`), or point LLVM_PROFDATA at a compatible one.
 #
@@ -30,6 +37,7 @@ set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "${repo}/scripts/lib/reject-isa-flags.sh"
+source "${repo}/scripts/lib/stage/time.sh"
 target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
 work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
@@ -44,7 +52,10 @@ jobs=${PGO_JOBS:-4}
 cargo_profile=${PGO_CARGO_PROFILE:-release}
 cargo_dir=${cargo_profile}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
-llvm_profdata=${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}
+key_inputs=(Cargo.toml Cargo.lock crates vendor benchmarks/scripts/pgo.sh benchmarks/r2-data-path)
+key_skip_re=$'\t(.*/)?(tests|benches)/|\\.md$'
+
+profdata() { "${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}" "$@"; }
 
 # Builder paths (checkout, cargo home, scratch) are remapped to fixed prefixes in every build of this script, the
 # instrumented one included, so the binary embeds no runner or home-directory path and the profile still matches.
@@ -57,7 +68,7 @@ remap_rustflags() {
 # The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments. A profile other
 # than release (PGO_CARGO_PROFILE=release-abort) has its own profile data: unwinding changes the control-flow hashes.
 cargo_build() {
-  [[ ${ISA_GUARD_DONE:-} == 1 ]] || reject_isa_flags
+  [[ ${ISA_GUARD_DONE:-} == 1 ]] || reject_isa_flags "${target}"
   local select=(--release)
   [[ ${cargo_profile} == release ]] || select=(--profile "${cargo_profile}")
   (cd "${repo}" && RUSTFLAGS="${RUSTFLAGS:-} $(remap_rustflags)" nice cargo build "${select[@]}" --locked \
@@ -80,11 +91,11 @@ build_tool() {
 }
 
 gen() {
-  [[ -x ${llvm_profdata} ]] || { echo "llvm-profdata not found at ${llvm_profdata}; rustup component add llvm-tools" >&2; exit 1; }
+  profdata --version > /dev/null 2>&1 || { echo "llvm-profdata not found; rustup component add llvm-tools or set LLVM_PROFDATA" >&2; exit 1; }
   rm -rf "${work}/raw" "${work}/lane" "${work}/out" "${profile}"
   mkdir -p "${work}/lane" "$(dirname -- "${profile}")"
-  RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=${work}/unused" CARGO_TARGET_DIR="${work}/target-gen" cargo_build
-  build_tool
+  RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=${work}/unused" CARGO_TARGET_DIR="${work}/target-gen" timed instrumented-build cargo_build
+  timed tool-build build_tool
 }
 
 lane() {
@@ -93,16 +104,23 @@ lane() {
   rm -f "${work}/raw/${lane}"/*.profraw
   default_cpus
   OXIROUTE_BIN="${work}/target-gen/${target}/${cargo_dir}/oxiroute" R2TOOL_BIN="${work}/target-tool/release/r2tool" \
-    "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" --scale "${scale}" --out "${work}/out/${lane}" \
+    timed "lane-${lane}" "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" --scale "${scale}" --out "${work}/out/${lane}" \
     --proxy-env "LLVM_PROFILE_FILE=${work}/raw/${lane}/%m_%p.profraw"
   compgen -G "${work}/raw/${lane}/*.profraw" > /dev/null || { echo "lane ${lane} wrote no raw profiles" >&2; exit 1; }
-  "${llvm_profdata}" merge -o "${work}/lane/${lane}.profdata" "${work}/raw/${lane}"/*.profraw
+  profdata merge -o "${work}/lane/${lane}.profdata" "${work}/raw/${lane}"/*.profraw
 }
 
 train() {
+  local entry
   gen
   for entry in ${lanes//,/ }; do lane "${entry%%:*}"; done
   merge
+}
+
+key() {
+  local toolchain=${1:?usage: $0 key TOOLCHAIN}
+  { printf '%s\n' "${toolchain}" "${target}" "${cargo_profile}" "${lanes}" "${scale}"
+    git -C "${repo}" ls-files --stage -- "${key_inputs[@]}" | grep -Ev "${key_skip_re}"; } | sha256sum | cut -c1-16
 }
 
 merge() {
@@ -112,7 +130,7 @@ merge() {
     [[ ${entry} == *:* ]] && weight=${entry#*:}
     inputs+=("-weighted-input=${weight},${work}/lane/${entry%%:*}.profdata")
   done
-  "${llvm_profdata}" merge -o "${profile}" "${inputs[@]}"
+  timed profile-merge profdata merge -o "${profile}" "${inputs[@]}"
   ls -l "${profile}"
 }
 
@@ -120,12 +138,12 @@ merge() {
 # functions the profile holds. A matching build reports almost none; a profile from another compiler reports all.
 check_profile_applied() {
   local log=$1 total missing
-  total=$("${llvm_profdata}" show "${profile}" | sed -n 's/^Total functions: //p')
+  total=$(profdata show "${profile}" | sed -n 's/^Total functions: //p')
   missing=$(grep -c 'no profile data available for function\|control flow change detected' "${log}" || true)
   echo "profile: ${missing} of ${total} functions unmatched"
   (( total > 0 && missing * 100 <= max_missing_pct * total )) || {
-    echo "the compiler ignored the profile (same rustc, same cargo arguments and the same source are required)" >&2
-    exit 1
+    echo "the profile does not match this build (same rustc, same cargo arguments and the same source are required): train it again, the profile-refresh workflow does, and never ship a plain build instead" >&2
+    exit 3
   }
 }
 
@@ -134,7 +152,7 @@ build() {
   local log="${work}/use-build.log"
   mkdir -p "${work}"
   RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-use=${profile} -Cllvm-args=-pgo-warn-missing-function" \
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-use}" cargo_build 2>&1 | tee "${log}"
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-use}" timed profile-use-build cargo_build 2>&1 | tee "${log}"
   check_profile_applied "${log}"
 }
 
@@ -159,10 +177,12 @@ case ${1:-} in
   train) train ;;
   gen) gen ;;
   lane) lane "${2:?usage: $0 lane NAME}" ;;
+  key) key "${2:-}" ;;
   merge) merge ;;
+  tool) timed tool-build build_tool ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
   rustflags) remap_rustflags; echo ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|gen|lane NAME|merge|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|gen|lane NAME|key TOOLCHAIN|merge|tool|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
 esac

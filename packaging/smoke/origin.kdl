@@ -1,0 +1,32 @@
+version 1
+
+(array)http_services {
+  (object)- {
+    name "origin"
+    (array)routes {
+      (object)- {
+        (object)action {
+          type "fixed_response"
+          status 200
+          body "origin-ok\n"
+        }
+        (object)path {
+          kind "segment_prefix"
+          value "/"
+        }
+      }
+    }
+  }
+}
+
+(array)listeners {
+  (object)- {
+    name "origin"
+    protocol "http"
+    service "origin"
+    (object)bind {
+      type "socket"
+      address "127.0.0.1:18081"
+    }
+  }
+}

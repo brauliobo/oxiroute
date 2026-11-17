@@ -143,6 +143,82 @@ grep -q 'runtime check SKIPPED' "${root}/out" || die 'SKIPPED line'
 QEMU_X86_64=qemu-x86_64-missing rejects 'required but' --run --require "${root}/clean"
 ok 'a missing qemu skips the run check, and fails with --require'
 
+# AArch64: assembled fixtures, with the host toolchain on an arm64 host and clang with lld elsewhere; the disassembler is
+# GNU objdump on an arm64 host and llvm-objdump elsewhere. The cases are skipped, and said to be, only when no
+# toolchain can build an AArch64 fixture.
+a64_arch='.arch armv8.5-a+lse+crc+crypto+dotprod+fp16+rcpc+memtag+sve'
+if [[ $(uname -m) == aarch64 ]]; then
+  a64_cc=(cc)
+elif command -v clang > /dev/null && command -v ld.lld > /dev/null && command -v llvm-objdump > /dev/null; then
+  a64_cc=(clang --target=aarch64-linux-gnu -fuse-ld=lld)
+else
+  a64_cc=()
+fi
+
+# fixture_a64 NAME [--exec] SYMBOL=BODY...: a static binary without libc; _start exits 0 (after calling the first symbol
+# when --exec is given), every SYMBOL=BODY is a function holding the instructions of BODY.
+fixture_a64() {
+  local name=$1 exec=0 body sym text
+  shift
+  [[ ${1:-} != --exec ]] || { exec=1; shift; }
+  {
+    printf '%s\n.text\n.globl _start\n_start:\n' "${a64_arch}"
+    (( exec == 0 )) || printf 'bl %s\n' "${1%%=*}"
+    printf 'mov x8, #93\nmov x0, #0\nsvc #0\n'
+    for body in "$@"; do
+      sym=${body%%=*} text=${body#*=}
+      printf '.type %s,%%function\n%s:\n%s\nret\n' "${sym}" "${sym}" "${text//; /$'\n'}"
+    done
+  } >"${root}/${name}.s"
+  "${a64_cc[@]}" -nostdlib -static -Wl,--build-id -o "${root}/${name}" "${root}/${name}.s"
+}
+
+if ((${#a64_cc[@]} > 0)); then
+  fixture_a64 a64_clean 'f=ldr q0, [x0]; fadd v0.4s, v1.4s, v2.4s; paciasp; autiasp; bti c; ldaxr x1, [x0]; stlxr w2, x1, [x0]'
+  accepts "${root}/a64_clean"
+  ok 'an AArch64 binary of NEON and hint-space PAC and BTI passes'
+
+  fixture_a64 a64_dispatched '__aarch64_ldadd8_acq_rel=ldaddal x1, x2, [x0]' '__aarch64_cas4_sync=casal w1, w2, [x0]' \
+    'aws_lc_0_1_0_aes_hw_ctr32_encrypt_blocks=aese v0.16b, v1.16b' 'ring_core_0_17_8__gcm_init_clmul=pmull v0.1q, v1.1d, v2.1d' \
+    'sha256_block_data_order=sha256h q0, q1, v2.4s' '_ZN9crc32fast11specialized7aarch649calculate17h0123456789abcdefE=crc32x w0, w1, x2'
+  accepts "${root}/a64_dispatched"
+  for family in 'outline-atomics 2' 'aws-lc 1' 'ring 1' 'openssl 1' 'rust-dispatch 1'; do
+    grep -q "${family% *} ${family#* }" "${root}/out" || { cat "${root}/out" >&2; die "AArch64 dispatched count of ${family% *}"; }
+  done
+  ok 'AArch64 outline atomics and the run-time dispatched crypto and CRC code pass and are counted by origin'
+
+  for leak in 'ldaddal x1, x2, [x0]:ldaddal' 'crc32b w0, w1, w2:crc32b' 'aese v0.16b, v1.16b:aese' 'sdot v0.4s, v1.16b, v2.16b:sdot' \
+    'fadd v0.8h, v1.8h, v2.8h:fadd' 'irg x0, x1:irg' 'ptrue p0.s:ptrue' 'pmull v0.1q, v1.1d, v2.1d:pmull'; do
+    fixture_a64 a64_leak "${legacy_app}=${leak%:*}" '__aarch64_ldadd8_acq_rel=ldaddal x1, x2, [x0]'
+    rejects "oxiroute::server::pump: ${leak##*:}" "${root}/a64_leak"
+    grep -q 'aarch64_ldadd8' "${root}/out" && die "the outline atomic helper is listed for ${leak%:*}"
+  done
+  ok 'LSE, CRC32, crypto, dot product, FP16, MTE, SVE and PMULL in own code fail and name the function'
+
+  fixture_a64 a64_lookalike '__aarch64_other=ldaddal x1, x2, [x0]' 'my_crc32_helper=crc32x w0, w1, x2'
+  rejects '2 function' "${root}/a64_lookalike"
+  ok 'AArch64 names that only look like dispatched code fail'
+
+  strip -o "${root}/a64_stripped" "${root}/a64_leak" 2> /dev/null || llvm-strip -o "${root}/a64_stripped" "${root}/a64_leak"
+  rejects 'stripped binary.*--symbols' "${root}/a64_stripped"
+  ok 'a stripped AArch64 binary fails closed'
+
+  a64_qemu=${QEMU_AARCH64:-qemu-aarch64}
+  if [[ $(uname -m) == aarch64 ]]; then
+    accepts --run "${root}/a64_clean"
+    grep -q 'runs natively' "${root}/out" || die 'no native run'
+    ok 'a native aarch64 host runs the binary'
+  elif command -v "${a64_qemu}" > /dev/null; then
+    accepts --run "${root}/a64_clean"
+    grep -q 'runs on qemu CPU cortex-a53' "${root}/out" || die 'no run on cortex-a53'
+    fixture_a64 a64_sigill --exec 'aws_lc_0_1_0_dot=sdot v0.4s, v1.16b, v2.16b'
+    rejects 'qemu CPU cortex-a53.*132|SIGILL' --run "${root}/a64_sigill"
+    ok '--run passes on the ARMv8.0 qemu CPU and fails on SIGILL'
+  fi
+else
+  printf 'SKIP: no AArch64 toolchain (an arm64 host, or clang, ld.lld and llvm-objdump), the AArch64 cases did not run\n'
+fi
+
 # Flag guard: the library and the inline copy of the PKGBUILD must agree.
 guard_lib() { env -i PATH="${PATH}" "$@" bash -c 'set -euo pipefail; source "$1"; reject_isa_flags' _ "${repo}/scripts/lib/reject-isa-flags.sh"; }
 guard_pkgbuild() { env -i PATH="${PATH}" "$@" bash -c 'set -euo pipefail; source "$1"; reject_isa_flags' _ "${repo}/packaging/arch/PKGBUILD"; }
@@ -179,6 +255,26 @@ for flag in -march=native -march=x86-64-v2 -march=x86-64-v3 -march=x86-64-v4 -ma
   guard_rejects CC="gcc ${flag}"
 done
 ok 'the flag guard (library and PKGBUILD copy) rejects CPU targets and accepts generic flags'
+
+guard_a64() { env -i PATH="${PATH}" "$@" bash -c 'set -euo pipefail; source "$1"; reject_isa_flags aarch64-unknown-linux-gnu' _ "${repo}/scripts/lib/reject-isa-flags.sh"; }
+guard_a64_rejects() {
+  ! guard_a64 "$@" > /dev/null 2> "${root}/err" || die "the aarch64 guard accepted: $*"
+  grep -q '^build refused: ' "${root}/err" || die "the aarch64 guard gave no refusal message for: $*"
+}
+guard_a64
+guard_a64 RUSTFLAGS='-Cforce-frame-pointers=yes -Cpanic=abort -Clink-arg=-Wl,-q --remap-path-prefix=/a=/b'
+guard_a64 CFLAGS='-march=armv8-a -mtune=generic -mcpu=generic -O2 -moutline-atomics -pipe' CFLAGS_aarch64_unknown_linux_gnu=-O3
+for flag in -mcpu=native -mcpu=cortex-a72 -march=native -march=armv8.2-a -march=armv8-a+crc -march=armv9-a -mtune=neoverse-n1; do
+  guard_a64_rejects CFLAGS="-O2 ${flag}"
+  guard_a64_rejects CFLAGS_aarch64_unknown_linux_gnu="-O3 ${flag}"
+  guard_a64_rejects CC="gcc ${flag}"
+done
+guard_a64_rejects RUSTFLAGS=-Ctarget-cpu=native
+guard_a64_rejects RUSTFLAGS='-Ctarget-feature=+lse'
+guard_a64_rejects CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-Ctarget-cpu=neoverse-n1
+! env -i PATH="${PATH}" bash -c 'set -euo pipefail; source "$1"; reject_isa_flags riscv64gc-unknown-linux-gnu' _ \
+  "${repo}/scripts/lib/reject-isa-flags.sh" > /dev/null 2>&1 || die 'a target without a baseline was accepted'
+ok 'the flag guard knows the aarch64 baseline (armv8-a) and refuses a target without one'
 
 # The build scripts refuse before they build anything.
 mkdir -p "${root}/bin" "${root}/work"

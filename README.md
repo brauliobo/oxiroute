@@ -55,7 +55,22 @@ and the management dashboard; the guide explains the ports, token, verification,
 
 Source builds use **Rust 1.97.1**, **Node.js 22**, **pnpm 11.3.0**, a C toolchain, and the platform build
 prerequisites described in the guide. Linux provides the fullest monitoring and supervision support.
-For packaged operation, see the [Arch packaging guide](packaging/arch/README.md).
+
+## Install a release
+
+Each [GitHub release](https://github.com/brauliobo/oxiroute/releases) attaches Debian and RPM packages, binary
+tarballs for `x86_64` and `aarch64`, and one `SHA256SUMS`. There is no hosted apt or yum repository yet; install the
+file you downloaded, after `sha256sum --check --ignore-missing SHA256SUMS`:
+
+```sh
+sudo apt install ./oxiroute_<version>_amd64.deb                   # Debian 12/13, Ubuntu 22.04/24.04
+sudo dnf install ./oxiroute-<version>-1.el9.x86_64.rpm            # AlmaLinux and Rocky Linux 9
+sudo dnf install ./oxiroute-<version>-1.amzn2023.x86_64.rpm       # Amazon Linux 2023
+```
+
+The packages enable and start nothing; [Install a release package](docs/user/INSTALL.md) has the aarch64 names, the
+tarball, the service opt-in, and upgrade, remove and purge behavior. For Arch Linux, see the
+[Arch packaging guide](packaging/arch/README.md).
 
 ## How configuration changes work
 

@@ -89,13 +89,23 @@ recording roots, or package files.
 
 ## Release Binaries, PGO, BOLT And The Abort Flavour
 
-`.github/workflows/release.yml` has a second job, `binaries`, that runs after the archive job and builds the
-`x86_64-unknown-linux-gnu` binaries (`oxiroute`, the `oxr` alias and `oxiroute-worker-launcher`) with
-profile-guided optimization, which cuts user-space instructions per request by 14 to 27%, and lays the result out with BOLT. The job is a thin call of
-`scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls `benchmarks/scripts/pgo.sh` and
-`benchmarks/scripts/bolt.sh`:
+`.github/workflows/release.yml` builds ONE binary set per architecture (`oxiroute`, the `oxr` alias and
+`oxiroute-worker-launcher`) with the reusable workflow `.github/workflows/release-binary.yml`: `binary-x86_64` and
+`binary-aarch64` run in parallel on a native runner each, do not wait for the archive job, and every tarball and every
+`.deb` and `.rpm` of the architecture is that one binary repackaged. The `x86_64-unknown-linux-gnu` binary is
+profile-guided, which cuts user-space instructions per request by 14 to 27%, and laid out by BOLT only on request (BOLT is
+opt-in, see below); the `aarch64-unknown-linux-gnu` binary is profile-guided and not laid out by BOLT.
+`scripts/package/main.sh binary ARCH VERSION OUT_DIR` builds it inside an `almalinux:9` container, the oldest glibc of every
+supported system (2.34: Debian 12 and 13, Ubuntu 22.04 and 24.04, the RHEL family 9 and 10, Amazon Linux 2023), and
+`scripts/verify/glibc_floor.sh` fails the build when a binary needs a glibc symbol version above the floor in
+`scripts/package/families.sh`. The container runs `scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls
+`benchmarks/scripts/pgo.sh` and `benchmarks/scripts/bolt.sh`. The script has two stages: `STAGE=pgo` (steps 1 to 3, the one
+that fixes the libc the binary links) and `STAGE=layout` (step 4 and the tarball). With BOLT the container stops after
+`STAGE=pgo` and `scripts/package/main.sh layout` runs the second stage on the runner, because the pinned BOLT is an Ubuntu 24.04
+package that does not run on el9's libc. BOLT rewrites the code and does not change the glibc a binary needs, and the floor
+is checked again on the rewritten binary. Without BOLT the container runs both stages (`STAGE=all`):
 
-1. `pgo.sh train`: instrumented build (`-Cprofile-generate`), replay of 24 R2 data-path lanes (the ten core lanes
+1. `pgo.sh train` (only when the profile of the key is not in the cache, see "The profile" below): instrumented build (`-Cprofile-generate`), replay of 24 R2 data-path lanes (the ten core lanes
    with weight 4, fourteen feature lanes with weight 1) through the instrumented proxy with
    `benchmarks/r2-data-path/run.sh --train` (loopback only, no `perf`, so it runs on GitHub runners),
    `llvm-profdata merge` with the weights into one profile.
@@ -109,32 +119,59 @@ profile-guided optimization, which cuts user-space instructions per request by 1
    directory, which no rustc flag can remap, so `PGO_WORK` must lie outside `/home` (the workflow uses `/tmp`).
 3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
    binary; any load error fails the job.
-4. `bolt.sh all` (skipped with `BOLT=0`): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
+4. `bolt.sh all` (opt-in: skipped with `BOLT=0`, which is what a tag does unless the repository variable `RELEASE_BOLT` is `1` or a
+   manual run sets `bolt`; it measured 0.2% fewer instructions per request, below the 2% that justifies the minutes): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
    unchanged, so the profile still matches), `llvm-bolt -instrument` adds counters (no `perf`, no LBR: it works in the
    virtual machines of hosted runners), ten lanes replay through the counted binary, and `llvm-bolt` rewrites the PGO
    binary (block order, function order, hot/cold splitting). The stage fails when fewer than 1000 functions got a
    profile, when the output grew by more than 50%, or when it is no longer PIE, lost `GNU_RELRO` or `BIND_NOW`, or does
-   not start. Then `smoke` runs again on the rewritten binary and `scripts/test/release/binary.sh` runs the whole
-   workspace test suite with the rewritten binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
-   panic-containment test drives the shipped bytes. Any failure fails the job; nothing falls back to the PGO binary.
+   not start. Then `smoke` runs again on the rewritten binary. The job `binary-tests` runs
+   `scripts/test/release/binary.sh` on the tarball's binary (the BOLT layout and the abort flavour): the whole
+   workspace test suite with that binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
+   panic-containment test drives the shipped bytes, in parallel with the packages. `publish` waits for it. Any failure fails
+   the release; nothing falls back to the PGO binary.
 
 BOLT comes from `scripts/install-bolt.sh DIR`: the Ubuntu 24.04 `bolt-18` and `libbolt-18-dev` 18.1.3-1 packages are
 downloaded and used only when their SHA-256 matches the values pinned in the script (a mismatch or an unreachable
-mirror fails the step). The workflow runs it before the build and exports `BOLT_BIN_DIR`. To update BOLT, take the new
+mirror fails the step). The workflow runs it before the layout stage and exports `BOLT_BIN_DIR`. To update BOLT, take the new
 package hashes from the `Packages` index of the Ubuntu archive and change the pins in the script. BOLT is a pipeline
 tool only, it is not linked into the product. BOLT bugs are binary-level and invisible to a normal `cargo test`: that
 is why the suite runs against the final artefact.
 
 The tarball `oxiroute-VERSION-TARGET.tar.gz` (layout of the Arch package: `bin/oxiroute`, `bin/oxr`,
 `lib/oxiroute/oxiroute-worker-launcher`, `LICENSE`, `BUILD-INFO.json`), its `.sha256` and `.build.json` (version,
-commit, `rustc --version`, `pgo`, `bolt`, `panic`, SHA-256 of the profile) are uploaded as workflow artifacts,
-attested, and attached to the tag's release; a line stating how the binaries were built is appended to the release
-notes. A training, profile, BOLT or test failure fails the job: there is no silent plain build. A manual run can start
-with the `pgo` input set to `false` (a plain build, said so in the notes line) or `bolt` set to `false`.
+commit, `rustc --version`, `pgo`, `bolt`, `panic`, SHA-256 of the profile) are uploaded as workflow artifacts and
+attested; the publish job attaches them to the tag's release and appends a line stating how the binaries were built to
+the release notes. A training, profile, BOLT or test failure fails the job: there is no silent plain build. A manual run
+can start with the `pgo` input set to `false` (a plain build, said so in the notes line, and refused by the publish
+job) or `bolt` set to `true` (BOLT is off by default).
+
+### aarch64
+
+The `aarch64-unknown-linux-gnu` tarball is built on the hosted `ubuntu-24.04-arm` runner, in an arm64 `almalinux:9`
+container, by the same script (`PGO_TARGET=aarch64-unknown-linux-gnu`): the instrumented build, the 24 training lanes and the
+profile-use build run on the native architecture, with the same profile-match gate and the same glibc 2.34 floor. The
+workflow also runs the shipped binary natively with `scripts/verify/baseline-isa.sh --run --require`; the runner CPU is not
+the ARMv8-A baseline, so the instruction check of the disassembly is the gate, as for the other flags below.
+**BOLT is off on aarch64** (the decision for the first release with packages): `scripts/install-bolt.sh` pins the
+amd64 Ubuntu packages, and no BOLT replay, rewrite or test run has been verified on aarch64 hardware, so the script
+refuses `BOLT=1` for that target (and `FLAVOUR=v3`) instead of building something unverified. The abort and x86-64-v3
+flavours stay x86_64-only tarballs. The release gates hold for aarch64 as well, adapted to the architecture rather than
+skipped: `reject_isa_flags aarch64-unknown-linux-gnu` refuses `-march=` other than `armv8-a`, `-mcpu=` other than
+`generic` and any `-Ctarget-cpu` or `-Ctarget-feature` (so `-mcpu=native` fails the build), `scripts/verify/binary-paths.sh`
+is architecture independent, and `scripts/verify/baseline-isa.sh` disassembles an AArch64 binary and fails on LSE, CRC32,
+crypto, dot-product, FP16, SVE and the other instructions above ARMv8-A outside the run-time dispatched code (libgcc
+and compiler-builtins outline atomics, OpenSSL, aws-lc, ring, zlib-ng, zstd, jemalloc, run-time detected Rust crates), and
+`--run` executes `version` on the native host or under `qemu-aarch64 -cpu cortex-a53`.
+`scripts/test/verify/baseline-isa.sh` tests them with assembled fixtures (aarch64 fixtures need an arm64 host or clang,
+lld and llvm-objdump). The dispatch allow-list was written from the instruction classes and the symbol families of the
+x86-64 list and has not yet met a real aarch64 release binary: if the first aarch64 build lists a function that sits
+behind a hardware check, extend `DISPATCHED_SYMBOL_PATTERNS` with the family and its evidence; a failure is the guard
+working, not a reason to skip it.
 
 ### Abort flavour
 
-A second matrix leg builds `FLAVOUR=abort`: cargo profile `release-abort` (`inherits = "release"`, `panic = "abort"`),
+The job `binary-extras` builds `FLAVOUR=abort` next to the default binary, in parallel with it: cargo profile `release-abort` (`inherits = "release"`, `panic = "abort"`),
 its own profile data (unwinding changes the control-flow hashes, so the default profile matches only 78% of it), the
 same BOLT stage, and the artefact `oxiroute-VERSION-TARGET-abort.tar.gz` with its own checksum, build record and notes
 line. A tag always publishes it; a manual run can skip it with `abort_flavour: false`. The default artefact, the Arch
@@ -159,12 +196,49 @@ never the default artefact; start the release workflow manually with `v3_flavour
 (`cargo build`, the Arch recipe) do not set the flags.
 
 Requirements: the toolchain that trains must be the toolchain that builds. The profile is keyed by symbol names, and
-rustc hashes its own version and the unit configuration into every symbol, so the job installs the pinned Rust 1.97.1
+rustc hashes its own version and the unit configuration into every symbol, so the jobs install the pinned Rust 1.97.1
 with the `llvm-tools` component (its `llvm-profdata` reads that compiler's raw format) and nothing else compiles
-between training and the final build. The profile is generated in the job and never committed or archived: the source
-archive, its checksum and `scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from
-source without a profile. Each leg takes about an hour on a hosted runner (training build, 24 lanes, profile build,
-BOLT counted replay and the workspace tests).
+between training and the final build. The profile is a cache entry, never committed: the source archive, its checksum and
+`scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from source without a profile.
+
+### The profile: reuse, cache keys, refresh and retrain triggers
+
+Training is not repeated per release. The profile of an architecture and flavour (`unwind` and `abort` have their own,
+unwinding changes the control-flow hashes; `aarch64` has its own) is a pure function of its inputs, so
+`release-binary.yml` asks `release-profile.yml` for it and only the missing ones are trained:
+
+1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-HASH`. HASH is the first 16 hex
+   digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
+   profile, the lane mix and scale, and the git blob ids of `Cargo.toml`, `Cargo.lock`, `crates/`, `vendor/`,
+   `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files.
+2. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache` under that key. On a hit nothing else runs: no
+   instrumented build, no lanes. On a miss the `train` job runs `scripts/package/main.sh profile train` (the instrumented build,
+   the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the cache entry.
+3. The binary job restores the same key with `fail-on-cache-miss: true`, mounts the file into the build container
+   (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
+   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile still matches the code: a mismatch exits with status 3 and the
+   message "train it again". It never produces a plain build; the job fails and the profile must be trained again (below).
+
+`.github/workflows/profile-refresh.yml` runs every night (03:17 UTC) and on demand on the default branch for the three
+profiles of a tag (x86_64 unwind and abort, aarch64 unwind). A key that is stored is restored, which renews the entry
+(GitHub evicts a cache entry that nobody restored for seven days), and a key that is new trains once. A tag run restores the
+entries that `main` saved; the entries a tag run saves are visible to that tag only. So a tag whose hot-path sources equal a
+night's state finds all three profiles and skips the instrumented build.
+
+Retrain triggers, all of them part of the key: a change to any crate or vendored source (not its tests, benches or
+documents), `Cargo.lock`, a `Cargo.toml` (the version bump of a release commit included: rustc hashes the package metadata
+into every symbol, so the key is conservative), the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the scale,
+anything in `benchmarks/r2-data-path/`, the target and the flavour. Procedure for a release: land the version bump on `main`,
+start `Profile refresh` by hand (about half an hour of waiting when the key is new), then tag. A tag created before that still
+works, it trains inside its own run first (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
+To force a retrain, delete the entry (`gh cache delete KEY`, the key is in the job summary of the `lookup` job) and run `Profile
+refresh`. A gate failure (status 3) with an unchanged key means an input is missing from the key: fix `key_inputs` in
+`benchmarks/scripts/pgo.sh`, do not raise `PGO_MAX_MISSING_PCT`.
+
+Local: `PGO_PROFILE_GIVEN=1 PGO_PROFILE=/path/to/oxiroute.profdata scripts/build-release-binaries.sh VERSION OUT` builds with a
+profile you trained earlier (`STAGE=train` leaves `OUT/oxiroute.profdata`); `benchmarks/scripts/test-pgo.sh` tests the key, the
+gate and the skip. Every stage of the scripts prints `stage-time NAME SECONDS` (`STAGE_TIMES=FILE` appends them, the jobs
+publish them as a table in the step summary).
 
 To regenerate locally with the same compiler:
 
@@ -179,8 +253,9 @@ FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.5.2 /path/to/oxiroute
 
 `PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
 scratch data, `PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened
-or different workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked
-against the glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
+or different workload still builds and passes the gate but gives less than the 14 to 27%. A build on your own machine
+links that machine's glibc; the release binary is built by `scripts/package/main.sh binary` in an `almalinux:9` container
+(glibc 2.34) so that the tarballs and the packages run on every supported distribution.
 
 ## Runtime CPU dispatch and the ISA guard
 
@@ -190,10 +265,11 @@ a `SIGILL` on an Intel Celeron J4125 (SSE4.2 and POPCNT, no AVX) from a build th
 tests, `OXIROUTE_CPU_LEVEL=scalar|sse2|sse42|avx2|avx512` forces a level; it can only lower the level and never exceeds what
 the CPU supports.
 
-Three gates keep a CPU target out of the shipped bytes:
+Three gates keep a CPU target out of the shipped bytes (the aarch64 binary has the same gates against ARMv8-A, see
+[aarch64](#aarch64); the text below describes x86-64):
 
 - `scripts/lib/reject-isa-flags.sh` (`reject_isa_flags`, called by `scripts/build-release-binaries.sh`,
-  `benchmarks/scripts/pgo.sh` and, as an inline copy, `packaging/arch/PKGBUILD`) fails the build with a one-line message
+  `benchmarks/scripts/pgo.sh` and, as an inline copy for x86-64, `packaging/arch/PKGBUILD`) fails the build with a one-line message
   when `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS` or `CARGO_TARGET_*_RUSTFLAGS` contain any
   `-Ctarget-cpu` or `-Ctarget-feature`, or when `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `CFLAGS_<target>` and
   friends (the cc crate inherits them for OpenSSL, aws-lc and Lua) carry `-march=`, `-mavx*`, `-msse4*`, `-mbmi*`, `-mfma`
@@ -231,26 +307,218 @@ loader, glibc and compiler runtime libraries. This changes the emulated loader; 
 `scripts/test/verify/baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
 "Release archive policy").
 
+## Release Assets And Packages
+
+`scripts/package/` owns the asset set; the workflows `release.yml`, `release-binary.yml` and `release-packages.yml` only call
+it. A release carries, for the version `V` (no leading `v`):
+
+| Asset | Built by | Notes |
+| --- | --- | --- |
+| `oxiroute-V.tar.gz`, `SOURCE-PROVENANCE.json` | `archive` | Deterministic source archive and provenance |
+| `oxiroute-V-x86_64-unknown-linux-gnu.tar.gz` | `binary-x86_64` | PGO and BOLT, glibc 2.34; also `-abort` (`binary-extras`, a tag always) and `-x86-64-v3` (dispatch only) |
+| `oxiroute-V-aarch64-unknown-linux-gnu.tar.gz` | `binary-aarch64` | PGO, no BOLT, glibc 2.34 |
+| each tarball's `.sha256` and `.build.json` | `binary-*` | `pin-bin-release.sh` reads the `.sha256` |
+| `oxiroute_V_amd64.deb`, `oxiroute_V_arm64.deb` | `packages-*` | Repackages the tarball binary with dpkg-buildpackage on Debian 12 |
+| `oxiroute-V-1.el9.x86_64.rpm`, `oxiroute-V-1.el9.aarch64.rpm` | `packages-*` | Repackages it with rpmbuild on AlmaLinux 9 |
+| `oxiroute-V-1.amzn2023.x86_64.rpm`, `oxiroute-V-1.amzn2023.aarch64.rpm` | `packages-*` | Repackages it with rpmbuild on Amazon Linux 2023 |
+| `<package>.build.json` | `packages-*` | The build record of the binary inside the package: identical to the record of the tarball of its architecture, which `publish` checks |
+| `SHA256SUMS` | `publish` | One file for every asset above |
+
+The `.deb` installs on Debian 12 and 13 and Ubuntu 22.04 and 24.04; the `el9` `.rpm` on AlmaLinux 9 and Rocky Linux 9, and
+the test matrix also installs it on AlmaLinux 10 (a reported result, not a promise of the recipe); the `amzn2023` `.rpm` on
+Amazon Linux 2023. They carry the same binary, so the families differ only in packaging metadata.
+
+A pre-release version `7.0.0-rc.1` is `7.0.0~rc.1` in the package versions, so it sorts below `7.0.0`.
+
+### Cut a release
+
+1. Set the workspace version, write `docs/RELEASE_NOTES_V.md` (the release text; the convention and the check of
+   `scripts/verify/release/version.sh` are unchanged), pin `packaging/arch/PKGBUILD` and `.SRCINFO` to the new source
+   archive (`packaging/arch/build-local.sh`), and merge.
+2. Tag `vV` and push the tag. The `changes` job verifies the version metadata and the notes first, so a wrong tag fails in
+   a minute, not after the builds.
+3. `archive`, `binary-x86_64`, `binary-aarch64` and `binary-extras` start together; `packages-x86_64` starts the moment
+   `binary-x86_64` is done and `packages-aarch64` the moment `binary-aarch64` is done (no barrier between the
+   architectures, and none on the archive job); `binary-tests` starts when the x86_64 binaries are done. Each build job
+   attests its files. `publish` runs only when all of them succeeded (`binary-extras` and `binary-tests` may be skipped only
+   when the run has nothing for them): `scripts/package/main.sh assets sums dist V` refuses a missing or empty asset, a
+   build record that does not say `"pgo": true`, a package that is not the binary of its architecture's tarball, a tarball
+   that does not match its `.sha256`, writes the one `SHA256SUMS` and checks it. A new release is created as a
+   draft, receives every asset and is published last, so no visitor sees a partial release. The release text is the notes
+   file plus the generated "Assets" section.
+4. After the assets are public, run `packaging/arch/pin-bin-release.sh V` and commit it.
+
+Re-publishing an existing tag: run the workflow manually with the tag and `publish: true`. The source archive and its
+provenance are verified byte for byte and not uploaded again; every other asset and `SHA256SUMS` are replaced.
+Without `publish` a manual run builds and tests everything and publishes nothing.
+
+A pull request, or a push to `main`, that changes a file the packages depend on (`recipe_paths_re` in
+`scripts/package/families.sh`) runs the same jobs as a dry run: `PGO=0` and `BOLT=0`, only the default flavour, no
+`binary-tests`, nothing attested or published, and the publish job is skipped. The plain build keeps its dependency objects
+in the workflow cache, so the next dry run compiles only the workspace crates. A newer push cancels the dry run it
+replaces; a tag or a manual run is never cancelled. Any other change ends after the first job.
+
+### What a package installs
+
+The installed layout is `packaging/arch/oxiroute.{service,sysusers,tmpfiles,modules,env,kdl,lua}`, copied unchanged
+into the Debian recipe (`packaging/deb/debian`, debhelper 13) and the RPM spec (`packaging/rpm/oxiroute.spec`): the
+test compares every installed file with the file of `packaging/arch`. Also installed: `/usr/bin/oxiroute`, the `oxr`
+symlink, `/usr/lib/oxiroute/oxiroute-worker-launcher`, and `/usr/share/doc/oxiroute/` (install guide, management CLI guide,
+`BUILD-INFO.json`, license). The three files in `/etc/oxiroute` are conffiles (deb) and `%config(noreplace)` (rpm). The
+packages enable and start nothing (`dh_installsystemd --no-enable --no-start`, `%systemd_post` with the distribution
+preset, which enables nothing); a running service is restarted on upgrade as distribution policy says. The `oxiroute` user comes from
+sysusers (the shell field is `-`, the platform's nologin, not a path that exists on one distribution only), the state
+directory from tmpfiles. `remove` keeps configuration and state; `apt purge` also deletes `/etc/oxiroute`,
+`/var/lib/oxiroute` and `/run/oxiroute` and keeps the system user. RPM has no purge: a modified configuration file stays as
+`.rpmsave` and `/var/lib/oxiroute` stays. Dependencies: `ca-certificates`, `systemd`, and what the dependency
+tool computes from the binary (glibc, libgcc); OpenSSL is linked statically, kTLS and io_uring need kernel features.
+`certbot` is suggested. No `Provides` or `Conflicts`: the Arch `oxiroute-bin` conflicts with the Arch `oxiroute`
+because both own the same Arch package name, and nothing else ships the `oxiroute` name on Debian or RPM systems.
+
+### Local commands
+
+Needs docker or podman (`PACKAGE_RUNTIME` selects). Resource controls: `PACKAGE_CPUSET=0-7` (container CPUs),
+`PACKAGE_NICE=10`, `PACKAGE_JOBS=3` (cargo jobs), `PACKAGE_CACHE=DIR` (toolchain and cargo registry between runs).
+The workflow is these commands in this order; a package needs the tarball of its architecture in `OUT_DIR` and takes
+seconds to assemble, the binary build is the one slow step:
+
+```sh
+PGO=0 scripts/package/main.sh binary x86_64 7.0.0 dist       # the one binary, on the el9 glibc; plain: ONLY for local smoke tests
+scripts/package/main.sh binary x86_64 7.0.0 dist             # profile-guided (the release build; STAGE=pgo leaves dist/stage for BOLT)
+scripts/package/main.sh build el9 x86_64 7.0.0 dist          # assembles the package from dist/oxiroute-7.0.0-x86_64-unknown-linux-gnu.tar.gz
+PGO=0 scripts/package/main.sh test el9 x86_64 dist/oxiroute-7.0.0-1.el9.x86_64.rpm
+PGO=0 scripts/package/main.sh all amzn2023 x86_64 7.0.0 dist # assemble, then test
+PACKAGE_IMAGES=ubuntu:22.04 PGO=0 scripts/package/main.sh test deb x86_64 dist/oxiroute_7.0.0_amd64.deb   # one image only
+scripts/package/main.sh test deb x86_64 dist/oxiroute_7.0.0_amd64.deb old/oxiroute_6.9.0_amd64.deb   # also upgrade
+scripts/package/main.sh selftest                             # offline: asset set, refusals, matrices, wiring, pins
+ALLOW_PLAIN=1 scripts/package/main.sh assets verify dist 7.0.0   # a local dry run; the workflow never sets ALLOW_PLAIN
+```
+
+`PGO=0` writes `"pgo": false` into the build record, which `assets` and the publish job refuse. `binary` never applies BOLT
+itself (see above; `main.sh layout` does, on a host that has it). The containers run without the default seccomp profile
+because it blocks io_uring, the default data plane, and a profile trained on the epoll plane would leave the code of every
+listener cold. An aarch64 binary and package are built natively (the scripts refuse otherwise); on an x86_64 host `test` of
+an aarch64 package runs under qemu-user binfmt emulation if the runtime has it registered, which proves the layout and the
+installation, not native code.
+
+### Verify a download
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS     # in the directory with the downloaded asset
+gh attestation verify oxiroute_V_amd64.deb --repo brauliobo/oxiroute
+```
+
+### Build time, budget and caching
+
+The release is one compile per architecture, not one per package: a build of every family on both architectures would
+compile the same code six times, and a package is the binary plus metadata, so the six packages and the tarball of an
+architecture share one binary. Every stage of the build prints `stage-time NAME SECONDS` and the jobs publish them in the
+step summary. Measured on this repository with 8 CPUs of a workstation (`taskset`, `-j3`, cold target directories, Rust 1.100,
+the harness on other CPUs); a hosted 4-vCPU runner is taken as 2 times slower, which is an extrapolation, not a measurement:
+
+| Stage | Before, local s | Before, hosted est. | After |
+| --- | ---: | ---: | --- |
+| Instrumented build (dependencies and fat-LTO link) | 792 | 26 min | 0 on a profile hit (a miss trains once, nightly) |
+| Load tool build | 70 | 2.3 min | beside the profile-use build, off the path |
+| 24 training lanes + merge | 16 | 0.5 min | 0 on a hit |
+| Profile-use build (fat LTO, `codegen-units=1`) | 548 | 18 min | unchanged, now the longest stage |
+| of which dependencies, up to the first workspace crate | 196 | 6.5 min | unchanged (see below) |
+| of which final `oxiroute` fat-LTO codegen, one thread | 237 | 8 min | unchanged |
+| BOLT: instrument 37, replay 10 lanes 8, rewrite 8, guards 0 | 54 | 2 min (+ Rust, pnpm, rust-cache, tool build on the host: 3 to 4 min) | opt-in; host setup reduced to Rust, the tool travels in `stage/` |
+| Workspace tests against the binary: test build, cold (shared with a build) | 1054 | 35 min, cached dependencies cut it | unchanged, in parallel with the packages, required by `publish` |
+| Workspace tests: run | 471 | 16 min | unchanged, same job |
+| Dry run build (`PGO=0`): fat LTO is unmeasured, no LTO with 16 codegen units | 317 | 10.5 min cold | dependencies cached, no LTO |
+| `selftest` of the package scripts | not measured | about 2 min | its own job, off the path |
+
+Quality, instructions per request (the harness, `h1_b1k`, `tls_h1_keepalive`, `h2_b1k_c4s16`, `f_fixed`, 3 repetitions):
+
+| Variant | Build | h1_b1k | tls_h1_keepalive | h2_b1k_c4s16 | f_fixed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PGO, fat LTO, 1 codegen unit (shipped) | 548 s | 11498 | 26079 | 28667 | 6507 |
+| the same with `-Wl,-q` (the BOLT build) | 598 s | 11540 | 26104 | 28759 | 6512 |
+| BOLT-rewritten | + 54 s | 11512 | 26063 | 28748 | 6476 |
+| PGO, thin LTO, 16 codegen units, trained with the same configuration | 363 s (instrumented 403 s) | 11929 (+3.7%) | 26615 (+2.1%) | 29113 (+1.6%) | 6517 (+0.2%) |
+
+Decisions from these numbers: the reusable profile removes the instrumented build, the lanes and the tool build
+(about 29 minutes on a hosted runner, the larger half of a leg). Thin LTO saves 235 s but costs up to 3.7% instructions per
+request on the data path, more than the 1% allowed, so the release stays on fat LTO with one codegen unit; a thin-LTO profile
+does not match a fat-LTO build at all (150% of the functions unmatched), the gate catches it. BOLT changes the instruction
+count by 0.2% (cycles per request moved between -9% and +8% under load and are inconclusive), below the 2% that pays for its
+minutes, so a tag does not run it unless the repository variable `RELEASE_BOLT` is `1` or the manual run asks for it. Training
+is not a cost worth parallelising: all 24 lanes replay in about 16 seconds, so the lane matrix of the first idea was not built; the cost
+was the instrumented build, and that is what the cache removes. The `unwind` and `abort` flavours and the `aarch64` binary
+already run in parallel jobs, each with its own profile (the symbol sets of `unwind` and `abort` differ in their control-flow
+hashes, so they are not shared). The gate also refused a thin-LTO profile on a fat build, which is the proof that sharing
+across configurations cannot happen silently.
+
+Critical path of a tag with the profiles in the cache, estimated on hosted runners: `changes` 1 minute, `lookup` 1, the binary job
+(container setup 3, profile-use build 18, checks and smoke 1, tarball and upload 1) 23, `packages-x86_64` 8, `publish` 2:
+about 35 minutes, against more than an hour for the binary leg alone before (the documented one hour per leg, then the packages and `publish`). A miss adds 26 minutes
+once. The target of 25 minutes is not reached: the profile-use build (18 minutes, 12 of them in the one-threaded fat-LTO
+codegen and the dependencies) is the floor of a fat-LTO release. What would cut it is a configuration that needs its own
+measurement: cached dependency objects keyed by the profile (the C builds of OpenSSL, jemalloc and aws-lc are 257 CPU seconds locally and
+do not depend on the profile, `ccache` would serve them), not done here. A dry run (`PGO=0 BOLT=0`) now links without LTO
+and with 16 codegen units; with the cached dependency objects it is about 6 minutes of build plus the same 8 minutes of packages.
+
+Caching: the toolchain and the cargo registry of the build container are cached with `actions/cache` keyed by `Cargo.lock`
+(one entry per architecture), and so are the dependency objects of a plain dry-run build (`.package-cache/plain-work`). The
+profiles are cache entries too (above). A profile-guided build never reuses objects of another profile: with `-Cprofile-use`
+each object is a function of the profile, and an object cache that did not see the profile (`sccache` hashes the command
+line, not the profile data) could return code compiled against another profile, so the PGO builds compile everything.
+`Swatinem/rust-cache` serves the cargo builds that run on the runner itself (the BOLT tools and the workspace tests) and writes its
+entry on `main` only. `CARGO_INCREMENTAL=0` is set in every release job. The instrumented build cannot reuse the objects of the
+profile-use build: its `RUSTFLAGS` differ (`-Cprofile-generate`), which cargo fingerprints. Per-job timeouts bound a stuck
+runner: 10 minutes for `changes` and `lookup`, 20 for assembling a package, 30 for one image, 90 for training, 120 for a binary or the tests.
+
+### Test matrix
+
+Each package is installed in fresh containers of the same architecture, one workflow job per image: the `.deb` on Debian 12
+and 13 and Ubuntu 22.04 and 24.04; the `el9` `.rpm` on AlmaLinux 9, Rocky Linux 9 and AlmaLinux 10; the Amazon Linux 2023
+`.rpm` on Amazon Linux 2023. The images are the unmodified distribution images, except that the test lets the package manager
+install documentation (the container images drop it). Each run checks the file list against `packaging/arch`, the conffile marking, the user and state
+directories, that nothing is enabled or started, `oxiroute version`, `oxiroute config check` of the shipped
+configuration as the `oxiroute` user, `systemd-analyze verify`, the shipped configuration serving `/ready`, one HTTP/1 request
+relayed by a proxy to a local origin (two `oxiroute` processes), a reinstall that keeps an edited configuration, the
+upgrade from the previous release package when the previous release has one, `remove`, and `purge` (deb).
+
+Results of the local run before the first release (x86_64, a plain `PGO=0` binary built on Debian 12, which needs glibc 2.34
+at most; all eight images passed every check above except the upgrade):
+
+| Package | Images |
+| --- | --- |
+| `.deb` | Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04: pass |
+| `el9` `.rpm` | AlmaLinux 9, Rocky Linux 9, AlmaLinux 10: pass |
+| `amzn2023` `.rpm` | Amazon Linux 2023: pass |
+
+Open limits: the aarch64 packages, the container build on `almalinux:9`, the profile-guided and BOLT binaries and the
+upgrade test (no earlier release carries a package) have only run in the release workflow, not locally. The unit uses
+directives of systemd 254 (`DelegateSubgroup=`) and 257 (`ProtectControlGroups=private`): Debian 12 (systemd 252),
+Ubuntu 22.04 (249) and Ubuntu 24.04 (255) ignore what they do not know with a warning, and `systemd-analyze verify` still
+accepts the unit there.
+
 ## Binary Package
 
 `packaging/arch/bin/` is the `oxiroute-bin` recipe: it installs the release tarball above and the same service,
 sysusers, tmpfiles, environment, KDL, Lua and `.install` files as the source recipe (byte-identical copies, enforced by
-`packaging/arch/verify-checksums.sh`). The tarball checksum exists only after the release workflow has run, so after the
-binaries job publishes, run `packaging/arch/pin-bin-release.sh VERSION` and commit the result. `verify-checksums.sh`
-runs in CI and in `scripts/verify/release/version.sh`; it fails on a stale local-file checksum or a PKGBUILD/`.SRCINFO`
-disagreement.
+`packaging/arch/verify-checksums.sh`). The tarball checksum exists only after the release workflow has run, so after
+the publish job has attached the tarballs, run `packaging/arch/pin-bin-release.sh VERSION` and commit the result.
+`verify-checksums.sh` runs in CI and in `scripts/verify/release/version.sh`; it fails on a stale local-file checksum or a
+PKGBUILD/`.SRCINFO` disagreement. The same `packaging/arch/oxiroute.{service,sysusers,tmpfiles,modules,env,kdl,lua}`
+files are the installed layout of the Debian and RPM packages too ([Release Assets And Packages](#release-assets-and-packages)).
 
-## GitHub Pages
+## Release workflow
 
 `.github/workflows/release.yml` runs on version tags, verifies Rust 1.97.1 metadata, version alignment,
-the deterministic archive, the Arch checksum, and a source provenance manifest, then uploads and
-attests the archive. The tag workflow does not run a full fuzz campaign.
-It publishes GitHub release assets only for a tag push; a manual run verifies a supplied tag or ref without
-publishing, unless `publish` is set: then the archive job first checks that the rebuilt archive, `SHA256SUMS` and
-`SOURCE-PROVENANCE.json` are byte-identical to the assets already on the release of that tag (it never uploads them),
-and only the binaries job attaches its tarballs, checksums and build records to that release. That is how the
-binaries of a tag whose tag-push run failed after the source assets were published are added without moving the tag
-or touching the source archive. A checksum mismatch is a deliberate release blocker, not a fallback.
+the deterministic archive, the Arch checksum, and a source provenance manifest, and calls the reusable workflows
+`release-binary.yml` (one binary of an architecture and flavour) and `release-packages.yml` (the packages of one
+architecture); the binary workflow calls `release-profile.yml` (the cached PGO profile of an architecture and flavour), which
+`profile-refresh.yml` also runs every night; every action in them is pinned by commit SHA. The tag workflow does not run a full
+fuzz campaign. It publishes GitHub release assets only for a tag push; a manual run verifies a supplied tag or ref without
+publishing, unless `publish` is set: then the archive job first checks that the rebuilt archive and
+`SOURCE-PROVENANCE.json` are byte-identical to the assets already on the release of that tag (it never uploads them
+again), and the publish job attaches the tarballs, packages, build records and the new `SHA256SUMS` to that release.
+That is how the assets of a tag whose tag-push run failed after the source assets were published are added without moving
+the tag or touching the source archive. A checksum mismatch is a deliberate release blocker, not a fallback.
 
 `.github/workflows/audit.yml` runs pinned cargo-deny advisory, ban, license, and source checks plus
 `cargo audit -D warnings`, all committed lockfile checks, and high-severity audits for the UI and

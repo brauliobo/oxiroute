@@ -1,0 +1,101 @@
+name: Release profile
+
+# The merged profile-guided-optimisation profile of one architecture and flavour (called by release-binary.yml and by
+# profile-refresh.yml). It is stored in actions/cache under a key that names the toolchain, the target, the flavour, the training
+# lanes and the git blobs of the sources that shape the hot path (scripts/package/profile.sh key), so a key that exists is the
+# profile that training would produce and is restored in seconds. A missing key trains once in the glibc-floor container
+# (instrumented build, the lanes, merge: the lanes replay in about half a minute, the instrumented build is the cost) and saves
+# the key. The binary job then restores the key and the profile-use build decides, with its unmatched-function gate, whether
+# the profile still matches; a mismatch fails the build with the instruction to train again.
+# docs/developer/RELEASING.md, "The profile".
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Ref that is built
+        required: true
+        type: string
+      arch:
+        description: x86_64 or aarch64
+        required: true
+        type: string
+      runner:
+        description: Native runner of the architecture
+        required: true
+        type: string
+      flavour:
+        description: unwind or abort
+        required: true
+        type: string
+    outputs:
+      key:
+        description: Cache key of the profile, present in the cache when this workflow succeeded
+        value: ${{ jobs.lookup.outputs.key }}
+
+permissions:
+  contents: read
+
+jobs:
+  lookup:
+    name: Look up the profile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      hit: ${{ steps.restore.outputs.cache-hit }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Name the profile of this source, toolchain and flavour
+        id: key
+        run: |
+          printf 'key=pgo-%s-%s-%s\n' "${{ inputs.arch }}" "${{ inputs.flavour }}" \
+            "$(scripts/package/main.sh profile key "${{ inputs.arch }}" "${{ inputs.flavour }}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore the profile (a hit also renews its eviction clock)
+        id: restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: profile/oxiroute.profdata
+          key: ${{ steps.key.outputs.key }}
+
+  train:
+    name: Train the profile
+    needs: lookup
+    if: needs.lookup.outputs.hit != 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    env:
+      PACKAGE_CACHE: ${{ github.workspace }}/.package-cache
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Cache the Rust toolchain and the cargo registry of the build container
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .package-cache/cargo
+            .package-cache/rustup
+          key: binary-${{ inputs.arch }}-${{ hashFiles('Cargo.lock', 'scripts/package/families.sh') }}
+          restore-keys: binary-${{ inputs.arch }}-
+
+      - name: Train it on the oldest supported glibc
+        run: |
+          PACKAGE_JOBS="$(nproc)" scripts/package/main.sh profile train "${{ inputs.arch }}" "${{ inputs.flavour }}" profile
+
+      - name: Report the stage times
+        if: always()
+        run: scripts/lib/stage/summary.sh profile/stage-times.txt >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Store the profile under its key
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: profile/oxiroute.profdata
+          key: ${{ needs.lookup.outputs.key }}

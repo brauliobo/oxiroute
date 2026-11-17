@@ -1,0 +1,134 @@
+name: Release packages
+
+# The .deb and .rpm packages of one architecture (called by release.yml as soon as that architecture's binary tarball exists).
+# Nothing is compiled: every package repackages the one binary of the architecture. A package is assembled in a container of
+# its family (dpkg-buildpackage, rpmbuild), then installed, upgraded, removed and purged in a fresh container of every image
+# it is promised to run on, one job per image (scripts/package/matrix.sh).
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Ref that is packaged
+        required: true
+        type: string
+      tag:
+        description: Tag of the release, to find the previous release for the upgrade test
+        required: true
+        type: string
+      version:
+        description: Release version without the leading v
+        required: true
+        type: string
+      arch:
+        description: x86_64 or aarch64
+        required: true
+        type: string
+      runner:
+        description: Native runner of the architecture
+        required: true
+        type: string
+      pgo:
+        description: 1 when the binary is profile-guided (the build record of the package must say so), 0 for a dry run
+        required: true
+        type: string
+      attest:
+        description: true attests the provenance of the packages
+        required: true
+        type: string
+      assemble_matrix:
+        description: Matrix of the families (scripts/package/matrix.sh assemble)
+        required: true
+        type: string
+      install_matrix:
+        description: Matrix of the family and image rows (scripts/package/matrix.sh install)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    name: Assemble ${{ matrix.family }} ${{ inputs.arch }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.assemble_matrix) }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Download the binary tarball of the architecture
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: oxiroute-binaries-${{ inputs.arch }}-unwind
+          path: dist
+
+      - name: Assemble the package in a container of its family
+        run: scripts/package/main.sh build "${{ matrix.family }}" "${{ inputs.arch }}" "${{ inputs.version }}" dist
+
+      - name: Upload the package and its build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages-${{ matrix.family }}-${{ inputs.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.deb.build.json
+            dist/*.rpm.build.json
+          if-no-files-found: error
+
+      - name: Attest the provenance of the package
+        if: inputs.attest == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+
+  install:
+    name: Install ${{ matrix.family }} ${{ inputs.arch }} on ${{ matrix.image }}
+    needs: assemble
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.install_matrix) }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Download the package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packages-${{ matrix.family }}-${{ inputs.arch }}
+          path: dist
+
+      - name: Fetch the package of the previous release (the upgrade test; none before the first release with packages)
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous="$(scripts/package/main.sh previous "${{ matrix.family }}" "${{ inputs.arch }}" "${{ inputs.tag }}" previous)"
+          printf 'package=%s\n' "${previous}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install, check, upgrade, remove and purge the package in a fresh container of the image
+        env:
+          PACKAGE_IMAGES: ${{ matrix.image }}
+          PGO: ${{ inputs.pgo }}
+          PREVIOUS: ${{ steps.previous.outputs.package }}
+        run: |
+          package="dist/$(scripts/package/main.sh name "${{ matrix.family }}" "${{ inputs.arch }}" "${{ inputs.version }}")"
+          scripts/package/main.sh test "${{ matrix.family }}" "${{ inputs.arch }}" "${package}" ${PREVIOUS:+"${PREVIOUS}"}

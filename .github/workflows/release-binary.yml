@@ -1,0 +1,166 @@
+name: Release binary
+
+# The one release binary of an architecture and flavour (called by release.yml). scripts/package/binary.sh builds it in a
+# container of the oldest supported glibc (almalinux:9, 2.34) and fails when it needs a newer symbol, so the same binary is
+# the tarball and the content of every .deb and .rpm of the architecture. With BOLT (x86_64 only) the profile-guided build
+# stops at STAGE=pgo and scripts/package/layout.sh rewrites the layout on the host, which has the newer glibc the pinned
+# BOLT package needs; the floor is checked again on the result. The profile of a profile-guided build comes from
+# release-profile.yml (restored from the cache by its key, trained once in its own job on a miss), never from training inside this job.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Ref that is built
+        required: true
+        type: string
+      version:
+        description: Release version without the leading v
+        required: true
+        type: string
+      arch:
+        description: x86_64 or aarch64
+        required: true
+        type: string
+      runner:
+        description: Native runner of the architecture
+        required: true
+        type: string
+      flavour:
+        description: unwind, abort or v3
+        required: true
+        type: string
+      pgo:
+        description: 1 builds with profile-guided optimization, 0 is the plain dry run
+        required: true
+        type: string
+      bolt:
+        description: 1 lays the binary out with BOLT after the profile-guided build (x86_64 only), 0 skips the stage
+        required: true
+        type: string
+      attest:
+        description: true attests the provenance of the tarball
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: ${{ inputs.arch }} ${{ inputs.flavour }} profile
+    if: inputs.pgo == '1'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-profile.yml
+    with:
+      ref: ${{ inputs.ref }}
+      arch: ${{ inputs.arch }}
+      runner: ${{ inputs.runner }}
+      flavour: ${{ inputs.flavour }}
+
+  binary:
+    name: ${{ inputs.arch }} ${{ inputs.flavour }}
+    needs: profile
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.profile.result) }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      PACKAGE_CACHE: ${{ github.workspace }}/.package-cache
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Cache the Rust toolchain and the cargo registry of the build container
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .package-cache/cargo
+            .package-cache/rustup
+          key: binary-${{ inputs.arch }}-${{ hashFiles('Cargo.lock', 'scripts/package/families.sh') }}
+          restore-keys: binary-${{ inputs.arch }}-
+
+      - name: Cache the dependencies of a plain dry-run build
+        if: inputs.pgo == '0'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .package-cache/plain-work
+          key: plain-${{ inputs.arch }}-${{ inputs.flavour }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: plain-${{ inputs.arch }}-${{ inputs.flavour }}-
+
+      - name: Restore the profile (a missing key is a bug of the profile workflow, never a reason to build without it)
+        if: inputs.pgo == '1'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: profile/oxiroute.profdata
+          key: ${{ needs.profile.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Build the binary on the oldest supported glibc (profile-guided unless this is a dry run)
+        env:
+          PGO: ${{ inputs.pgo }}
+          PGO_PROFILE_HOST: ${{ inputs.pgo == '1' && format('{0}/profile/oxiroute.profdata', github.workspace) || '' }}
+          FLAVOUR: ${{ inputs.flavour }}
+          STAGE: ${{ inputs.bolt == '1' && 'pgo' || 'all' }}
+          RELEASE_TESTS: 0
+        run: |
+          PACKAGE_JOBS="$(nproc)" scripts/package/main.sh binary "${{ inputs.arch }}" "${{ inputs.version }}" release-binaries
+
+      - name: Install Rust 1.97.1 for the layout stage (BUILD-INFO records the compiler)
+        if: inputs.bolt == '1'
+        uses: dtolnay/rust-toolchain@766a42937d994bd78bb4591385445c188ccb3f09 # 1.97.1
+        with:
+          toolchain: 1.97.1
+
+      - name: Install BOLT (pinned package, SHA-256 verified)
+        if: inputs.bolt == '1'
+        run: |
+          bin="$(./scripts/install-bolt.sh "${RUNNER_TEMP}/bolt")"
+          printf 'BOLT_BIN_DIR=%s\n' "${bin}" >> "${GITHUB_ENV}"
+
+      - name: Lay the binary out with BOLT and pack it
+        if: inputs.bolt == '1'
+        env:
+          FLAVOUR: ${{ inputs.flavour }}
+          PGO_WORK: /tmp/oxiroute-pgo
+          STAGE_TIMES: ${{ github.workspace }}/release-binaries/stage-times.txt
+        run: scripts/package/main.sh layout "${{ inputs.arch }}" "${{ inputs.version }}" release-binaries
+
+      - name: Report the stage times
+        if: always()
+        run: scripts/lib/stage/summary.sh release-binaries/stage-times.txt >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Install qemu-user for the CPU baseline check
+        if: inputs.arch == 'x86_64' && inputs.flavour != 'v3'
+        run: sudo apt-get install --yes --no-install-recommends qemu-user
+
+      - name: Run the shipped binary on CPUs without AVX (x86_64) or on the ARMv8-A baseline (aarch64)
+        if: inputs.flavour != 'v3'
+        run: |
+          tarball="release-binaries/$(scripts/package/main.sh stem "${{ inputs.version }}" "${{ inputs.arch }}" "${{ inputs.flavour }}").tar.gz"
+          unpacked="$(mktemp -d)"
+          tar --directory "${unpacked}" --extract --strip-components 1 --file "${tarball}"
+          scripts/verify/baseline-isa.sh --run --require "${unpacked}/bin/oxiroute"
+
+      - name: Upload the binary tarball, its checksum, build record and release note
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: oxiroute-binaries-${{ inputs.arch }}-${{ inputs.flavour }}
+          path: |
+            release-binaries/oxiroute-*.tar.gz
+            release-binaries/oxiroute-*.tar.gz.sha256
+            release-binaries/oxiroute-*.build.json
+            release-binaries/pgo-note-*.md
+          if-no-files-found: error
+
+      - name: Attest the provenance of the tarball
+        if: inputs.attest == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: release-binaries/oxiroute-*.tar.gz
