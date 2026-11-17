@@ -12,6 +12,8 @@
 # (STAGE=layout scripts/build-release-binaries.sh VERSION OUT_DIR): the pinned BOLT is an Ubuntu 24.04 package that
 # does not run on the libc of the container, but it rewrites the binary without changing the glibc it needs, and the
 # floor is checked again on the result.
+# PGO_PROFILE_HOST (host file) is a merged profile trained by an earlier job (STAGE=train leaves OUT_DIR/oxiroute.profdata,
+# scripts/package/profile.sh): it is mounted read-only and the build uses it without training.
 # Also: PACKAGE_JOBS (cargo jobs, default 4), PACKAGE_CACHE (host directory that keeps the Rust toolchain and the cargo
 # registry between runs), PACKAGE_RUNTIME, PACKAGE_CPUSET and PACKAGE_NICE (runtime.sh).
 set -euo pipefail
@@ -36,7 +38,9 @@ cache=${PACKAGE_CACHE:+$(mkdir -p -- "${PACKAGE_CACHE}" && cd -- "${PACKAGE_CACH
 container_run "${arch}" "${binary_image}" \
   -e ARCH="${arch}" -e RELEASE_VERSION="${version}" -e HOST_UID="$(id -u)" -e PACKAGE_JOBS="${PACKAGE_JOBS:-4}" \
   -e PGO="${PGO:-1}" -e BOLT="${BOLT:-0}" -e FLAVOUR="${FLAVOUR:-unwind}" -e STAGE="${STAGE:-all}" \
-  -e RELEASE_TESTS="${RELEASE_TESTS:-1}" \
+  -e RELEASE_TESTS="${RELEASE_TESTS:-1}" -e STAGE_TIMES=/out/stage-times.txt \
+  ${PGO_PROFILE_HOST:+-e PGO_PROFILE=/pgo-profile/oxiroute.profdata -e PGO_PROFILE_GIVEN=1} \
+  ${PGO_PROFILE_HOST:+-v "$(realpath -- "${PGO_PROFILE_HOST}"):/pgo-profile/oxiroute.profdata:ro"} \
   -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${package_repo}" log -1 --format=%ct HEAD)}" \
   -e RELEASE_COMMIT="${RELEASE_COMMIT:-$(git -C "${package_repo}" rev-parse HEAD)}" \
   -v "${scratch}/src.tar:/src.tar:ro" -v "${package_scripts}:/package:ro" -v "${out}:/out" \

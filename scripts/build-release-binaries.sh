@@ -28,7 +28,9 @@
 # Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind, abort or v3, default unwind), PGO_TARGET (default
 # x86_64-unknown-linux-gnu), PGO_WORK and the other benchmarks/scripts/pgo.sh variables, BOLT_BIN_DIR (directory of
 # llvm-bolt and merge-fdata, see scripts/install-bolt.sh) and the other benchmarks/scripts/bolt.sh variables,
-# PGO_KEEP_INSTRUMENTED=1 (keep the instrumented build; it is removed to save disk), SOURCE_DATE_EPOCH (default:
+# PGO_KEEP_INSTRUMENTED=1 (keep the instrumented build; it is removed to save disk), PGO_PROFILE_GIVEN=1 (the merged profile
+# at PGO_PROFILE, default PGO_WORK/oxiroute.profdata, was trained by an earlier job: skip the instrumented build and the
+# training, and let the profile-use build decide whether it still matches, pgo.sh build), SOURCE_DATE_EPOCH (default:
 # commit time of HEAD), RELEASE_COMMIT (recorded commit, default HEAD; for a source tree without a git repository).
 #
 # The build is two stages that can run on different machines (STAGE, default all = both in one process):
@@ -36,6 +38,9 @@
 #                 OUT_DIR/stage (the binaries and stage.env). This is the stage that fixes the libc a binary links, so the
 #                 release workflow runs it in a container of the oldest supported system (GLIBC_FLOOR=2.34).
 #   STAGE=layout  from OUT_DIR/stage: the BOLT layout (x86_64), the tests of the shipped binary and the tarball.
+#   STAGE=train   only the training: the instrumented build, the lanes and the merge, leaving OUT_DIR/oxiroute.profdata for a
+#                 later build with PGO_PROFILE_GIVEN=1 (scripts/package/profile.sh, the profile workflow).
+#   STAGE=key     prints the key of the profile that PGO_TOOLCHAIN (default: rustc --version) would train (pgo.sh key).
 # GLIBC_FLOOR (for example 2.34) makes the script fail when a binary needs a newer glibc symbol version
 # (scripts/verify/glibc_floor.sh); unset, nothing is checked. RELEASE_TESTS=0 leaves the workspace tests of the shipped
 # binary (BOLT and abort flavours) to scripts/test-release-binary.sh run by another job of the workflow.
@@ -51,15 +56,18 @@ bolt=${BOLT:-1}
 flavour=${FLAVOUR:-unwind}
 stage_name=${STAGE:-all}
 release_tests=${RELEASE_TESTS:-1}
+profile_given=${PGO_PROFILE_GIVEN:-0}
 [[ ${pgo} == 0 || ${pgo} == 1 ]] || { echo "PGO must be 0 or 1" >&2; exit 2; }
 [[ ${bolt} == 0 || ${bolt} == 1 ]] || { echo "BOLT must be 0 or 1" >&2; exit 2; }
+[[ ${profile_given} == 0 || ${profile_given} == 1 ]] || { echo "PGO_PROFILE_GIVEN must be 0 or 1" >&2; exit 2; }
 [[ ${release_tests} == 0 || ${release_tests} == 1 ]] || { echo "RELEASE_TESTS must be 0 or 1" >&2; exit 2; }
 [[ ${flavour} == unwind || ${flavour} == abort || ${flavour} == v3 ]] || { echo "FLAVOUR must be unwind, abort or v3" >&2; exit 2; }
-[[ ${stage_name} == all || ${stage_name} == pgo || ${stage_name} == layout ]] || { echo "STAGE must be all, pgo or layout" >&2; exit 2; }
+[[ ${stage_name} =~ ^(all|pgo|layout|train|key)$ ]] || { echo "STAGE must be all, pgo, layout, train or key" >&2; exit 2; }
 [[ ${target} == x86_64-unknown-linux-gnu || ${target} == aarch64-unknown-linux-gnu ]] || { echo "PGO_TARGET must be x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu" >&2; exit 2; }
 [[ ${target} == x86_64-* || ${flavour} != v3 ]] || { echo "FLAVOUR=v3 is an x86-64 flavour" >&2; exit 2; }
 [[ ${target} == x86_64-* || ${bolt} == 0 ]] || { echo "BOLT is installed and verified for x86_64 only (scripts/install-bolt.sh pins amd64 packages); use BOLT=0" >&2; exit 2; }
 source "${repo}/scripts/lib/reject-isa-flags.sh"
+source "${repo}/scripts/lib/stage/time.sh"
 reject_isa_flags "${target}"
 export ISA_GUARD_DONE=1 # the CFLAGS_* below are ours, pgo.sh must not reject the v3 flavour's
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
@@ -92,19 +100,27 @@ verify_binary() {
 }
 out=$(realpath -m -- "${out}")
 stage_dir=${out}/stage
-mkdir -p -- "${out}"
+[[ ${stage_name} == key ]] || mkdir -p -- "${out}"
+
+train_profile() {
+  if [[ ${profile_given} == 1 ]]; then
+    [[ -f ${profile} ]] || { echo "PGO_PROFILE_GIVEN=1 but there is no profile at ${profile}; train it (pgo.sh train) or unset it" >&2; exit 1; }
+    return
+  fi
+  timed training "${pgo_script}" train
+  [[ ${PGO_KEEP_INSTRUMENTED:-0} == 1 ]] || rm -rf -- "${work}/target-gen"
+}
 
 pgo_stage() {
   if [[ ${pgo} == 1 ]]; then
-    "${pgo_script}" train
-    [[ ${PGO_KEEP_INSTRUMENTED:-0} == 1 ]] || rm -rf -- "${work}/target-gen"
-    "${pgo_script}" build
+    train_profile
+    timed profile-use "${pgo_script}" build
     release=${CARGO_TARGET_DIR:-${work}/target-use}/${target}/${cargo_profile}
     pgo_json=true
     note="built with profile-guided optimization (trained on the pinned compiler by the release workflow; \`${name}.build.json\` records it)"
     profile_sha256="\"$(sha256sum "${profile}" | cut -d' ' -f1)\""
   else
-    "${pgo_script}" plain
+    timed plain-build "${pgo_script}" plain
     release=${CARGO_TARGET_DIR:-${work}/target-plain}/${target}/${cargo_profile}
     pgo_json=false
     note="a plain build without profile-guided optimization (the release workflow was started with PGO disabled)"
@@ -115,13 +131,14 @@ pgo_stage() {
     verify_isa "${release}/${binary}"
   done
   verify_isa --run "${release}/oxiroute"
-  "${pgo_script}" smoke "${release}/oxiroute"
+  timed smoke "${pgo_script}" smoke "${release}/oxiroute"
 }
 
 save_stage() {
   rm -rf -- "${stage_dir}"
   install -Dm755 "${release}/oxiroute" "${stage_dir}/oxiroute"
   install -Dm755 "${release}/oxiroute-worker-launcher" "${stage_dir}/oxiroute-worker-launcher"
+  install -Dm755 "${work}/target-tool/release/r2tool" "${stage_dir}/r2tool"
   printf 'pgo_json=%q\nnote=%q\nprofile_sha256=%q\n' "${pgo_json}" "${note}" "${profile_sha256}" > "${stage_dir}/stage.env"
 }
 
@@ -129,6 +146,7 @@ load_stage() {
   [[ -f ${stage_dir}/stage.env ]] || { echo "no stage of the profile-guided build in ${stage_dir} (STAGE=pgo)" >&2; exit 1; }
   source "${stage_dir}/stage.env"
   release=${stage_dir}
+  install -Dm755 "${stage_dir}/r2tool" "${work}/target-tool/release/r2tool"
   for binary in oxiroute oxiroute-worker-launcher; do
     verify_binary "${release}/${binary}"
   done
@@ -149,16 +167,16 @@ layout_stage() {
     export BOLT_WORK=${work}/bolt R2TOOL_BIN=${work}/target-tool/release/r2tool
     shipped=${BOLT_WORK}/oxiroute
     mkdir -p "${BOLT_WORK}"
-    "${bolt_script}" all "${release}/oxiroute" "${shipped}"
+    timed bolt "${bolt_script}" all "${release}/oxiroute" "${shipped}"
     verify_binary "${shipped}"
     verify_isa --run "${shipped}"
-    "${pgo_script}" smoke "${shipped}"
+    timed smoke-bolt "${pgo_script}" smoke "${shipped}"
     note="${note}, then relinked by BOLT for instruction layout"
   fi
   if [[ ${bolt} == 1 || ${flavour} == abort ]]; then
     if [[ ${release_tests} == 1 ]]; then
       # The binary that ships, not the one cargo test builds, runs the whole workspace test suite.
-      BOLT_TEST_TARGET_DIR=${work}/target-test "${repo}/scripts/test-release-binary.sh" "${shipped}"
+      BOLT_TEST_TARGET_DIR=${work}/target-test timed workspace-tests "${repo}/scripts/test-release-binary.sh" "${shipped}"
       rm -rf -- "${work}/target-test"
       note="${note} (the workspace tests ran against it)"
     else
@@ -204,9 +222,11 @@ JSON
   ls -l -- "${out}"
 }
 
-[[ ${stage_name} == pgo || ${bolt} == 0 ]] || require_bolt
+[[ ${stage_name} != layout && ${stage_name} != all || ${bolt} == 0 ]] || require_bolt
 case ${stage_name} in
+  key) "${pgo_script}" key "${PGO_TOOLCHAIN:-$(rustc --version)}" ;;
+  train) train_profile; install -Dm644 "${profile}" "${out}/oxiroute.profdata" ;;
   pgo) pgo_stage; save_stage ;;
-  layout) load_stage; layout_stage; verify_glibc "${shipped}"; pack ;;
-  all) pgo_stage; layout_stage; verify_glibc "${shipped}"; pack ;;
+  layout) load_stage; layout_stage; verify_glibc "${shipped}"; timed pack pack ;;
+  all) pgo_stage; layout_stage; verify_glibc "${shipped}"; timed pack pack ;;
 esac

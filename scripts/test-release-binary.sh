@@ -13,6 +13,7 @@
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+source "${repo}/scripts/lib/stage/time.sh"
 binary=${1:-}
 [[ -f ${binary} && ${binary} != -* ]] || { echo "usage: $0 BIN [cargo test arguments]" >&2; exit 2; }
 shift
@@ -25,13 +26,13 @@ expected=$(sha256sum "${binary}" | cut -d' ' -f1)
 installed=${CARGO_TARGET_DIR}/release/oxiroute
 
 cd "${repo}"
-nice cargo test --release "${scope[@]}" --locked --jobs "${jobs}" --no-run
+timed test-build nice cargo test --release "${scope[@]}" --locked --jobs "${jobs}" --no-run
 deps_file=$(find "${CARGO_TARGET_DIR}/release/deps" -samefile "${installed}")
 [[ $(wc -l <<< "${deps_file}") == 1 ]] || { echo "cannot find the cargo output behind ${installed}" >&2; exit 1; }
 cat -- "${binary}" > "${deps_file}"
 [[ $(sha256sum "${installed}" | cut -d' ' -f1) == "${expected}" ]]
 status=0
-nice cargo test --release "${scope[@]}" --locked --jobs "${jobs}" --no-fail-fast "$@" || status=$?
+timed test-run nice cargo test --release "${scope[@]}" --locked --jobs "${jobs}" --no-fail-fast "$@" || status=$?
 [[ $(sha256sum "${installed}" | cut -d' ' -f1) == "${expected}" ]] || {
   echo "cargo replaced the binary under test; the results above are not for ${binary}" >&2
   exit 1

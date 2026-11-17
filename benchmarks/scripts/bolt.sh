@@ -19,6 +19,7 @@ export LC_ALL=C
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 work=${BOLT_WORK:-/var/tmp/oxiroute-bolt}
+source "${repo}/scripts/lib/stage/time.sh"
 export PATH=${BOLT_BIN_DIR:+${BOLT_BIN_DIR}:}${PATH}
 lanes=${BOLT_LANES:-h1_b1k h1_newconn_b1k tls_h1_keepalive static_f1k f_fixed h2_b1k_c4s16 tls_hs_full_tls13 h1_b64k h1_post4k f_access_log}
 scale=${BOLT_SCALE:-0.3}
@@ -37,7 +38,7 @@ default_cpus() {
 
 instrument() {
   mkdir -p "${work}/prof"
-  llvm-bolt "$1" -instrument -o "$2" --instrumentation-file="${work}/prof/inst.fdata" --instrumentation-file-append-pid
+  timed bolt-instrument llvm-bolt "$1" -instrument -o "$2" --instrumentation-file="${work}/prof/inst.fdata" --instrumentation-file-append-pid
 }
 
 # The counters are written when the proxy exits normally (SIGTERM is handled), so every lane is its own process.
@@ -46,7 +47,7 @@ train() {
   default_cpus
   rm -f "${work}"/prof/inst.fdata.*
   for lane in ${lanes}; do
-    OXIROUTE_BIN=$1 R2TOOL_BIN=${tool} nice "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" \
+    OXIROUTE_BIN=$1 R2TOOL_BIN=${tool} timed "bolt-lane-${lane}" nice "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" \
       --scale "${scale}" --out "${work}/out/${lane}"
     find "${work}/prof" -name 'inst.fdata.*' -size +0 | grep -q . || { echo "no BOLT profile after ${lane}" >&2; exit 1; }
   done
@@ -67,7 +68,7 @@ optimize() {
   local log="${work}/optimize.log"
   merge-fdata $(find "${work}/prof" -name '*.fdata*' -size +0) > "${work}/merged.fdata"
   [[ -s ${work}/merged.fdata ]] || { echo "BOLT profile is empty" >&2; exit 1; }
-  llvm-bolt "$1" -o "$2" -data="${work}/merged.fdata" "${opts[@]}" 2>&1 | tee "${log}"
+  timed bolt-rewrite llvm-bolt "$1" -o "$2" -data="${work}/merged.fdata" "${opts[@]}" 2>&1 | tee "${log}"
   [[ ${PIPESTATUS[0]} == 0 ]] || { echo "llvm-bolt failed" >&2; exit 1; }
 }
 
@@ -94,7 +95,7 @@ all() {
   train "${instrumented}"
   rm -f -- "${instrumented}"
   optimize "$1" "$2"
-  check "$1" "$2"
+  timed bolt-guards check "$1" "$2"
 }
 
 case ${1:-} in

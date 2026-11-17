@@ -4,7 +4,7 @@
 # binary needs a glibc symbol newer than the floor of families.sh.
 #
 # Environment: ARCH, RELEASE_VERSION, HOST_UID and, for the build script, PGO, BOLT, FLAVOUR, STAGE, RELEASE_TESTS,
-# PACKAGE_JOBS, SOURCE_DATE_EPOCH, RELEASE_COMMIT.
+# PGO_PROFILE, PGO_PROFILE_GIVEN, PACKAGE_JOBS, SOURCE_DATE_EPOCH, RELEASE_COMMIT.
 # Mounts: /src.tar (the source), /package (scripts/package), /out (the result), optionally /cache (toolchain and cargo
 # registry; also the build directory of a plain build, whose dependencies a later plain build reuses. A profile-guided build
 # never reuses objects: each one is a function of the profile it is built with).

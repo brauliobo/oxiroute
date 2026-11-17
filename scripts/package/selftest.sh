@@ -137,12 +137,27 @@ test_release_workflow_wiring() {
   [[ $(needs_of packages-aarch64) == *binary-aarch64* && $(needs_of packages-aarch64) != *x86_64* ]] ||
     fail 'packages-aarch64 does not start on binary-aarch64 alone'
   [[ $(needs_of binary-x86_64) != *archive* && $(needs_of binary-aarch64) != *archive* ]] || fail 'a binary waits for the archive job'
-  for job in archive binary-x86_64 binary-aarch64 binary-extras binary-tests packages-x86_64 packages-aarch64; do
+  for job in selftest archive binary-x86_64 binary-aarch64 binary-extras binary-tests packages-x86_64 packages-aarch64; do
     sed -n '/^  publish:/,$p' "${file}" | grep -q "^      - ${job}$" || fail "publish does not need ${job}"
   done
   grep -q "cancel-in-progress: \${{ github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}" "${file}" ||
     fail 'a release run can be cancelled'
   grep -q 'assets sums dist' "${file}" && ! grep -q ALLOW_PLAIN "${repo}"/.github/workflows/release*.yml || fail 'publish does not refuse a plain build'
+}
+
+test_profile_is_restored_never_silently_skipped() {
+  local binary=${repo}/.github/workflows/release-binary.yml profile=${repo}/.github/workflows/release-profile.yml
+  grep -q 'fail-on-cache-miss: true' "${binary}" || fail 'the binary job can build without the profile it was told to use'
+  grep -q 'PGO_PROFILE_HOST' "${binary}" || fail 'the binary job does not hand the restored profile to the build'
+  grep -q 'uses: ./.github/workflows/release-profile.yml' "${binary}" || fail 'the binary job does not use the profile workflow'
+  grep -q 'key: ${{ needs.lookup.outputs.key }}' "${profile}" || fail 'the trained profile is not saved under the key that is looked up'
+  grep -q 'cron:' "${repo}/.github/workflows/profile-refresh.yml" || fail 'nothing refreshes the profile of main'
+}
+
+test_profile_keys_name_architecture_and_flavour() {
+  local keys
+  keys=$(for arch in "${package_arches[@]}"; do for flavour in unwind abort; do "${here}/profile.sh" key "${arch}" "${flavour}"; done; done)
+  [[ $(sort -u <<< "${keys}" | wc -l) == 4 ]] || fail "the profile keys of the architectures and flavours are not distinct: ${keys}"
 }
 
 test_recipes_carry_no_version() {
@@ -173,6 +188,8 @@ test_glibc_floor_is_the_lowest_of_the_images
 test_file_names_round_trip
 test_workflows_are_pinned
 test_release_workflow_wiring
+test_profile_is_restored_never_silently_skipped
+test_profile_keys_name_architecture_and_flavour
 test_recipes_carry_no_version
 test_layout_comes_from_packaging_arch
 printf 'package selftest passed\n'

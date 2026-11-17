@@ -4,6 +4,8 @@
 #
 #   main.sh binary ARCH VERSION OUT_DIR       build the binary tarball of an architecture on the oldest supported glibc
 #   main.sh layout ARCH VERSION OUT_DIR       the BOLT layout and the tarball of a binary built with STAGE=pgo (host)
+#   main.sh profile key|train ARCH FLAVOUR [OUT_DIR]
+#                                             the cache key of the PGO profile, and its training in the container
 #   main.sh build FAMILY ARCH VERSION OUT_DIR assemble a package of the tarball in OUT_DIR in a container of its family
 #   main.sh test FAMILY ARCH PACKAGE [PREVIOUS]
 #                                             install it in fresh containers of every image of the family and check it
@@ -25,7 +27,7 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "${here}/families.sh"
 
-usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" >&2; exit 2; }
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 
 all() {
   local family=$1 arch=$2 version=$3 out=$4
@@ -36,7 +38,7 @@ all() {
 command=${1:-}
 shift || true
 case ${command} in
-  binary | layout | build | test | matrix | assets | changed | previous | selftest) exec "${here}/${command}.sh" "$@" ;;
+  binary | layout | profile | build | test | matrix | assets | changed | previous | selftest) exec "${here}/${command}.sh" "$@" ;;
   all) [[ $# == 4 ]] || usage; all "$@" ;;
   name) [[ $# == 3 ]] || usage; package_file "$@" ;;
   stem) [[ $# == 3 ]] || usage; tarball_stem "$1" "$(package_target "$2")" "$3" ;;
