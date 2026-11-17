@@ -4,7 +4,9 @@
 
 use oxiroute_config::{AccessLogPolicy, ConfigDraft};
 
-use super::{Outcome, Pair, corpus, features::log_lines};
+use futures_util::{StreamExt as _, stream};
+
+use super::{Fleet, Outcome, Pair, SHARDS, compare_viewed, corpus, features::log_lines};
 use crate::{
     h1_wire::{Origin, Wire},
     revalidating_origin::with_cache_on,
@@ -34,36 +36,19 @@ fn age_masked(mut outcome: Outcome) -> Outcome {
     outcome
 }
 
-async fn compare(pair: &Pair, cases: &[corpus::Case]) {
-    let mut differences = Vec::new();
-    for case in cases {
-        let (classic, lane) = pair.play(&case.script()).await;
-        let (classic, lane) = (age_masked(classic), age_masked(lane));
-        if classic != lane {
-            differences.push(format!(
-                "case `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
-                case.name
-            ));
-        }
-    }
-    assert!(
-        differences.is_empty(),
-        "{} of {} cases differ:\n{}",
-        differences.len(),
-        cases.len(),
-        differences.join("\n")
-    );
+async fn compare(fleet: &Fleet, cases: &[corpus::Case]) {
+    compare_viewed(fleet, cases, |_| false, age_masked).await;
 }
 
 #[tokio::test]
 async fn cached_responses_are_identical_on_both_paths() {
-    let pair = Pair::configured(CACHEABLE, false, false, cached).await;
+    let fleet = Fleet::of(|_| Pair::configured(CACHEABLE, false, false, cached)).await;
     let cases: Vec<_> = [corpus::cache_requests("/r"), corpus::requests("/r")]
         .into_iter()
         .flatten()
         .collect();
-    compare(&pair, &cases).await;
-    pair.finish();
+    compare(&fleet, &cases).await;
+    fleet.finish();
 }
 
 fn large_reply() -> &'static [u8] {
@@ -127,17 +112,21 @@ Cache-Control: max-age=60\r\nCONTENT-LANGUAGE: en\r\nDate: Mon, 01 Jan 2024 00:0
 
 #[tokio::test]
 async fn cached_responses_of_every_stored_shape_are_identical_on_both_paths() {
-    for (name, reply) in shapes() {
-        let pair = Pair::configured(reply, false, false, cached).await;
-        let cases: Vec<_> = [corpus::probes("/r"), corpus::cache_requests("/r")]
-            .into_iter()
-            .flatten()
-            .take(24)
-            .collect();
+    let cases: Vec<_> = [corpus::probes("/r"), corpus::cache_requests("/r")]
+        .into_iter()
+        .flatten()
+        .take(24)
+        .collect();
+    let cases = &cases;
+    stream::iter(shapes().into_iter().map(|(name, reply)| async move {
+        let fleet = Fleet(vec![Pair::configured(reply, false, false, cached).await]);
         eprintln!("shape `{name}`");
-        compare(&pair, &cases).await;
-        pair.finish();
-    }
+        compare(&fleet, cases).await;
+        fleet.finish();
+    }))
+    .buffer_unordered(SHARDS)
+    .collect::<Vec<_>>()
+    .await;
 }
 
 #[tokio::test]
@@ -159,10 +148,10 @@ async fn access_lines_of_cached_hits_are_identical_on_both_paths() {
         config.http_services[0].access_log = Some(AccessLogPolicy::File { path: lane_path });
     })
     .await;
-    let pair = Pair { classic, lane }.warmed().await;
-    compare(&pair, &corpus::cache_requests("/r")).await;
+    let fleet = Fleet(vec![Pair { classic, lane }.warmed().await]);
+    compare(&fleet, &corpus::cache_requests("/r")).await;
     let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
-    pair.finish();
+    fleet.finish();
     assert_ne!(classic_lines.len(), 0);
     assert_eq!(classic_lines, lane_lines);
 }

@@ -7,6 +7,7 @@ pub mod classic;
 pub mod reference_scan;
 pub mod request_corpus;
 pub mod response_corpus;
+pub mod same;
 
 /// xorshift64*: deterministic, seedable, no dependency.
 pub struct Rng(pub u64);

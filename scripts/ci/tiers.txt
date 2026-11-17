@@ -99,6 +99,7 @@ oxiroute-forward-proxy::h1_wire                       core
 oxiroute-forward-proxy::h2_wire                       core
 oxiroute-forward-proxy::h3_wire                       core
 oxiroute-h1-head                                      core
+oxiroute-h1-head::dispatch                            core
 oxiroute-h1-head::header_values                       core
 oxiroute-h1-head::reference_scan                      core
 oxiroute-h1-head::request_scan                        core

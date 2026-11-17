@@ -303,7 +303,8 @@ Three gates keep a CPU target out of the shipped bytes (the aarch64 binary has t
   for x86-64-v3 raises `SIGILL` before the binary runs.
 
 `scripts/test/cpu-targets.sh` builds and executes the CPU and HTTP/1 scanner tests for generic x86-64 and the
-native build host. The generic test executables also run under QEMU with baseline, SSSE3 and AVX2 CPUs, including an
+native build host. The `oxiroute-cpu` tests and the `oxiroute-h1-head` `dispatch` tests (`CPU_TEST_BINARIES` names
+them as `PACKAGE` or `PACKAGE:TEST`) also run under QEMU with baseline, SSSE3 and AVX2 CPUs, including an
 AVX2 CPU with unrelated POPCNT and BMI features masked. Separate masks of SSE3, SSSE3 and SSE4 verify that
 selection respects Rust’s target-feature dependencies and lowers the backend when needed. Each emulated run asserts
 both the detected and selected backend; setting a requested level above the emulated hardware must not execute

@@ -330,7 +330,7 @@ fn mask_ids(line: &str) -> String {
     out
 }
 
-const SHARDS: usize = 4;
+const SHARDS: usize = 8;
 
 /// [`SHARDS`] pairs that share the cases of a corpus: every case ends with the silence that shows a connection stays
 /// open, so the cases of one pair queue up behind each other's silences while the pairs wait side by side.
@@ -348,14 +348,25 @@ impl Fleet {
 
 /// Runs every case of `cases` against both proxies and reports every difference at once.
 async fn compare(fleet: &Fleet, cases: &[corpus::Case]) {
+    compare_viewed(fleet, cases, skips_case, |outcome| outcome).await;
+}
+
+/// [`compare`] for the cases `skipped` does not name, each outcome seen through `view`.
+async fn compare_viewed(
+    fleet: &Fleet,
+    cases: &[corpus::Case],
+    skipped: fn(&str) -> bool,
+    view: fn(Outcome) -> Outcome,
+) {
     let shards = fleet.0.iter().enumerate().map(|(shard, pair)| async move {
         let mut differences = Vec::new();
-        for (index, case) in cases.iter().enumerate().skip(shard).step_by(SHARDS) {
-            if skips_case(&case.name) {
+        for (index, case) in cases.iter().enumerate().skip(shard).step_by(fleet.0.len()) {
+            if skipped(&case.name) {
                 continue;
             }
             let script = case.script();
             let (classic, lane) = pair.play(&script).await;
+            let (classic, lane) = (view(classic), view(lane));
             if classic != lane {
                 differences.push((
                     index,
