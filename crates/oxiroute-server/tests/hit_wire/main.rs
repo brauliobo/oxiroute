@@ -349,14 +349,17 @@ async fn a_purged_entry_is_not_served_again_until_the_cache_is_refilled() {
 async fn hits_on_many_connections_over_two_workers_all_come_from_the_cache() {
     const CLIENTS: usize = 8;
     const ROUNDS: usize = 40;
+    const PATHS: [&str; 2] = ["/item", "/item?"];
     let payload = body(1024);
     let wire = wire(Origin::start(reply(FRESH, &payload)).await, |config| {
         config.listener_workers = Some(2);
     })
     .await;
     let mut warm = Client::connect(wire.proxy).await;
-    warm.get("/item", "").await;
-    warm.get("/item?", "").await;
+    for path in PATHS {
+        warm.get(path, "").await;
+        warm.get(path, "").await;
+    }
     let proxy = wire.proxy;
     let clients = (0..CLIENTS)
         .map(|index| {
@@ -364,8 +367,7 @@ async fn hits_on_many_connections_over_two_workers_all_come_from_the_cache() {
             tokio::spawn(async move {
                 let mut client = Client::connect(proxy).await;
                 for _ in 0..ROUNDS {
-                    let path = if index % 2 == 0 { "/item" } else { "/item?" };
-                    let hit = client.get(path, "").await;
+                    let hit = client.get(PATHS[index % 2], "").await;
                     assert_eq!(hit.status(), "HTTP/1.1 200 OK");
                     if index % 2 == 0 {
                         assert_eq!(hit.body, payload);
@@ -379,5 +381,5 @@ async fn hits_on_many_connections_over_two_workers_all_come_from_the_cache() {
     }
     let seen = stop(wire);
     assert_eq!(seen.origin.len(), 2, "one fill per key, then hits");
-    assert_eq!(seen.lane, CLIENTS * ROUNDS);
+    assert_eq!(seen.lane, PATHS.len() + CLIENTS * ROUNDS);
 }
