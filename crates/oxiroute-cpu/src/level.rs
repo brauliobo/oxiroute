@@ -39,11 +39,11 @@ impl Level {
         match self {
             Self::Scalar => &[],
             Self::Sse2 => &["sse2"],
-            Self::Sse42 => &["sse3", "ssse3"],
-            Self::Avx2 => &["sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2"],
+            Self::Sse42 => &["sse2", "sse3", "ssse3"],
+            Self::Avx2 => &["sse2", "sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2"],
             Self::Avx512 => &[
-                "sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2", "f16c", "fma", "avx512f",
-                "avx512bw",
+                "sse2", "sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2", "f16c", "fma",
+                "avx512f", "avx512bw",
             ],
         }
     }
@@ -98,19 +98,36 @@ fn hardware_mask() -> u8 {
     }
 }
 
+#[cfg(any(test, all(target_arch = "x86_64", feature = "std")))]
+fn mask_of(has: impl Fn(&str) -> bool) -> u8 {
+    Level::ALL
+        .into_iter()
+        .filter(|level| level.features().iter().all(|&feature| has(feature)))
+        .fold(0, |mask, level| mask | bit(level))
+}
+
 #[cfg(all(target_arch = "x86_64", feature = "std"))]
 fn detect() -> u8 {
-    use std::arch::is_x86_feature_detected as has;
-    // Rust enables each target feature's prerequisites even when a kernel does not name their intrinsics.
-    let ssse3 = has!("sse3") && has!("ssse3");
-    let avx2 = ssse3 && has!("sse4.1") && has!("sse4.2") && has!("avx") && has!("avx2");
-    let avx512 = avx2 && has!("f16c") && has!("fma") && has!("avx512f") && has!("avx512bw");
-    bit(Level::Scalar)
-        | bit(Level::Sse2)
-        | (u8::from(ssse3) * bit(Level::Sse42))
-        | (u8::from(avx2) * bit(Level::Avx2))
-        | (u8::from(avx512) * bit(Level::Avx512))
+    mask_of(detected)
 }
+
+#[cfg(all(target_arch = "x86_64", feature = "std"))]
+macro_rules! detectors {
+    ($($feature:tt),*) => {
+        fn detected(feature: &str) -> bool {
+            match feature {
+                $($feature => std::arch::is_x86_feature_detected!($feature),)*
+                _ => panic!("{feature} has no runtime detector"),
+            }
+        }
+    };
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "std"))]
+detectors!(
+    "sse2", "sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2", "f16c", "fma", "avx512f",
+    "avx512bw"
+);
 
 #[cfg(not(all(target_arch = "x86_64", feature = "std")))]
 fn detect() -> u8 {
@@ -172,6 +189,61 @@ mod tests {
                 assert_eq!(lowered(hardware, Some(requested)), requested.min(hardware));
             }
         }
+    }
+
+    fn level_of(has: impl Fn(&str) -> bool) -> Level {
+        select(mask_of(has), Level::Avx512)
+    }
+
+    fn avx2_and(extra: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |feature| Level::Avx2.features().contains(&feature) || extra.contains(&feature)
+    }
+
+    #[test]
+    fn each_level_needs_every_feature_it_names() {
+        for level in Level::ALL {
+            assert_eq!(level_of(|f| level.features().contains(&f)), level);
+            for missing in level.features() {
+                let lacking = level_of(|f| f != *missing && level.features().contains(&f));
+                assert!(lacking < level, "{level:?} without {missing}");
+            }
+        }
+    }
+
+    #[test]
+    fn avx512_needs_both_foundation_and_byte_word_support() {
+        assert_eq!(level_of(avx2_and(&["f16c", "fma", "avx512f"])), Level::Avx2);
+        assert_eq!(
+            level_of(avx2_and(&["f16c", "fma", "avx512bw"])),
+            Level::Avx2
+        );
+        assert_eq!(level_of(avx2_and(&["avx512f", "avx512bw"])), Level::Avx2);
+        assert_eq!(
+            level_of(avx2_and(&["f16c", "fma", "avx512f", "avx512bw"])),
+            Level::Avx512
+        );
+    }
+
+    #[test]
+    fn avx512_never_outranks_missing_lower_features() {
+        let wide = ["avx512f", "avx512bw", "f16c", "fma"];
+        assert_eq!(level_of(|f| f == "sse2" || wide.contains(&f)), Level::Sse2);
+        let ssse3 = ["sse2", "sse3", "ssse3"];
+        assert_eq!(
+            level_of(|f| ssse3.contains(&f) || wide.contains(&f)),
+            Level::Sse42
+        );
+    }
+
+    #[test]
+    fn every_declared_feature_has_a_detector() {
+        #[cfg(all(target_arch = "x86_64", feature = "std"))]
+        Level::ALL
+            .into_iter()
+            .flat_map(Level::features)
+            .for_each(|&feature| {
+                detected(feature);
+            });
     }
 
     #[test]
