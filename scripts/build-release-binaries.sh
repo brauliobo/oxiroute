@@ -111,7 +111,15 @@ train_profile() {
   [[ ${PGO_KEEP_INSTRUMENTED:-0} == 1 ]] || rm -rf -- "${work}/target-gen"
 }
 
+start_tool_build() {
+  [[ ${pgo} == 0 || ${profile_given} == 1 ]] || return 0
+  "${pgo_script}" tool &
+  tool_pid=$!
+}
+
 pgo_stage() {
+  local tool_pid=
+  start_tool_build
   if [[ ${pgo} == 1 ]]; then
     train_profile
     timed profile-use "${pgo_script}" build
@@ -131,6 +139,7 @@ pgo_stage() {
     verify_isa "${release}/${binary}"
   done
   verify_isa --run "${release}/oxiroute"
+  [[ -z ${tool_pid} ]] || wait "${tool_pid}"
   timed smoke "${pgo_script}" smoke "${release}/oxiroute"
 }
 

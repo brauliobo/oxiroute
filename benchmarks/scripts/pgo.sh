@@ -9,6 +9,8 @@
 #                       documents); equal keys mean a stored profile
 #                       is the one `train` would produce, so the release workflow reuses it instead of training again
 #   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
+#   pgo.sh tool         build the load tool of the lanes (train and smoke need it; a build that does not train builds it
+#                       beside the profile-use build)
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
 #   pgo.sh rustflags    print the path-remapping rustc flags every build here appends to RUSTFLAGS
@@ -177,9 +179,10 @@ case ${1:-} in
   lane) lane "${2:?usage: $0 lane NAME}" ;;
   key) key "${2:-}" ;;
   merge) merge ;;
+  tool) timed tool-build build_tool ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
   rustflags) remap_rustflags; echo ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|gen|lane NAME|key TOOLCHAIN|merge|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|gen|lane NAME|key TOOLCHAIN|merge|tool|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
 esac
