@@ -153,7 +153,11 @@ macro_rules! nibble_lo {
         while low < 16 {
             let mut row = 2;
             while row < 8 {
-                table[low as usize] |= if $member(row << 4 | low) { 1 << (row - 2) } else { 0 };
+                table[low as usize] |= if $member(row << 4 | low) {
+                    1 << (row - 2)
+                } else {
+                    0
+                };
                 row += 1;
             }
             low += 1;
@@ -175,7 +179,10 @@ fn bits(mask: i32) -> u32 {
 fn lookup128(x: __m128i, lo: &[u8; 16]) -> __m128i {
     let nibble = _mm_set1_epi8(0x0f);
     let low = _mm_shuffle_epi8(load128(lo), _mm_and_si128(x, nibble));
-    let high = _mm_shuffle_epi8(load128(&ROW_BITS), _mm_and_si128(_mm_srli_epi16::<4>(x), nibble));
+    let high = _mm_shuffle_epi8(
+        load128(&ROW_BITS),
+        _mm_and_si128(_mm_srli_epi16::<4>(x), nibble),
+    );
     _mm_cmpeq_epi8(_mm_and_si128(low, high), _mm_setzero_si128())
 }
 
@@ -255,7 +262,12 @@ impl Lanes for Sse42 {
     #[inline(always)]
     fn underscore(self, reg: Self::Reg) -> u32 {
         // SAFETY: as above.
-        unsafe { pair_mask!(reg, |x| _mm_cmpeq_epi8(x, _mm_set1_epi8(b'_'.cast_signed()))) }
+        unsafe {
+            pair_mask!(reg, |x| _mm_cmpeq_epi8(
+                x,
+                _mm_set1_epi8(b'_'.cast_signed())
+            ))
+        }
     }
 
     #[inline(always)]

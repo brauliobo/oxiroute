@@ -1,9 +1,7 @@
 //! Every level the CPU runs against a lane-at-a-time oracle: one window at every offset of buffers shorter and longer than
 //! a window, on every byte value, so the lanes past the end and the tail windows are covered too.
 
-use oxiroute_cpu::{
-    Job, Lanes, Level, TokenMasks, WIDTH, dispatch_with, is_target_byte, is_tchar,
-};
+use oxiroute_cpu::{Job, Lanes, Level, TokenMasks, WIDTH, dispatch_with, is_target_byte, is_tchar};
 
 /// Positions at the ends of a window and of the buffers.
 const EDGES: [usize; 8] = [0, 1, 15, 16, 30, 31, 32, 33];
@@ -74,7 +72,10 @@ fn check_every_offset(level: Level, buf: &[u8]) {
 #[test]
 fn is_target_byte_is_what_http_uri_stores_unchanged() {
     let allowed: Vec<u8> = (0..=255u8).filter(|&b| is_target_byte(b)).collect();
-    assert_eq!(allowed.len(), 1 + 0x3b - 0x24 + 1 + 1 + 0x5f - 0x3f + 1 + 0x7e - 0x61 + 1);
+    assert_eq!(
+        allowed.len(),
+        1 + 0x3b - 0x24 + 1 + 1 + 0x5f - 0x3f + 1 + 0x7e - 0x61 + 1
+    );
     for forbidden in [b' ', b'"', b'#', b'<', b'>', b'`', 0x00, 0x7f, 0x80, 0xff] {
         assert!(!is_target_byte(forbidden));
     }
@@ -100,7 +101,9 @@ fn every_byte_value_at_every_position_of_short_and_long_buffers() {
 fn whole_buffers_of_one_class_at_every_length() {
     for level in Level::supported() {
         for len in 0..=100 {
-            for fill in [b'-', b'Q', b'_', b':', b' ', b'\r', 0x00, 0x7f, b'/', b'?', 0xc3] {
+            for fill in [
+                b'-', b'Q', b'_', b':', b' ', b'\r', 0x00, 0x7f, b'/', b'?', 0xc3,
+            ] {
                 check_every_offset(level, &vec![fill; len]);
             }
         }
@@ -109,7 +112,8 @@ fn whole_buffers_of_one_class_at_every_length() {
 
 #[test]
 fn a_head_at_every_offset() {
-    let head = b"GET /index.html?a=1&b=%20 HTTP/1.1\r\nHost: example.com\r\nX_Odd-Name: v\talue\r\n\r\n";
+    let head =
+        b"GET /index.html?a=1&b=%20 HTTP/1.1\r\nHost: example.com\r\nX_Odd-Name: v\talue\r\n\r\n";
     for level in Level::supported() {
         check_every_offset(level, head);
     }

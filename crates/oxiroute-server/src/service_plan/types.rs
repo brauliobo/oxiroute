@@ -15,8 +15,8 @@ use crate::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },
-    service_plan::ListenerPlane,
     http::cache::CompressionPolicy,
+    service_plan::ListenerPlane,
 };
 
 #[derive(Clone)]

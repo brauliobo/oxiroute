@@ -106,7 +106,13 @@ impl Written {
         self.0 |= 1 << owned as u8;
     }
 
-    fn put_missing(&self, out: &mut BytesMut, served: Representation<'_>, automatic: &str, owned: [Owned; 2]) {
+    fn put_missing(
+        &self,
+        out: &mut BytesMut,
+        served: Representation<'_>,
+        automatic: &str,
+        owned: [Owned; 2],
+    ) {
         for field in owned.into_iter().filter(|field| !self.has(*field)) {
             field.put(out, served, automatic);
         }

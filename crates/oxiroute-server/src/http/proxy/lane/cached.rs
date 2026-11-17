@@ -9,8 +9,8 @@ mod wire;
 use std::{net::IpAddr, time::Instant};
 
 use bytes::{BufMut as _, BytesMut};
-use http::{Method, uri::Authority};
 use http::HeaderMap;
+use http::{Method, uri::Authority};
 use oxiroute_cache::{CachedResponse, FreshHit, RequestKeyInput};
 use oxiroute_h1_head::RequestHead;
 use pingora::{apps::Http1Connection, protocols::Stream};

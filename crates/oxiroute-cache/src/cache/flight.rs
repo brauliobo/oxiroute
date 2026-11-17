@@ -127,7 +127,11 @@ impl Shared {
     /// Evicts the least recently used representations of the whole cache, except `keep`, until its bounds hold again,
     /// which is whether they do. The victim is the head of the shard whose head is oldest; no shard is locked while
     /// another is.
-    pub(super) fn evict_to_bounds(&self, delta: &mut InsertionDelta, keep: Option<&CacheKey>) -> bool {
+    pub(super) fn evict_to_bounds(
+        &self,
+        delta: &mut InsertionDelta,
+        keep: Option<&CacheKey>,
+    ) -> bool {
         while self.usage.exceeds(&self.config) {
             let Some(victim) = self.shards.iter().min_by_key(|shard| shard.oldest_access()) else {
                 return false;
@@ -192,9 +196,7 @@ impl State {
 
     pub(super) fn remove_entry(&mut self, key: &CacheKey) -> Option<StoredEntry> {
         let stored = self.entries.remove(key)?;
-        self.usage
-            .bytes
-            .fetch_sub(stored.charge, Ordering::Relaxed);
+        self.usage.bytes.fetch_sub(stored.charge, Ordering::Relaxed);
         self.usage.entries.fetch_sub(1, Ordering::Relaxed);
         Some(stored)
     }

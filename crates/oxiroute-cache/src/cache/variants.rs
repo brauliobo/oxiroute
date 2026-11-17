@@ -59,7 +59,10 @@ impl Cache {
 
     fn admit_variant(&self, key: &CacheKey, variants: &Variants, bytes: usize) -> bool {
         let shard = self.shared.shard(key.base());
-        if !shard.lock().charge_variant(key, variants, bytes, self.shared.config.max_object_bytes) {
+        if !shard
+            .lock()
+            .charge_variant(key, variants, bytes, self.shared.config.max_object_bytes)
+        {
             return false;
         }
         let mut delta = InsertionDelta {
@@ -76,7 +79,13 @@ impl Cache {
 }
 
 impl State {
-    fn charge_variant(&mut self, key: &CacheKey, variants: &Variants, bytes: usize, object_limit: usize) -> bool {
+    fn charge_variant(
+        &mut self,
+        key: &CacheKey,
+        variants: &Variants,
+        bytes: usize,
+        object_limit: usize,
+    ) -> bool {
         let Some(stored) = self.entries.get_mut(key) else {
             return false;
         };

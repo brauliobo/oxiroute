@@ -111,7 +111,9 @@ async fn each_coding_has_its_own_variant() {
         (Coding::Zstd, 250),
     ] {
         let variant = cache
-            .variant(&response, coding, |_| std::future::ready(Some(coded(bytes))))
+            .variant(&response, coding, |_| {
+                std::future::ready(Some(coded(bytes)))
+            })
             .await;
         assert_eq!(variant.expect("variant").len(), bytes);
     }
@@ -135,7 +137,9 @@ async fn purging_the_entry_releases_its_variants() {
     let cache = Cache::new(config(64 * 1024)).expect("cache");
     let response = cached(&cache, "/page");
     cache
-        .variant(&response, Coding::Zstd, |_| std::future::ready(Some(coded(400))))
+        .variant(&response, Coding::Zstd, |_| {
+            std::future::ready(Some(coded(400)))
+        })
         .await
         .expect("variant");
     let charged = cache.stats().bytes_used;
@@ -152,7 +156,9 @@ async fn variant_of_a_purged_or_replaced_entry_is_not_charged() {
     store(&cache, prepare(&cache, "/page"));
     let before = cache.stats().bytes_used;
     let declined = cache
-        .variant(&stale, Coding::Gzip, |_| std::future::ready(Some(coded(100))))
+        .variant(&stale, Coding::Gzip, |_| {
+            std::future::ready(Some(coded(100)))
+        })
         .await;
     assert!(declined.is_none());
     assert_eq!(cache.stats().bytes_used, before);
@@ -168,7 +174,9 @@ async fn variant_evicts_the_least_recently_used_entry_to_fit() {
     cached(&cache, "/a");
     let newer = cached(&cache, "/b");
     let variant = cache
-        .variant(&newer, Coding::Gzip, |_| std::future::ready(Some(coded(300))))
+        .variant(&newer, Coding::Gzip, |_| {
+            std::future::ready(Some(coded(300)))
+        })
         .await;
     assert_eq!(variant.expect("variant").len(), 300);
     let stats = cache.stats();
@@ -190,7 +198,9 @@ async fn variant_that_cannot_fit_beside_its_own_entry_is_declined() {
     let cache = Cache::new(config(entry_charge + 100)).expect("cache");
     let response = cached(&cache, "/a");
     let declined = cache
-        .variant(&response, Coding::Gzip, |_| std::future::ready(Some(coded(101))))
+        .variant(&response, Coding::Gzip, |_| {
+            std::future::ready(Some(coded(101)))
+        })
         .await;
     assert!(declined.is_none());
     let stats = cache.stats();
@@ -210,7 +220,9 @@ async fn variant_beyond_the_object_bound_is_declined() {
     let cache = Cache::new(bounded).expect("cache");
     let response = cached(&cache, "/a");
     let declined = cache
-        .variant(&response, Coding::Gzip, |_| std::future::ready(Some(coded(101))))
+        .variant(&response, Coding::Gzip, |_| {
+            std::future::ready(Some(coded(101)))
+        })
         .await;
     assert!(declined.is_none());
     assert_eq!(cache.stats().bytes_used, entry_charge);

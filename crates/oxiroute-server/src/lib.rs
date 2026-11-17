@@ -32,9 +32,9 @@ mod wire;
 mod test_ports;
 
 pub use config::coordinator as config_coordinator;
-pub use doorbell::Doorbell;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
+pub use doorbell::Doorbell;
 pub use forward_proxy::{
     ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,
     ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,

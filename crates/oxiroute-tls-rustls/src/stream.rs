@@ -79,7 +79,12 @@ impl TlsStream {
     /// already read from it and the next reads return it first.
     #[must_use]
     pub fn resume(io: L4Stream, conn: ServerConnection, replay: Vec<u8>) -> Self {
-        let mut stream = Self::established(io, Pump::new(conn, Records::default()), None, Instant::now());
+        let mut stream = Self::established(
+            io,
+            Pump::new(conn, Records::default()),
+            None,
+            Instant::now(),
+        );
         stream.replay = replay;
         stream
     }

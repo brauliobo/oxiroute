@@ -12,13 +12,7 @@ mod process_support;
 #[path = "../support/revalidating_origin.rs"]
 mod revalidating_origin;
 
-use std::{
-    fmt::Write as _,
-    io::Read as _,
-    net::SocketAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt::Write as _, io::Read as _, net::SocketAddr, sync::Arc, time::Duration};
 
 use h1_wire::{Origin, Wire, find};
 use origin::{BODY_BYTES, CompressionOrigin, hex_text, html, noise};

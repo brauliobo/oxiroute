@@ -247,14 +247,7 @@ impl TransportConnector {
             offload
                 .spawn(peer.reuse_hash(), async move {
                     let offload_wait = offload_start.elapsed();
-                    do_connect(
-                        &peer,
-                        bind_to,
-                        alpn_override,
-                        &tls_ctx,
-                        Some(offload_wait),
-                    )
-                    .await
+                    do_connect(&peer, bind_to, alpn_override, &tls_ctx, Some(offload_wait)).await
                 })
                 .await
                 .or_err(InternalError, "offload runtime failure")??

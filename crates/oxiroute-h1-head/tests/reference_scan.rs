@@ -131,7 +131,9 @@ fn text(rng: &mut Rng, alphabet: &[u8], len: usize) -> Vec<u8> {
 }
 
 fn length(rng: &mut Rng) -> usize {
-    *rng.pick(&[1, 2, 3, 7, 8, 15, 16, 17, 30, 31, 32, 33, 34, 63, 64, 65, 100, 256, 300])
+    *rng.pick(&[
+        1, 2, 3, 7, 8, 15, 16, 17, 30, 31, 32, 33, 34, 63, 64, 65, 100, 256, 300,
+    ])
 }
 
 fn text_of_any_length(rng: &mut Rng, alphabet: &[u8], empty_one_in: usize) -> Vec<u8> {
@@ -145,7 +147,11 @@ fn generated_fields(rng: &mut Rng, with_host: bool) -> Vec<u8> {
         fields.extend_from_slice(b"Host: example.com\r\n");
     }
     for _ in 0..rng.below(12) {
-        let name_len = if rng.chance(8) { length(rng) } else { 1 + rng.below(20) };
+        let name_len = if rng.chance(8) {
+            length(rng)
+        } else {
+            1 + rng.below(20)
+        };
         fields.extend(text(rng, NAME_ALPHABET, name_len));
         fields.extend_from_slice(if rng.chance(4) { b":" } else { b": " });
         fields.extend(text_of_any_length(rng, VALUE_ALPHABET, 6));
@@ -200,18 +206,30 @@ fn the_limits_of_names_targets_methods_and_header_counts() {
     let host = "Host: a\r\n";
     for name_len in [254, 255, 256, 257] {
         let name = "n".repeat(name_len);
-        same_request(format!("GET / HTTP/1.1\r\n{host}{name}: v\r\n\r\n").as_bytes(), &mut head);
+        same_request(
+            format!("GET / HTTP/1.1\r\n{host}{name}: v\r\n\r\n").as_bytes(),
+            &mut head,
+        );
     }
     for method_len in [31, 32, 33, 34] {
         let method = "M".repeat(method_len);
-        same_request(format!("{method} / HTTP/1.1\r\n{host}\r\n").as_bytes(), &mut head);
+        same_request(
+            format!("{method} / HTTP/1.1\r\n{host}\r\n").as_bytes(),
+            &mut head,
+        );
     }
     for target_len in [30, 31, 32, 33, 64, 65, 65_533, 65_534, 65_535] {
         let target = "t".repeat(target_len);
-        same_request(format!("GET /{target} HTTP/1.1\r\n{host}\r\n").as_bytes(), &mut head);
+        same_request(
+            format!("GET /{target} HTTP/1.1\r\n{host}\r\n").as_bytes(),
+            &mut head,
+        );
     }
     for headers in [62, 63, 64, 65, 66] {
         let fields = (0..headers).fold(String::new(), |all, i| all + &format!("X-{i}: v\r\n"));
-        same_request(format!("GET / HTTP/1.1\r\n{host}{fields}\r\n").as_bytes(), &mut head);
+        same_request(
+            format!("GET / HTTP/1.1\r\n{host}{fields}\r\n").as_bytes(),
+            &mut head,
+        );
     }
 }
