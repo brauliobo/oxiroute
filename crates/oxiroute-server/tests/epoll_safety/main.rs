@@ -353,7 +353,7 @@ async fn a_response_in_flight_survives_the_replacement_of_its_generation(plane: 
     client.write_all(GET).await.unwrap();
     read_until(&mut client, "\r\n\r\ny").await;
     proxy.reload().await;
-    let rest = read_to_end_within(&mut client, Duration::from_secs(60)).await;
+    let rest = read_to_end_within(&mut client, Duration::from_mins(1)).await;
     assert_eq!(rest.len(), SECONDS - 1, "the response was cut: {rest:?}");
     assert_eq!(proxy.served_on_epoll(), expected_on_epoll(plane, 1));
 }
@@ -699,7 +699,7 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
         "the server spent {spent} ticks of 150 while it could not accept"
     );
     drop(held);
-    while !proxy.descriptors().await.is_some_and(|open| open <= idle) {
+    while proxy.descriptors().await.is_none_or(|open| open > idle) {
         sleep(Duration::from_millis(20)).await;
     }
     answer_one_request(&mut proxy.connect().await).await;
