@@ -62,7 +62,7 @@ the test strategy.
 ## Version Sources
 
 The workspace version is in the root `Cargo.toml`; the server exposes it through `version`. Release
-notes live in `docs/RELEASE_NOTES_<version>.md`. Notes written ahead of a release are named `docs/RELEASE_NOTES_<version>_DRAFT.md` and renamed when the
+notes live in `docs/RELEASE_NOTES_<version>.md` (the publish job refuses a release without them and appends the assets section). Notes written ahead of a release are named `docs/RELEASE_NOTES_<version>_DRAFT.md` and renamed when the
 release is cut. The Arch recipe pins the release archive and checksum.
 Keep all three aligned.
 
@@ -79,9 +79,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify/release/version.sh 6.5.2
-./scripts/create-release-archive.sh /tmp/oxiroute-6.5.2.tar.gz 6.5.2
-./scripts/verify/release/archive.sh /tmp/oxiroute-6.5.2.tar.gz 6.5.2 --compare-worktree
+./scripts/verify/release/version.sh 7.0.0
+./scripts/create-release-archive.sh /tmp/oxiroute-7.0.0.tar.gz 7.0.0
+./scripts/verify/release/archive.sh /tmp/oxiroute-7.0.0.tar.gz 7.0.0 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -258,10 +258,10 @@ To regenerate locally with the same compiler:
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
 BOLT_BIN_DIR=$(scripts/install-bolt.sh /var/tmp/oxiroute-bolt-tools) \
-  ./scripts/build-release-binaries.sh 6.5.2 /path/to/oxiroute-release
-BOLT=0 ./scripts/build-release-binaries.sh 6.5.2 /path/to/oxiroute-pgo          # PGO only
-PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 6.5.2 /path/to/oxiroute-plain  # plain build of the same command
-FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.5.2 /path/to/oxiroute-abort
+  ./scripts/build-release-binaries.sh 7.0.0 /path/to/oxiroute-release
+BOLT=0 ./scripts/build-release-binaries.sh 7.0.0 /path/to/oxiroute-pgo          # PGO only
+PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 7.0.0 /path/to/oxiroute-plain  # plain build of the same command
+FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 7.0.0 /path/to/oxiroute-abort
 ```
 
 `PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
@@ -347,9 +347,22 @@ A pre-release version `7.0.0-rc.1` is `7.0.0~rc.1` in the package versions, so i
 
 1. Set the workspace version, write `docs/RELEASE_NOTES_V.md` (the release text; the convention and the check of
    `scripts/verify/release/version.sh` are unchanged), pin `packaging/arch/PKGBUILD` and `.SRCINFO` to the new source
-   archive (`packaging/arch/build-local.sh`), and merge.
-2. Tag `vV` and push the tag. The `changes` job verifies the version metadata and the notes first, so a wrong tag fails in
-   a minute, not after the builds.
+   archive (`packaging/arch/build-local.sh`), and merge. The version lives in `Cargo.toml`,
+   `crates/oxiroute-forward-proxy/Cargo.toml`, `Cargo.lock` and `fuzz/Cargo.lock` (`cargo update -w --offline`, plus
+   `--manifest-path fuzz/Cargo.toml`; both only change workspace versions), the `info.version` of
+   `contracts/*.openapi.json` and of `crates/oxiroute-server/src/registry/contract.rs` and
+   `src/rtmp/api/contract.rs`, `ui/package.json`, `remotion/package.json`, `website/index.html`, the Arch recipes and
+   their READMEs under `packaging/arch/` (the local README copy is checksummed in both recipes), the version lines of
+   `README.md`, `docs/COMPATIBILITY.md` and `docs/PRODUCT_SPEC.md`, and the notes link of `docs/README.md`. The
+   checksum of the Arch binary tarball is the one thing the release flow fills afterwards (step 4).
+2. A version bump on `main` changes `Cargo.toml` and `Cargo.lock`, which starts `Profile refresh`
+   ([the profile](#the-profile-reuse-cache-keys-refresh-and-retrain-triggers)): rustc hashes the version into every workspace
+   symbol, so the profile of the previous version matches nothing and the three profiles of the new version (x86_64
+   unwind and abort, aarch64 unwind) must be trained before the tag. Wait for the three legs of that run to finish, then
+   create the tag; a tag created within minutes of the bump trains inside its own run instead, about half an hour longer.
+   Tag `vV` and push the tag. The `changes` job verifies the version metadata and the notes first, so a wrong tag fails in
+   a minute, not after the builds. The source archive excludes `packaging/arch`, so its checksum in the PKGBUILD stays valid
+   only while nothing else changes between the pin and the tag; the `archive` job fails on a mismatch.
 3. `archive`, `binary-x86_64`, `binary-aarch64` and `binary-extras` start together; `packages-x86_64` starts the moment
    `binary-x86_64` is done and `packages-aarch64` the moment `binary-aarch64` is done (no barrier between the
    architectures, and none on the archive job); `binary-tests` starts when the x86_64 binaries are done. Each build job
