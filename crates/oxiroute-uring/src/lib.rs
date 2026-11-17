@@ -17,6 +17,7 @@ mod probe;
 mod raw;
 mod ring;
 mod slot;
+mod stage;
 
 pub use config::{Config, Taskrun};
 pub use event::{Event, Forwarded, Peek, Read, Released, Sent};

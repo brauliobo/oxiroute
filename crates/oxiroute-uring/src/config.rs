@@ -47,7 +47,30 @@ impl Default for Config {
     }
 }
 
+const PAGE: u64 = 4096;
+const SUBMISSION_ENTRY: u64 = 64;
+const COMPLETION_ENTRY: u64 = 16;
+const ARRAY_ENTRY: u64 = 4;
+const RINGS_HEADER: u64 = 64;
+const BUFFER_RING_ENTRY: u64 = 16;
+
 impl Config {
+    /// Bytes the kernel charges against `RLIMIT_MEMLOCK` for one ring of this configuration where it accounts ring
+    /// memory to the user: the submission entries, the completion entries, the submission index array and the page
+    /// array of each provided-buffer ring, every region rounded up to whole pages. The limit is shared by every
+    /// process of the user and a closed ring returns its share only after the kernel has torn it down.
+    #[must_use]
+    pub fn ring_bytes(&self) -> u64 {
+        let submissions = u64::from(self.entries.next_power_of_two());
+        let completions = 2 * submissions;
+        let entries = submissions * SUBMISSION_ENTRY;
+        let rings = RINGS_HEADER + completions * COMPLETION_ENTRY + submissions * ARRAY_ENTRY;
+        let pools = self
+            .pools()
+            .map(|(buffers, _)| (u64::from(buffers) * BUFFER_RING_ENTRY).next_multiple_of(PAGE));
+        entries.next_multiple_of(PAGE) + rings.next_multiple_of(PAGE) + pools.iter().sum::<u64>()
+    }
+
     pub(crate) const fn pools(&self) -> [(u16, u32); 2] {
         [
             (self.buffers, self.buffer_size),

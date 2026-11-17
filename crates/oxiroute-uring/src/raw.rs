@@ -31,7 +31,12 @@ use rustix::{
     net::{RecvFlags, SendFlags, SocketFlags},
 };
 
-use crate::{addr::Address, config::Taskrun, slot::Lease};
+use crate::{
+    addr::Address,
+    config::Taskrun,
+    slot::Lease,
+    stage::{SETTING_UP_THE_RING, during},
+};
 
 const RECV_POLL_FIRST: u16 = 1;
 const ENTRY_WORDS: usize = 8;
@@ -243,10 +248,6 @@ pub(crate) struct Queue {
     scratch: Vec<(u64, i32, u32)>,
 }
 
-fn during(step: &'static str) -> impl FnOnce(io::Error) -> io::Error {
-    move |error| io::Error::new(error.kind(), format!("{step}: {error}"))
-}
-
 fn flag(flags: SocketFlags) -> i32 {
     flags.bits().cast_signed()
 }
@@ -265,7 +266,7 @@ impl Queue {
         };
         let ring = builder
             .build(entries)
-            .map_err(during("setting up the ring"))?;
+            .map_err(during(SETTING_UP_THE_RING))?;
         let [small, large] = pools;
         let mut buffers = [
             Buffers::new(small.0, small.1)

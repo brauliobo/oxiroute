@@ -385,12 +385,19 @@ response that was not eligible. A pipe size the kernel refuses at start refuses 
 The `io_uring` plane needs kernel 6.1 (5.19 with cooperative task running), `kernel.io_uring_disabled` of 0 and a policy
 that allows the `io_uring` system calls. It creates one ring per engine thread: a 2048-entry submission queue and two
 provided-buffer pools, 256 buffers of 16 KiB and 64 of 64 KiB, which are 8 MiB of address space per thread and resident
-only where a socket received into them. It registers no fixed buffers and no fixed files, so on kernel 5.12 and later it
-holds no locked memory and `RLIMIT_MEMLOCK` does not constrain it, and it uses no pipes, so `pipe-user-pages-soft` does not
-either. What bounds it is the memory the process can map: `RLIMIT_AS`, a cgroup `memory.max` and the kernel's own
-allocations. The plan-time probe creates a ring with exactly these settings and round-trips a receive through its
-buffers; when the process cannot get the memory, the configuration is refused naming the memory, instead of the worker
-failing when its threads start.
+only where a socket received into them. It registers no fixed buffers and no fixed files, and it uses no pipes, so
+`pipe-user-pages-soft` does not constrain it. What bounds it is the memory the process can map (`RLIMIT_AS`, a cgroup
+`memory.max`) and the kernel's own allocations, and on kernels that account the memory of the ring itself to the user
+`RLIMIT_MEMLOCK`: the 2048-entry ring is 212 KiB with its two provided-buffer rings (`Config::ring_bytes`), every
+engine thread and every plan-time probe holds one, all processes of the user draw on the same limit, and a closed ring
+returns its share only after the kernel has torn it down. The kernel of the GitHub-hosted `ubuntu-24.04` runners (7.0
+Azure, limit 8192 KiB) behaves so: it grants 38 such rings to the user and refuses the 39th with `ENOMEM`, whatever the
+setup flags (a process with `CAP_IPC_LOCK` is not limited), so a host running many instances at once needs
+`LimitMEMLOCK` raised in proportion to the engine threads it starts. The plan-time probe creates a ring with exactly these settings and
+round-trips a receive through its buffers; when the kernel refuses the ring, the configuration is refused naming
+`RLIMIT_MEMLOCK` with its value and the size of a ring, and when the process cannot map the buffers, naming the memory,
+instead of the worker failing when its threads start. An omitted `http_data_plane` never selects `io_uring`; an explicit
+`io_uring` that the probe or a later thread start cannot satisfy fails the start with that message.
 
 An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
 server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once.

@@ -167,6 +167,7 @@ oxiroute-tls-rustls::loopback                         core
 oxiroute-uring                                        core
 oxiroute-uring::descriptors                           uring
 oxiroute-uring::limits                                uring
+oxiroute-uring::memlock                               uring
 oxiroute-uring::ring                                  uring
 oxiroute-worker-scaling                               core
 oxiroute-worker-scaling::controller                   core
