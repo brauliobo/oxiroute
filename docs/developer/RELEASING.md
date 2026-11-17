@@ -316,6 +316,9 @@ AVX-512 requires a capable native host or an emulator that implements it; reques
 does not establish AVX-512 coverage.
 For a host whose libraries require x86-64-v3, set `QEMU_LD_PREFIX=/path/to/baseline-sysroot` to compatible generic
 loader, glibc and compiler runtime libraries. This changes the emulated loader; it does not alter the host libraries.
+`cpu-targets.sh` fails with that instruction when the host loader raises `SIGILL` on a baseline CPU model before any
+test runs; a sysroot without its own `/etc/ld.so.cache` also needs
+`QEMU_SET_ENV=LD_LIBRARY_PATH=/lib/x86_64-linux-gnu` so the host cache does not resolve the host libraries.
 
 `scripts/test/verify/baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
 "Release archive policy").

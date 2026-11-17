@@ -31,6 +31,8 @@ default_masks='Haswell,-popcnt,-bmi1,-bmi2=avx2'
 default_masks+=' Haswell,-sse3,-ssse3,-sse4.1,-sse4.2=sse2 Haswell,-sse4.1,-sse4.2=sse42'
 read -ra cpus <<< "${CPU_TEST_CPUS:-${default_cpus}}"
 read -ra masks <<< "${CPU_TEST_MASKED_CPUS-${default_masks}}"
+loader_hint='the host loader or libc needs a newer instruction set; set QEMU_LD_PREFIX to a baseline sysroot'
+loader_hint+=' (docs/developer/RELEASING.md)'
 while IFS=$'\t' read -r package binary; do
   selected_cpus=("${cpus[@]}")
   if [[ ${package} == oxiroute-cpu ]]; then
@@ -40,6 +42,7 @@ while IFS=$'\t' read -r package binary; do
     cpu=${spec%=*} expected=${spec##*=}
     [[ ${cpu} != "${expected}" ]] || { echo "CPU_TEST_CPUS entries must be CPU=LEVEL" >&2; exit 1; }
     printf 'CPU dispatch tests: %s on %s\n' "$(basename "${binary}")" "${cpu}"
+    "${qemu}" -cpu "${cpu}" "${binary}" --list > /dev/null 2>&1 || { echo "${package} cannot start on ${cpu}: ${loader_hint}" >&2; exit 1; }
     OXIROUTE_CPU_LEVEL=avx512 OXIROUTE_EXPECT_CPU_LEVEL=${expected} OXIROUTE_EXPECT_SELECTED_LEVEL=${expected} \
       "${qemu}" -cpu "${cpu}" "${binary}" --test-threads=1 --nocapture
   done
