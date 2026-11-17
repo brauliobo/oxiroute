@@ -207,32 +207,45 @@ Training is not repeated per release. The profile of an architecture and flavour
 unwinding changes the control-flow hashes; `aarch64` has its own) is a pure function of its inputs, so
 `release-binary.yml` asks `release-profile.yml` for it and only the missing ones are trained:
 
-1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-HASH`. HASH is the first 16 hex
-   digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
-   profile, the lane mix and scale, and the git blob ids of `Cargo.toml`, `Cargo.lock`, `crates/`, `vendor/`,
-   `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files.
-2. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache` under that key. On a hit nothing else runs: no
-   instrumented build, no lanes. On a miss the `train` job runs `scripts/package/main.sh profile train` (the instrumented build,
-   the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the cache entry.
-3. The binary job restores the same key with `fail-on-cache-miss: true`, mounts the file into the build container
-   (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
-   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile still matches the code: a mismatch exits with status 3 and the
+1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-vVERSION-HASH`. HASH is the first 16
+   hex digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
+   profile (so the flavour), the lane mix and scale, and the content of `Cargo.toml` (build settings), `Cargo.lock`, `crates/`,
+   `vendor/`, `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files and
+   blanking the workspace version in the manifests and the lock file. UI, documentation, tests and a version-only bump do not
+   change HASH (`benchmarks/scripts/test-pgo.sh` proves it, as it proves that a source, dependency or build-setting change does).
+   `profile prefix` prints `pgo-ARCH-FLAVOUR-vVERSION-`.
+2. The version is the first component, not part of HASH, because it decides whether a profile fits at all: rustc hashes the
+   package version into the symbol of every workspace function (measured: the same crate built at 6.5.2 and 6.5.3 has 35 of 35
+   exported symbols renamed), and a profile is matched by symbol name, so a profile trained at another version matches no
+   workspace function and the gate rejects it. A version bump is therefore always a new profile; the refresh below makes it
+   before the tag.
+3. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache`. A release build asks for the exact key and,
+   when that is missing, for the newest key under the prefix of its version (`restore-keys`): normally the last refresh of
+   `main`, whose sources can differ a little from the tag. A hit of either kind stops there: no instrumented build, no lanes.
+   Only when nothing of that version exists the `train` job runs `scripts/package/main.sh profile train` (the instrumented
+   build, the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the exact key. The refresh asks for
+   the exact key only, so it trains whenever HASH moved.
+4. The binary job restores the key that the lookup settled on with `fail-on-cache-miss: true`, mounts the file into the build
+   container (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
+   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile fits the code that is built: a mismatch exits with status 3 and the
    message "train it again". It never produces a plain build; the job fails and the profile must be trained again (below).
 
-`.github/workflows/profile-refresh.yml` runs every night (03:17 UTC) and on demand on the default branch for the three
-profiles of a tag (x86_64 unwind and abort, aarch64 unwind). A key that is stored is restored, which renews the entry
-(GitHub evicts a cache entry that nobody restored for seven days), and a key that is new trains once. A tag run restores the
-entries that `main` saved; the entries a tag run saves are visible to that tag only. So a tag whose hot-path sources equal a
-night's state finds all three profiles and skips the instrumented build.
+`.github/workflows/profile-refresh.yml` keeps the profiles of `main` warm for the three profiles of a tag (x86_64 unwind and
+abort, aarch64 unwind). It runs automatically on every push to `main` that touches `Cargo.toml` or `Cargo.lock` (where a
+version bump, a toolchain or a dependency change lands), every night (03:17 UTC, which also renews the entries that GitHub evicts
+after seven days without access) and on demand. A tag run restores the entries that `main` saved; the entries a tag run saves
+are visible to that tag only.
 
-Retrain triggers, all of them part of the key: a change to any crate or vendored source (not its tests, benches or
-documents), `Cargo.lock`, a `Cargo.toml` (the version bump of a release commit included: rustc hashes the package metadata
-into every symbol, so the key is conservative), the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the scale,
-anything in `benchmarks/r2-data-path/`, the target and the flavour. Procedure for a release: land the version bump on `main`,
-start `Profile refresh` by hand (about half an hour of waiting when the key is new), then tag. A tag created before that still
-works, it trains inside its own run first (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
+Retrain triggers: a change to HASH (any crate or vendored source other than tests, benches and documents, a dependency
+version in `Cargo.lock`, a build setting in `Cargo.toml`, the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the
+scale, anything in `benchmarks/r2-data-path/`, the target, the flavour) trains on the next refresh; a new version trains too.
+A tag whose HASH moved since the last refresh still uses the newest profile of its version if the gate accepts it (at most 5%
+of the profile's functions unmatched), which is how a hot-path commit after a night's run does not force a half-hour
+training. The one manual fallback: if the tag run fails the gate (status 3) or you tag within minutes of the version bump, start
+`Profile refresh` on `main`, wait for the three legs, and re-run the tag workflow; a tag run that finds nothing of its version
+trains inside its own run instead (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
 To force a retrain, delete the entry (`gh cache delete KEY`, the key is in the job summary of the `lookup` job) and run `Profile
-refresh`. A gate failure (status 3) with an unchanged key means an input is missing from the key: fix `key_inputs` in
+refresh`. A gate failure with an unchanged key means an input is missing from the key: fix `key_inputs` in
 `benchmarks/scripts/pgo.sh`, do not raise `PGO_MAX_MISSING_PCT`.
 
 Local: `PGO_PROFILE_GIVEN=1 PGO_PROFILE=/path/to/oxiroute.profdata scripts/build-release-binaries.sh VERSION OUT` builds with a
