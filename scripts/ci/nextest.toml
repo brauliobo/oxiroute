@@ -4,7 +4,10 @@ fail-fast = false
 status-level = "fail"
 final-status-level = "slow"
 failure-output = "immediate-final"
-slow-timeout = { period = "30s", terminate-after = 6 }
+slow-timeout = { period = "20s", terminate-after = 9 }
+
+[profile.default.junit]
+path = "junit.xml"
 
 [[profile.default.overrides]]
 filter = "binary_id(=oxiroute::lane_differential) | binary_id(=oxiroute::reverse_http3_golden) | binary_id(=oxiroute::supervised)"

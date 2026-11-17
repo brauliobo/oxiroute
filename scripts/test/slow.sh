@@ -6,4 +6,4 @@ set -euo pipefail
 # shellcheck source=../lib/nextest.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/../lib/nextest.sh"
 
-run_tiers slow "$@"
+OXIROUTE_TEST_BUDGET=none run_tiers slow "$@"

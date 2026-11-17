@@ -22,7 +22,7 @@ jobs:
   lint:
     name: Format, control-plane contract and clippy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
         run: ./scripts/ci/tiers.sh check
 
       - name: Lint the test lane scripts
-        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,core,doc,planes,slow,tls}.sh scripts/ci/{probe,tiers}.sh scripts/lib/nextest.sh
+        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,core,doc,planes,slow,tls}.sh scripts/ci/{probe,test_budget,tiers}.sh scripts/lib/nextest.sh
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
@@ -83,7 +83,7 @@ jobs:
   archive:
     name: Build the workspace tests once
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -120,7 +120,7 @@ jobs:
     name: Plane-independent tests
     needs: archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -151,7 +151,7 @@ jobs:
     name: ${{ matrix.plane }} data plane
     needs: archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -170,7 +170,7 @@ jobs:
     name: ${{ matrix.backend }} TLS backend
     needs: archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
@@ -188,7 +188,7 @@ jobs:
   cpu-targets:
     name: Generic and native CPU dispatch
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -200,17 +200,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: cpu-targets
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install CPU emulator
         run: sudo apt-get update && sudo apt-get install --yes qemu-user
 
-      - name: Verify scanners on baseline, SSSE3, AVX2 and native CPUs
+      - name: Verify the dispatch tests on baseline, SSSE3, AVX2 and native CPUs
         run: ./scripts/test/cpu-targets.sh
 
   release-archive:
     name: Release archive policy
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -230,7 +231,7 @@ jobs:
   fuzz-contract:
     name: Bounded fuzz harness and corpus contract
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -246,7 +247,7 @@ jobs:
   package:
     name: Arch package service metadata
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -264,7 +265,7 @@ jobs:
   ui:
     name: UI tests and build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -312,7 +313,7 @@ jobs:
   stats-ui:
     name: Stats page build, embedded assets and browser tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       NO_PROXY: 127.0.0.1,localhost
     steps:
@@ -378,7 +379,7 @@ jobs:
   browser:
     name: Deterministic dashboard browser tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       NO_PROXY: 127.0.0.1,localhost
     steps:

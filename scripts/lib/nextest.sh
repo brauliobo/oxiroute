@@ -7,7 +7,7 @@
 # OXIROUTE_TEST_ARCHIVE names a `cargo nextest archive` of the workspace: the lane unpacks it once into the workspace
 # target directory, where the tests find the binaries their build recorded, and runs it instead of building. Most tests
 # wait on sockets and clocks, so a lane runs OXIROUTE_TEST_THREADS of them at once (default: three per CPU), which keeps
-# four CPUs busy.
+# four CPUs busy. A lane then fails when a test ran longer than OXIROUTE_TEST_BUDGET seconds (scripts/ci/test_budget.sh).
 
 repo_dir=$(cd -- "${BASH_SOURCE[0]%/*}/../.." && pwd)
 tiers_script=${repo_dir}/scripts/ci/tiers.sh
@@ -28,8 +28,10 @@ run_filter() {
   fi
   (
     cd "${repo_dir}" || exit
+    rm -f "${build_metadata}"/*/junit.xml
     cargo nextest run "${source[@]}" --config-file scripts/ci/nextest.toml \
-      --test-threads "${OXIROUTE_TEST_THREADS:-$(($(nproc) * 3))}" -E "${filterset}" "$@"
+      --test-threads "${OXIROUTE_TEST_THREADS:-$(($(nproc) * 3))}" -E "${filterset}" "$@" &&
+      scripts/ci/test_budget.sh "${build_metadata}"/*/junit.xml
   )
 }
 
