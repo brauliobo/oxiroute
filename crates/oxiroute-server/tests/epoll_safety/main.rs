@@ -139,17 +139,16 @@ impl Proxy {
         }
     }
 
-    async fn revision(&self) -> String {
+    async fn managed(&self, path: &str) -> Value {
         let authorization = format!("Bearer {TOKEN}");
-        let response = http_request(
-            self.management,
-            "GET",
-            "/api/v1/generations",
-            &[("Authorization", &authorization)],
-            &[],
-        )
-        .await;
-        response.json()["generation"]["activeRevision"]
+        let headers = [("Authorization", authorization.as_str())];
+        http_request(self.management, "GET", path, &headers, &[])
+            .await
+            .json()
+    }
+
+    async fn revision(&self) -> String {
+        self.managed("/api/v1/generations").await["generation"]["activeRevision"]
             .as_str()
             .expect("active revision")
             .to_owned()
@@ -202,9 +201,8 @@ impl Proxy {
         TcpStream::connect(self.address).await.expect("connect")
     }
 
-    fn descriptors(&self) -> u64 {
-        let open = std::fs::read_dir(format!("/proc/{}/fd", self.server.pid()));
-        open.expect("the descriptors of the server").count() as u64
+    async fn descriptors(&self) -> Option<u64> {
+        self.managed("/api/v1/monitoring").await["process"]["openFileDescriptors"].as_u64()
     }
 
     fn limit_descriptors(&self, limit: u64) {
@@ -684,7 +682,10 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
         config.log_filter = None;
     })
     .await;
-    let idle = proxy.descriptors();
+    let idle = proxy
+        .descriptors()
+        .await
+        .expect("the descriptors of the server");
     proxy.limit_descriptors(idle + 4);
     let mut held = Vec::new();
     for _ in 0..60 {
@@ -698,7 +699,7 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
         "the server spent {spent} ticks of 150 while it could not accept"
     );
     drop(held);
-    while proxy.descriptors() > idle {
+    while !proxy.descriptors().await.is_some_and(|open| open <= idle) {
         sleep(Duration::from_millis(20)).await;
     }
     answer_one_request(&mut proxy.connect().await).await;
