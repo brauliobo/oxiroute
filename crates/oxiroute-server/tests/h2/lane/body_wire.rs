@@ -8,6 +8,7 @@
 use std::{
     future::poll_fn,
     net::SocketAddr,
+    pin::pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -26,6 +27,7 @@ use oxiroute_config::{AlpnProtocol, ConfigDraft, HttpVersionPolicy};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
+    sync::Notify,
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -62,6 +64,7 @@ struct Seen {
 struct Origin {
     address: SocketAddr,
     seen: Arc<Mutex<Vec<Seen>>>,
+    changed: Arc<Notify>,
     accepted: Arc<AtomicUsize>,
     task: JoinHandle<()>,
 }
@@ -72,17 +75,20 @@ impl Origin {
         let address = listener.local_addr().expect("origin address");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
+        let changed = Arc::new(Notify::new());
         let (records, count) = (Arc::clone(&seen), Arc::clone(&accepted));
+        let notify = Arc::clone(&changed);
         let task = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.expect("origin accept");
                 count.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(serve(stream, Arc::clone(&records)));
+                tokio::spawn(serve(stream, Arc::clone(&records), Arc::clone(&notify)));
             }
         });
         Self {
             address,
             seen,
+            changed,
             accepted,
             task,
         }
@@ -90,6 +96,21 @@ impl Origin {
 
     fn requests(&self) -> Vec<Seen> {
         self.seen.lock().expect("records").clone()
+    }
+
+    async fn settled(&self) {
+        loop {
+            let mut changed = pin!(self.changed.notified());
+            changed.as_mut().enable();
+            if self
+                .requests()
+                .iter()
+                .all(|seen| seen.complete || seen.aborted)
+            {
+                return;
+            }
+            changed.await;
+        }
     }
 
     fn body_bytes(&self) -> usize {
@@ -140,7 +161,7 @@ async fn answer_ahead(stream: &mut TcpStream, path: &str, body: &[u8]) -> std::i
     Ok(())
 }
 
-async fn serve(mut stream: TcpStream, records: Arc<Mutex<Vec<Seen>>>) {
+async fn serve(mut stream: TcpStream, records: Arc<Mutex<Vec<Seen>>>, changed: Arc<Notify>) {
     let mut bytes = Vec::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
@@ -174,8 +195,10 @@ async fn serve(mut stream: TcpStream, records: Arc<Mutex<Vec<Seen>>>) {
             records[index].body = body.to_vec();
             records[index].complete = complete;
             records[index].aborted = aborted;
+            changed.notify_waiters();
         };
         if answer_ahead(&mut stream, &path, &body).await.is_err() {
+            note(&body, false, true);
             return;
         }
         let whole = |body: &[u8]| {
@@ -471,13 +494,15 @@ fn masked_head(head: &str, port: u16) -> String {
 /// What an origin observed, with generated ids masked. `exact` keeps the bodies; a body that the origin stops reading
 /// is cut at a different byte on each path, so it is compared by whether it is a prefix of what was sent. A request
 /// that the origin saw end before any of its body is not compared: the classic path writes the head before it looks
-/// at the client and the lane does not write it when the client has already left.
+/// at the client and the lane does not write it when the client has already left. Without `exact` the origin answered
+/// before the upload ended and no request it saw cut off is compared: how much of the upload it got before the
+/// connection closed is up to the timing of each path, and the part it did get is checked against what was sent.
 fn observed(side: &Side, exact: bool) -> Vec<Seen> {
     let port = side.origin.address.port();
     side.origin
         .requests()
         .into_iter()
-        .filter(|seen| !(seen.aborted && seen.body.is_empty()))
+        .filter(|seen| !seen.aborted || (exact && !seen.body.is_empty()))
         .map(|seen| Seen {
             body: match (exact, is_chunked(&seen.head)) {
                 (false, _) => Vec::new(),
@@ -512,8 +537,11 @@ async fn same_with(
         let from_lane = exchange(&mut l, upload).await;
         assert_eq!(from_lane, from_classic, "response to upload {index}");
     }
-    // The origins may still be reading when the client has its answer.
-    sleep(Duration::from_millis(300)).await;
+    for side in [&lane, &classic] {
+        timeout(STEP, side.origin.settled())
+            .await
+            .expect("the origin finished with every request");
+    }
     assert_eq!(
         observed(&lane, exact),
         observed(&classic, exact),
