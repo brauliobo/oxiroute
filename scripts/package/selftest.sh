@@ -176,6 +176,14 @@ test_recipes_carry_no_version() {
     "${repo}/scripts/package/build.sh" "${repo}/scripts/package/test.sh" || fail 'a literal release version in a recipe or script'
 }
 
+test_recipe_paths_cover_the_workflow_filter() {
+  local path
+  while read -r path; do
+    [[ ${path} == packaging/* ]] && continue
+    grep -Eq "${recipe_paths_re}" <<< "${path/\*\*/x}" || fail "${path} runs the release workflow but is not in recipe_paths_re"
+  done < <(sed -n '/^  pull_request:/,/^  workflow_dispatch:/s/^ *- //p' "${repo}/.github/workflows/release.yml")
+}
+
 test_layout_comes_from_packaging_arch() {
   local file
   for file in $(sed -n 's/^layout_files=(\(.*\))/\1/p' "${here}/container/package.sh"); do
@@ -200,5 +208,6 @@ test_release_workflow_wiring
 test_profile_is_restored_never_silently_skipped
 test_profile_keys_name_architecture_and_flavour
 test_recipes_carry_no_version
+test_recipe_paths_cover_the_workflow_filter
 test_layout_comes_from_packaging_arch
 printf 'package selftest passed\n'

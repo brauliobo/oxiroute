@@ -9,8 +9,8 @@ binary_image=almalinux:9
 version_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 # The files a package depends on: a change to one of them is what makes a pull request build and test the packages.
 recipe_paths_re='^(packaging/(deb|rpm|smoke)/|packaging/arch/oxiroute\.(service|sysusers|tmpfiles|modules|env|kdl|lua)$|scripts/package/'
-recipe_paths_re+='|scripts/(build-release-binaries|verify-baseline-isa|verify-binary-paths|verify/glibc_floor)\.sh$|scripts/lib/reject-isa-flags\.sh$'
-recipe_paths_re+='|benchmarks/scripts/(pgo|bolt|test-pgo)\.sh$|scripts/(lib/stage/|test-release-binary\.sh)|docs/(user/INSTALL|MANAGEMENT_CLI)\.md$|\.github/workflows/release(-binary|-packages|-profile)?\.yml$)'
+recipe_paths_re+='|scripts/(build-release-binaries\.sh|verify/(baseline-isa|binary-paths|glibc_floor)\.sh|lib/reject-isa-flags\.sh)$'
+recipe_paths_re+='|benchmarks/scripts/(pgo|bolt|test-pgo)\.sh$|scripts/(lib/stage/|test/release/binary\.sh)|docs/(user/INSTALL|MANAGEMENT_CLI)\.md$|\.github/workflows/release(-binary|-packages|-profile)?\.yml$)'
 
 require_version() {
   [[ $1 =~ ${version_re} ]] || { printf 'not a release version: %s\n' "$1" >&2; return 1; }
