@@ -81,13 +81,13 @@ jobs:
         run: cargo +1.97.1 metadata --format-version 1 --no-deps --locked
 
       - name: Verify control-plane OpenAPI artifact
-        run: ./scripts/verify-control-plane-contract.sh
+        run: ./scripts/verify/control-plane-contract.sh
 
       - name: Verify all committed lockfiles are current
-        run: ./scripts/verify-lockfiles.sh
+        run: ./scripts/verify/lockfiles.sh
 
       - name: Verify bounded fuzz targets and crash-corpus seeds
-        run: ./scripts/verify-fuzz.sh
+        run: ./scripts/verify/fuzz.sh
 
       - name: Select release version
         run: |
@@ -96,10 +96,10 @@ jobs:
           printf 'RELEASE_VERSION=%s\n' "${version}" >> "${GITHUB_ENV}"
 
       - name: Verify version metadata
-        run: ./scripts/verify-release-version.sh "${RELEASE_VERSION}"
+        run: ./scripts/verify/release/version.sh "${RELEASE_VERSION}"
 
       - name: Test release archive policy
-        run: ./scripts/test-release-archive.sh
+        run: ./scripts/test/release/archive.sh
 
       - name: Create and verify deterministic source archive
         run: |

@@ -2,8 +2,10 @@
 //! the real `HeaderMap` calls, and `stamp_request_id` against `stamp_response`.
 
 use crate::common::Rng;
-use crate::common::classic_response::classic_response;
-use crate::common::classic_write::{Kind, OwnedEdit, apply, lend, serialize_response, stamp_response};
+use crate::common::classic::response::classic_response;
+use crate::common::classic::write::{
+    Kind, OwnedEdit, apply, lend, serialize_response, stamp_response,
+};
 use crate::common::request_corpus::crlf;
 use crate::common::response_corpus::{Verdict, corpus};
 use http::header::HeaderValue;

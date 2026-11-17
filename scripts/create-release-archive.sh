@@ -40,7 +40,7 @@ find "${temporary_tree}" -mindepth 1 ! -type d -printf '%P\0' | LC_ALL=C sort -z
     --create \
     --file=- | gzip -n >"${temporary_archive}"
 
-"${repo_dir}/scripts/verify-release-archive.sh" "${temporary_archive}" "${version}" --compare-worktree
+"${repo_dir}/scripts/verify/release/archive.sh" "${temporary_archive}" "${version}" --compare-worktree
 mv -- "${temporary_archive}" "${archive}"
 rm -rf -- "${temporary_tree}"
 trap - EXIT

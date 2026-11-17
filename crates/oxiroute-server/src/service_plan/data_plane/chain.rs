@@ -1,9 +1,7 @@
-use std::sync::OnceLock;
-
 use oxiroute_config::{HttpDataPlane, ListenerBind, Protocol};
 use thiserror::Error;
 
-use super::{DataPlane, EngineConditions};
+use super::{DataPlane, EngineConditions, MissingCapability, PlaneCapabilities};
 
 const _: () = assert!(matches!(
     DataPlane::DEFAULT_ORDER.last(),
@@ -32,7 +30,7 @@ pub enum Skip {
     Routes,
 }
 
-pub(crate) type Probe = fn() -> Option<String>;
+pub(crate) type Capability = fn(&PlaneCapabilities) -> Result<(), MissingCapability>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TlsServing {
@@ -56,7 +54,7 @@ impl TlsServing {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Link {
     pub(crate) plane: DataPlane,
-    pub(crate) probe: Probe,
+    pub(crate) capability: Capability,
     pub(crate) engine: bool,
     pub(crate) scheduling: bool,
     pub(crate) tls: TlsServing,
@@ -65,29 +63,33 @@ pub(crate) struct Link {
 impl Link {
     pub(crate) const IO_URING: Self = Self {
         plane: DataPlane::IoUring,
-        probe: io_uring_probe,
+        capability: PlaneCapabilities::io_uring,
         engine: true,
         scheduling: false,
         tls: TlsServing::Never,
     };
     pub(crate) const EPOLL: Self = Self {
         plane: DataPlane::Epoll,
-        probe: epoll_probe,
+        capability: PlaneCapabilities::epoll,
         engine: true,
         scheduling: true,
         tls: TlsServing::WhenChosen,
     };
     pub(crate) const TOKIO: Self = Self {
         plane: DataPlane::Tokio,
-        probe: always,
+        capability: granted,
         engine: false,
         scheduling: true,
         tls: TlsServing::Always,
     };
 
-    fn available(self, conditions: EngineConditions) -> Result<(), Skip> {
-        if let Some(missing) = (self.probe)() {
-            return Err(Skip::Unavailable(missing));
+    fn available(
+        self,
+        capabilities: &PlaneCapabilities,
+        conditions: EngineConditions,
+    ) -> Result<(), Skip> {
+        if let Err(missing) = (self.capability)(capabilities) {
+            return Err(Skip::Unavailable(missing.to_string()));
         }
         if !self.engine {
             return Ok(());
@@ -158,7 +160,8 @@ impl Candidate {
         terminable: bool,
     ) -> Result<(), Skip> {
         self.available.clone()?;
-        self.link.serves(listener, routes, (self.chosen, terminable))
+        self.link
+            .serves(listener, routes, (self.chosen, terminable))
     }
 }
 
@@ -177,6 +180,7 @@ impl Planes {
     pub(crate) fn candidates(
         self,
         setting: Option<HttpDataPlane>,
+        capabilities: &PlaneCapabilities,
         conditions: EngineConditions,
     ) -> Vec<Candidate> {
         order(setting, self.order)
@@ -184,7 +188,7 @@ impl Planes {
             .map(|plane| self.link(*plane))
             .map(|link| Candidate {
                 link,
-                available: link.available(conditions),
+                available: link.available(capabilities, conditions),
                 chosen: setting.is_some_and(|chosen| link.plane.is(chosen)),
             })
             .collect()
@@ -199,7 +203,10 @@ impl Planes {
     }
 }
 
-fn order(setting: Option<HttpDataPlane>, default: &'static [DataPlane]) -> &'static [DataPlane] {
+pub(super) fn order(
+    setting: Option<HttpDataPlane>,
+    default: &'static [DataPlane],
+) -> &'static [DataPlane] {
     match setting {
         None => default,
         Some(HttpDataPlane::IoUring) => &[DataPlane::IoUring, DataPlane::Tokio],
@@ -208,27 +215,7 @@ fn order(setting: Option<HttpDataPlane>, default: &'static [DataPlane]) -> &'sta
     }
 }
 
-fn always() -> Option<String> {
-    None
-}
-
-fn epoll_probe() -> Option<String> {
-    (!oxiroute_epoll_h1::supported()).then(|| "epoll is not available on this platform".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn probe_io_uring() -> Option<String> {
-    oxiroute_epoll_h1::io_uring_support()
-        .err()
-        .map(|missing| missing.to_string())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn probe_io_uring() -> Option<String> {
-    Some("only Linux provides io_uring".to_owned())
-}
-
-fn io_uring_probe() -> Option<String> {
-    static MISSING: OnceLock<Option<String>> = OnceLock::new();
-    MISSING.get_or_init(probe_io_uring).clone()
+#[allow(clippy::unnecessary_wraps)]
+fn granted(_: &PlaneCapabilities) -> Result<(), MissingCapability> {
+    Ok(())
 }

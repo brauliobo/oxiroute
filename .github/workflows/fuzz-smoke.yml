@@ -21,7 +21,7 @@ jobs:
           components: rustfmt
 
       - name: Verify bounded fuzz targets and crash-corpus seeds
-        run: ./scripts/verify-fuzz.sh
+        run: ./scripts/verify/fuzz.sh
 
       - name: Run optional cargo-fuzz smoke when tooling is available
         run: bash fuzz/smoke.sh

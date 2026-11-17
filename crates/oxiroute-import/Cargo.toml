@@ -23,5 +23,57 @@ zeroize.workspace = true
 syn = { version = "3", features = ["full"] }
 tempfile.workspace = true
 
+[[test]]
+name = "nginx_ciphers"
+path = "tests/nginx/ciphers/main.rs"
+
+[[test]]
+name = "nginx_includes"
+path = "tests/nginx/includes.rs"
+
+[[test]]
+name = "nginx_lexer"
+path = "tests/nginx/lexer.rs"
+
+[[test]]
+name = "nginx_listen"
+path = "tests/nginx/listen.rs"
+
+[[test]]
+name = "nginx_lower"
+path = "tests/nginx/lower/main.rs"
+
+[[test]]
+name = "nginx_parser"
+path = "tests/nginx/parser.rs"
+
+[[test]]
+name = "nginx_root"
+path = "tests/nginx/root.rs"
+
+[[test]]
+name = "nginx_router_shape"
+path = "tests/nginx/router_shape.rs"
+
+[[test]]
+name = "nginx_rtmp"
+path = "tests/nginx/rtmp/main.rs"
+
+[[test]]
+name = "nginx_rtmp_parser_compat"
+path = "tests/nginx/rtmp_parser_compat.rs"
+
+[[test]]
+name = "nginx_semantic"
+path = "tests/nginx/semantic.rs"
+
+[[test]]
+name = "nginx_stream"
+path = "tests/nginx/stream.rs"
+
+[[test]]
+name = "nginx_tls"
+path = "tests/nginx/tls.rs"
+
 [lints]
 workspace = true

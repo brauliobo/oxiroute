@@ -535,12 +535,12 @@ request. To rebuild after changing the UI:
 
 ```sh
 cd ui && pnpm install --frozen-lockfile && pnpm build:stats
-cd .. && scripts/generate-stats-assets.sh --from ui/dist-stats
+cd .. && scripts/generate/stats/assets.sh --from ui/dist-stats
 ```
 
-`generate-stats-assets.sh` installs the build and regenerates the table
+`scripts/generate/stats/assets.sh` installs the build and regenerates the table
 `src/observability/stats_page/assets/table.rs`; with `--check` it changes nothing and fails on any
-difference. `scripts/verify-stats-assets.sh` runs that check, rebuilds the UI with `pnpm build:stats`
+difference. `scripts/verify/stats/assets.sh` runs that check, rebuilds the UI with `pnpm build:stats`
 and compares it with the embedded files byte for byte (CI runs it in the `stats-ui` job). `pnpm
 build:stats` also fails when the bundle contains a virtual DOM renderer, an unexpected file, or exceeds
 its size budget.

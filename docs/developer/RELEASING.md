@@ -6,25 +6,25 @@ the test strategy.
 ## Before A Release
 
 - Run the full Rust and UI gates in [TESTING.md](TESTING.md).
-- Run `./scripts/verify-control-plane-contract.sh` to verify the checked OpenAPI artifact is generated
+- Run `./scripts/verify/control-plane-contract.sh` to verify the checked OpenAPI artifact is generated
   from the registry and DTO schemas without drift.
-- Run `./scripts/verify-lockfiles.sh` so every Cargo and pnpm manifest is checked against its
+- Run `./scripts/verify/lockfiles.sh` so every Cargo and pnpm manifest is checked against its
   committed lockfile.
 - Re-check [COMPATIBILITY.md](../COMPATIBILITY.md) against the active runtime, not just crate code.
 - Update the relevant user/reference pages and add release notes under `docs/`.
 - Render the dashboard GIFs if UI labels or product states changed.
 - Inspect generated archives and ensure secrets, `target/`, `node_modules/`, and benchmark artifacts
-  are absent. `scripts/verify-release-archive.sh` enforces this list and checks the Git-tracked file
+  are absent. `scripts/verify/release/archive.sh` enforces this list and checks the Git-tracked file
   list when called with `--compare-worktree`.
 - Verify the Arch recipe and `.SRCINFO` only after the release asset exists.
-- Run `scripts/verify-rtmp-public-api.sh` only when proving the immutable RTMP Phase 0 fixture against
+- Run `scripts/verify/rtmp/public-api.sh` only when proving the immutable RTMP Phase 0 fixture against
   the matching current 0.4.1 API. Its command semantics are exact equality between the current
   `oxiroute-rtmp` rustdoc graph and `docs/developer/fixtures/rtmp-public-api-phase0.snapshot`. It is
   expected to fail after the authorized 0.5 removals and is not a 0.5 acceptance gate. Do not
   regenerate the Phase 0 fixture. For 0.5 acceptance, require the exact classified generalized RTMP
-  delta from `scripts/verify-public-api.sh` and the future pinned `cargo-public-api` semantic
+  delta from `scripts/verify/public/api.sh` and the future pinned `cargo-public-api` semantic
   comparison described below.
-- Run `scripts/verify-public-api-baseline-provenance.sh` to regenerate all-features rustdoc JSON from
+- Run `scripts/verify/public/api-baseline-provenance.sh` to regenerate all-features rustdoc JSON from
   exact commit `2d9c5fe66cd096d7a1d8e3bada8d5784b5f97f6c` in an isolated archive under `/tmp/opencode` and
   compare the result byte-for-byte with the five checked generalized baselines. The command pins
   Rust 1.97.1, target `x86_64-unknown-linux-gnu`, canonical schema 4, and cleans the archive on exit.
@@ -35,11 +35,11 @@ the test strategy.
   directory, and never executes the mutable candidate entrypoint for baseline generation. It also
   pins the candidate entrypoint digest
   `2545bc342e1042f0f4986875fd7f1944f61715f93eecd61cc42e190edd9a08f1`. Run
-  `scripts/verify-public-api-baseline-provenance.sh --adversarial-self-test` to prove mutations of
+  `scripts/verify/public/api-baseline-provenance.sh --adversarial-self-test` to prove mutations of
   either source fail digest verification. `--update` is reserved for intentional, reviewed baseline
   regeneration from that same authenticated commit; changing canonicalizer bytes requires separately
   reviewing and updating both hardcoded and documented digests.
-- Run `scripts/verify-generation-blueprint-baseline.sh` to regenerate the comprehensive runtime-plan
+- Run `scripts/verify/generation/blueprint/baseline.sh` to regenerate the comprehensive runtime-plan
   behavior fixture from exact commit `2d9c5fe66cd096d7a1d8e3bada8d5784b5f97f6c`. The gate authenticates
   its archived instrumentation and harness with hardcoded SHA-256 digests, compares schema-2
   normalized decisions, acquired service/TLS and pool outputs, exact topology, errors, and acquisition
@@ -48,9 +48,9 @@ the test strategy.
   `ba9a2ad1252ffe96bb4d5a84a40ce226a2a7ae374feeb1241b0549d4feaa11df`; the reviewed harness digest
   is `99b173a270a21f24c5766e1611a854a226892ea794f40c4033406e7f29cc8cbc`, and the generated fixture
   digest is `b83eb1bb086d72b9eae8030aeb9ed1cd799d82fb415fcc2401e0f7bbabccabd3`.
-  Run `scripts/verify-generation-blueprint-baseline.sh --adversarial-self-test` to prove mutations of
+  Run `scripts/verify/generation/blueprint/baseline.sh --adversarial-self-test` to prove mutations of
   either immutable input fail authentication.
-- Run `scripts/verify-public-api.sh` for the fast candidate comparison. It uses the identical
+- Run `scripts/verify/public/api.sh` for the fast candidate comparison. It uses the identical
   toolchain, target, features, and schema metadata and checks each generated delta against the
   classified `docs/developer/fixtures/*-public-api-0.5.delta` files. The canonicalizer derives
   first-party dependency aliases from each dependency rustdoc root and rejects unresolved private
@@ -69,7 +69,7 @@ Keep all three aligned.
 ## Package Path
 
 `scripts/create-release-archive.sh` creates a deterministic source archive from committed `HEAD`,
-excluding the Arch recipe and benchmark report artifacts. `scripts/verify-release-archive.sh` checks
+excluding the Arch recipe and benchmark report artifacts. `scripts/verify/release/archive.sh` checks
 the root prefix, every committed lock/license input, forbidden artifact and secret-shaped paths,
 private-key and high-signal credential content, and optional committed file-list equality.
 `packaging/arch/build-local.sh` reuses those checks before invoking `makepkg`; it still checks the
@@ -79,9 +79,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 6.5.2
+./scripts/verify/release/version.sh 6.5.2
 ./scripts/create-release-archive.sh /tmp/oxiroute-6.5.2.tar.gz 6.5.2
-./scripts/verify-release-archive.sh /tmp/oxiroute-6.5.2.tar.gz 6.5.2 --compare-worktree
+./scripts/verify/release/archive.sh /tmp/oxiroute-6.5.2.tar.gz 6.5.2 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -104,7 +104,7 @@ profile-guided optimization, which cuts user-space instructions per request by 1
    so a profile the compiler ignored cannot be published as a PGO build.
    Every build of the script (instrumented, profile-use, plain) appends the same `--remap-path-prefix` flags for the
    checkout, the cargo home and `PGO_WORK`, so the binary embeds no runner or home-directory path and the profile still
-   matches. `scripts/build-release-binaries.sh` then runs `scripts/verify-binary-paths.sh` and fails when a binary
+   matches. `scripts/build-release-binaries.sh` then runs `scripts/verify/binary-paths.sh` and fails when a binary
    contains `/home/`, `/runner/work`, the checkout or the cargo home. The vendored OpenSSL records its own build
    directory, which no rustc flag can remap, so `PGO_WORK` must lie outside `/home` (the workflow uses `/tmp`).
 3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
@@ -114,7 +114,7 @@ profile-guided optimization, which cuts user-space instructions per request by 1
    virtual machines of hosted runners), ten lanes replay through the counted binary, and `llvm-bolt` rewrites the PGO
    binary (block order, function order, hot/cold splitting). The stage fails when fewer than 1000 functions got a
    profile, when the output grew by more than 50%, or when it is no longer PIE, lost `GNU_RELRO` or `BIND_NOW`, or does
-   not start. Then `smoke` runs again on the rewritten binary and `scripts/test-release-binary.sh` runs the whole
+   not start. Then `smoke` runs again on the rewritten binary and `scripts/test/release/binary.sh` runs the whole
    workspace test suite with the rewritten binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
    panic-containment test drives the shipped bytes. Any failure fails the job; nothing falls back to the PGO binary.
 
@@ -199,7 +199,7 @@ Three gates keep a CPU target out of the shipped bytes:
   friends (the cc crate inherits them for OpenSSL, aws-lc and Lua) carry `-march=`, `-mavx*`, `-msse4*`, `-mbmi*`, `-mfma`
   and the like. Only `-march=x86-64`, `-march=x86-64-v1` and `-mtune=generic` (the makepkg defaults) pass; nothing is
   stripped silently. Arch users whose `makepkg.conf` sets `-march=native` set generic flags in `~/.makepkg.conf`.
-- `scripts/verify-baseline-isa.sh BIN` disassembles the binary and fails on VEX/EVEX, BMI, FMA, LZCNT and MOVBE
+- `scripts/verify/baseline-isa.sh BIN` disassembles the binary and fails on VEX/EVEX, BMI, FMA, LZCNT and MOVBE
   instructions in any function that is not runtime-dispatched (`oxiroute_cpu::`, memchr, aho-corasick, aws-lc and ring
   assembly, zlib-ng, zstd, glibc, ... or a symbol that names its ISA); the allow-list is `DISPATCHED_SYMBOL_PATTERNS` in the
   script, one `family ORIGIN REGEX` entry per body of third-party code with the CPU check that gates it (for aws-lc: the
@@ -207,13 +207,13 @@ Three gates keep a CPU target out of the shipped bytes:
   into Rust code and C or assembly symbols, and counts the accepted functions per origin. It skips the dead pre-rewrite section `.bolt.org.text` of a BOLT output (the
   build checks the binary BOLT reads before BOLT runs). A stripped binary fails closed: pass `--symbols UNSTRIPPED` (same build-id). It runs on the release binaries
   in `build-release-binaries.sh`, not for the `v3` flavour.
-- `scripts/verify-baseline-isa.sh --run BIN` also runs `BIN version` under `qemu-x86_64 -cpu Nehalem` and
+- `scripts/verify/baseline-isa.sh --run BIN` also runs `BIN version` under `qemu-x86_64 -cpu Nehalem` and
   `-cpu Denverton` (a Goldmont-class Atom: SSE4.2, no AVX; qemu has no Goldmont Plus, the J4125 core) and fails on a
   non-zero exit or `SIGILL`. Without `qemu-x86_64` (package `qemu-user`) it prints `SKIPPED` and exits 0; `--require`
   makes that exit 1. A dynamic binary needs the host loader or `QEMU_LD_PREFIX=<baseline sysroot>`; a host glibc built
   for x86-64-v3 raises `SIGILL` before the binary runs.
 
-`scripts/test-cpu-targets.sh` builds and executes the CPU and HTTP/1 scanner tests for generic x86-64 and the
+`scripts/test/cpu-targets.sh` builds and executes the CPU and HTTP/1 scanner tests for generic x86-64 and the
 native build host. The generic test executables also run under QEMU with baseline, SSSE3 and AVX2 CPUs, including an
 AVX2 CPU with unrelated POPCNT and BMI features masked. Separate masks of SSE3, SSSE3 and SSE4 verify that
 selection respects Rust’s target-feature dependencies and lowers the backend when needed. Each emulated run asserts
@@ -228,7 +228,7 @@ does not establish AVX-512 coverage.
 For a host whose libraries require x86-64-v3, set `QEMU_LD_PREFIX=/path/to/baseline-sysroot` to compatible generic
 loader, glibc and compiler runtime libraries. This changes the emulated loader; it does not alter the host libraries.
 
-`scripts/test-verify-baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
+`scripts/test/verify/baseline-isa.sh` tests the guard and the verifier offline with assembled fixtures (CI job
 "Release archive policy").
 
 ## Binary Package
@@ -237,7 +237,7 @@ loader, glibc and compiler runtime libraries. This changes the emulated loader; 
 sysusers, tmpfiles, environment, KDL, Lua and `.install` files as the source recipe (byte-identical copies, enforced by
 `packaging/arch/verify-checksums.sh`). The tarball checksum exists only after the release workflow has run, so after the
 binaries job publishes, run `packaging/arch/pin-bin-release.sh VERSION` and commit the result. `verify-checksums.sh`
-runs in CI and in `scripts/verify-release-version.sh`; it fails on a stale local-file checksum or a PKGBUILD/`.SRCINFO`
+runs in CI and in `scripts/verify/release/version.sh`; it fails on a stale local-file checksum or a PKGBUILD/`.SRCINFO`
 disagreement.
 
 ## GitHub Pages

@@ -17,15 +17,15 @@ use crate::{
         StaticFilesBlueprint,
     },
     http::cache::CompressionPolicy,
-    rtmp::value_plan::compile_rtmp_value_plans_from_draft,
+    rtmp::value::plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
-    service_plan::DataPlanePolicy,
     service_plan::errors::{ServicePlanError, rtmp_preparation_error},
     service_plan::types::{
         CachePolicyBlueprint, CacheStoreBlueprint, EndpointBlueprint, HttpActionBlueprint,
         HttpRouteBlueprint, HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint,
         PoolBlueprint, RtmpSpec, ServiceReference,
     },
+    service_plan::{DataPlanePolicy, PlaneCapabilities},
 };
 
 /// Immutable, value-only decisions for one validated generation.
@@ -51,6 +51,7 @@ pub(crate) struct GenerationCompiler;
 impl GenerationCompiler {
     pub(crate) fn compile(
         validated: &ValidatedConfig,
+        capabilities: &PlaneCapabilities,
     ) -> Result<GenerationBlueprint, ServicePlanError> {
         let config = validated.as_draft();
         reject_unimplemented_runtime_policies(config)?;
@@ -110,7 +111,7 @@ impl GenerationCompiler {
                 }))
                 .chain(crate::registry::host::registry_binds(config))
                 .collect(),
-            listener_specs: compile_listener_blueprints(config),
+            listener_specs: compile_listener_blueprints(config, capabilities),
             pool_specs,
             cache_specs,
             http_service_specs,
@@ -674,8 +675,9 @@ fn refuse_tls_profile(
 
 fn compile_listener_blueprints(
     config: &oxiroute_config::ConfigDraft,
+    capabilities: &PlaneCapabilities,
 ) -> Result<Box<[ListenerBlueprint]>, ServicePlanError> {
-    let data_plane = DataPlanePolicy::of(config)?;
+    let data_plane = DataPlanePolicy::of(config, capabilities)?;
     config
         .listeners
         .iter()

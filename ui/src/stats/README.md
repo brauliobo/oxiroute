@@ -17,11 +17,11 @@ Names are content hashes (deterministic for pinned pnpm/node/vite and `--frozen-
 single source of the shell the page listener serves. The build base is the token `/__stats_prefix__/`, so the built
 `stats.html` loads `/__stats_prefix__/assets/<file from manifest>` as `<script type="module" crossorigin>` and
 `<link rel="stylesheet" crossorigin>`; the listener replaces the token with the configured `uri_prefix` per request.
-`scripts/generate-stats-assets.sh --from ui/dist-stats` installs the built `stats.html` as
-`crates/oxiroute-server/assets/stats/index.html` and `verify-stats-assets.sh` fails when it differs from a fresh build.
+`scripts/generate/stats/assets.sh --from ui/dist-stats` installs the built `stats.html` as
+`crates/oxiroute-server/assets/stats/index.html` and `scripts/verify/stats/assets.sh` fails when it differs from a fresh build.
 Nothing in the bundle assumes the page is at `/`; `vite preview` answers the token as the site root. The page asks `<page path without trailing slash>/snapshot.json`.
 `pnpm verify:stats-bundle` (part of `build:stats`) checks: pure Vapor (no VDOM), only the files above, manifest matches,
-gzip budget JS <= 90 KiB and CSS <= 12 KiB (`scripts/verify-stats-budget.mjs`). Browser smoke:
+gzip budget JS <= 90 KiB and CSS <= 12 KiB (`scripts/verify/stats/budget.mjs`). Browser smoke:
 `pnpm test:browser --project=stats-chromium` (strict CSP via `vite preview --config vite.stats.config.ts`).
 
 ## Modules (all pure and tested, except the store)

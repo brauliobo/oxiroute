@@ -1,0 +1,599 @@
+use std::{fs, os::unix::fs::PermissionsExt as _};
+
+use oxiroute_config::{
+    DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer,
+};
+use serde_json::json;
+use tempfile::TempDir;
+
+use crate::http_support::http_request;
+use crate::process_support::{ServerProcess, build_ui, reserve_tcp_address};
+use crate::shared::{TOKEN, management_config, recording_candidate};
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn built_management_ui_and_authenticated_config_lifecycle_run_over_real_tcp() {
+    let ui_dir = build_ui();
+    let management_address = reserve_tcp_address();
+    let active = management_config(management_address, Some(ui_dir.clone()));
+    let mut server = ServerProcess::start(
+        &active.clone().validate().expect("valid active config"),
+        Some(TOKEN),
+    );
+    server.wait_for_tcp(management_address).await;
+    let token_path = server.token_path.as_ref().expect("management token file");
+    let authorization = format!("Bearer {TOKEN}");
+    assert_eq!(
+        fs::metadata(token_path)
+            .expect("token metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let index = http_request(management_address, "GET", "/", &[], &[]).await;
+    assert_eq!(index.status, 200);
+    assert_eq!(
+        index.headers.get("content-type").map(String::as_str),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(index.body, fs::read(ui_dir.join("index.html")).unwrap());
+    let asset_paths = built_asset_paths(&index.body);
+    assert!(!asset_paths.is_empty(), "built index must reference assets");
+    for path in asset_paths {
+        let response = http_request(management_address, "GET", &path, &[], &[]).await;
+        assert_eq!(response.status, 200, "asset {path}");
+        assert_eq!(
+            response.body,
+            fs::read(ui_dir.join(path.trim_start_matches('/'))).unwrap(),
+            "asset {path}"
+        );
+    }
+
+    let monitoring = http_request(
+        management_address,
+        "GET",
+        "/api/v1/monitoring",
+        &[
+            ("Cache-Control", "no-store"),
+            ("Authorization", &authorization),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(monitoring.status, 200);
+    let monitoring = monitoring.json();
+    assert_eq!(monitoring["listeners"], json!([]));
+    assert_eq!(monitoring["upstreamPools"], json!([]));
+    assert_eq!(monitoring["certbotCertificates"], json!([]));
+    assert!(monitoring["certbotWatcher"].is_null());
+    assert_eq!(
+        monitoring["rtmp"],
+        json!({
+            "activeStreams": 0,
+            "publishers": 0,
+            "subscribers": 0,
+            "mediaPayloadBytesReceived": "0",
+            "recordingSupported": false,
+            "manualRecording": false,
+            "recorderBytesWritten": "0",
+            "recorderSegmentsStarted": "0",
+            "recorderSegmentsCompleted": "0",
+            "recorderDiscontinuities": "0",
+            "relayConnectionAttempts": "0",
+            "relayConnections": "0",
+            "relayReconnects": "0",
+            "relayDnsRefreshAttempts": "0",
+            "relayDnsRefreshSuccesses": "0",
+            "relayDnsRefreshFailures": "0",
+            "relayEventsSent": "0",
+            "relayEventsDropped": "0",
+            "relayPayloadBytesSent": "0",
+            "accessLog": {
+                "queueCapacity": 1_024,
+                "queueDepth": "0",
+                "enqueued": "0",
+                "written": "0",
+                "dropped": "0",
+                "queueSaturated": "0",
+                "writeFailures": "0",
+            },
+            "relays": [],
+            "recorders": [],
+        })
+    );
+
+    let catalog = http_request(
+        management_address,
+        "GET",
+        "/api/v1/rtmp/streams",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    assert!(catalog["as_of_unix_ms"].as_u64().is_some());
+    assert_eq!(catalog["revision"], "0");
+    assert_eq!(
+        catalog["capabilities"],
+        json!({ "live_ingest": false, "manual_recording": false })
+    );
+    assert_eq!(catalog["streams"], json!([]));
+
+    let topology = http_request(
+        management_address,
+        "GET",
+        "/api/v1/topology",
+        &[
+            ("Cache-Control", "no-store"),
+            ("Authorization", &authorization),
+        ],
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(topology["schemaVersion"], 1);
+    assert_eq!(topology["state"]["config"], "active");
+    assert_eq!(topology["state"]["runtime"], "active");
+    assert_eq!(topology["nodes"], json!([]));
+    assert_eq!(topology["edges"], json!([]));
+    assert_eq!(topology["overlays"], json!([]));
+
+    let unauthorized = http_request(management_address, "GET", "/api/v1/config", &[], &[]).await;
+    assert_eq!(unauthorized.status, 401);
+    assert_eq!(unauthorized.json()["error"]["code"], "unauthorized");
+
+    let get = http_request(
+        management_address,
+        "GET",
+        "/api/v1/config",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await;
+    assert_eq!(get.status, 200);
+    let snapshot = get.json();
+    assert_eq!(snapshot["schemaVersion"], 1);
+    assert_eq!(snapshot["config"], serde_json::to_value(&active).unwrap());
+    assert_eq!(snapshot["candidateRevision"], snapshot["activeRevision"]);
+    assert_ne!(snapshot["diskRevision"], snapshot["activeRevision"]);
+    assert_eq!(snapshot["configFormat"], "lua");
+    assert_eq!(snapshot["compositional"], false);
+    assert!(!String::from_utf8_lossy(&get.body).contains(TOKEN));
+
+    let missing_root = TempDir::new()
+        .expect("secret recording parent")
+        .path()
+        .join("tenant-secret-recording-root");
+    let invalid_candidate = recording_candidate(&active, &missing_root);
+    let invalid_body = serde_json::to_vec(&json!({ "config": invalid_candidate })).unwrap();
+    let rejected = http_request(
+        management_address,
+        "POST",
+        "/api/v1/config/validate",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &invalid_body,
+    )
+    .await;
+    assert_eq!(rejected.status, 422);
+    assert_eq!(
+        rejected.json()["diagnostics"][0]["code"],
+        "E_RUNTIME_PREPARE"
+    );
+    let rejected_wire = String::from_utf8_lossy(&rejected.body);
+    assert!(
+        rejected_wire.contains("candidate cannot be prepared as a complete runtime generation")
+    );
+    assert!(!rejected_wire.contains(&missing_root.display().to_string()));
+    assert!(!rejected_wire.contains(TOKEN));
+
+    let mut candidate = active.clone();
+    candidate.management.as_mut().unwrap().ui_dir = None;
+    let candidate_body = serde_json::to_vec(&json!({ "config": candidate })).unwrap();
+    let validated = http_request(
+        management_address,
+        "POST",
+        "/api/v1/config/validate",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &candidate_body,
+    )
+    .await;
+    assert_eq!(validated.status, 200);
+    assert_eq!(
+        validated.json()["normalizedConfig"],
+        serde_json::to_value(&candidate).unwrap()
+    );
+    assert_eq!(validated.json()["configFormat"], "lua");
+    assert_eq!(
+        validated.json()["configPreview"],
+        validated.json()["luaPreview"]
+    );
+
+    let revision = snapshot["diskRevision"].as_str().unwrap();
+    let saved = http_request(
+        management_address,
+        "PUT",
+        "/api/v1/config",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+            ("If-Config-Revision", revision),
+        ],
+        &candidate_body,
+    )
+    .await;
+    assert_eq!(saved.status, 200);
+    let saved = saved.json();
+    assert_eq!(saved["activeRevision"], snapshot["activeRevision"]);
+    assert_eq!(saved["outcome"], "saved_pending_activation");
+    assert_eq!(saved["activationState"], "pending");
+    assert_eq!(saved["restartRequired"], false);
+
+    let persisted = http_request(
+        management_address,
+        "GET",
+        "/api/v1/config",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(
+        persisted["config"],
+        serde_json::to_value(candidate).unwrap()
+    );
+    assert_eq!(persisted["diskRevision"], saved["diskRevision"]);
+    assert_eq!(persisted["activeRevision"], snapshot["activeRevision"]);
+    assert!(
+        fs::read_to_string(&server.config_path)
+            .expect("persisted process config")
+            .contains("ui_dir = nil")
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn authenticated_server_batches_are_prevalidated_and_mutate_owned_runtime_state() {
+    let management_address = reserve_tcp_address();
+    let mut config = management_config(management_address, None);
+    config.upstream_pools = ["public-v4", "public-v6"]
+        .into_iter()
+        .map(|name| UpstreamPool {
+            name: name.into(),
+            servers: vec![UpstreamServer {
+                name: "origin-a".into(),
+                endpoint: UpstreamEndpoint::Socket {
+                    address: "127.0.0.1:8080".parse().expect("upstream"),
+                },
+                max_connections: Some(10),
+                dns_resolution: DnsResolutionPolicy::OnConnect,
+            }],
+            endpoints: Vec::new(),
+            algorithm: UpstreamAlgorithm::RoundRobin,
+            health_check: None,
+            passive_health: None,
+            tls: None,
+            http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::Safe,
+            registration: None,
+            canary: None,
+            resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
+        })
+        .collect();
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let active_revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/generations",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["generation"]["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+
+    let unauthorized = http_request(management_address, "GET", "/api/v1/servers", &[], &[]).await;
+    assert_eq!(unauthorized.status, 401);
+
+    let rejected = http_request(
+        management_address,
+        "POST",
+        "/api/v1/servers/administrative-state",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [
+                { "pool": "public-v4", "server": "origin-a" },
+                { "pool": "missing", "server": "origin-a" }
+            ],
+            "state": "drain",
+            "expectedActiveRevision": active_revision.clone(),
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(rejected.status, 404);
+    assert_eq!(rejected.json()["error"]["code"], "pool_not_found");
+
+    let stale = http_request(
+        management_address,
+        "POST",
+        "/api/v1/servers/administrative-state",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+            "state": "drain",
+            "expectedActiveRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(stale.status, 409);
+    assert_eq!(stale.json()["error"]["code"], "generation_conflict");
+
+    let malformed = http_request(
+        management_address,
+        "POST",
+        "/api/v1/servers/administrative-state",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+            "state": "drain",
+            "expectedActiveRevision": "malformed",
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(malformed.status, 409);
+    assert_eq!(malformed.json()["error"]["code"], "generation_conflict");
+
+    let unchanged = http_request(
+        management_address,
+        "GET",
+        "/api/v1/servers",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    assert!(
+        unchanged["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| { entry["server"]["administrativeState"] == "ready" })
+    );
+
+    for (path, mut body) in [
+        (
+            "/api/v1/servers/administrative-state",
+            json!({
+                "targets": [
+                    { "pool": "public-v4", "server": "origin-a" },
+                    { "pool": "public-v6", "server": "origin-a" }
+                ],
+                "state": "drain"
+            }),
+        ),
+        (
+            "/api/v1/servers/health-override",
+            json!({
+                "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+                "health": "down"
+            }),
+        ),
+        (
+            "/api/v1/servers/checks",
+            json!({
+                "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+                "enabled": false
+            }),
+        ),
+    ] {
+        body["expectedActiveRevision"] = json!(active_revision.clone());
+        let response = http_request(
+            management_address,
+            "POST",
+            path,
+            &[
+                ("Authorization", &authorization),
+                ("Content-Type", "application/json"),
+            ],
+            &serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(response.status, 200, "{path}: {}", response.json());
+    }
+    let capacity = http_request(
+        management_address,
+        "PUT",
+        "/api/v1/servers/max-connections",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+            "maxConnections": 3,
+            "expectedActiveRevision": active_revision,
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(capacity.status, 200);
+
+    let changed = http_request(
+        management_address,
+        "GET",
+        "/api/v1/servers",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await;
+    assert_eq!(changed.status, 200);
+    assert!(!String::from_utf8_lossy(&changed.body).contains(TOKEN));
+    let changed = changed.json();
+    let v4 = changed["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["pool"] == "public-v4")
+        .unwrap();
+    assert_eq!(v4["server"]["administrativeState"], "drain");
+    assert_eq!(v4["server"]["healthOverride"], "down");
+    assert_eq!(v4["server"]["checksEnabled"], false);
+    assert_eq!(v4["server"]["maxConnections"], 3);
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn dns_refresh_batch_reports_every_target_and_explicit_non_atomic_outcomes() {
+    let management_address = reserve_tcp_address();
+    let mut config = management_config(management_address, None);
+    config.upstream_pools = vec![UpstreamPool {
+        name: "dns".into(),
+        servers: vec![
+            UpstreamServer {
+                name: "resolvable".into(),
+                endpoint: UpstreamEndpoint::Dns {
+                    host: "localhost".into(),
+                    port: 8080,
+                },
+                max_connections: None,
+                dns_resolution: DnsResolutionPolicy::OnConnect,
+            },
+            UpstreamServer {
+                name: "missing".into(),
+                endpoint: UpstreamEndpoint::Dns {
+                    host: "does-not-exist.invalid".into(),
+                    port: 8080,
+                },
+                max_connections: None,
+                dns_resolution: DnsResolutionPolicy::OnConnect,
+            },
+        ],
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        passive_health: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: UpstreamConnectionReuse::Safe,
+        registration: None,
+        canary: None,
+        resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
+    }];
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+
+    let duplicate = http_request(
+        management_address,
+        "GET",
+        "/api/v1/servers",
+        &[
+            ("Authorization", &authorization),
+            ("Authorization", &authorization),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(duplicate.status, 400);
+    assert_eq!(duplicate.json()["error"]["code"], "duplicate_authorization");
+
+    let active_revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/generations",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["generation"]["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+    let refreshed = http_request(
+        management_address,
+        "POST",
+        "/api/v1/servers/refresh-dns",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [
+                { "pool": "dns", "server": "resolvable" },
+                { "pool": "dns", "server": "missing" }
+            ],
+            "expectedActiveRevision": active_revision,
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(refreshed.status, 207, "{}", refreshed.text());
+    let body = refreshed.json();
+    assert_eq!(body["atomic"], false);
+    assert_eq!(body["servers"].as_array().unwrap().len(), 2);
+    assert_eq!(body["servers"][0]["outcome"], "refreshed");
+    assert_eq!(body["servers"][1]["outcome"], "failed");
+    assert_eq!(body["servers"][1]["error"]["code"], "dns_refresh_failed");
+
+    server.shutdown();
+}
+
+fn built_asset_paths(index: &[u8]) -> Vec<String> {
+    let index = std::str::from_utf8(index).expect("built index UTF-8");
+    let mut paths = Vec::new();
+    for marker in ["src=\"", "href=\""] {
+        let mut remainder = index;
+        while let Some(start) = remainder.find(marker) {
+            remainder = &remainder[start + marker.len()..];
+            let end = remainder.find('"').expect("asset attribute terminator");
+            let path = &remainder[..end];
+            if path.starts_with("/assets/") {
+                paths.push(path.to_owned());
+            }
+            remainder = &remainder[end + 1..];
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}

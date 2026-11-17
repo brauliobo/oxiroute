@@ -4,12 +4,12 @@
     {
       "id": "evidence.canonical.config",
       "tests": [
-        "crates/oxiroute-config-source/tests/lua_config/defaults.rs#loads_the_canonical_configuration",
-        "crates/oxiroute-config-source/tests/lua_config/statistics.rs#page_only_statistics_validate_render_and_roundtrip",
-        "crates/oxiroute-config-source/tests/lua_config/statistics.rs#rejects_invalid_statistics_pages_and_broad_bind_conflicts",
-        "crates/oxiroute-config-source/tests/lua_config/statistics.rs#statistics_page_uri_prefix_requires_an_exact_ascii_http_path",
-        "crates/oxiroute-config-source/tests/lua_config/schema.rs#rejects_unknown_fields_including_the_old_direct_upstream",
-        "crates/oxiroute-config-source/tests/lua_render.rs#exhaustively_round_trips_every_current_type_field_and_variant"
+        "crates/oxiroute-config-source/tests/lua/config/defaults.rs#loads_the_canonical_configuration",
+        "crates/oxiroute-config-source/tests/lua/config/statistics.rs#page_only_statistics_validate_render_and_roundtrip",
+        "crates/oxiroute-config-source/tests/lua/config/statistics.rs#rejects_invalid_statistics_pages_and_broad_bind_conflicts",
+        "crates/oxiroute-config-source/tests/lua/config/statistics.rs#statistics_page_uri_prefix_requires_an_exact_ascii_http_path",
+        "crates/oxiroute-config-source/tests/lua/config/schema.rs#rejects_unknown_fields_including_the_old_direct_upstream",
+        "crates/oxiroute-config-source/tests/lua/render/fields.rs#exhaustively_round_trips_every_current_type_field_and_variant"
       ]
     },
     {
@@ -37,10 +37,10 @@
         "crates/oxiroute-config-source/tests/http/route_policies.rs#validates_proxy_timeouts_and_roundtrips_them",
         "crates/oxiroute-config-source/tests/http/route_policies.rs#validates_rescue_and_any_retry_status",
         "crates/oxiroute-config-source/tests/http/route_policies.rs#validates_retry_budget_jitter_and_idempotency_header",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#rescue_replays_a_rescued_status_on_the_other_server",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#idempotency_key_gates_the_replay_of_a_post_after_a_response_timeout",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#retry_budget_per_second_stops_retries_until_the_next_second",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#header_timeout_answers_504_and_leaves_budget_for_the_retry"
+        "crates/oxiroute-server/tests/http/proxy_routing/rescue.rs#rescue_replays_a_rescued_status_on_the_other_server",
+        "crates/oxiroute-server/tests/http/proxy_routing/rescue.rs#idempotency_key_gates_the_replay_of_a_post_after_a_response_timeout",
+        "crates/oxiroute-server/tests/http/proxy_routing/rescue.rs#retry_budget_per_second_stops_retries_until_the_next_second",
+        "crates/oxiroute-server/tests/http/proxy_routing/timeouts.rs#header_timeout_answers_504_and_leaves_budget_for_the_retry"
       ]
     },
     {
@@ -56,66 +56,66 @@
     {
       "id": "evidence.endpoint.dns",
       "tests": [
-        "crates/oxiroute-config-source/tests/lua_config/endpoints.rs#validates_and_normalizes_dns_endpoints_without_resolution_or_expansion",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#connects_to_a_dns_http_endpoint_and_keeps_its_identity"
+        "crates/oxiroute-config-source/tests/lua/config/endpoints.rs#validates_and_normalizes_dns_endpoints_without_resolution_or_expansion",
+        "crates/oxiroute-server/tests/http/proxy_routing/endpoints.rs#connects_to_a_dns_http_endpoint_and_keeps_its_identity"
       ]
     },
     {
       "id": "evidence.endpoint.unix",
       "tests": [
-        "crates/oxiroute-config-source/tests/lua_config/endpoints.rs#validates_normalizes_and_deduplicates_unix_paths",
+        "crates/oxiroute-config-source/tests/lua/config/endpoints.rs#validates_normalizes_and_deduplicates_unix_paths",
         "crates/oxiroute-import/tests/haproxy/lower/backends.rs#absolute_unix_server_lowers_without_socket_substitution",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#connects_to_a_unix_http_endpoint"
+        "crates/oxiroute-server/tests/http/proxy_routing/endpoints.rs#connects_to_a_unix_http_endpoint"
       ]
     },
     {
       "id": "evidence.admission.nullable",
       "tests": [
-        "crates/oxiroute-config-source/tests/lua_config/defaults.rs#applies_optional_admission_defaults_without_fabricating_limits",
+        "crates/oxiroute-config-source/tests/lua/config/defaults.rs#applies_optional_admission_defaults_without_fabricating_limits",
         "crates/oxiroute-import/tests/haproxy/lower/routing.rs#strict_default_route_http_subset_uses_an_explicit_unbounded_body_policy",
-        "crates/oxiroute-server/tests/service_plan.rs#preserves_unbounded_listener_and_request_body_limits"
+        "crates/oxiroute-server/tests/service_plan/plan.rs#preserves_unbounded_listener_and_request_body_limits"
       ]
     },
     {
       "id": "evidence.nginx.import",
       "tests": [
-        "crates/oxiroute-import/tests/nginx_includes.rs#unsupported_glob_grammar_is_blocking_instead_of_an_empty_success",
-        "crates/oxiroute-import/tests/nginx_semantic.rs#every_expanded_occurrence_has_one_ordered_terminal_decision",
-        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_explicit_nginx_proxy_version_with_canonical_defaults",
-        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_certificate_paths_without_reading_operational_material",
-        "crates/oxiroute-import/tests/nginx_lower.rs#exact_location_fixed_and_redirect_actions_finalize_without_placeholders",
-        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_static_index_behavior_into_canonical_static_routes",
-        "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize",
-        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_x_accel_response_controls_that_the_runtime_does_not_implement",
-        "crates/oxiroute-import/tests/nginx_lower.rs#one_named_upstream_is_shared_by_routes_and_listeners",
-        "crates/oxiroute-import/tests/nginx_lower.rs#complete_nginx_configs_are_rejected_by_the_http_fragment_api",
-        "crates/oxiroute-import/tests/nginx_root.rs#complete_root_merges_http_and_rtmp_and_externalizes_process_concerns",
-        "crates/oxiroute-import/tests/nginx_root.rs#bare_https_origins_lower_unverified_with_a_warning_and_need_no_overlay",
-        "crates/oxiroute-import/tests/nginx_root.rs#explicit_upstream_tls_overlay_verifies_the_origin_and_requests_activation",
-        "crates/oxiroute-import/tests/nginx_root.rs#acme_webroot_caret_tilde_prefix_lowers_as_a_plain_static_prefix",
-        "crates/oxiroute-import/tests/nginx_root.rs#certbot_return_after_an_exact_host_redirect_does_not_duplicate_the_route",
-        "crates/oxiroute-import/tests/nginx_root.rs#bearer_gate_accepts_any_literal_and_never_keeps_it",
-        "crates/oxiroute-import/tests/nginx_root.rs#cookie_path_rewrites_keep_the_full_nginx_replacement_text",
-        "crates/oxiroute-import/tests/nginx_root.rs#host_header_fallback_is_the_first_server_name_verbatim",
-        "crates/oxiroute-import/tests/nginx_root.rs#default_proxy_buffering_streams_with_one_warning_per_location",
-        "crates/oxiroute-import/tests/nginx_root.rs#formatted_access_log_migrates_through_the_overlay_and_lists_dropped_fields",
-        "crates/oxiroute-import/tests/nginx_root.rs#accepted_directives_without_runtime_effect_are_reported_individually",
-        "crates/oxiroute-import/tests/nginx_router_shape.rs#router_shape_skeleton_finalizes_end_to_end",
-        "crates/oxiroute-import/tests/nginx_lower.rs#caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_cipher_macro_imports_as_the_default_policy_with_one_explanatory_note",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#the_macro_note_names_the_default_list_the_dropped_suites_and_the_legacy_client_recipe",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_rustls_supports_imports_unchanged_without_a_note",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#tls13_suite_names_in_an_explicit_list_are_served_by_rustls_without_a_note",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_with_dhe_imports_unchanged_and_the_note_says_openssl_serves_it",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_without_a_tls12_suite_rustls_serves_selects_openssl_through_the_note",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#an_explicit_list_that_rustls_serves_only_in_part_stays_on_rustls_and_names_what_it_lacks",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_list_mixing_explicit_suites_and_a_macro_imports_as_the_default_policy",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_macro_list_that_names_a_dhe_suite_imports_unchanged_for_openssl",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#ssl_dhparam_maps_to_the_dh_parameters_path_and_notes_the_openssl_backend",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_macro_with_ssl_dhparam_keeps_its_openssl_meaning_on_the_openssl_profile",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#a_tls13_only_minimum_imports_a_macro_without_a_note_because_the_list_governs_tls12_only",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#the_tls_protocol_policy_still_sets_the_minimum_version",
-        "crates/oxiroute-import/tests/nginx_ciphers/imports.rs#ssl_prefer_server_ciphers_maps_independently_of_the_cipher_import",
+        "crates/oxiroute-import/tests/nginx/includes.rs#unsupported_glob_grammar_is_blocking_instead_of_an_empty_success",
+        "crates/oxiroute-import/tests/nginx/semantic.rs#every_expanded_occurrence_has_one_ordered_terminal_decision",
+        "crates/oxiroute-import/tests/nginx/lower/proxy.rs#lowers_explicit_nginx_proxy_version_with_canonical_defaults",
+        "crates/oxiroute-import/tests/nginx/lower/tls.rs#lowers_certificate_paths_without_reading_operational_material",
+        "crates/oxiroute-import/tests/nginx/lower/responses.rs#exact_location_fixed_and_redirect_actions_finalize_without_placeholders",
+        "crates/oxiroute-import/tests/nginx/lower/locations.rs#lowers_static_index_behavior_into_canonical_static_routes",
+        "crates/oxiroute-import/tests/nginx/lower/proxy.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize",
+        "crates/oxiroute-import/tests/nginx/lower/proxy.rs#blocks_x_accel_response_controls_that_the_runtime_does_not_implement",
+        "crates/oxiroute-import/tests/nginx/lower/upstreams.rs#one_named_upstream_is_shared_by_routes_and_listeners",
+        "crates/oxiroute-import/tests/nginx/lower/diagnostics.rs#complete_nginx_configs_are_rejected_by_the_http_fragment_api",
+        "crates/oxiroute-import/tests/nginx/root.rs#complete_root_merges_http_and_rtmp_and_externalizes_process_concerns",
+        "crates/oxiroute-import/tests/nginx/root.rs#bare_https_origins_lower_unverified_with_a_warning_and_need_no_overlay",
+        "crates/oxiroute-import/tests/nginx/root.rs#explicit_upstream_tls_overlay_verifies_the_origin_and_requests_activation",
+        "crates/oxiroute-import/tests/nginx/root.rs#acme_webroot_caret_tilde_prefix_lowers_as_a_plain_static_prefix",
+        "crates/oxiroute-import/tests/nginx/root.rs#certbot_return_after_an_exact_host_redirect_does_not_duplicate_the_route",
+        "crates/oxiroute-import/tests/nginx/root.rs#bearer_gate_accepts_any_literal_and_never_keeps_it",
+        "crates/oxiroute-import/tests/nginx/root.rs#cookie_path_rewrites_keep_the_full_nginx_replacement_text",
+        "crates/oxiroute-import/tests/nginx/root.rs#host_header_fallback_is_the_first_server_name_verbatim",
+        "crates/oxiroute-import/tests/nginx/root.rs#default_proxy_buffering_streams_with_one_warning_per_location",
+        "crates/oxiroute-import/tests/nginx/root.rs#formatted_access_log_migrates_through_the_overlay_and_lists_dropped_fields",
+        "crates/oxiroute-import/tests/nginx/root.rs#accepted_directives_without_runtime_effect_are_reported_individually",
+        "crates/oxiroute-import/tests/nginx/router_shape.rs#router_shape_skeleton_finalizes_end_to_end",
+        "crates/oxiroute-import/tests/nginx/lower/locations.rs#caret_tilde_is_a_plain_prefix_only_without_regex_named_or_variable_locations",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#a_cipher_macro_imports_as_the_default_policy_with_one_explanatory_note",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#the_macro_note_names_the_default_list_the_dropped_suites_and_the_legacy_client_recipe",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#an_explicit_list_rustls_supports_imports_unchanged_without_a_note",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#tls13_suite_names_in_an_explicit_list_are_served_by_rustls_without_a_note",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#an_explicit_list_with_dhe_imports_unchanged_and_the_note_says_openssl_serves_it",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#an_explicit_list_without_a_tls12_suite_rustls_serves_selects_openssl_through_the_note",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#an_explicit_list_that_rustls_serves_only_in_part_stays_on_rustls_and_names_what_it_lacks",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#a_list_mixing_explicit_suites_and_a_macro_imports_as_the_default_policy",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#a_macro_list_that_names_a_dhe_suite_imports_unchanged_for_openssl",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#ssl_dhparam_maps_to_the_dh_parameters_path_and_notes_the_openssl_backend",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#a_macro_with_ssl_dhparam_keeps_its_openssl_meaning_on_the_openssl_profile",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#a_tls13_only_minimum_imports_a_macro_without_a_note_because_the_list_governs_tls12_only",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#the_tls_protocol_policy_still_sets_the_minimum_version",
+        "crates/oxiroute-import/tests/nginx/ciphers/imports.rs#ssl_prefer_server_ciphers_maps_independently_of_the_cipher_import",
         "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_cipher_macro_runs_on_rustls",
         "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_explicit_list_rustls_serves_runs_on_rustls",
         "crates/oxiroute-server/src/tls/tests/nginx/ciphers.rs#an_imported_explicit_dhe_list_selects_openssl",
@@ -152,7 +152,7 @@
         "crates/oxiroute-import/tests/haproxy/lower/routing.rs#positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance",
         "crates/oxiroute-import/tests/haproxy/lower/routing.rs#non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes",
         "crates/oxiroute-import/tests/import_report.rs#haproxy_report_identifies_strict_capability_and_retains_ordinary_source_provenance",
-        "crates/oxiroute-server/tests/cli_import.rs#haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers"
+        "crates/oxiroute-server/tests/cli/import.rs#haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers"
       ]
     },
     {
@@ -173,7 +173,7 @@
         "crates/oxiroute-import/tests/import_report.rs#apache_report_distinguishes_missing_optional_includes_and_retains_include_stacks",
         "crates/oxiroute-config-source/tests/resolver.rs#native_apache_imports_from_kdl_hocon_and_uci",
         "crates/oxiroute-config-source/tests/resolver.rs#native_apache_reference_retains_include_provenance_in_its_report",
-        "crates/oxiroute-server/tests/cli_import.rs#apache_cli_report_exposes_deterministic_include_provenance"
+        "crates/oxiroute-server/tests/cli/import.rs#apache_cli_report_exposes_deterministic_include_provenance"
       ]
     },
     {
@@ -181,7 +181,7 @@
       "tests": [
         "crates/oxiroute-import/tests/haproxy/lower/backends.rs#audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resolution",
         "crates/oxiroute-import/tests/haproxy/lower/backends.rs#leastconn_lowers_for_http_connection_accounting",
-        "crates/oxiroute-server/tests/http_routing.rs#least_connections_prefers_the_smallest_lease_count_and_rotates_ties"
+        "crates/oxiroute-server/tests/http/routing.rs#least_connections_prefers_the_smallest_lease_count_and_rotates_ties"
       ]
     },
     {
@@ -196,26 +196,26 @@
     {
       "id": "evidence.nginx-rtmp.import",
       "tests": [
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_rtmp_message_and_acknowledgement_limits_with_provenance",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_server_scoped_rtmp_message_and_acknowledgement_limits",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#server_scoped_rtmp_limits_override_inherited_values",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_nonuniform_effective_rtmp_limits_across_servers",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#rejects_rtmp_transport_limits_outside_canonical_bounds",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_exact_same_daemon_auto_push_policy",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_bounded_push_and_blocks_pull_without_fallback",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_one_absolute_rtmp_access_log_with_the_combined_format",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_bounded_hls_policy_and_key_rotation",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_hls_logging_and_auto_push_forms_outside_the_bounded_subset",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_unsafe_typed_exec_paths_without_shell_fallback",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#applies_native_application_and_recorder_defaults_explicitly",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_extended_recorder_forms",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_named_recorders_and_explicit_disabled_file_policies",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#source_noop_hls_muxdelay_does_not_block_an_exact_application",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server"
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#lowers_rtmp_message_and_acknowledgement_limits_with_provenance",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#lowers_server_scoped_rtmp_message_and_acknowledgement_limits",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#server_scoped_rtmp_limits_override_inherited_values",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#blocks_nonuniform_effective_rtmp_limits_across_servers",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#rejects_rtmp_transport_limits_outside_canonical_bounds",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#lowers_exact_same_daemon_auto_push_policy",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#lowers_bounded_push_and_blocks_pull_without_fallback",
+        "crates/oxiroute-import/tests/nginx/rtmp/limits.rs#lowers_one_absolute_rtmp_access_log_with_the_combined_format",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#lowers_bounded_hls_policy_and_key_rotation",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#blocks_hls_logging_and_auto_push_forms_outside_the_bounded_subset",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#blocks_unsafe_typed_exec_paths_without_shell_fallback",
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#applies_native_application_and_recorder_defaults_explicitly",
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#lowers_extended_recorder_forms",
+        "crates/oxiroute-import/tests/nginx/rtmp/recording.rs#lowers_named_recorders_and_explicit_disabled_file_policies",
+        "crates/oxiroute-import/tests/nginx/rtmp/relay.rs#source_noop_hls_muxdelay_does_not_block_an_exact_application",
+        "crates/oxiroute-import/tests/nginx/rtmp/structure.rs#keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server"
       ]
     },
     {
@@ -247,9 +247,9 @@
         "crates/oxiroute-config-source/tests/resolver.rs#native_squid_references_resolve_the_same_candidate_shape",
         "crates/oxiroute-import/tests/squid/peers.rs#cache_peer_credentials_become_typed_secret_facts",
         "crates/oxiroute-import/tests/squid/semantics.rs#cache_policy_and_storage_are_classified_without_placeholders",
-        "crates/oxiroute-server/tests/cli_import.rs#import_previews_default_to_kdl_and_round_trip_every_format",
-        "crates/oxiroute-server/tests/forward_proxy_h1/squid.rs#imported_squid_candidate_serves_authenticated_http_over_daemon",
-        "crates/oxiroute-server/tests/forward_proxy_h1/squid.rs#imported_squid_authentication_rejects_missing_credentials"
+        "crates/oxiroute-server/tests/cli/import.rs#import_previews_default_to_kdl_and_round_trip_every_format",
+        "crates/oxiroute-server/tests/forward/proxy/h1/squid.rs#imported_squid_candidate_serves_authenticated_http_over_daemon",
+        "crates/oxiroute-server/tests/forward/proxy/h1/squid.rs#imported_squid_authentication_rejects_missing_credentials"
       ]
     },
     {
@@ -267,25 +267,25 @@
     {
       "id": "evidence.cache.memory-reverse-http",
       "tests": [
-        "crates/oxiroute-server/tests/service_plan.rs#compiles_an_active_memory_cache_policy",
-        "crates/oxiroute-server/tests/service_plan.rs#rejects_advanced_authorized_cache_reuse_at_runtime",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#memory_cache_reuses_get_and_head_responses",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#cache_collapses_concurrent_misses_into_one_origin_request",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#memory_cache_revalidates_expired_responses_with_origin_validators",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#cache_policy_does_not_change_uncached_routes",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#no_store_origin_responses_are_not_admitted",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#set_cookie_origin_responses_are_not_admitted",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#failed_cache_fills_do_not_poison_later_requests",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#chunked_responses_are_forwarded_without_cache_admission"
+        "crates/oxiroute-server/tests/service_plan/cache.rs#compiles_an_active_memory_cache_policy",
+        "crates/oxiroute-server/tests/service_plan/cache.rs#rejects_advanced_authorized_cache_reuse_at_runtime",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#memory_cache_reuses_get_and_head_responses",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#cache_collapses_concurrent_misses_into_one_origin_request",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#memory_cache_revalidates_expired_responses_with_origin_validators",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#cache_policy_does_not_change_uncached_routes",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#no_store_origin_responses_are_not_admitted",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#set_cookie_origin_responses_are_not_admitted",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#failed_cache_fills_do_not_poison_later_requests",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#chunked_responses_are_forwarded_without_cache_admission"
       ]
     },
     {
       "id": "evidence.cache.persistent-reverse-http",
       "tests": [
-        "crates/oxiroute-server/tests/service_plan.rs#compiles_an_active_persistent_cache_policy",
-        "crates/oxiroute-server/tests/service_plan.rs#compiles_surrogate_tag_and_authenticated_purge_cache_policy",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#disk_cache_survives_proxy_restart",
-        "crates/oxiroute-server/tests/http_proxy_routing/cache.rs#authenticated_surrogate_tag_purge_removes_a_cached_response"
+        "crates/oxiroute-server/tests/service_plan/cache.rs#compiles_an_active_persistent_cache_policy",
+        "crates/oxiroute-server/tests/service_plan/cache.rs#compiles_surrogate_tag_and_authenticated_purge_cache_policy",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#disk_cache_survives_proxy_restart",
+        "crates/oxiroute-server/tests/http/proxy_routing/cache.rs#authenticated_surrogate_tag_purge_removes_a_cached_response"
       ]
     },
     {
@@ -293,12 +293,12 @@
       "tests": [
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_absolute_form_crosses_a_real_http_connection",
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_connect_ipv6_authority_crosses_a_real_http_connection",
-        "crates/oxiroute-server/tests/forward_proxy_h1/basic_auth.rs#basic_authenticated_absolute_form_and_connect_cross_the_runtime_listener",
+        "crates/oxiroute-server/tests/forward/proxy/h1/basic_auth.rs#basic_authenticated_absolute_form_and_connect_cross_the_runtime_listener",
         "crates/oxiroute-forward-proxy/tests/h2_wire.rs#h2_forward_and_connect_cross_real_frames",
-        "crates/oxiroute-server/tests/forward_proxy_h2.rs#daemon_accepts_tls_h2_connect_and_relays_stream_data",
+        "crates/oxiroute-server/tests/forward/proxy/h2.rs#daemon_accepts_tls_h2_connect_and_relays_stream_data",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#h3_absolute_target_crosses_quic_tls_and_h3_frames",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#classic_connect_maps_authentication_and_policy_rejections_without_opening_tunnels",
-        "crates/oxiroute-server/tests/forward_proxy_h3/extended_connect.rs#daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback"
+        "crates/oxiroute-server/tests/forward/proxy/h3/extended_connect.rs#daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback"
       ]
     },
     {
@@ -319,7 +319,7 @@
         "crates/oxiroute-import/tests/varnish_foundation.rs#exact_file_storage_lowers_to_a_disk_cache_store",
         "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence",
         "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_rejects_missing_invocation_semantics",
-        "crates/oxiroute-server/tests/cli_import.rs#varnish_import_report_and_preview_use_exact_invocation_arguments"
+        "crates/oxiroute-server/tests/cli/import.rs#varnish_import_report_and_preview_use_exact_invocation_arguments"
       ]
     },
     {
@@ -329,20 +329,20 @@
         "crates/oxiroute-import/tests/haproxy/lower/backends.rs#dns_leastconn_pool_finalizes_with_reusable_connections_and_queue_timeout",
         "crates/oxiroute-import/tests/haproxy/lower/preprocessing.rs#preprocessed_services_keep_health_routes_queue_timeouts_and_native_default_retries",
         "crates/oxiroute-import/tests/haproxy/lower/backends.rs#ordered_default_server_health_options_materialize_on_subsequent_servers",
-        "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#reusable_upstream_connection_holds_its_lease_until_the_socket_closes",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#delayed_same_server_retry_waits_and_reselects_the_original_server",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#final_redispatch_retries_same_server_then_selects_an_available_server",
-        "crates/oxiroute-server/tests/http_proxy_routing.rs#pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_each",
-        "crates/oxiroute-server/tests/process_management.rs#page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin",
-        "crates/oxiroute-server/tests/process_management.rs#unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket",
-        "crates/oxiroute-server/tests/service_plan.rs#rtmp_listeners_share_one_service_identity_catalog_and_hub"
+        "crates/oxiroute-server/tests/http/routing.rs#ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port",
+        "crates/oxiroute-server/tests/http/proxy_routing/reuse.rs#reusable_upstream_connection_holds_its_lease_until_the_socket_closes",
+        "crates/oxiroute-server/tests/http/proxy_routing/retries.rs#delayed_same_server_retry_waits_and_reselects_the_original_server",
+        "crates/oxiroute-server/tests/http/proxy_routing/retries.rs#final_redispatch_retries_same_server_then_selects_an_available_server",
+        "crates/oxiroute-server/tests/http/proxy_routing/retries.rs#pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_each",
+        "crates/oxiroute-server/tests/process/management/stats.rs#page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin",
+        "crates/oxiroute-server/tests/process/management/unix.rs#unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket",
+        "crates/oxiroute-server/tests/service_plan/rtmp.rs#rtmp_listeners_share_one_service_identity_catalog_and_hub"
       ]
     },
     {
       "id": "evidence.rtmp.recording",
       "tests": [
-        "crates/oxiroute-server/tests/service_plan.rs#recorder_planning_is_read_only_and_runtime_activation_opens_the_store",
+        "crates/oxiroute-server/tests/service_plan/rtmp.rs#recorder_planning_is_read_only_and_runtime_activation_opens_the_store",
         "crates/oxiroute-server/tests/rtmp_recording.rs#continuous_recording_finalizes_on_disconnect_and_is_fully_observable",
         "crates/oxiroute-server/tests/rtmp_recording.rs#manual_api_start_and_stop_control_the_exact_runtime_recorder",
         "crates/oxiroute-rtmp/tests/recorder_session.rs#recorder_storage_failure_does_not_fail_live_ingest"
@@ -351,7 +351,7 @@
     {
       "id": "evidence.import.no-placeholder",
       "tests": [
-        "crates/oxiroute-import/tests/nginx_lower.rs#dns_upstream_shared_by_tcp_and_unix_listeners_finalizes_without_a_placeholder",
+        "crates/oxiroute-import/tests/nginx/lower/upstreams.rs#dns_upstream_shared_by_tcp_and_unix_listeners_finalizes_without_a_placeholder",
         "crates/oxiroute-import/tests/haproxy/lower/listeners.rs#automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder"
       ]
     }

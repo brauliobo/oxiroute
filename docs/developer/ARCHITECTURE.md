@@ -81,12 +81,15 @@ The server crate owns listener admission and dispatches by protocol:
   the listener's admission, and its connections hold the same admission guards as tokio ones. `DataPlanePolicy` is
   the one place that decides which plane serves a listener, and it decides once per generation. The chain is data:
   `DataPlane::DEFAULT_ORDER` is the ordered list (`epoll`, `tokio`) and each plane is a `Link` in
-  `service_plan/data_plane/chain.rs` with a capability probe and what it serves (fast lane, scheduling, TLS only when the
-  plane is chosen and the profile is rustls, plain HTTP/1.1 socket listeners). Per listener the first plane whose probe and conditions pass wins, and the skipped
+  `service_plan/data_plane/chain.rs` with the host capability it needs and what it serves (fast lane, scheduling, TLS only
+  when the plane is chosen and the profile is rustls, plain HTTP/1.1 socket listeners). Per listener the first plane whose capability and conditions pass wins, and the skipped
   planes with their reasons travel with the choice (`PlaneSelection`) to the log line written when the listener is
-  built. An explicit `epoll` or `io_uring` is a plan error when its probe or conditions fail, an explicit `tokio`
-  probes nothing, and an explicit plane left out of the default order still works. The `io_uring` probe runs once per
-  process on a short-lived ring. To put `io_uring` first, add `Self::IoUring` at the head of
+  built. An explicit `epoll` or `io_uring` is a plan error when its capability or conditions fail, an explicit `tokio`
+  needs nothing, and an explicit plane left out of the default order still works. The generation blueprint compiler
+  stays pure: it receives the host's `PlaneCapabilities` as an input and never probes the kernel. The runtime plan
+  detects them once per process at the host boundary (`service_plan/data_plane/host.rs`), only for the planes the
+  setting can reach (an omitted setting detects `epoll` and never creates an `io_uring` ring; the `io_uring` check
+  runs once on a short-lived ring when the setting names it), and tests feed synthetic capabilities. To put `io_uring` first, add `Self::IoUring` at the head of
   `DataPlane::DEFAULT_ORDER` and the `io_uring` step to the chain sentence in `docs/CONFIG_SPEC.md` and
   `docs/OPERATIONS.md`. An engine thread that panics or fails marks the generation's runtime failed instead of
   leaving a listener that accepts connections nothing serves. `aged_per_worker` and `dynamic` worker scaling run

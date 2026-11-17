@@ -1,4 +1,25 @@
-use super::*;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use openssl::x509::X509;
+use oxiroute_config::{AlpnProtocol, Certificate, CertificateSource, TlsProfile, TlsVersion};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpPrepareContext, RtmpPrepareMode,
+};
+use oxiroute_server::{
+    CertbotWatcherConfig, CertbotWatcherSupervisor, FileWatcherConfig, FileWatcherSupervisor,
+    RtmpManagementApi, RuntimeMetrics,
+};
+use serde_json::Value;
+use tempfile::TempDir;
+
+use crate::canonical::canonical_config;
+use crate::config_support::runtime_plan;
+use crate::fixture_support::write_test_identity;
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -235,4 +256,80 @@ fn prepares_certbot_reconcilers_with_the_profile_active_generation() {
             .health,
         oxiroute_server::CertbotWatcherHealth::Stopped
     );
+}
+
+fn empty_rtmp_control() -> RtmpControlHandle {
+    PreparedRtmpRuntimeSet::prepare(
+        [],
+        &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("empty RTMP preparation")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("empty RTMP runtime")
+    .control()
+}
+
+#[cfg(unix)]
+fn write_test_certbot_lineage(temp: &TempDir) -> (PathBuf, PathBuf) {
+    let live = temp.path().join("live/public");
+    let archive = temp.path().join("archive/public");
+    fs::create_dir_all(&live).expect("create Certbot live directory");
+    fs::create_dir_all(&archive).expect("create Certbot archive directory");
+    write_test_certbot_revision(&archive, 1, "proxy-a.pem", "proxy-a-key.pem");
+    set_test_certbot_revision(&archive, 1);
+    (live, archive)
+}
+
+#[cfg(unix)]
+fn write_test_certbot_revision(
+    archive: &Path,
+    revision: u64,
+    chain_fixture: &str,
+    key_fixture: &str,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fullchain = fs::read(fixtures.join(chain_fixture)).expect("read test fullchain");
+    let certificates = X509::stack_from_pem(&fullchain).expect("parse test fullchain");
+    let cert = certificates[0].to_pem().expect("encode test leaf");
+    let chain = certificates[1..]
+        .iter()
+        .flat_map(|certificate| certificate.to_pem().expect("encode test issuer"))
+        .collect::<Vec<_>>();
+    fs::write(archive.join(format!("cert{revision}.pem")), cert).expect("write Certbot leaf");
+    fs::write(archive.join(format!("chain{revision}.pem")), chain).expect("write Certbot chain");
+    fs::write(archive.join(format!("fullchain{revision}.pem")), fullchain)
+        .expect("write Certbot fullchain");
+    let key_path = archive.join(format!("privkey{revision}.pem"));
+    fs::write(
+        &key_path,
+        fs::read(fixtures.join(key_fixture)).expect("read test private key"),
+    )
+    .expect("write Certbot private key");
+    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+        .expect("secure Certbot private key");
+}
+
+#[cfg(unix)]
+fn set_test_certbot_revision(archive: &Path, revision: u64) {
+    use std::os::unix::fs::symlink;
+
+    let live = archive
+        .parent()
+        .and_then(Path::parent)
+        .expect("archive root")
+        .join("live/public");
+    for stem in ["cert", "chain", "fullchain", "privkey"] {
+        let link = live.join(format!("{stem}.pem"));
+        if fs::symlink_metadata(&link).is_ok() {
+            fs::remove_file(&link).expect("remove prior Certbot live link");
+        }
+        symlink(
+            Path::new("../../archive/public").join(format!("{stem}{revision}.pem")),
+            link,
+        )
+        .expect("write Certbot live link");
+    }
 }

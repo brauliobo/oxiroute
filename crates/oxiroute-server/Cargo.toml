@@ -105,5 +105,161 @@ path = "tests/fixtures/supervisor_launcher.rs"
 test = false
 bench = false
 
+[[test]]
+name = "cli_evacuate"
+path = "tests/cli/evacuate.rs"
+
+[[test]]
+name = "cli_import"
+path = "tests/cli/import.rs"
+
+[[test]]
+name = "forward_proxy_h1"
+path = "tests/forward/proxy/h1/main.rs"
+
+[[test]]
+name = "forward_proxy_h2"
+path = "tests/forward/proxy/h2.rs"
+
+[[test]]
+name = "forward_proxy_h3"
+path = "tests/forward/proxy/h3/main.rs"
+
+[[test]]
+name = "http_proxy_routing"
+path = "tests/http/proxy_routing/main.rs"
+
+[[test]]
+name = "http_routing"
+path = "tests/http/routing.rs"
+
+[[test]]
+name = "lane_allocations"
+path = "tests/lane/allocations.rs"
+
+[[test]]
+name = "lane_differential"
+path = "tests/lane/differential/main.rs"
+
+[[test]]
+name = "lane_origin_connections"
+path = "tests/lane/origin_connections.rs"
+
+[[test]]
+name = "process_acme_webroot"
+path = "tests/process/acme_webroot.rs"
+
+[[test]]
+name = "process_active_drain"
+path = "tests/process/active_drain/main.rs"
+
+[[test]]
+name = "process_cache_revalidation_wire"
+path = "tests/process/cache_revalidation_wire.rs"
+
+[[test]]
+name = "process_check"
+path = "tests/process/check.rs"
+
+[[test]]
+name = "process_connection_limit"
+path = "tests/process/connection_limit.rs"
+
+[[test]]
+name = "process_environment_settings"
+path = "tests/process/environment_settings.rs"
+
+[[test]]
+name = "process_generation_retirement"
+path = "tests/process/generation_retirement.rs"
+
+[[test]]
+name = "process_h1_arrival"
+path = "tests/process/h1/arrival.rs"
+
+[[test]]
+name = "process_h1_body_wire"
+path = "tests/process/h1/body_wire.rs"
+
+[[test]]
+name = "process_h1_idle"
+path = "tests/process/h1/idle.rs"
+
+[[test]]
+name = "process_h1_static_wire"
+path = "tests/process/h1/static_wire.rs"
+
+[[test]]
+name = "process_h1_wire"
+path = "tests/process/h1/wire.rs"
+
+[[test]]
+name = "process_h2_windows"
+path = "tests/process/h2_windows.rs"
+
+[[test]]
+name = "process_hop_by_hop_wire"
+path = "tests/process/hop_by_hop_wire.rs"
+
+[[test]]
+name = "process_listener_workers"
+path = "tests/process/listener_workers.rs"
+
+[[test]]
+name = "process_management"
+path = "tests/process/management/main.rs"
+
+[[test]]
+name = "process_registry"
+path = "tests/process/registry/main.rs"
+
+[[test]]
+name = "process_rtmp_runtime"
+path = "tests/process/rtmp_runtime/main.rs"
+
+[[test]]
+name = "process_udp_drain"
+path = "tests/process/udp_drain.rs"
+
+[[test]]
+name = "process_worker_scaling"
+path = "tests/process/worker_scaling.rs"
+
+[[test]]
+name = "wire_tls_clients"
+path = "tests/wire/tls/clients.rs"
+
+[[test]]
+name = "wire_tls_handshake_pool"
+path = "tests/wire/tls/handshake_pool.rs"
+
+[[test]]
+name = "wire_tls_idle"
+path = "tests/wire/tls/idle.rs"
+
+[[test]]
+name = "wire_tls_interop"
+path = "tests/wire/tls/interop/main.rs"
+
+[[test]]
+name = "wire_tls_key_exchange"
+path = "tests/wire/tls/key_exchange.rs"
+
+[[test]]
+name = "wire_tls_parity"
+path = "tests/wire/tls/parity.rs"
+
+[[test]]
+name = "wire_tls_rustls"
+path = "tests/wire/tls/rustls.rs"
+
+[[test]]
+name = "wire_tls_static_ktls"
+path = "tests/wire/tls/static_ktls.rs"
+
+[[test]]
+name = "wire_tls_tickets"
+path = "tests/wire/tls/tickets.rs"
+
 [lints]
 workspace = true

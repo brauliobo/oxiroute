@@ -7,8 +7,8 @@
 #
 # Sourced: `source scripts/lib/reject-isa-flags.sh; reject_isa_flags`. Executed: it runs the check itself.
 # packaging/arch/PKGBUILD carries an inline copy (makepkg builds a release archive that predates this file); keep them
-# equal, scripts/test-verify-baseline-isa.sh runs the same cases against both.
-# Not inspected: `[build] rustflags` of cargo config files; scripts/verify-baseline-isa.sh catches those in the binary.
+# equal, scripts/test/verify/baseline-isa.sh runs the same cases against both.
+# Not inspected: `[build] rustflags` of cargo config files; scripts/verify/baseline-isa.sh catches those in the binary.
 
 isa_rust_re='^((-C|--codegen)=?)?target-(cpu|feature)'
 isa_c_re='^-(march=|mtune=|m(avx|sse3|ssse3|sse4|bmi|fma|popcnt|lzcnt|movbe|f16c|aes|pclmul|sha|vaes|vpclmulqdq|gfni|adx|xop|tbm|evex512))'

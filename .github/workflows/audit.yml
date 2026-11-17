@@ -44,7 +44,7 @@ jobs:
             remotion/pnpm-lock.yaml
 
       - name: Verify all committed lockfiles are current
-        run: ./scripts/verify-lockfiles.sh
+        run: ./scripts/verify/lockfiles.sh
 
   cargo-policy:
     name: Rust dependency, advisory, license, and source policy

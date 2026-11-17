@@ -17,5 +17,13 @@ thiserror.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 
+[[test]]
+name = "tls_backend"
+path = "tests/tls/backend.rs"
+
+[[test]]
+name = "tls_handshake_threads"
+path = "tests/tls/handshake_threads.rs"
+
 [lints]
 workspace = true

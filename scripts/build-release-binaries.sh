@@ -5,7 +5,7 @@
 # then the smoke lanes and the whole workspace test suite against the rewritten binary). PGO=0 builds without a
 # profile, BOLT=0 skips the layout stage. A training, profile, BOLT or test failure fails the script: there is no
 # silent fallback to the previous stage.
-# The binaries must not embed a home-directory, runner or checkout path (scripts/verify-binary-paths.sh). The vendored
+# The binaries must not embed a home-directory, runner or checkout path (scripts/verify/binary-paths.sh). The vendored
 # OpenSSL records its own build directory, so PGO_WORK must lie outside /home (default: /var/tmp/oxiroute-pgo).
 #
 #   build-release-binaries.sh VERSION OUT_DIR
@@ -20,7 +20,7 @@
 # with -O3 (CFLAGS for the target only; a plain `cargo build` keeps the cc crate default).
 #
 # Every flavour but v3 must run on generic x86-64 and pick AVX at run time (crate oxiroute-cpu): the build refuses a
-# RUSTFLAGS or CFLAGS that bakes in a CPU target (scripts/lib/reject-isa-flags.sh), and scripts/verify-baseline-isa.sh
+# RUSTFLAGS or CFLAGS that bakes in a CPU target (scripts/lib/reject-isa-flags.sh), and scripts/verify/baseline-isa.sh
 # checks the binaries (disassembly, and `version` under qemu CPUs without AVX when qemu-x86_64 is installed).
 #
 # Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind, abort or v3, default unwind), PGO_TARGET (default
@@ -73,7 +73,7 @@ if [[ ${bolt} == 1 ]]; then
   }
 fi
 # The v3 flavour needs AVX2 by design; the launcher has no `version` command, so only `oxiroute` runs under qemu.
-verify_isa() { [[ ${flavour} == v3 ]] || "${repo}/scripts/verify-baseline-isa.sh" "$@"; }
+verify_isa() { [[ ${flavour} == v3 ]] || "${repo}/scripts/verify/baseline-isa.sh" "$@"; }
 out=$(realpath -m -- "${out}")
 mkdir -p -- "${out}"
 
@@ -93,7 +93,7 @@ else
   profile_sha256=null
 fi
 for binary in oxiroute oxiroute-worker-launcher; do
-  "${repo}/scripts/verify-binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+  "${repo}/scripts/verify/binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
   verify_isa "${release}/${binary}"
 done
 verify_isa --run "${release}/oxiroute"
@@ -105,14 +105,14 @@ if [[ ${bolt} == 1 ]]; then
   shipped=${BOLT_WORK}/oxiroute
   mkdir -p "${BOLT_WORK}"
   "${bolt_script}" all "${release}/oxiroute" "${shipped}"
-  "${repo}/scripts/verify-binary-paths.sh" "${shipped}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+  "${repo}/scripts/verify/binary-paths.sh" "${shipped}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
   verify_isa --run "${shipped}"
   "${pgo_script}" smoke "${shipped}"
   note="${note}, then relinked by BOLT for instruction layout"
 fi
 # The binary that ships, not the one cargo test builds, runs the whole workspace test suite.
 if [[ ${bolt} == 1 || ${flavour} == abort ]]; then
-  BOLT_TEST_TARGET_DIR=${work}/target-test "${repo}/scripts/test-release-binary.sh" "${shipped}"
+  BOLT_TEST_TARGET_DIR=${work}/target-test "${repo}/scripts/test/release/binary.sh" "${shipped}"
   rm -rf -- "${work}/target-test"
   note="${note} (the workspace tests ran against it)"
 fi

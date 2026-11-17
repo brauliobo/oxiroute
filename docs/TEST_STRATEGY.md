@@ -23,7 +23,7 @@ partial capabilities to parity:
   Varnish report cases are recorded in `coverage/evidence.json`.
 - RTMP hardening rejects malformed AMF command payloads without panicking, and chunk tests feed
   two fragmented message streams one byte at a time while preserving per-stream state.
-- `crates/oxiroute-server/tests/process_udp_drain.rs` covers UDP reload, existing-session
+- `crates/oxiroute-server/tests/process/udp_drain.rs` covers UDP reload, existing-session
   retention, rejection of new work after drain, deadline cancellation, and listener release.
 - UI contract/component coverage and the desktop/mobile browser suite cover redacted native report
   selection, provenance, preview, read-only GET boundaries, and responsive layout. The browser
@@ -260,7 +260,7 @@ paths, and durable audit store are implemented but do not by themselves close th
 
 Checked-in bounded harnesses cover configuration/native source parsing, forward targets, over-read
 I/O, RTMP handshake/chunk/AMF decoding, TLS ClientHello, PROXY v1/v2, bounded UDP datagram headers,
-HTTP/1 parsing, and the current public parser surfaces. `scripts/verify-fuzz.sh` validates the complete
+HTTP/1 parsing, and the current public parser surfaces. `scripts/verify/fuzz.sh` validates the complete
 target/corpus contract and locked build, while the optional `fuzz/smoke.sh` workflow provides a fixed,
 bounded execution when libFuzzer tooling is available. These checks do not claim coverage, corpus
 stability beyond the checked-in seed contract, or crash-free long-running execution. Daemon routing,
@@ -313,7 +313,7 @@ The current full local check set is:
 cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 ./scripts/test/all.sh
-./scripts/verify-fuzz.sh
+./scripts/verify/fuzz.sh
 bash fuzz/smoke.sh
 pnpm --dir ui test
 pnpm --dir ui build
