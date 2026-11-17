@@ -8,6 +8,8 @@ use oxiroute_config::{
     UpstreamTls,
 };
 
+use futures_util::future::join_all;
+
 use super::{Fleet, OK, Pair, SHARDS, compare, corpus, play};
 use crate::{
     fixture_support::fixture,
@@ -310,10 +312,11 @@ async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases
     })
     .await;
     compare(&fleet, cases).await;
-    for shard in 0..SHARDS {
+    let read = (0..SHARDS).map(|shard| async move {
         let [classic_log, lane_log] = logs(shard);
-        let (classic_lines, lane_lines) =
-            (log_lines(&classic_log).await, log_lines(&lane_log).await);
+        tokio::join!(log_lines(&classic_log), log_lines(&lane_log))
+    });
+    for (shard, (classic_lines, lane_lines)) in join_all(read).await.into_iter().enumerate() {
         assert!(!classic_lines.is_empty());
         assert_eq!(classic_lines, lane_lines, "shard {shard}");
     }
