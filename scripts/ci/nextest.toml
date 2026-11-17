@@ -18,6 +18,10 @@ io-uring-rings = { max-threads = 6 }
 filter = "binary_id(=oxiroute::epoll_safety) & test(~more_idle_connections_than_a_thread_cap)"
 test-group = "idle-connection-herd"
 
+[[profile.default.overrides]]
+filter = "binary_id(=oxiroute-uring::memlock) & test(~a_kernel_that_accounts_ring_memory)"
+threads-required = "num-test-threads"
+
 [profile.io_uring]
 inherits = "default"
 
