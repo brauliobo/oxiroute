@@ -4,6 +4,7 @@ use oxiroute_uring::{Event, Handle, Peek, Read as Received, Released, Ring, Sent
 use rustix::event::epoll::EventFlags;
 
 use super::Polled;
+use crate::plane::context::during;
 use crate::plane::{
     config::Config,
     link::{Delivery, Io, Link},
@@ -106,7 +107,9 @@ fn polled(event: Event) -> Polled {
 impl Uring {
     pub(crate) fn new(config: &Config) -> io::Result<Self> {
         Ok(Self {
-            ring: Rc::new(RefCell::new(Ring::new(&config.uring)?)),
+            ring: Rc::new(RefCell::new(
+                Ring::new(&config.uring).map_err(during("creating the io_uring ring"))?,
+            )),
             listeners: Vec::new(),
             wakes: Vec::new(),
             events: Vec::with_capacity(config.events),

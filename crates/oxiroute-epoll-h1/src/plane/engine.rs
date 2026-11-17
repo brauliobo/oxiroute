@@ -13,6 +13,7 @@ use rustix::net::getsockname;
 use super::{
     ScalingStats,
     config::{Config, Timeouts},
+    context::during,
     driver::Driver,
     reactor::{Control, DRAINING, ListenerFd, Reactor, STOPPING},
     schedule::{Fleet, Plan},
@@ -173,12 +174,14 @@ impl Engine {
         let (exit_tx, exit_rx) = mpsc::channel();
         let wakers = (0..config.threads)
             .map(|_| Waker::new())
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(during("creating the thread wakers"))?;
         let fleet = config
             .scheduling
             .as_ref()
             .map(|scheduling| Fleet::<S::Admission>::new(scheduling, wakers.clone()))
-            .transpose()?;
+            .transpose()
+            .map_err(during("creating the thread scheduler"))?;
         let mut engine = Self {
             control: Arc::clone(&control),
             wakers,
@@ -198,7 +201,8 @@ impl Engine {
             let (ready, exits) = (ready_tx.clone(), exit_tx.clone());
             let handle = thread::Builder::new()
                 .name(format!("{}-h1-{index}", config.driver.thread_prefix()))
-                .spawn(move || supervised(parts, control, (&ready, &exits)))?;
+                .spawn(move || supervised(parts, control, (&ready, &exits)))
+                .map_err(during("spawning an engine thread"))?;
             engine.threads.push(handle);
         }
         drop(ready_tx);

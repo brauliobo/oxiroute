@@ -263,7 +263,9 @@ impl Queue {
             Taskrun::Defer => builder.setup_defer_taskrun(),
             Taskrun::Cooperative => builder.setup_coop_taskrun(),
         };
-        let ring = builder.build(entries)?;
+        let ring = builder
+            .build(entries)
+            .map_err(during("setting up the ring"))?;
         let [small, large] = pools;
         let mut buffers = [
             Buffers::new(small.0, small.1)
