@@ -41,6 +41,7 @@ jobs:
           ./scripts/test/name_prefixes.sh
           ./scripts/verify/line_limit.sh
           ./scripts/verify/name_prefixes.sh
+          ./scripts/verify/return_traps.sh
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2

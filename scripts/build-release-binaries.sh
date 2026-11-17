@@ -200,10 +200,10 @@ layout_stage() {
   fi
 }
 
-pack() {
+pack() (
   local stage root
   stage=$(mktemp -d)
-  trap 'rm -rf -- "${stage}"' RETURN
+  trap 'rm -rf -- "${stage}"' EXIT
   root=${stage}/${name}
   install -Dm755 "${shipped}" "${root}/bin/oxiroute"
   ln -s oxiroute "${root}/bin/oxr"
@@ -229,7 +229,7 @@ JSON
   cp -- "${root}/BUILD-INFO.json" "${out}/${name}.build.json"
   printf "The \`%s\` binaries%s are %s.\n" "${target}" "${suffix:+ (\`${flavour}\` flavour)}" "${note}" > "${out}/pgo-note-${target}${suffix}.md"
   ls -l -- "${out}"
-}
+)
 
 [[ ${stage_name} != layout && ${stage_name} != all || ${bolt} == 0 ]] || require_bolt
 case ${stage_name} in
