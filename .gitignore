@@ -26,6 +26,9 @@
 !/benchmarks/scripts/test-pgo.sh
 !/benchmarks/r2-data-path/
 !/benchmarks/reports/
+/benchmarks/reports/*
+!/benchmarks/reports/7.0/
+!/benchmarks/reports/io-uring-http1/
 /docs/ROADMAP.md
 /docs/DOCUMENTATION_PLAN.md
 /docs/PERFORMANCE_OPTIMIZATIONS.md
