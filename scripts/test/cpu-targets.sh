@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Exercise the real scanners on both baseline and native builds; QEMU covers CPUs lacking optional instructions.
+# Under QEMU runs only what proves the runtime dispatch (every oxiroute-cpu test and the h1-head dispatch binary); the
+# exhaustive comparisons of the other test binaries run natively in the core tier.
 set -euo pipefail
 ulimit -c 0
 
@@ -11,21 +13,32 @@ target=${CARGO_TARGET_DIR:-${repo}/target}/cpu-targets
 qemu=${QEMU_X86_64:-qemu-x86_64}
 command -v "${qemu}" > /dev/null || { echo "${qemu} is required for CPU dispatch tests" >&2; exit 1; }
 
+read -ra emulated <<< "${CPU_TEST_BINARIES:-oxiroute-cpu oxiroute-h1-head:dispatch}"
+
 RUSTFLAGS='-C target-cpu=x86-64' CARGO_TARGET_DIR=${target}/generic \
   nice cargo test --release --locked -p oxiroute-cpu -p oxiroute-h1-head --no-run --jobs 4 \
     --message-format=json > "${work}/build.jsonl"
-python3 - "${work}/build.jsonl" > "${work}/tests" <<'PY'
+python3 - "${work}/build.jsonl" "${emulated[@]}" > "${work}/tests" <<'PY'
 import json
 import sys
 from pathlib import Path
 
+wanted = {entry.partition(':')[0]: entry.partition(':')[2] for entry in sys.argv[2:]}
+found = set()
 with open(sys.argv[1]) as output:
     for line in output:
         artifact = json.loads(line)
-        if artifact.get('reason') == 'compiler-artifact' and artifact.get('executable') and artifact['profile']['test']:
-            print(Path(artifact['manifest_path']).parent.name, artifact['executable'], sep='\t')
+        if artifact.get('reason') != 'compiler-artifact' or not artifact.get('executable') or not artifact['profile']['test']:
+            continue
+        package = Path(artifact['manifest_path']).parent.name
+        target = artifact['target']['name']
+        if package in wanted and wanted[package] in ('', target):
+            found.add(package + (':' + target if wanted[package] else ''))
+            print(package, artifact['executable'], sep='\t')
+missing = [entry for entry in sys.argv[2:] if entry not in found]
+if missing:
+    sys.exit('no test executable was built for: ' + ' '.join(missing))
 PY
-[[ -s ${work}/tests ]] || { echo 'no CPU test executables were built' >&2; exit 1; }
 default_cpus='qemu64=sse2 Nehalem=sse42 Haswell=avx2'
 default_masks='Haswell,-popcnt,-bmi1,-bmi2=avx2'
 default_masks+=' Haswell,-sse3,-ssse3,-sse4.1,-sse4.2=sse2 Haswell,-sse4.1,-sse4.2=sse42'
