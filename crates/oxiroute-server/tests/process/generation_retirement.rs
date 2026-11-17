@@ -56,6 +56,7 @@ struct Instance {
     config: ConfigDraft,
     upstream: JoinHandle<()>,
     release: Arc<Semaphore>,
+    arrived: Arc<Semaphore>,
     sequence: u64,
 }
 
@@ -79,6 +80,7 @@ impl Instance {
             config,
             upstream,
             release: Arc::new(Semaphore::new(0)),
+            arrived: Arc::new(Semaphore::new(0)),
             sequence: 0,
         }
     }
@@ -114,7 +116,9 @@ impl Instance {
         tune: impl FnOnce(&mut ConfigDraft),
     ) -> Self {
         let release = Arc::new(Semaphore::new(0));
-        let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
+        let arrived = Arc::new(Semaphore::new(0));
+        let (upstream_address, upstream) =
+            start_held_http_upstream(Arc::clone(&release), Arc::clone(&arrived)).await;
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
         let mut config = http_config(management, listener, upstream_address, retirement);
@@ -129,6 +133,7 @@ impl Instance {
             config,
             upstream,
             release,
+            arrived,
             sequence: 0,
         }
     }
@@ -552,8 +557,11 @@ fn http_config(
     config
 }
 
-/// Answers each request only after a permit is added to `release`.
-async fn start_held_http_upstream(release: Arc<Semaphore>) -> (SocketAddr, JoinHandle<()>) {
+/// Answers each request only after a permit is added to `release`, and adds a permit to `arrived` as each one arrives.
+async fn start_held_http_upstream(
+    release: Arc<Semaphore>,
+    arrived: Arc<Semaphore>,
+) -> (SocketAddr, JoinHandle<()>) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("held upstream bind");
@@ -565,6 +573,7 @@ async fn start_held_http_upstream(release: Arc<Semaphore>) -> (SocketAddr, JoinH
                 accepted = listener.accept() => {
                     let (mut stream, _) = accepted.expect("held upstream accept");
                     let release = Arc::clone(&release);
+                    let arrived = Arc::clone(&arrived);
                     connections.spawn(async move {
                         let mut head = Vec::new();
                         let mut byte = [0_u8; 1];
@@ -574,6 +583,7 @@ async fn start_held_http_upstream(release: Arc<Semaphore>) -> (SocketAddr, JoinH
                             }
                             head.push(byte[0]);
                         }
+                        arrived.add_permits(1);
                         release.acquire().await.expect("release gate").forget();
                         let _ = stream
                             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nheld")
@@ -702,11 +712,22 @@ async fn in_flight_response_finishes_at_retirement(mut instance: Instance) {
         .await
         .expect("connection");
     send_get(&mut busy, "/held").await;
-    sleep(Duration::from_millis(300)).await;
+    timeout(WIRE_TIMEOUT, instance.arrived.acquire())
+        .await
+        .expect("the request reaches the upstream")
+        .expect("arrival gate")
+        .forget();
 
-    let status = instance.apply().await;
+    instance.apply().await;
+    let status = wait_until(
+        "only the busy connection holds the retired generation",
+        || async {
+            let status = instance.generation().await;
+            (status["retiredGenerations"][0]["inFlight"] == 1).then_some(status)
+        },
+    )
+    .await;
     let retired = &status["retiredGenerations"][0];
-    assert_eq!(retired["inFlight"], 1, "{status}");
     assert_eq!(retired["inFlightByKind"]["http1"], 1);
 
     instance.release.add_permits(1);
