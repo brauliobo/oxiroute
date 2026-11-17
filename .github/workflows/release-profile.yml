@@ -74,6 +74,54 @@ jobs:
           key: ${{ steps.key.outputs.key }}
           restore-keys: ${{ inputs.reuse_newest && steps.key.outputs.prefix || '' }}
 
+  warm:
+    name: Warm the dependency objects of the profile-use build
+    needs: [lookup, train]
+    if: ${{ !cancelled() && !inputs.reuse_newest && needs.lookup.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.train.result) }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    env:
+      PACKAGE_CACHE: ${{ github.workspace }}/.package-cache
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Cache the Rust toolchain and the cargo registry of the build container
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .package-cache/cargo
+            .package-cache/rustup
+          key: binary-${{ inputs.arch }}-${{ hashFiles('Cargo.lock', 'scripts/package/families.sh') }}
+          restore-keys: binary-${{ inputs.arch }}-
+
+      - name: Cache the dependency objects built with this profile
+        id: objects
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .package-cache/pgo-work
+          key: use-bolt0-${{ needs.lookup.outputs.key }}
+
+      - name: Restore the profile
+        if: steps.objects.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: profile/oxiroute.profdata
+          key: ${{ needs.lookup.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Build once with the profile so that a tag finds the dependency objects (a tag build is the same command)
+        if: steps.objects.outputs.cache-hit != 'true'
+        env:
+          PGO: '1'
+          FLAVOUR: ${{ inputs.flavour }}
+          STAGE: pgo
+          RELEASE_TESTS: 0
+          PGO_PROFILE_HOST: ${{ github.workspace }}/profile/oxiroute.profdata
+        run: PACKAGE_JOBS="$(nproc)" scripts/package/main.sh binary "${{ inputs.arch }}" 0.0.0-profile warm
+
   train:
     name: Train the profile
     needs: lookup

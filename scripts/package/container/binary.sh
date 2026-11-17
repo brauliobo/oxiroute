@@ -38,7 +38,9 @@ install_rust() {
 }
 
 pgo_work() {
-  if [[ ${PGO} == 0 && -d /cache ]]; then echo /cache/plain-work; else echo /work/pgo; fi
+  if [[ ${PGO} == 0 && -d /cache ]]; then echo /cache/plain-work
+  elif [[ ${PGO_PROFILE_GIVEN:-0} == 1 && -d /cache ]]; then echo /cache/pgo-work
+  else echo /work/pgo; fi
 }
 
 # A plain build is the dry run (it publishes nothing): no LTO and 16 codegen units, 317 s cold locally against 548 s of the profile-use build with fat LTO.
