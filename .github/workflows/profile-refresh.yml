@@ -3,12 +3,21 @@ name: Profile refresh
 # Keeps the PGO profiles of main in the cache so that a tag build almost always finds its profile and skips the instrumented
 # build (release-profile.yml). Every night, and on demand, it computes the profile key of main for each architecture and flavour:
 # a key that is stored is restored (which renews the cache entry before GitHub evicts it after seven days without access), a new
-# key trains once. Run it by hand after the commit that bumps the version or changes the toolchain pin and before tagging.
+# key trains once. It also runs on every push to main that touches Cargo.toml or Cargo.lock, which is where a version
+# bump lands (a new version is a new profile: rustc hashes the package version into every workspace symbol), so the tag that
+# follows finds its profile. The one manual fallback: start this workflow by hand on main and wait for it before tagging.
 # docs/developer/RELEASING.md, "The profile".
 
 on:
   schedule:
     - cron: '17 3 * * *'
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/release-profile.yml
+      - .github/workflows/profile-refresh.yml
   workflow_dispatch:
 
 permissions:
@@ -36,3 +45,4 @@ jobs:
       arch: ${{ matrix.arch }}
       runner: ${{ matrix.runner }}
       flavour: ${{ matrix.flavour }}
+      reuse_newest: false

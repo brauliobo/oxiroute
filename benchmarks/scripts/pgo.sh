@@ -4,10 +4,12 @@
 #   pgo.sh train        instrumented build, replay the R2 data-path lanes (no perf needed), merge into $PGO_PROFILE
 #   pgo.sh gen          the instrumented build alone, and pgo.sh lane NAME replays one lane of it (train = gen, every
 #                       lane of PGO_LANES, merge; the two steps let a long training be split and resumed)
-#   pgo.sh key TOOLCHAIN  the identity of the profile a build would train: the toolchain, target, cargo profile, lane mix and
-#                       the git blobs of the sources that shape the hot path (key_inputs below, without tests, benches and
-#                       documents); equal keys mean a stored profile
-#                       is the one `train` would produce, so the release workflow reuses it instead of training again
+#   pgo.sh key TOOLCHAIN  the identity of the code a profile fits: the toolchain, target, cargo profile, lane mix, scale and the
+#                       sources that shape the hot path (key_inputs below, without tests, benches and documents; the workspace
+#                       version is blanked in the manifests and the lock file, so it is not part of the hash)
+#   pgo.sh version      the workspace version. It is NOT in the hash but it decides whether a profile fits: rustc hashes the
+#                       package version into the symbol of every workspace function, so a profile trained at another version
+#                       matches none of them. The release workflow keys the cache by version first, hash second
 #   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
 #   pgo.sh tool         build the load tool of the lanes (train and smoke need it; a build that does not train builds it
 #                       beside the profile-use build)
@@ -53,7 +55,8 @@ cargo_profile=${PGO_CARGO_PROFILE:-release}
 cargo_dir=${cargo_profile}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
 key_inputs=(Cargo.toml Cargo.lock crates vendor benchmarks/scripts/pgo.sh benchmarks/r2-data-path)
-key_skip_re=$'\t(.*/)?(tests|benches)/|\\.md$'
+key_skip_re=' (.*/)?(tests|benches)/|\.md$'
+key_manifest_re='(^|/)Cargo\.(toml|lock)$'
 
 profdata() { "${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}" "$@"; }
 
@@ -117,10 +120,34 @@ train() {
   merge
 }
 
+workspace_version() { sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "${repo}/Cargo.toml" | head -1; }
+
+blank_version() {
+  local version=$1 path=$2
+  case ${path} in
+    *Cargo.lock) awk -v v="version = \"${version}\"" '
+        function flush(   i) { for (i = 1; i <= n; i++) if (!(workspace_crate && lines[i] == v)) print lines[i]; n = 0; workspace_crate = 1 }
+        /^\[\[package\]\]/ { flush() }
+        { lines[++n] = $0 }
+        /^source = / { workspace_crate = 0 }
+        END { flush() }' ;;
+    *) sed "s/version = \"${version//./\\.}\"/version = \"@VERSION@\"/g" ;;
+  esac
+}
+
+key_inputs_digest() {
+  local version blob path
+  version=$(workspace_version)
+  git -C "${repo}" ls-files --stage -- "${key_inputs[@]}" | sed -E 's/^[0-7]+ ([0-9a-f]+) [0-9]+\t/\1 /' | grep -Ev "${key_skip_re}" |
+    while read -r blob path; do
+      [[ ! ${path} =~ ${key_manifest_re} ]] || blob=$(git -C "${repo}" show ":${path}" | blank_version "${version}" "${path}" | sha256sum)
+      printf '%s %s\n' "${blob}" "${path}"
+    done
+}
+
 key() {
   local toolchain=${1:?usage: $0 key TOOLCHAIN}
-  { printf '%s\n' "${toolchain}" "${target}" "${cargo_profile}" "${lanes}" "${scale}"
-    git -C "${repo}" ls-files --stage -- "${key_inputs[@]}" | grep -Ev "${key_skip_re}"; } | sha256sum | cut -c1-16
+  { printf '%s\n' "${toolchain}" "${target}" "${cargo_profile}" "${lanes}" "${scale}"; key_inputs_digest; } | sha256sum | cut -c1-16
 }
 
 merge() {
@@ -178,11 +205,12 @@ case ${1:-} in
   gen) gen ;;
   lane) lane "${2:?usage: $0 lane NAME}" ;;
   key) key "${2:-}" ;;
+  version) workspace_version ;;
   merge) merge ;;
   tool) timed tool-build build_tool ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
   rustflags) remap_rustflags; echo ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|gen|lane NAME|key TOOLCHAIN|merge|tool|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|gen|lane NAME|key TOOLCHAIN|version|merge|tool|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
 esac

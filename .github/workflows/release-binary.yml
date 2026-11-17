@@ -58,6 +58,7 @@ jobs:
       arch: ${{ inputs.arch }}
       runner: ${{ inputs.runner }}
       flavour: ${{ inputs.flavour }}
+      reuse_newest: true
 
   binary:
     name: ${{ inputs.arch }} ${{ inputs.flavour }}
@@ -93,6 +94,13 @@ jobs:
           path: .package-cache/plain-work
           key: plain-${{ inputs.arch }}-${{ inputs.flavour }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: plain-${{ inputs.arch }}-${{ inputs.flavour }}-
+
+      - name: Cache the dependency objects built with this profile (exact key only, an object is a function of the profile bytes)
+        if: inputs.pgo == '1'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .package-cache/pgo-work
+          key: use-bolt${{ inputs.bolt }}-${{ needs.profile.outputs.key }}
 
       - name: Restore the profile (a missing key is a bug of the profile workflow, never a reason to build without it)
         if: inputs.pgo == '1'

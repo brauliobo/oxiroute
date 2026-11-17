@@ -55,15 +55,25 @@ key_fixture() {
   printf 'fn a() {}\n' >"${dir}/crates/a/src/lib.rs"
   printf 'x\n' >"${dir}/crates/a/tests/t.rs"
   printf 'doc\n' >"${dir}/crates/a/README.md"
-  printf 'x\n' >"${dir}/Cargo.lock"
-  printf 'x\n' >"${dir}/Cargo.toml"
   printf 'x\n' >"${dir}/benchmarks/r2-data-path/run.py"
+  write_manifests 1.2.3 "${dir}" 0.9.1
   git -C "${dir}" init -q
   git -C "${dir}" add -- .
   keyed=${dir}/benchmarks/scripts/pgo.sh
 }
 
+write_manifests() {
+  local version=$1 dir=$2 dependency=$3
+  printf '[workspace.package]\nversion = "%s"\n[profile.release]\nlto = "fat"\n' "${version}" >"${dir}/Cargo.toml"
+  printf '[package]\nname = "a"\nversion = "%s"\n[dependencies]\nb = { path = "../b", version = "%s" }\n' "${version}" "${version}" \
+    >"${dir}/crates/a/Cargo.toml"
+  printf 'version = 4\n\n[[package]]\nname = "a"\nversion = "%s"\n\n[[package]]\nname = "tokio"\nversion = "%s"\nsource = "registry+x"\n' \
+    "${version}" "${dependency}" >"${dir}/Cargo.lock"
+}
+
 key_of() { "${keyed}" key "${1:-1.97.1}"; }
+
+restage() { git -C "${root}/keyed" add -- .; }
 
 test_key_follows_the_inputs_of_the_profile() {
   local before
@@ -77,11 +87,29 @@ test_key_follows_the_inputs_of_the_profile() {
   [[ ${before} != "$(PGO_LANES=h1_b1k key_of)" ]] || fail 'the key ignores the lane mix'
   printf 'documentation changed\n' >"${root}/keyed/crates/a/README.md"
   printf 'y\n' >"${root}/keyed/crates/a/tests/t.rs"
-  git -C "${root}/keyed" add -- .
+  restage
   [[ ${before} == "$(key_of)" ]] || fail 'a test or a document changes the key'
   printf 'fn a() { 1; }\n' >"${root}/keyed/crates/a/src/lib.rs"
-  git -C "${root}/keyed" add -- .
+  restage
   [[ ${before} != "$(key_of)" ]] || fail 'a source change keeps the key'
+}
+
+test_version_bump_keeps_the_hash_and_moves_the_version() {
+  local before
+  key_fixture
+  before=$(key_of)
+  [[ $("${keyed}" version) == 1.2.3 ]] || fail 'the workspace version is not read'
+  write_manifests 1.3.0 "${root}/keyed" 0.9.1
+  restage
+  [[ $("${keyed}" version) == 1.3.0 ]] || fail 'the bumped version is not read'
+  [[ ${before} == "$(key_of)" ]] || fail 'a version-only bump changes the hash'
+  write_manifests 1.3.0 "${root}/keyed" 0.9.2
+  restage
+  [[ ${before} != "$(key_of)" ]] || fail 'a dependency version change keeps the hash'
+  write_manifests 1.3.0 "${root}/keyed" 0.9.1
+  sed -i 's/lto = "fat"/lto = "thin"/' "${root}/keyed/Cargo.toml"
+  restage
+  [[ ${before} != "$(key_of)" ]] || fail 'a build setting change keeps the hash'
 }
 
 run_build() {
@@ -135,6 +163,7 @@ printf '%s\n' "${RUSTFLAGS:-}" >>"${FAKE_CARGO_LOG:-/dev/null}"
 for _ in $(seq "${FAKE_MISSING:-0}"); do echo 'warning: no profile data available for function'; done
 CARGO
 test_key_follows_the_inputs_of_the_profile
+test_version_bump_keeps_the_hash_and_moves_the_version
 test_stale_profile_is_a_hard_error
 test_given_profile_skips_the_training
 test_release_script_prints_the_key_of_the_profile

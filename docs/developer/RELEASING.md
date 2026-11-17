@@ -207,32 +207,45 @@ Training is not repeated per release. The profile of an architecture and flavour
 unwinding changes the control-flow hashes; `aarch64` has its own) is a pure function of its inputs, so
 `release-binary.yml` asks `release-profile.yml` for it and only the missing ones are trained:
 
-1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-HASH`. HASH is the first 16 hex
-   digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
-   profile, the lane mix and scale, and the git blob ids of `Cargo.toml`, `Cargo.lock`, `crates/`, `vendor/`,
-   `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files.
-2. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache` under that key. On a hit nothing else runs: no
-   instrumented build, no lanes. On a miss the `train` job runs `scripts/package/main.sh profile train` (the instrumented build,
-   the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the cache entry.
-3. The binary job restores the same key with `fail-on-cache-miss: true`, mounts the file into the build container
-   (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
-   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile still matches the code: a mismatch exits with status 3 and the
+1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-vVERSION-HASH`. HASH is the first 16
+   hex digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
+   profile (so the flavour), the lane mix and scale, and the content of `Cargo.toml` (build settings), `Cargo.lock`, `crates/`,
+   `vendor/`, `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files and
+   blanking the workspace version in the manifests and the lock file. UI, documentation, tests and a version-only bump do not
+   change HASH (`benchmarks/scripts/test-pgo.sh` proves it, as it proves that a source, dependency or build-setting change does).
+   `profile prefix` prints `pgo-ARCH-FLAVOUR-vVERSION-`.
+2. The version is the first component, not part of HASH, because it decides whether a profile fits at all: rustc hashes the
+   package version into the symbol of every workspace function (measured: the same crate built at 6.5.2 and 6.5.3 has 35 of 35
+   exported symbols renamed), and a profile is matched by symbol name, so a profile trained at another version matches no
+   workspace function and the gate rejects it. A version bump is therefore always a new profile; the refresh below makes it
+   before the tag.
+3. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache`. A release build asks for the exact key and,
+   when that is missing, for the newest key under the prefix of its version (`restore-keys`): normally the last refresh of
+   `main`, whose sources can differ a little from the tag. A hit of either kind stops there: no instrumented build, no lanes.
+   Only when nothing of that version exists the `train` job runs `scripts/package/main.sh profile train` (the instrumented
+   build, the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the exact key. The refresh asks for
+   the exact key only, so it trains whenever HASH moved.
+4. The binary job restores the key that the lookup settled on with `fail-on-cache-miss: true`, mounts the file into the build
+   container (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
+   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile fits the code that is built: a mismatch exits with status 3 and the
    message "train it again". It never produces a plain build; the job fails and the profile must be trained again (below).
 
-`.github/workflows/profile-refresh.yml` runs every night (03:17 UTC) and on demand on the default branch for the three
-profiles of a tag (x86_64 unwind and abort, aarch64 unwind). A key that is stored is restored, which renews the entry
-(GitHub evicts a cache entry that nobody restored for seven days), and a key that is new trains once. A tag run restores the
-entries that `main` saved; the entries a tag run saves are visible to that tag only. So a tag whose hot-path sources equal a
-night's state finds all three profiles and skips the instrumented build.
+`.github/workflows/profile-refresh.yml` keeps the profiles of `main` warm for the three profiles of a tag (x86_64 unwind and
+abort, aarch64 unwind). It runs automatically on every push to `main` that touches `Cargo.toml` or `Cargo.lock` (where a
+version bump, a toolchain or a dependency change lands), every night (03:17 UTC, which also renews the entries that GitHub evicts
+after seven days without access) and on demand. A tag run restores the entries that `main` saved; the entries a tag run saves
+are visible to that tag only.
 
-Retrain triggers, all of them part of the key: a change to any crate or vendored source (not its tests, benches or
-documents), `Cargo.lock`, a `Cargo.toml` (the version bump of a release commit included: rustc hashes the package metadata
-into every symbol, so the key is conservative), the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the scale,
-anything in `benchmarks/r2-data-path/`, the target and the flavour. Procedure for a release: land the version bump on `main`,
-start `Profile refresh` by hand (about half an hour of waiting when the key is new), then tag. A tag created before that still
-works, it trains inside its own run first (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
+Retrain triggers: a change to HASH (any crate or vendored source other than tests, benches and documents, a dependency
+version in `Cargo.lock`, a build setting in `Cargo.toml`, the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the
+scale, anything in `benchmarks/r2-data-path/`, the target, the flavour) trains on the next refresh; a new version trains too.
+A tag whose HASH moved since the last refresh still uses the newest profile of its version if the gate accepts it (at most 5%
+of the profile's functions unmatched), which is how a hot-path commit after a night's run does not force a half-hour
+training. The one manual fallback: if the tag run fails the gate (status 3) or you tag within minutes of the version bump, start
+`Profile refresh` on `main`, wait for the three legs, and re-run the tag workflow; a tag run that finds nothing of its version
+trains inside its own run instead (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
 To force a retrain, delete the entry (`gh cache delete KEY`, the key is in the job summary of the `lookup` job) and run `Profile
-refresh`. A gate failure (status 3) with an unchanged key means an input is missing from the key: fix `key_inputs` in
+refresh`. A gate failure with an unchanged key means an input is missing from the key: fix `key_inputs` in
 `benchmarks/scripts/pgo.sh`, do not raise `PGO_MAX_MISSING_PCT`.
 
 Local: `PGO_PROFILE_GIVEN=1 PGO_PROFILE=/path/to/oxiroute.profdata scripts/build-release-binaries.sh VERSION OUT` builds with a
@@ -451,21 +464,46 @@ already run in parallel jobs, each with its own profile (the symbol sets of `unw
 hashes, so they are not shared). The gate also refused a thin-LTO profile on a fat build, which is the proof that sharing
 across configurations cannot happen silently.
 
-Critical path of a tag with the profiles in the cache, estimated on hosted runners: `changes` 1 minute, `lookup` 1, the binary job
-(container setup 3, profile-use build 18, checks and smoke 1, tarball and upload 1) 23, `packages-x86_64` 8, `publish` 2:
-about 35 minutes, against more than an hour for the binary leg alone before (the documented one hour per leg, then the packages and `publish`). A miss adds 26 minutes
-once. The target of 25 minutes is not reached: the profile-use build (18 minutes, 12 of them in the one-threaded fat-LTO
-codegen and the dependencies) is the floor of a fat-LTO release. What would cut it is a configuration that needs its own
-measurement: cached dependency objects keyed by the profile (the C builds of OpenSSL, jemalloc and aws-lc are 257 CPU seconds locally and
-do not depend on the profile, `ccache` would serve them), not done here. A dry run (`PGO=0 BOLT=0`) now links without LTO
-and with 16 codegen units; with the cached dependency objects it is about 6 minutes of build plus the same 8 minutes of packages.
+The profile-use build in phases (`cargo build --timings`, 8 CPUs, `-j3`): the registry dependencies, the C builds of OpenSSL, jemalloc and
+aws-lc among them, finish at 195 s; the `oxiroute` library then compiles for 115 s and the final `oxiroute` binary spends 237 s in
+one-threaded fat-LTO codegen (548 s together). Rebuilding with every workspace source touched and the dependency objects of the
+previous build in place takes 350 s (55 units compiled, 140 of 131931 functions unmatched): the dependency objects are 198 s, 36%, of
+the build and 0.9 GB of cache. Fat LTO with 16 codegen units compiles the library in 54 s and the final crate in 302 s, 548 s together
+again, with 0.3% to 1.8% more instructions per request than one codegen unit (a profile of one codegen-unit count does not match a
+build of the other: 26% unmatched), so it is not used. `-Cprofile-use` reaches the dependencies through `RUSTFLAGS` (stable cargo has no
+per-package rustflags) and their functions are in the profile, so their objects are a function of the profile bytes and are cached
+under the profile key (below), never across profiles.
+
+Critical path of a tag with the profile and the dependency objects in the cache, estimated on hosted runners (local x 2):
+
+| Stage | Hosted est. | Note |
+| --- | ---: | --- |
+| `changes` | 1 min | the package-script selftest is its own job |
+| `lookup` (profile) | 1 min | restore by exact key or newest of the version |
+| container setup (image, packages, toolchain cache) | 3 min | unchanged |
+| profile-use build: workspace, one-thread fat-LTO codegen | 11.7 min | 350 s local, was 548 s (18 min) |
+| checks, smoke, tarball, upload | 2 min | |
+| packages (assemble, then the slowest image) | 8 min | unchanged; all images already run in parallel |
+| `publish` | 2 min | |
+| Total | about 29 min | was about 35 with the profile only, more than an hour before |
+
+The 25 minutes are not reached; the floor is the profile-use build of the workspace, 11.7 minutes: the `oxiroute` library (4 min) and the
+one-threaded fat-LTO codegen of the final crate (8 min) change with every release, depend on the profile and cannot be cached or
+split, and thin LTO, which would save 235 s local, costs up to 3.7% instructions per request. The remaining time is the fixed 3 minutes of
+container setup and the 8 minutes of package checks (assemble job, then the slowest of 8 image jobs, each downloading its distribution);
+no measurement of those jobs exists here, so they are unchanged. The x86_64 `unwind`, `abort` and `aarch64` binaries already build in separate
+parallel jobs; attestation of the tarball (about half a minute) is the only step that could still move off the path. A miss of the
+profile adds the instrumented build (26 min) once; a miss of the dependency objects adds 6.6 minutes. A dry run (`PGO=0 BOLT=0`) links without LTO
+and with 16 codegen units; with the cached dependency objects it is about 6 minutes of build plus the 8 minutes of packages.
 
 Caching: the toolchain and the cargo registry of the build container are cached with `actions/cache` keyed by `Cargo.lock`
 (one entry per architecture), and so are the dependency objects of a plain dry-run build (`.package-cache/plain-work`). The
-profiles are cache entries too (above). A profile-guided build never reuses objects of another profile: with `-Cprofile-use`
-each object is a function of the profile, and an object cache that did not see the profile (`sccache` hashes the command
-line, not the profile data) could return code compiled against another profile, so the PGO builds compile everything.
-`Swatinem/rust-cache` serves the cargo builds that run on the runner itself (the BOLT tools and the workspace tests) and writes its
+profiles are cache entries too (above). The dependency objects of the profile-use build (`.package-cache/pgo-work`, about 1 GB per leg) are cached too, under
+`use-bolt0-PROFILEKEY` (exact key only: with `-Cprofile-use` each object is a function of the profile bytes, and cargo does not
+notice a changed profile file, so a restore-key or a key that ignores the profile could return code compiled against another
+profile). The refresh job `warm` builds once with each new profile to fill them, the tag build restores the entry of the profile it
+uses. `sccache` hashes the command line, not the profile data, and is not used; `ccache` for the C builds alone was not measured (they
+are part of the 198 s above). `Swatinem/rust-cache` serves the cargo builds that run on the runner itself (the BOLT tools and the workspace tests) and writes its
 entry on `main` only. `CARGO_INCREMENTAL=0` is set in every release job. The instrumented build cannot reuse the objects of the
 profile-use build: its `RUSTFLAGS` differ (`-Cprofile-generate`), which cargo fingerprints. Per-job timeouts bound a stuck
 runner: 10 minutes for `changes` and `lookup`, 20 for assembling a package, 30 for one image, 90 for training, 120 for a binary or the tests.
