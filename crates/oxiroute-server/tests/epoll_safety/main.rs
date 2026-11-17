@@ -197,8 +197,15 @@ impl Proxy {
         .expect("the reloaded generation activated");
     }
 
-    async fn connect(&self) -> TcpStream {
-        TcpStream::connect(self.address).await.expect("connect")
+    async fn connect(&mut self) -> TcpStream {
+        match TcpStream::connect(self.address).await {
+            Ok(stream) => stream,
+            Err(error) => panic!(
+                "connect {}: {error}; {}",
+                self.address,
+                self.server.report()
+            ),
+        }
     }
 
     async fn descriptors(&self) -> Option<u64> {
@@ -318,7 +325,7 @@ async fn a_body_ended_by_an_origin_reset_is_not_completed(plane: HttpDataPlane) 
         }
     })
     .await;
-    let proxy = Proxy::start(origin.address, plane, |_| {}).await;
+    let mut proxy = Proxy::start(origin.address, plane, |_| {}).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     let mut received = read_until(&mut client, "part-one;").await;
@@ -367,7 +374,7 @@ on_every_plane!(a_response_in_flight_survives_the_replacement_of_its_generation)
 
 async fn a_partial_request_head_is_closed_at_the_default_read_limit(plane: HttpDataPlane) {
     let origin = Scripted::start(|_| async {}).await;
-    let proxy = Proxy::start(origin.address, plane, |_| {}).await;
+    let mut proxy = Proxy::start(origin.address, plane, |_| {}).await;
     let mut client = proxy.connect().await;
     client
         .write_all(b"GET /r HTTP/1.1\r\nHost: example.test\r\nX-A:")
@@ -420,7 +427,7 @@ async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataP
         }
     })
     .await;
-    let proxy = Proxy::start(origin.address, plane, |config| config.log_filter = None).await;
+    let mut proxy = Proxy::start(origin.address, plane, |config| config.log_filter = None).await;
     let mut clients = Vec::with_capacity(CLIENTS);
     for _ in 0..CLIENTS {
         let mut client = proxy.connect().await;
@@ -546,7 +553,7 @@ async fn a_request_waiting_on_an_evacuated_server_is_sent_to_another(plane: Http
         held.origin(b"", FROM_A).await,
         replying_origin(FROM_B).await,
     );
-    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut proxy = proxy_over_two_origins(plane, &first, &second).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     held.arrived().await;
@@ -564,7 +571,7 @@ async fn forcing_an_evacuation_cuts_a_request_waiting_on_it(plane: HttpDataPlane
         held.origin(b"", FROM_A).await,
         replying_origin(FROM_B).await,
     );
-    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut proxy = proxy_over_two_origins(plane, &first, &second).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     held.arrived().await;
@@ -588,7 +595,7 @@ async fn a_response_that_started_is_left_running_by_an_evacuation(plane: HttpDat
         held.origin(STARTED, b"-a").await,
         replying_origin(FROM_B).await,
     );
-    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut proxy = proxy_over_two_origins(plane, &first, &second).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     read_until(&mut client, "from").await;
@@ -608,7 +615,7 @@ async fn forcing_an_evacuation_resets_a_response_that_started(plane: HttpDataPla
         held.origin(STARTED, b"-a").await,
         replying_origin(FROM_B).await,
     );
-    let proxy = proxy_over_two_origins(plane, &first, &second).await;
+    let mut proxy = proxy_over_two_origins(plane, &first, &second).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     read_until(&mut client, "from").await;
@@ -635,7 +642,7 @@ async fn a_response_with_a_malformed_first_chunk_is_answered_with_a_502() {
     let origin =
         replying_origin(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbroken\r\n")
             .await;
-    let proxy = Proxy::start(origin.address, plane, |_| {}).await;
+    let mut proxy = Proxy::start(origin.address, plane, |_| {}).await;
     let mut client = proxy.connect().await;
     client.write_all(GET).await.unwrap();
     let answer = read_to_end(&mut client).await;
@@ -665,7 +672,7 @@ async fn the_connect_time_is_logged_when_the_origin_closes_before_answering(plan
     let directory = tempfile::tempdir().expect("log directory");
     let log = directory.path().join("access.log");
     let path = log.clone();
-    let proxy = Proxy::start(origin.address, plane, move |config| {
+    let mut proxy = Proxy::start(origin.address, plane, move |config| {
         config.http_services[0].access_log = Some(AccessLogPolicy::File { path });
     })
     .await;
@@ -683,7 +690,7 @@ async fn descriptors_exhausted_at_accept_neither_spin_the_listener_nor_stop_it(
     plane: HttpDataPlane,
 ) {
     let origin = replying_origin(OK).await;
-    let proxy = Proxy::start(origin.address, plane, |config| {
+    let mut proxy = Proxy::start(origin.address, plane, |config| {
         config.log_filter = None;
     })
     .await;

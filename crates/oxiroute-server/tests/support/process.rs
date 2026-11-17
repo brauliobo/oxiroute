@@ -166,6 +166,28 @@ impl ServerProcess {
         }
     }
 
+    /// Whether the server is still running or how it ended, with everything it wrote to standard error.
+    #[allow(dead_code)]
+    pub fn report(&mut self) -> String {
+        let state = match self.child.try_wait().expect("inspect server process") {
+            Some(status) => format!("the server ended with {status}"),
+            None => "the server is still running".to_owned(),
+        };
+        let process =
+            fs::read_to_string(format!("/proc/{}/status", self.child.id())).unwrap_or_default();
+        let listening = fs::read_to_string("/proc/net/tcp").unwrap_or_default();
+        let listening = listening
+            .lines()
+            .filter(|row| row.split_whitespace().nth(3) == Some("0A"));
+        let listening = listening
+            .filter_map(|row| row.split_whitespace().nth(1))
+            .collect::<Vec<_>>();
+        format!(
+            "{state}; process:\n{process}\nlistening: {listening:?}\nstandard error:\n{}",
+            self.stderr()
+        )
+    }
+
     /// Everything the server has written to standard error so far.
     pub fn stderr(&self) -> String {
         fs::read_to_string(&self.stderr_path).expect("server standard error")
