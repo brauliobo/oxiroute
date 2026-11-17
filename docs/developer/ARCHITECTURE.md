@@ -91,8 +91,12 @@ The server crate owns listener admission and dispatches by protocol:
   of operations in flight. A response the ring accepted is sent whole or the connection fails; a closed connection
   waits up to `Config::flush` (a minute) for the peer to take it and is then reset, never ended with a clean end of
   stream. A listener that runs out of descriptors waits for a waiting connection and sheds it through a spare
-  descriptor instead of retrying, so it neither spins nor stops. Measurements are in
-  `benchmarks/reports/io-uring-http1/README.md`.
+  descriptor instead of retrying, so it neither spins nor stops. A response body of known length or in chunks is not
+  copied in user space: the engine frames the bytes in the receive buffer the ring lent it, and the send of the client
+  reads that same buffer, which returns to its pool when the send ends. A socket whose receives keep filling the small
+  buffers receives into larger ones (`Config::large_buffers`), so a 64 KiB body takes a few completions, not many.
+  A wait returns every completion that is ready, so connections that became ready together are served in one batch
+  and one order. Measurements are in `benchmarks/reports/io-uring-http1/README.md`.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
   resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
   TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by

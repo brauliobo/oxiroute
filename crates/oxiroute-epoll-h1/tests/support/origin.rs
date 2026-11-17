@@ -161,7 +161,7 @@ fn serve(mut stream: TcpStream, heads: &Mutex<Vec<String>>, flaky: &AtomicUsize)
     }
 }
 
-fn sized(len: usize) -> Vec<u8> {
+pub fn sized(len: usize) -> Vec<u8> {
     (0..len).map(|index| b'a' + (index % 23) as u8).collect()
 }
 
@@ -233,6 +233,21 @@ fn respond(stream: &mut TcpStream, request: &Incoming, flaky: &AtomicUsize) -> b
             format!("HTTP/1.1 {number} Status\r\nContent-Length: 0\r\n\r\n").as_bytes(),
         ),
         "head" => write(stream, b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"),
+        "truncated" => {
+            let head = "HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\n\r\n";
+            let _ = write(stream, &[head.as_bytes(), &sized(number)].concat());
+            false
+        }
+        "dribble" => {
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {number}\r\n\r\n");
+            let body = sized(number);
+            write(stream, head.as_bytes())
+                && body.chunks(1000).all(|piece| {
+                    thread::sleep(Duration::from_millis(1));
+                    write(stream, piece)
+                })
+        }
+        "trailing" => write(stream, &[ok(&sized(number), ""), b"JUNK".to_vec()].concat()),
         "slowbody" => {
             let _ = write(stream, b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab");
             thread::sleep(Duration::from_millis(number as u64));

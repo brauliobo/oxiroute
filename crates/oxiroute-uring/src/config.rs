@@ -17,6 +17,11 @@ pub struct Config {
     pub buffers: u16,
     /// Bytes of one provided receive buffer.
     pub buffer_size: u32,
+    /// Larger provided receive buffers for sockets that keep filling the small ones, a power of two. Pages of a
+    /// buffer that never receives a byte are never resident.
+    pub large_buffers: u16,
+    /// Bytes of one large provided receive buffer.
+    pub large_buffer_size: u32,
     /// Largest number of bytes one send stages; larger writes are accepted in parts.
     pub send_limit: usize,
     /// Accept operations kept in flight per listener.
@@ -32,6 +37,8 @@ impl Default for Config {
             entries: 2048,
             buffers: 256,
             buffer_size: 16 * 1024,
+            large_buffers: 64,
+            large_buffer_size: 64 * 1024,
             send_limit: 32 * 1024,
             accepts: 8,
             flush: Duration::from_mins(1),
@@ -41,14 +48,26 @@ impl Default for Config {
 }
 
 impl Config {
+    pub(crate) const fn pools(&self) -> [(u16, u32); 2] {
+        [
+            (self.buffers, self.buffer_size),
+            (self.large_buffers, self.large_buffer_size),
+        ]
+    }
+
     pub(crate) fn validate(&self) -> io::Result<()> {
         let invalid =
             |reason: &'static str| Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
-        if !self.buffers.is_power_of_two() || self.buffers > 1 << 15 {
-            return invalid("the number of provided buffers is a power of two up to 32768");
+        for (buffers, size) in self.pools() {
+            if !buffers.is_power_of_two() || buffers > 1 << 15 {
+                return invalid("the number of provided buffers is a power of two up to 32768");
+            }
+            if size == 0 || size > 1 << 24 {
+                return invalid("a provided buffer holds 1 byte to 16 MiB");
+            }
         }
-        if self.buffer_size == 0 || self.buffer_size > 1 << 24 {
-            return invalid("a provided buffer holds 1 byte to 16 MiB");
+        if self.large_buffer_size < self.buffer_size {
+            return invalid("a large provided buffer is at least as large as a small one");
         }
         if self.accepts == 0 || self.accepts > 16 {
             return invalid("a listener keeps 1 to 16 accepts in flight");

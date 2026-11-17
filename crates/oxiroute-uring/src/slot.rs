@@ -56,10 +56,17 @@ impl Meta {
     }
 }
 
+/// A provided buffer of one of the pools of the ring.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Lease {
+    pub(crate) pool: u8,
+    pub(crate) buffer: u16,
+}
+
 /// Received bytes waiting for the caller: still in a provided buffer, or moved to the heap when the pool runs low.
 #[derive(Debug)]
 pub(crate) enum Chunk {
-    Ring(u16),
+    Ring(Lease),
     Heap(Vec<u8>),
 }
 
@@ -107,6 +114,7 @@ pub(crate) struct Slot {
     pub(crate) tag: u64,
     pub(crate) fd: Option<OwnedFd>,
     pub(crate) reader: Reader,
+    pub(crate) streaming: bool,
     pub(crate) writer: Writer,
     pub(crate) connect: Connect,
     pub(crate) poll: Option<u64>,
@@ -127,6 +135,7 @@ impl Slot {
             tag: 0,
             fd: None,
             reader: Reader::Idle,
+            streaming: false,
             writer: Writer::Idle,
             connect: Connect::Idle,
             poll: None,

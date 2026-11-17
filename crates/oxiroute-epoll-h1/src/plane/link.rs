@@ -1,6 +1,6 @@
 use std::{io, os::fd::OwnedFd};
 
-use oxiroute_uring::Released;
+use oxiroute_uring::{Peek, Released};
 use rustix::event::epoll::EventFlags;
 
 use super::{
@@ -92,12 +92,65 @@ impl Link {
             Io::Fd(fd) => sys::write(fd, head, body),
             Io::Ring(socket) => socket.write(head, body, delivery),
         };
+        self.written(wrote, head.len() + body.len())
+    }
+
+    fn written(&mut self, wrote: Wrote, total: usize) -> Wrote {
         match wrote {
-            Wrote::Bytes(count) if count == head.len() + body.len() => {}
+            Wrote::Bytes(count) if count == total => {}
             Wrote::Bytes(_) | Wrote::Block => self.ready.write = false,
             Wrote::Failed => {}
         }
         wrote
+    }
+
+    pub(crate) const fn lends(&self) -> bool {
+        matches!(self.io, Io::Ring(_))
+    }
+
+    pub(crate) fn peek<R>(&mut self, view: impl FnOnce(&[u8]) -> R) -> Peek<R> {
+        if !self.ready.read {
+            return Peek::Block;
+        }
+        let Io::Ring(socket) = &self.io else {
+            unreachable!("only a ring socket lends its received bytes")
+        };
+        let peeked = socket.peek(view);
+        if matches!(peeked, Peek::Block) {
+            self.ready.read = false;
+        }
+        peeked
+    }
+
+    pub(crate) fn forward(
+        &mut self,
+        source: &mut Self,
+        (head, count): (&[u8], usize),
+        delivery: Delivery,
+    ) -> Wrote {
+        if !self.ready.write {
+            return Wrote::Block;
+        }
+        let (Io::Ring(sink), Io::Ring(from)) = (&self.io, &source.io) else {
+            unreachable!("only ring sockets forward received bytes")
+        };
+        let (wrote, left) = sink.forward(from, (head, count), delivery);
+        source.drained(left);
+        self.written(wrote, head.len() + count)
+    }
+
+    pub(crate) fn skip(&mut self, count: usize) {
+        let Io::Ring(socket) = &self.io else {
+            unreachable!("only a ring socket lends its received bytes")
+        };
+        let left = socket.skip(count);
+        self.drained(left);
+    }
+
+    fn drained(&mut self, left: usize) {
+        if left == 0 {
+            self.ready.read = self.ready.closing;
+        }
     }
 
     pub(crate) fn shutdown_write(&self) {

@@ -3127,6 +3127,7 @@ name = "oxiroute-uring"
 version = "6.5.2"
 dependencies = [
  "io-uring",
+ "libc",
  "rustix",
 ]
 
