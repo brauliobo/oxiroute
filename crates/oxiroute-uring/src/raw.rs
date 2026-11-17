@@ -243,6 +243,10 @@ pub(crate) struct Queue {
     scratch: Vec<(u64, i32, u32)>,
 }
 
+fn during(step: &'static str) -> impl FnOnce(io::Error) -> io::Error {
+    move |error| io::Error::new(error.kind(), format!("{step}: {error}"))
+}
+
 fn flag(flags: SocketFlags) -> i32 {
     flags.bits().cast_signed()
 }
@@ -262,19 +266,23 @@ impl Queue {
         let ring = builder.build(entries)?;
         let [small, large] = pools;
         let mut buffers = [
-            Buffers::new(small.0, small.1)?,
-            Buffers::new(large.0, large.1)?,
+            Buffers::new(small.0, small.1)
+                .map_err(during("allocating the small receive buffers"))?,
+            Buffers::new(large.0, large.1)
+                .map_err(during("allocating the large receive buffers"))?,
         ];
         for (group, pool) in buffers.iter_mut().enumerate() {
             // SAFETY: the page array is heap allocated, never moves, and is owned by `Queue`, which unregisters
             // the ring in `Drop` before the pages are freed (or leaks both when completions cannot be drained).
             unsafe {
-                ring.submitter().register_buf_ring_with_flags(
-                    pool.pages.as_ptr() as usize as u64,
-                    pool.count,
-                    group as u16,
-                    0,
-                )?;
+                ring.submitter()
+                    .register_buf_ring_with_flags(
+                        pool.pages.as_ptr() as usize as u64,
+                        pool.count,
+                        group as u16,
+                        0,
+                    )
+                    .map_err(during("registering the provided-buffer ring"))?;
             }
             pool.fill();
         }

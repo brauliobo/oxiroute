@@ -382,6 +382,16 @@ already holds its 64 pipes, `OpenFailed` when the kernel refuses a new one (no f
 pipe memory limit `pipe-user-pages-soft` makes `F_SETPIPE_SZ` fail). `Spliced` marks a spliced body and `Unused` a
 response that was not eligible. A pipe size the kernel refuses at start refuses to start the plane.
 
+The `io_uring` plane needs kernel 6.1 (5.19 with cooperative task running), `kernel.io_uring_disabled` of 0 and a policy
+that allows the `io_uring` system calls. It creates one ring per engine thread: a 2048-entry submission queue and two
+provided-buffer pools, 256 buffers of 16 KiB and 64 of 64 KiB, which are 8 MiB of address space per thread and resident
+only where a socket received into them. It registers no fixed buffers and no fixed files, so on kernel 5.12 and later it
+holds no locked memory and `RLIMIT_MEMLOCK` does not constrain it, and it uses no pipes, so `pipe-user-pages-soft` does not
+either. What bounds it is the memory the process can map: `RLIMIT_AS`, a cgroup `memory.max` and the kernel's own
+allocations. The plan-time probe creates a ring with exactly these settings and round-trips a receive through its
+buffers; when the process cannot get the memory, the configuration is refused naming the memory, instead of the worker
+failing when its threads start.
+
 An operator evacuation acts on a request served by the epoll plane as on any other: a request waiting on the evacuated
 server is sent to another one and `--force` cancels it, and the epoll thread serving it is woken to act at once.
 

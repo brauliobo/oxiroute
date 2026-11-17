@@ -24,6 +24,9 @@ pub enum Missing {
     Kernel,
     /// A seccomp filter or container policy refuses the system call.
     Refused,
+    /// The process cannot get the memory of a ring with the settings the plane uses: an address space or memory limit
+    /// (`RLIMIT_AS`, a cgroup `memory.max`) or the kernel's own allocations.
+    Memory(io::Error),
     /// The ring could not be created with the settings the plane uses.
     Setup {
         what: &'static str,
@@ -55,6 +58,10 @@ impl fmt::Display for Missing {
                 f,
                 "a seccomp filter or container policy refuses the io_uring system calls"
             ),
+            Self::Memory(error) => write!(
+                f,
+                "the process cannot get the memory of an io_uring ring and its receive buffers: {error}"
+            ),
             Self::Setup { what, error } => write!(f, "the kernel cannot set up {what}: {error}"),
             Self::Opcode(name) => write!(
                 f,
@@ -80,6 +87,7 @@ fn setup_failure(error: io::Error, taskrun: Taskrun) -> Missing {
         Some(Errno::PERM | Errno::ACCESS) => sysctl()
             .filter(|setting| *setting > 0)
             .map_or(Missing::Refused, |sysctl| Missing::Disabled { sysctl }),
+        _ if error.kind() == io::ErrorKind::OutOfMemory => Missing::Memory(error),
         _ => Missing::Setup {
             what: match taskrun {
                 Taskrun::Defer => "a single-issuer ring with deferred task running (kernel 6.1)",
@@ -154,23 +162,14 @@ fn awaited(ring: &mut Ring, receiver: crate::Handle, queued: crate::Sent) -> Res
     }
 }
 
-/// Checks that a ring configured like `config` works here: the sysctl, the system calls, every opcode the plane
-/// submits, and a round trip through the provided-buffer ring. Run it at plan time and refuse the configuration
-/// when it fails.
+/// Checks that a ring configured exactly like `config` works here: the sysctl, the system calls, the memory of the ring
+/// and of its provided buffers, every opcode the plane submits, and a round trip through the provided-buffer ring. Run
+/// it at plan time and refuse the configuration when it fails.
 pub fn probe(config: &Config) -> Result<(), Missing> {
     if let Some(setting @ 2) = sysctl() {
         return Err(Missing::Disabled { sysctl: setting });
     }
-    let test = Config {
-        entries: 8,
-        buffers: 2,
-        buffer_size: 4096,
-        large_buffers: 2,
-        large_buffer_size: 4096,
-        accepts: 1,
-        ..config.clone()
-    };
-    let mut ring = Ring::new(&test).map_err(|error| setup_failure(error, config.taskrun))?;
+    let mut ring = Ring::new(config).map_err(|error| setup_failure(error, config.taskrun))?;
     required(&ring)?;
     echo(&mut ring)
 }
