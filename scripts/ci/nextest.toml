@@ -12,7 +12,15 @@ priority = 100
 
 [test-groups]
 idle-connection-herd = { max-threads = 1 }
+io-uring-rings = { max-threads = 6 }
 
 [[profile.default.overrides]]
 filter = "binary_id(=oxiroute::epoll_safety) & test(~more_idle_connections_than_a_thread_cap)"
 test-group = "idle-connection-herd"
+
+[profile.io_uring]
+inherits = "default"
+
+[[profile.io_uring.overrides]]
+filter = "all() - (binary_id(=oxiroute::epoll_safety) & test(~more_idle_connections_than_a_thread_cap))"
+test-group = "io-uring-rings"

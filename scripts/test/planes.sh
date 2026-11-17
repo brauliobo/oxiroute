@@ -25,7 +25,7 @@ plane_lanes() {
       lane run_tiers "planes engine epoll"
       EPOLL_H1_TRIGGER=level lane run_tiers "engine epoll"
       ;;
-    io_uring) EPOLL_H1_DRIVER=io_uring lane run_tiers "planes engine uring" ;;
+    io_uring) EPOLL_H1_DRIVER=io_uring lane run_tiers "planes engine uring" --profile io_uring ;;
     *) printf 'usage: planes.sh [tokio|epoll|io_uring|all]\n' >&2; exit 2 ;;
   esac
 }
