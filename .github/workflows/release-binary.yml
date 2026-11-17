@@ -58,6 +58,7 @@ jobs:
       arch: ${{ inputs.arch }}
       runner: ${{ inputs.runner }}
       flavour: ${{ inputs.flavour }}
+      reuse_newest: true
 
   binary:
     name: ${{ inputs.arch }} ${{ inputs.flavour }}

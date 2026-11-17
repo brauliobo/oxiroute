@@ -150,14 +150,23 @@ test_profile_is_restored_never_silently_skipped() {
   grep -q 'fail-on-cache-miss: true' "${binary}" || fail 'the binary job can build without the profile it was told to use'
   grep -q 'PGO_PROFILE_HOST' "${binary}" || fail 'the binary job does not hand the restored profile to the build'
   grep -q 'uses: ./.github/workflows/release-profile.yml' "${binary}" || fail 'the binary job does not use the profile workflow'
-  grep -q 'key: ${{ needs.lookup.outputs.key }}' "${profile}" || fail 'the trained profile is not saved under the key that is looked up'
+  grep -q 'key: ${{ needs.lookup.outputs.exact }}' "${profile}" || fail 'the trained profile is not saved under the exact key that is looked up'
   grep -q 'cron:' "${repo}/.github/workflows/profile-refresh.yml" || fail 'nothing refreshes the profile of main'
+  sed -n '/^on:/,/^permissions:/p' "${repo}/.github/workflows/profile-refresh.yml" | grep -q -- '- Cargo.toml' ||
+    fail 'a push that bumps the version does not refresh the profile'
+  grep -q 'reuse_newest: false' "${repo}/.github/workflows/profile-refresh.yml" || fail 'the refresh would reuse an old profile instead of training a new key'
+  grep -q 'reuse_newest: true' "${binary}" || fail 'a release build does not accept the newest profile of its version'
 }
 
 test_profile_keys_name_architecture_and_flavour() {
   local keys
   keys=$(for arch in "${package_arches[@]}"; do for flavour in unwind abort; do "${here}/profile.sh" key "${arch}" "${flavour}"; done; done)
   [[ $(sort -u <<< "${keys}" | wc -l) == 4 ]] || fail "the profile keys of the architectures and flavours are not distinct: ${keys}"
+  [[ $("${here}/profile.sh" key x86_64 unwind) == "$("${here}/profile.sh" prefix x86_64 unwind)"* ]] || fail 'the key is not under the prefix of its version'
+  [[ $("${here}/profile.sh" prefix x86_64 unwind) == *"-v$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "${repo}/Cargo.toml" | head -1)-" ]] ||
+    fail 'the prefix does not name the workspace version'
+  [[ $("${here}/profile.sh" prefix x86_64 unwind) != "$("${here}/profile.sh" prefix x86_64 abort)" ]] || fail 'the flavours share a prefix'
+
 }
 
 test_recipes_carry_no_version() {
