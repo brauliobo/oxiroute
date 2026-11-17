@@ -93,8 +93,8 @@ recording roots, or package files.
 `oxiroute-worker-launcher`) with the reusable workflow `.github/workflows/release-binary.yml`: `binary-x86_64` and
 `binary-aarch64` run in parallel on a native runner each, do not wait for the archive job, and every tarball and every
 `.deb` and `.rpm` of the architecture is that one binary repackaged. The `x86_64-unknown-linux-gnu` binary is
-profile-guided, which cuts user-space instructions per request by 14 to 27%, and laid out by BOLT; the
-`aarch64-unknown-linux-gnu` binary is profile-guided and not laid out by BOLT (see below).
+profile-guided, which cuts user-space instructions per request by 14 to 27%, and laid out by BOLT only on request (BOLT is
+opt-in, see below); the `aarch64-unknown-linux-gnu` binary is profile-guided and not laid out by BOLT.
 `scripts/package/main.sh binary ARCH VERSION OUT_DIR` builds it inside an `almalinux:9` container, the oldest glibc of every
 supported system (2.34: Debian 12 and 13, Ubuntu 22.04 and 24.04, the RHEL family 9 and 10, Amazon Linux 2023), and
 `scripts/verify/glibc_floor.sh` fails the build when a binary needs a glibc symbol version above the floor in
@@ -105,7 +105,7 @@ that fixes the libc the binary links) and `STAGE=layout` (step 4 and the tarball
 package that does not run on el9's libc. BOLT rewrites the code and does not change the glibc a binary needs, and the floor
 is checked again on the rewritten binary. Without BOLT the container runs both stages (`STAGE=all`):
 
-1. `pgo.sh train`: instrumented build (`-Cprofile-generate`), replay of 24 R2 data-path lanes (the ten core lanes
+1. `pgo.sh train` (only when the profile of the key is not in the cache, see "The profile" below): instrumented build (`-Cprofile-generate`), replay of 24 R2 data-path lanes (the ten core lanes
    with weight 4, fourteen feature lanes with weight 1) through the instrumented proxy with
    `benchmarks/r2-data-path/run.sh --train` (loopback only, no `perf`, so it runs on GitHub runners),
    `llvm-profdata merge` with the weights into one profile.
@@ -119,7 +119,8 @@ is checked again on the rewritten binary. Without BOLT the container runs both s
    directory, which no rustc flag can remap, so `PGO_WORK` must lie outside `/home` (the workflow uses `/tmp`).
 3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
    binary; any load error fails the job.
-4. `bolt.sh all` (skipped with `BOLT=0`): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
+4. `bolt.sh all` (opt-in: skipped with `BOLT=0`, which is what a tag does unless the repository variable `RELEASE_BOLT` is `1` or a
+   manual run sets `bolt`; it measured 0.2% fewer instructions per request, below the 2% that justifies the minutes): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
    unchanged, so the profile still matches), `llvm-bolt -instrument` adds counters (no `perf`, no LBR: it works in the
    virtual machines of hosted runners), ten lanes replay through the counted binary, and `llvm-bolt` rewrites the PGO
    binary (block order, function order, hot/cold splitting). The stage fails when fewer than 1000 functions got a
@@ -143,7 +144,7 @@ commit, `rustc --version`, `pgo`, `bolt`, `panic`, SHA-256 of the profile) are u
 attested; the publish job attaches them to the tag's release and appends a line stating how the binaries were built to
 the release notes. A training, profile, BOLT or test failure fails the job: there is no silent plain build. A manual run
 can start with the `pgo` input set to `false` (a plain build, said so in the notes line, and refused by the publish
-job) or `bolt` set to `false`.
+job) or `bolt` set to `true` (BOLT is off by default).
 
 ### aarch64
 
@@ -195,12 +196,49 @@ never the default artefact; start the release workflow manually with `v3_flavour
 (`cargo build`, the Arch recipe) do not set the flags.
 
 Requirements: the toolchain that trains must be the toolchain that builds. The profile is keyed by symbol names, and
-rustc hashes its own version and the unit configuration into every symbol, so the job installs the pinned Rust 1.97.1
+rustc hashes its own version and the unit configuration into every symbol, so the jobs install the pinned Rust 1.97.1
 with the `llvm-tools` component (its `llvm-profdata` reads that compiler's raw format) and nothing else compiles
-between training and the final build. The profile is generated in the job and never committed or archived: the source
-archive, its checksum and `scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from
-source without a profile. Each leg takes about an hour on a hosted runner (training build, 24 lanes, profile build,
-BOLT counted replay and the workspace tests).
+between training and the final build. The profile is a cache entry, never committed: the source archive, its checksum and
+`scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from source without a profile.
+
+### The profile: reuse, cache keys, refresh and retrain triggers
+
+Training is not repeated per release. The profile of an architecture and flavour (`unwind` and `abort` have their own,
+unwinding changes the control-flow hashes; `aarch64` has its own) is a pure function of its inputs, so
+`release-binary.yml` asks `release-profile.yml` for it and only the missing ones are trained:
+
+1. `scripts/package/main.sh profile key ARCH FLAVOUR` prints the key, `pgo-ARCH-FLAVOUR-HASH`. HASH is the first 16 hex
+   digits of a SHA-256 over the pinned toolchain (`rust_toolchain` of `scripts/package/families.sh`), the target, the cargo
+   profile, the lane mix and scale, and the git blob ids of `Cargo.toml`, `Cargo.lock`, `crates/`, `vendor/`,
+   `benchmarks/scripts/pgo.sh` and `benchmarks/r2-data-path/`, leaving out `tests/`, `benches/` and `*.md` files.
+2. The `lookup` job restores `profile/oxiroute.profdata` from `actions/cache` under that key. On a hit nothing else runs: no
+   instrumented build, no lanes. On a miss the `train` job runs `scripts/package/main.sh profile train` (the instrumented build,
+   the 24 lanes and the merge in the glibc-floor container, `STAGE=train`) and saves the cache entry.
+3. The binary job restores the same key with `fail-on-cache-miss: true`, mounts the file into the build container
+   (`PGO_PROFILE_HOST`, `PGO_PROFILE_GIVEN=1`) and goes straight to the profile-use build. The existing gate
+   (`PGO_MAX_MISSING_PCT`, 5%) decides whether the profile still matches the code: a mismatch exits with status 3 and the
+   message "train it again". It never produces a plain build; the job fails and the profile must be trained again (below).
+
+`.github/workflows/profile-refresh.yml` runs every night (03:17 UTC) and on demand on the default branch for the three
+profiles of a tag (x86_64 unwind and abort, aarch64 unwind). A key that is stored is restored, which renews the entry
+(GitHub evicts a cache entry that nobody restored for seven days), and a key that is new trains once. A tag run restores the
+entries that `main` saved; the entries a tag run saves are visible to that tag only. So a tag whose hot-path sources equal a
+night's state finds all three profiles and skips the instrumented build.
+
+Retrain triggers, all of them part of the key: a change to any crate or vendored source (not its tests, benches or
+documents), `Cargo.lock`, a `Cargo.toml` (the version bump of a release commit included: rustc hashes the package metadata
+into every symbol, so the key is conservative), the toolchain pin, `benchmarks/scripts/pgo.sh`, the lane list or the scale,
+anything in `benchmarks/r2-data-path/`, the target and the flavour. Procedure for a release: land the version bump on `main`,
+start `Profile refresh` by hand (about half an hour of waiting when the key is new), then tag. A tag created before that still
+works, it trains inside its own run first (the instrumented build, about half an hour on a hosted runner, is the larger half of a cold leg).
+To force a retrain, delete the entry (`gh cache delete KEY`, the key is in the job summary of the `lookup` job) and run `Profile
+refresh`. A gate failure (status 3) with an unchanged key means an input is missing from the key: fix `key_inputs` in
+`benchmarks/scripts/pgo.sh`, do not raise `PGO_MAX_MISSING_PCT`.
+
+Local: `PGO_PROFILE_GIVEN=1 PGO_PROFILE=/path/to/oxiroute.profdata scripts/build-release-binaries.sh VERSION OUT` builds with a
+profile you trained earlier (`STAGE=train` leaves `OUT/oxiroute.profdata`); `benchmarks/scripts/test-pgo.sh` tests the key, the
+gate and the skip. Every stage of the scripts prints `stage-time NAME SECONDS` (`STAGE_TIMES=FILE` appends them, the jobs
+publish them as a table in the step summary).
 
 To regenerate locally with the same compiler:
 
@@ -374,32 +412,63 @@ gh attestation verify oxiroute_V_amd64.deb --repo brauliobo/oxiroute
 
 The release is one compile per architecture, not one per package: a build of every family on both architectures would
 compile the same code six times, and a package is the binary plus metadata, so the six packages and the tarball of an
-architecture share one binary. What is measured and what is estimated:
+architecture share one binary. Every stage of the build prints `stage-time NAME SECONDS` and the jobs publish them in the
+step summary. Measured on this repository with 8 CPUs of a workstation (`taskset`, `-j3`, cold target directories, Rust 1.100,
+the harness on other CPUs); a hosted 4-vCPU runner is taken as 2 times slower, which is an extrapolation, not a measurement:
 
-| Step | Basis | Time |
-| --- | --- | --- |
-| Plain release compile of the workspace, in a container, 8 shared CPUs | Measured locally | about 10 minutes |
-| Assemble one package from the tarball | Measured locally | under 1 minute (about 25 seconds for the `.deb`) |
-| Install, check, upgrade, remove and purge in one fresh container | Measured locally, dominated by the distribution downloads | 3 to 4 minutes |
-| Profile-guided binary (instrumented build, 24 training lanes, profile-use build) on a 4-vCPU runner | Estimate: two full compiles and the training | 40 to 60 minutes |
-| BOLT layout on the runner | Estimate: counted replay and rewrite | 10 to 20 minutes |
-| Workspace tests against the shipped binary (`binary-tests`) | Estimate: a test build of the workspace and its run | 30 to 60 minutes, parallel with the packages |
+| Stage | Before, local s | Before, hosted est. | After |
+| --- | ---: | ---: | --- |
+| Instrumented build (dependencies and fat-LTO link) | 792 | 26 min | 0 on a profile hit (a miss trains once, nightly) |
+| Load tool build | 70 | 2.3 min | beside the profile-use build, off the path |
+| 24 training lanes + merge | 16 | 0.5 min | 0 on a hit |
+| Profile-use build (fat LTO, `codegen-units=1`) | 548 | 18 min | unchanged, now the longest stage |
+| of which dependencies, up to the first workspace crate | 196 | 6.5 min | unchanged (see below) |
+| of which final `oxiroute` fat-LTO codegen, one thread | 237 | 8 min | unchanged |
+| BOLT: instrument 37, replay 10 lanes 8, rewrite 8, guards 0 | 54 | 2 min (+ Rust, pnpm, rust-cache, tool build on the host: 3 to 4 min) | opt-in; host setup reduced to Rust, the tool travels in `stage/` |
+| Workspace tests against the binary: test build, cold (shared with a build) | 1054 | 35 min, cached dependencies cut it | unchanged, in parallel with the packages, required by `publish` |
+| Workspace tests: run | 471 | 16 min | unchanged, same job |
+| Dry run build (`PGO=0`): fat LTO is unmeasured, no LTO with 16 codegen units | 317 | 10.5 min cold | dependencies cached, no LTO |
+| `selftest` of the package scripts | not measured | about 2 min | its own job, off the path |
 
-Critical path of a tag, expected: `changes` (about 2 minutes, the selftest runs first) then `binary-x86_64` (the PGO build and
-the BOLT layout, 50 to 80 minutes) then `packages-x86_64` (about 2 minutes to assemble, about 5 for the slowest image,
-all images in parallel) then `publish` (a few minutes). `binary-aarch64` and its packages run beside it and finish earlier
-(no BOLT); `binary-extras` is one more binary build of the same length on its own runner and `binary-tests` the longest tail.
-So the packages add about 8 minutes to the time of the tarballs; they do not multiply it. A dry run (`PGO=0 BOLT=0`) is
-one plain compile (10 to 20 minutes on a cold cache, a few minutes when the dependency objects are cached) plus the same
-8 minutes.
+Quality, instructions per request (the harness, `h1_b1k`, `tls_h1_keepalive`, `h2_b1k_c4s16`, `f_fixed`, 3 repetitions):
+
+| Variant | Build | h1_b1k | tls_h1_keepalive | h2_b1k_c4s16 | f_fixed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PGO, fat LTO, 1 codegen unit (shipped) | 548 s | 11498 | 26079 | 28667 | 6507 |
+| the same with `-Wl,-q` (the BOLT build) | 598 s | 11540 | 26104 | 28759 | 6512 |
+| BOLT-rewritten | + 54 s | 11512 | 26063 | 28748 | 6476 |
+| PGO, thin LTO, 16 codegen units, trained with the same configuration | 363 s (instrumented 403 s) | 11929 (+3.7%) | 26615 (+2.1%) | 29113 (+1.6%) | 6517 (+0.2%) |
+
+Decisions from these numbers: the reusable profile removes the instrumented build, the lanes and the tool build
+(about 29 minutes on a hosted runner, the larger half of a leg). Thin LTO saves 235 s but costs up to 3.7% instructions per
+request on the data path, more than the 1% allowed, so the release stays on fat LTO with one codegen unit; a thin-LTO profile
+does not match a fat-LTO build at all (150% of the functions unmatched), the gate catches it. BOLT changes the instruction
+count by 0.2% (cycles per request moved between -9% and +8% under load and are inconclusive), below the 2% that pays for its
+minutes, so a tag does not run it unless the repository variable `RELEASE_BOLT` is `1` or the manual run asks for it. Training
+is not a cost worth parallelising: all 24 lanes replay in about 16 seconds, so the lane matrix of the first idea was not built; the cost
+was the instrumented build, and that is what the cache removes. The `unwind` and `abort` flavours and the `aarch64` binary
+already run in parallel jobs, each with its own profile (the symbol sets of `unwind` and `abort` differ in their control-flow
+hashes, so they are not shared). The gate also refused a thin-LTO profile on a fat build, which is the proof that sharing
+across configurations cannot happen silently.
+
+Critical path of a tag with the profiles in the cache, estimated on hosted runners: `changes` 1 minute, `lookup` 1, the binary job
+(container setup 3, profile-use build 18, checks and smoke 1, tarball and upload 1) 23, `packages-x86_64` 8, `publish` 2:
+about 35 minutes, against more than an hour for the binary leg alone before (the documented one hour per leg, then the packages and `publish`). A miss adds 26 minutes
+once. The target of 25 minutes is not reached: the profile-use build (18 minutes, 12 of them in the one-threaded fat-LTO
+codegen and the dependencies) is the floor of a fat-LTO release. What would cut it is a configuration that needs its own
+measurement: cached dependency objects keyed by the profile (the C builds of OpenSSL, jemalloc and aws-lc are 257 CPU seconds locally and
+do not depend on the profile, `ccache` would serve them), not done here. A dry run (`PGO=0 BOLT=0`) now links without LTO
+and with 16 codegen units; with the cached dependency objects it is about 6 minutes of build plus the same 8 minutes of packages.
 
 Caching: the toolchain and the cargo registry of the build container are cached with `actions/cache` keyed by `Cargo.lock`
-(one entry per architecture), and so are the dependency objects of a plain dry-run build (`.package-cache/plain-work`).
-A profile-guided build never reuses objects: with `-Cprofile-use` each object is a function of the profile, and an object
-cache that did not see the profile (`sccache` hashes the command line, not the profile data) could return code compiled
-against another profile, so the PGO builds compile everything. `Swatinem/rust-cache` serves the cargo builds that run on the
-runner itself (the BOLT tools and the workspace tests) and writes its entry on `main` only. Per-job timeouts bound a
-stuck runner: 10 minutes for `changes`, 20 for assembling a package, 30 for one image, 120 for a binary or the tests.
+(one entry per architecture), and so are the dependency objects of a plain dry-run build (`.package-cache/plain-work`). The
+profiles are cache entries too (above). A profile-guided build never reuses objects of another profile: with `-Cprofile-use`
+each object is a function of the profile, and an object cache that did not see the profile (`sccache` hashes the command
+line, not the profile data) could return code compiled against another profile, so the PGO builds compile everything.
+`Swatinem/rust-cache` serves the cargo builds that run on the runner itself (the BOLT tools and the workspace tests) and writes its
+entry on `main` only. `CARGO_INCREMENTAL=0` is set in every release job. The instrumented build cannot reuse the objects of the
+profile-use build: its `RUSTFLAGS` differ (`-Cprofile-generate`), which cargo fingerprints. Per-job timeouts bound a stuck
+runner: 10 minutes for `changes` and `lookup`, 20 for assembling a package, 30 for one image, 90 for training, 120 for a binary or the tests.
 
 ### Test matrix
 
@@ -442,7 +511,8 @@ files are the installed layout of the Debian and RPM packages too ([Release Asse
 `.github/workflows/release.yml` runs on version tags, verifies Rust 1.97.1 metadata, version alignment,
 the deterministic archive, the Arch checksum, and a source provenance manifest, and calls the reusable workflows
 `release-binary.yml` (one binary of an architecture and flavour) and `release-packages.yml` (the packages of one
-architecture); every action in them is pinned by commit SHA. The tag workflow does not run a full
+architecture); the binary workflow calls `release-profile.yml` (the cached PGO profile of an architecture and flavour), which
+`profile-refresh.yml` also runs every night; every action in them is pinned by commit SHA. The tag workflow does not run a full
 fuzz campaign. It publishes GitHub release assets only for a tag push; a manual run verifies a supplied tag or ref without
 publishing, unless `publish` is set: then the archive job first checks that the rebuilt archive and
 `SOURCE-PROVENANCE.json` are byte-identical to the assets already on the release of that tag (it never uploads them
