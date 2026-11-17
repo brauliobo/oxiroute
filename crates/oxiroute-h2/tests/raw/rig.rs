@@ -77,7 +77,7 @@ async fn serve(
                         tokio::spawn(async move {
                             let (status, headers) = response(200, &[]);
                             stream.send_response(status, headers, false).unwrap();
-                            let body: Vec<u8> = (0..n).map(|i| i as u8).collect();
+                            let body: Vec<u8> = (0..=u8::MAX).cycle().take(n).collect();
                             write_body(&mut stream, Bytes::from(body), true).await.unwrap();
                         });
                     }
