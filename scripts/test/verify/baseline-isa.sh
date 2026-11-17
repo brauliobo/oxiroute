@@ -136,6 +136,12 @@ if command -v "${qemu}" >/dev/null; then
   rejects 'qemu CPU Nehalem.*132|SIGILL' --run "${root}/sigill"
   ISA_QEMU_CPUS=NoSuchCpu rejects 'does not list the CPU NoSuchCpu' --run "${root}/clean"
   ok '--run passes on qemu CPUs without AVX and fails on SIGILL'
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ $1 == -cpu && $2 == help ]] && { printf "x86 Nehalem  (alias)\nx86 Denverton  (alias)\n" >&2; exit 1; }' \
+    "exec ${qemu} \"\$@\"" > "${root}/qemu-prefixed"
+  chmod +x "${root}/qemu-prefixed"
+  QEMU_X86_64=${root}/qemu-prefixed accepts --run "${root}/clean"
+  ok 'a qemu that prefixes its CPU names with the architecture is understood'
 else
   printf 'SKIP: %s is not installed, the qemu cases did not run\n' "${qemu}"
 fi

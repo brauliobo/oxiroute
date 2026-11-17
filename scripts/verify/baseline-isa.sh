@@ -276,7 +276,7 @@ run_check_emulated() {
   fi
   known=$("${qemu}" -cpu help 2>&1) || true # the CPU list goes to stderr and the exit status is 1
   for cpu in "${cpus[@]}"; do
-    grep -Eq "^ +${cpu}( |$)" <<<"${known}" || fail "${qemu} does not list the CPU ${cpu} (ISA_QEMU_CPUS)"
+    grep -Eq "^ *(x86 +)?${cpu}( |$)" <<<"${known}" || fail "${qemu} does not list the CPU ${cpu} (ISA_QEMU_CPUS)"
   done
   err=$("${qemu}" -cpu max "${bin}" version 2>&1 > /dev/null) ||
     fail "'version' fails even on the richest qemu CPU (max): a loader, library or sysroot problem (QEMU_LD_PREFIX)," \
