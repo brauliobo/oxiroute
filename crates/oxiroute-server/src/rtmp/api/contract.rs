@@ -41,7 +41,7 @@ pub(super) fn generated_openapi() -> Value {
         "openapi": "3.1.0",
         "info": {
             "title": "OxiRoute Control Plane API",
-            "version": "6.5.2",
+            "version": "7.0.0",
             "description": "Checked contract for the registry-owned protected read-only management endpoints."
         },
         "paths": paths,

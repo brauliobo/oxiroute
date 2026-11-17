@@ -88,7 +88,7 @@ fuzz, browser, dependency, and release gates; a focused test is not a substitute
 - [API/UI](../API_UI_SPEC.md) and [CLI](../reference/CLI.md): external behavior and revisions.
 - [Operations](../OPERATIONS.md): activation, readiness, reload, drain, and shutdown.
 - [Import](../IMPORT_SPEC.md) and [RTMP](../RTMP_SPEC.md): feature-specific contracts.
-- [Benchmarks](../BENCHMARKS.md): historical measurements, scope, and reproducibility.
+- [Benchmarks](../BENCHMARKS.md): 7.0 measurements, scope, and reproducibility.
 - [Documentation maintenance](DOCUMENTATION.md): audience, language, evidence, and source ownership.
 - [Releasing](RELEASING.md): release artifacts and maintainer checks.
 - [Shared TLS context](TLS_CLIENT_CONTEXT.md): outbound trust ownership and reload cost.
