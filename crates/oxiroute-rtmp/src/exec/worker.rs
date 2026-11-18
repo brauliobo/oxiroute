@@ -55,6 +55,7 @@ pub enum ExecWorkerPhase {
 pub enum ExecWorkerFailure {
     SpawnFailed,
     NetworkIsolationUnavailable,
+    PrivilegeConfinementUnavailable,
     FilesystemPolicyUnavailable,
     InputWriteFailed,
     OutputLimit,
@@ -392,6 +393,14 @@ fn run_worker(
     receiver: &Receiver<WorkerCommand>,
     lease: ExecProcessLease,
 ) {
+    if !forbid_privilege_gain() {
+        update_state(inner, |status| {
+            status.phase = ExecWorkerPhase::Failed;
+            status.failure = Some(ExecWorkerFailure::PrivilegeConfinementUnavailable);
+        });
+        drop(lease);
+        return;
+    }
     if profile.network() == ExecNetworkPolicy::Disabled && !isolate_network_namespace() {
         update_state(inner, |status| {
             status.phase = ExecWorkerPhase::Failed;
@@ -794,6 +803,17 @@ const fn media_event_kind(kind: MediaEventKind) -> u8 {
         MediaEventKind::VideoInterframe => 7,
         MediaEventKind::VideoDisposable => 8,
         MediaEventKind::VideoMetadata => 9,
+    }
+}
+
+fn forbid_privilege_gain() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        rustix::thread::set_no_new_privs(true).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
     }
 }
 

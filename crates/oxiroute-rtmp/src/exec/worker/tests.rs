@@ -238,3 +238,21 @@ fn output_limit_is_reported_even_when_the_child_exits_immediately() {
     assert!(status.output_truncated);
     assert_eq!(status.stdout_bytes, 4);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_children_cannot_gain_privileges() {
+    let profile = command_profile(
+        "/bin/grep",
+        [
+            "-E".into(),
+            "^NoNewPrivs:[[:space:]]+1$".into(),
+            "/proc/self/status".into(),
+        ],
+        limits(1, 64 * 1024),
+    );
+    let profiles = ExecProfileSet::new([profile]).expect("profile set");
+    let workers = profiles.start_publisher("service", &key(), SessionId::new());
+    let status = wait_for(&workers[0], |status| status.stdout_bytes > 0);
+    assert_eq!(status.stdout_bytes, "NoNewPrivs:\t1\n".len());
+}

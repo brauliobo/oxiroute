@@ -1,7 +1,7 @@
 # RTMP Guide
 
 OxiRoute's current RTMP slice is a bounded live publish/play service with runtime visibility,
-legacy AVC/AAC FLV recording, HLS/DASH output, bounded VOD, same-daemon auto-push, and isolated exec
+legacy AVC/AAC FLV recording, HLS/DASH output, bounded VOD, same-daemon auto-push, and exec
 profiles. It is not complete nginx-rtmp compatibility.
 
 ## Configure A Live Application
@@ -348,8 +348,10 @@ chunked upstream responses are rejected.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder
   administration and cross-process quota coordination are not.
 - Same-daemon auto-push is available only through authenticated owner-only Unix workers; it does not
-  create an arbitrary RTMP endpoint or forward peer media recursively. Isolated command/transcode
-  profiles are bounded and allowlisted; broader nginx exec directive parity is not.
+  create an arbitrary RTMP endpoint or forward peer media recursively. Command/transcode
+  profiles are bounded, allowlisted, cannot gain privileges and, by default, have no network;
+  they are not sandboxed from the filesystem and have no memory or CPU limits, so confine the
+  daemon itself. Broader nginx exec directive parity is not available.
 - DASH output is available for validated AVC/AAC publishers. It writes bounded fragmented MP4
   segments and an MPD under the configured media quota; malformed or unsupported codec forms fail
   closed with no MPEG-TS masquerading as DASH. Native nginx-DASH lowering, richer callback fields,

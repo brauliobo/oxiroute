@@ -183,8 +183,13 @@ Substitutions use `$name` or `${name}`. Common names are `app`, `flashver`, `swf
 `basename`, `dirname`, `recorder`. Redirections accepted by the reference include
 `[fd]>/path`, `[fd]>>/path`, `[fd]</path`, `[fd]>&source_fd`, `[fd]<&source_fd`.
 
-OxiRoute MUST run allowed commands through an isolated no-shell worker with executable
-allowlists and resource limits. It does not reproduce reference pointer/filter defects.
+OxiRoute MUST run allowed commands through a no-shell worker with executable allowlists and
+bounded queue, output, timeout, respawn and process-count limits. The child cannot gain privileges
+(`no_new_privs` is set before it starts; the worker fails with `PrivilegeConfinementUnavailable`
+if the kernel refuses it) and, with `network = "disabled"`, runs in its own network namespace.
+There is no filesystem confinement, seccomp, user switch or per-child memory/CPU limit: the child
+can read and write whatever the daemon user can, so deploy the daemon under a service manager that
+confines it. It does not reproduce reference pointer/filter defects.
 
 Canonical `rtmp_services[].exec_profiles` entries use one exact executable path, typed argv and
 environment entries, an explicit working directory, and bounded process, queue, output, timeout,
