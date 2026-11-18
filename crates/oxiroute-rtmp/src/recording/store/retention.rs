@@ -25,6 +25,14 @@ pub(super) struct FinishedRecording {
     pub(super) name: String,
     pub(super) bytes: u64,
     pub(super) modified: (i128, i128),
+    publication: u64,
+}
+
+impl StoreState {
+    pub(super) fn record_publication(&mut self, name: &str) {
+        self.publications += 1;
+        self.published.insert(name.to_owned(), self.publications);
+    }
 }
 
 impl StoreShared {
@@ -41,7 +49,7 @@ impl StoreShared {
 
     pub(super) fn finished_recordings(
         &self,
-        state: &StoreState,
+        state: &mut StoreState,
     ) -> Result<Vec<FinishedRecording>, RecordingStoreError> {
         let mut directory = Dir::read_from(&self.root)
             .map_err(|source| RecordingStoreError::RootRead(source.into()))?;
@@ -68,11 +76,24 @@ impl StoreShared {
                         i128::from(metadata.st_mtime),
                         i128::from(metadata.st_mtime_nsec),
                     ),
+                    publication: state.published.get(text).copied().unwrap_or(0),
                 });
             }
         }
-        finished
-            .sort_by(|left, right| (left.modified, &left.name).cmp(&(right.modified, &right.name)));
+        let present: HashSet<&str> = finished
+            .iter()
+            .map(|recording| recording.name.as_str())
+            .collect();
+        state
+            .published
+            .retain(|name, _| present.contains(name.as_str()));
+        finished.sort_by(|left, right| {
+            (left.modified, left.publication, &left.name).cmp(&(
+                right.modified,
+                right.publication,
+                &right.name,
+            ))
+        });
         Ok(finished)
     }
 
@@ -86,16 +107,18 @@ impl StoreShared {
     pub(super) fn delete_finished(
         &self,
         state: &mut StoreState,
-        recording: &FinishedRecording,
+        name: &str,
+        bytes: u64,
     ) -> Result<(), RecordingStoreError> {
-        match rustix_fs::unlinkat(&self.root, recording.name.as_str(), AtFlags::empty()) {
+        match rustix_fs::unlinkat(&self.root, name, AtFlags::empty()) {
             Ok(()) => {}
             Err(Errno::NOENT) => return Ok(()),
             Err(source) => return Err(RecordingStoreError::RecordingDelete(source.into())),
         }
-        let _ = rustix_fs::unlinkat(&self.root, sidecar_name(&recording.name), AtFlags::empty());
+        let _ = rustix_fs::unlinkat(&self.root, sidecar_name(name), AtFlags::empty());
+        state.published.remove(name);
         state.files = state.files.saturating_sub(1);
-        state.bytes_used = state.bytes_used.saturating_sub(recording.bytes);
+        state.bytes_used = state.bytes_used.saturating_sub(bytes);
         Ok(())
     }
 
@@ -104,7 +127,7 @@ impl StoreShared {
         state: &mut StoreState,
         recording: &FinishedRecording,
     ) -> Result<(), RecordingStoreError> {
-        self.delete_finished(state, recording)?;
+        self.delete_finished(state, &recording.name, recording.bytes)?;
         state.evicted_files += 1;
         state.evicted_bytes = state.evicted_bytes.saturating_add(recording.bytes);
         Ok(())

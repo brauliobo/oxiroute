@@ -37,6 +37,8 @@ pub(super) struct StoreState {
     pub(super) files: usize,
     pub(super) active_recorders: usize,
     pub(super) active: HashSet<String>,
+    pub(super) published: HashMap<String, u64>,
+    pub(super) publications: u64,
     pub(super) evicted_files: u64,
     pub(super) evicted_bytes: u64,
     incarnations: HashMap<u64, IncarnationState>,

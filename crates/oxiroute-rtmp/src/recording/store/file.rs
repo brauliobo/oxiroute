@@ -162,6 +162,7 @@ impl RecordingFile {
         self.partial_exists = false;
         self.partial_exists_state.store(false, Ordering::Release);
         self.file_accounted = false;
+        self.shared.lock().record_publication(&relative_name);
         let recording = RecordingCommit {
             relative_name,
             bytes: self.length,

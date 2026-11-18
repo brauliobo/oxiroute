@@ -357,6 +357,67 @@ fn third_unresolved_rotation_fails_explicitly_and_preserves_the_current_segment(
 }
 
 #[test]
+fn delete_oldest_waits_for_in_flight_finalizations_instead_of_failing_the_file_quota() {
+    let root = tempdir().expect("recording root");
+    let store = RecordingStore::open(
+        root.path(),
+        RecordingStoreLimits {
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(2),
+            max_active_recorders: 1,
+            retention: crate::RecordingRetention {
+                delete_oldest: true,
+                max_age: None,
+            },
+        },
+    )
+    .expect("recording store");
+    let worker = RecorderWorker::start(
+        store.clone(),
+        &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+        b"camera",
+        1_721_619_000,
+        RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+        RecorderWorkerConfig {
+            max_queue_messages: 8,
+            max_queue_bytes: 1024,
+            max_frames: Some(1),
+            shutdown_timeout: Duration::from_secs(1),
+            video_codec: None,
+            ..RecorderWorkerConfig::default()
+        },
+    )
+    .expect("recorder worker");
+    enqueue(
+        &worker,
+        MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\0\x12"[..])).unwrap(),
+    );
+    enqueue_audio_burst(&worker, 0, 1);
+    wait_until(|| worker.status().events_processed == 2);
+    let gate = worker.install_publication_gate();
+
+    enqueue_audio_burst(&worker, 1, 1);
+    assert!(gate.wait_before_claim(Duration::from_secs(1)));
+    wait_until(|| worker.status().segments_started == 2);
+    enqueue_audio_burst(&worker, 2, 1);
+    wait_until(|| worker.status().queue_messages == 0);
+    gate.allow_claim();
+    assert!(gate.wait_after_claim(Duration::from_secs(1)));
+    gate.allow_publication();
+    wait_until(|| worker.status().events_processed == 4);
+    let status = match worker.shutdown() {
+        RecorderShutdown::Joined(status) => status,
+        RecorderShutdown::TimedOut(supervisor) => {
+            panic!("recorder shutdown timed out: {:?}", supervisor.status())
+        }
+    };
+    assert_eq!(status.phase, RecorderWorkerPhase::Stopped);
+    assert_eq!(status.segments_started, 3);
+    assert_eq!(status.segments_completed, 3);
+    assert_eq!(store.evictions().files, 1);
+}
+
+#[test]
 fn record_mask_filters_events_before_the_worker_queue() {
     let root = tempdir().expect("recording root");
     let store = RecordingStore::open(

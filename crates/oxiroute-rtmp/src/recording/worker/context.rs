@@ -263,14 +263,8 @@ impl WorkerContext {
                     self.next_segment_sequence,
                 )
                 .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
-            let segment = Segment::open(
-                &self.store,
-                &requested_name,
-                &headers,
-                Arc::clone(&self.shared.bytes_written),
-                &self.shared,
-                self.segment_identity(arrived_at_unix_seconds),
-            )?;
+            let segment =
+                self.open_new_segment(&requested_name, &headers, arrived_at_unix_seconds)?;
             let segment_name = segment.partial_relative_name.clone();
             (
                 segment_name,
@@ -313,6 +307,36 @@ impl WorkerContext {
             status.segments_started = status.segments_started.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn open_new_segment(
+        &mut self,
+        requested_name: &str,
+        headers: &[MediaEvent],
+        started_at_unix_seconds: u64,
+    ) -> Result<Segment, WorkerError> {
+        loop {
+            let opened = Segment::open(
+                &self.store,
+                requested_name,
+                headers,
+                Arc::clone(&self.shared.bytes_written),
+                &self.shared,
+                self.segment_identity(started_at_unix_seconds),
+            );
+            match opened {
+                Err(error)
+                    if error.kind == RecorderFailure::QuotaFiles && self.reclaims_finished() =>
+                {
+                    self.complete_pending_finalization(true)?;
+                }
+                opened => return opened,
+            }
+        }
+    }
+
+    fn reclaims_finished(&self) -> bool {
+        self.store.limits().retention.delete_oldest && !self.pending_finalizations.is_empty()
     }
 
     fn segment_identity(&self, started_at_unix_seconds: u64) -> SegmentIdentity {

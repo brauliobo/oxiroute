@@ -333,14 +333,7 @@ impl RecordingStore {
         let metadata = rustix_fs::statat(&shared.root, name, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|source| RecordingStoreError::RecordingDelete(source.into()))?;
         let bytes = u64::try_from(metadata.st_size).unwrap_or(0);
-        shared.delete_finished(
-            &mut state,
-            &FinishedRecording {
-                name: name.to_owned(),
-                bytes,
-                modified: (0, 0),
-            },
-        )?;
+        shared.delete_finished(&mut state, name, bytes)?;
         Ok(bytes)
     }
 }

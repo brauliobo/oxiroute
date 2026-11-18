@@ -43,7 +43,7 @@ use fsutil::*;
 pub use inventory::*;
 pub use limits::*;
 pub use registry::*;
-use retention::{ActiveReservation, FinishedRecording, is_hidden_name, is_sidecar, sidecar_name};
+use retention::{ActiveReservation, is_hidden_name, is_sidecar, sidecar_name};
 pub use root::*;
 
 mod flv;

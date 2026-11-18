@@ -30,6 +30,15 @@ fn record(store: &RecordingStore, name: &str, bytes: usize) -> Result<(), Record
     file.commit().map(|_| ())
 }
 
+fn stamp(root: &Path, name: &str, at: SystemTime) {
+    File::options()
+        .write(true)
+        .open(root.join(name))
+        .expect("recording")
+        .set_modified(at)
+        .expect("modification time");
+}
+
 fn age(root: &Path, name: &str, seconds_ago: u64) {
     File::options()
         .write(true)
@@ -75,6 +84,50 @@ fn delete_oldest_keeps_the_newest_files_within_the_file_quota() {
     assert!(root.path().join("c.flv").exists());
     assert_eq!(store.evictions(), RecordingEvictions { files: 1, bytes: 8 });
     assert_eq!(store.stats().files, 2);
+}
+
+#[test]
+fn delete_oldest_evicts_in_publication_order_when_modification_times_are_equal() {
+    let root = tempdir().expect("root");
+    let store = RecordingStore::open(root.path(), limits(3, 4096, delete_oldest())).expect("store");
+    let names = ["m.flv", "z.flv", "a.flv"];
+    for name in names {
+        record(&store, name, 8).expect("recording");
+    }
+    let tick = SystemTime::now() - Duration::from_mins(1);
+    for name in names {
+        stamp(root.path(), name, tick);
+    }
+
+    record(&store, "d.flv", 8).expect("d evicts the first published");
+    assert!(!root.path().join("m.flv").exists());
+    assert!(root.path().join("z.flv").exists());
+    assert!(root.path().join("a.flv").exists());
+
+    stamp(root.path(), "z.flv", tick);
+    stamp(root.path(), "a.flv", tick);
+    stamp(root.path(), "d.flv", tick);
+    record(&store, "e.flv", 8).expect("e evicts the next published");
+    assert!(!root.path().join("z.flv").exists());
+    assert!(root.path().join("a.flv").exists());
+    assert!(root.path().join("d.flv").exists());
+    assert_eq!(store.evictions().files, 2);
+}
+
+#[test]
+fn delete_oldest_orders_recordings_without_a_publication_by_name_at_equal_modification_times() {
+    let root = tempdir().expect("root");
+    let tick = SystemTime::now() - Duration::from_mins(1);
+    for name in ["b.flv", "a.flv"] {
+        fs::write(root.path().join(name), [7; 8]).expect("existing recording");
+        stamp(root.path(), name, tick);
+    }
+    let store = RecordingStore::open(root.path(), limits(2, 4096, delete_oldest())).expect("store");
+
+    record(&store, "c.flv", 8).expect("c evicts the first by name");
+
+    assert!(!root.path().join("a.flv").exists());
+    assert!(root.path().join("b.flv").exists());
 }
 
 #[test]
