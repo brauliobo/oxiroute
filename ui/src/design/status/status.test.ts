@@ -3,8 +3,8 @@ import { ICON_PATHS } from '../badge/tone'
 import { mount } from '../../test/mount'
 import StatusBadge from './StatusBadge.vue'
 import {
-  FEED_STATUSES, GENERATION_STATUSES, LISTENER_STATUSES, POOL_STATUSES, SERVER_STATUSES, poolStatusOf, serverStatusOf,
-  statusLabel, statusOfRuntimeState, toneOf,
+  FEED_STATUSES, GENERATION_STATUSES, LISTENER_STATUSES, POOL_STATUSES, SERVER_STATUSES, STREAM_STATUSES, poolStatusOf,
+  serverStatusOf, statusLabel, statusOfRuntimeState, toneOf,
 } from './status'
 import type { RuntimeState, ServerHealth } from './status'
 
@@ -33,8 +33,16 @@ describe('status words', () => {
     expect(FEED_STATUSES.map(toneOf)).toEqual(['neutral', 'ok', 'info', 'warn', 'warn', 'bad'])
   })
 
+  it('names every stream state', () => {
+    expect(STREAM_STATUSES.map(statusLabel)).toEqual(['LIVE', 'DEGRADED', 'OFFLINE', 'IDLE'])
+    expect(STREAM_STATUSES.map(toneOf)).toEqual(['ok', 'warn', 'neutral', 'info'])
+  })
+
   it('never gives two different states the same word', () => {
-    const all = [...SERVER_STATUSES, ...POOL_STATUSES, ...LISTENER_STATUSES, ...GENERATION_STATUSES, ...FEED_STATUSES]
+    const all = [
+      ...SERVER_STATUSES, ...POOL_STATUSES, ...LISTENER_STATUSES, ...GENERATION_STATUSES, ...FEED_STATUSES,
+      ...STREAM_STATUSES,
+    ]
     const words = new Set(all.map(statusLabel))
     expect(words.size).toBe(new Set(all).size)
   })

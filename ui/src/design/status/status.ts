@@ -5,13 +5,15 @@ export const POOL_STATUSES = ['up', 'degraded', 'down', 'empty'] as const
 export const LISTENER_STATUSES = ['configured', 'listening', 'stopped', 'failed'] as const
 export const GENERATION_STATUSES = ['active', 'starting', 'degraded'] as const
 export const FEED_STATUSES = ['loading', 'live', 'paused', 'stale', 'retrying', 'unavailable'] as const
+export const STREAM_STATUSES = ['streaming', 'degraded', 'offline', 'idle'] as const
 
 export type ServerStatus = (typeof SERVER_STATUSES)[number]
 export type PoolStatus = (typeof POOL_STATUSES)[number]
 export type ListenerStatus = (typeof LISTENER_STATUSES)[number]
 export type GenerationStatus = (typeof GENERATION_STATUSES)[number]
 export type FeedStatus = (typeof FEED_STATUSES)[number]
-export type Status = ServerStatus | PoolStatus | ListenerStatus | GenerationStatus | FeedStatus
+export type StreamStatus = (typeof STREAM_STATUSES)[number]
+export type Status = ServerStatus | PoolStatus | ListenerStatus | GenerationStatus | FeedStatus | StreamStatus
 
 interface Word {
   label: string
@@ -40,6 +42,9 @@ const WORDS: Readonly<Record<Status, Word>> = {
   stale: { label: 'Stale', tone: 'warn' },
   retrying: { label: 'Retrying', tone: 'warn' },
   unavailable: { label: 'Unavailable', tone: 'bad' },
+  streaming: { label: 'LIVE', tone: 'ok' },
+  offline: { label: 'OFFLINE', tone: 'neutral' },
+  idle: { label: 'IDLE', tone: 'info' },
 }
 
 export const statusLabel = (status: Status): string => WORDS[status].label

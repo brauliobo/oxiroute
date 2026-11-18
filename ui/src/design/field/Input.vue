@@ -1,7 +1,7 @@
 <script setup vapor lang="ts">
 import './styles.css'
 
-withDefaults(defineProps<{ modelValue: string; type?: 'text' | 'search' | 'password' | 'number' }>(), { type: 'text' })
+withDefaults(defineProps<{ modelValue: string; type?: 'text' | 'search' | 'password' | 'number' | 'date' }>(), { type: 'text' })
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const onInput = (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value)

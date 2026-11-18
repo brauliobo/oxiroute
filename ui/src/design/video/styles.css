@@ -1,0 +1,10 @@
+@layer ox.primitives {
+  .ox-video {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--ox-radius-sm);
+    background: var(--ox-bg);
+    object-fit: contain;
+  }
+}
