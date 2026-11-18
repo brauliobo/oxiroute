@@ -6,17 +6,26 @@ use std::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use super::{Endpoint, Response};
+use super::{Endpoint, Response, Timeouts};
 use crate::cli::error::CliError;
 
 pub(crate) struct Client {
     pub(super) endpoint: Endpoint,
     pub(super) token: Option<Zeroizing<String>>,
+    timeouts: Timeouts,
 }
 
 impl Client {
-    pub(crate) const fn new(endpoint: Endpoint, token: Option<Zeroizing<String>>) -> Self {
-        Self { endpoint, token }
+    pub(crate) const fn new(
+        endpoint: Endpoint,
+        token: Option<Zeroizing<String>>,
+        timeouts: Timeouts,
+    ) -> Self {
+        Self {
+            endpoint,
+            token,
+            timeouts,
+        }
     }
 
     pub(crate) const fn endpoint(&self) -> &Endpoint {
@@ -134,11 +143,12 @@ impl Client {
             let _ = write!(head, "{name}: {value}\r\n");
         }
         head.push_str("\r\n");
-        let mut stream = self.endpoint.connect()?;
+        let mut stream = self.endpoint.connect(self.timeouts)?;
         stream
             .write_all(head.as_bytes())
             .and_then(|()| stream.write_all(body))
-            .map_err(|error| self.endpoint.transport(CliError::Io(error)))?;
-        Response::read(BufReader::new(stream)).map_err(|error| self.endpoint.transport(error))
+            .map_err(|error| self.endpoint.transport(CliError::Io(error), self.timeouts))?;
+        Response::read(BufReader::new(stream))
+            .map_err(|error| self.endpoint.transport(error, self.timeouts))
     }
 }

@@ -4,10 +4,9 @@ use std::{
     net::{TcpStream, ToSocketAddrs as _},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
-use super::Response;
+use super::{Response, Timeouts, span};
 use crate::cli::error::CliError;
 
 const ENDPOINT_HINT: &str = "the management endpoint is `management { bind }` in the configuration; \
@@ -63,17 +62,22 @@ impl Endpoint {
     }
 
     /// One GET whose answer is returned whatever its status, to an authority the caller names.
-    pub(crate) fn get_unchecked(&self, path: &str, host: &str) -> Result<Response, CliError> {
+    pub(crate) fn get_unchecked(
+        &self,
+        path: &str,
+        host: &str,
+        timeouts: Timeouts,
+    ) -> Result<Response, CliError> {
         if path.contains(['\r', '\n', ' ']) || host.contains(['\r', '\n']) {
             return Err(CliError::Local("request target is invalid".into()));
         }
-        let mut stream = self.connect()?;
+        let mut stream = self.connect(timeouts)?;
         write!(
             stream,
             "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
         )
-        .map_err(|error| self.transport(CliError::Io(error)))?;
-        Response::read(BufReader::new(stream)).map_err(|error| self.transport(error))
+        .map_err(|error| self.transport(CliError::Io(error), timeouts))?;
+        Response::read(BufReader::new(stream)).map_err(|error| self.transport(error, timeouts))
     }
 
     /// Registry sockets authorize by file permission, so no token is read or sent.
@@ -81,9 +85,9 @@ impl Endpoint {
         matches!(self, Self::Unix(_))
     }
 
-    pub(super) fn connect(&self) -> Result<Stream, CliError> {
-        let timeout = Some(Duration::from_secs(10));
-        let configure = |error: io::Error| self.transport(CliError::Io(error));
+    pub(super) fn connect(&self, timeouts: Timeouts) -> Result<Stream, CliError> {
+        let timeout = Some(timeouts.answer());
+        let configure = |error: io::Error| self.transport(CliError::Io(error), timeouts);
         match self {
             Self::Tcp { address, .. } => {
                 let address = address
@@ -95,14 +99,15 @@ impl Endpoint {
                             "cannot resolve {self}: the host does not resolve to an address; {ENDPOINT_HINT}"
                         ))
                     })?;
-                let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-                    .map_err(|error| self.refused(&error))?;
+                let stream = TcpStream::connect_timeout(&address, timeouts.connect())
+                    .map_err(|error| self.refused(&error, timeouts))?;
                 stream.set_read_timeout(timeout).map_err(configure)?;
                 stream.set_write_timeout(timeout).map_err(configure)?;
                 Ok(Stream::Tcp(stream))
             }
             Self::Unix(path) => {
-                let stream = UnixStream::connect(path).map_err(|error| self.refused(&error))?;
+                let stream =
+                    UnixStream::connect(path).map_err(|error| self.refused(&error, timeouts))?;
                 stream.set_read_timeout(timeout).map_err(configure)?;
                 stream.set_write_timeout(timeout).map_err(configure)?;
                 Ok(Stream::Unix(stream))
@@ -110,14 +115,33 @@ impl Endpoint {
         }
     }
 
-    fn refused(&self, error: &io::Error) -> CliError {
+    fn refused(&self, error: &io::Error, timeouts: Timeouts) -> CliError {
+        if error.kind() == io::ErrorKind::TimedOut {
+            return CliError::Timeout(format!(
+                "cannot connect to {self} within {}: the connection attempt timed out; check the address \
+                 and any firewall, or raise the limit with --timeout",
+                span(timeouts.connect())
+            ));
+        }
         CliError::Connect(format!(
             "cannot connect to {self}: {error}; is the daemon running? {ENDPOINT_HINT}"
         ))
     }
 
-    pub(super) fn transport(&self, error: CliError) -> CliError {
+    pub(super) fn transport(&self, error: CliError, timeouts: Timeouts) -> CliError {
         match error {
+            CliError::Io(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                CliError::Timeout(format!(
+                    "{self} did not answer within {}: the daemon may be overloaded or stuck; \
+                     raise the limit with --timeout",
+                    span(timeouts.answer())
+                ))
+            }
             CliError::Io(error) => {
                 CliError::Connect(format!("{self} stopped answering the request: {error}"))
             }

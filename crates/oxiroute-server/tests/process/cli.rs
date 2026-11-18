@@ -33,9 +33,10 @@ use process_support::{ServerProcess, reserve_tcp_address};
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
 struct Daemon {
-    _server: ServerProcess,
+    server: ServerProcess,
     management: SocketAddr,
     token_file: PathBuf,
+    draft: ConfigDraft,
 }
 
 async fn backend() -> SocketAddr {
@@ -109,21 +110,34 @@ fn config(management: SocketAddr, traffic: SocketAddr, backends: [SocketAddr; 2]
 
 impl Daemon {
     async fn start() -> Self {
-        let management = reserve_tcp_address();
+        Self::start_on(reserve_tcp_address()).await
+    }
+
+    async fn start_on(management: SocketAddr) -> Self {
         let traffic = reserve_tcp_address();
         let backends = [backend().await, backend().await];
-        let validated = config(management, traffic, backends)
-            .validate()
-            .expect("valid CLI test config");
+        let draft = config(management, traffic, backends);
+        let validated = draft.clone().validate().expect("valid CLI test config");
         let mut server = ServerProcess::start(&validated, Some(TOKEN));
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(traffic).await;
         let token_file = server.token_path.clone().expect("token file");
         Self {
-            _server: server,
+            server,
             management,
             token_file,
+            draft,
         }
+    }
+
+    fn rewrite_config(&mut self, max_connections: u64) {
+        self.draft.max_connections = Some(max_connections);
+        let validated = self
+            .draft
+            .clone()
+            .validate()
+            .expect("valid CLI test config");
+        process_support::write_config(&self.server.config_path, &validated);
     }
 
     fn endpoint(&self) -> String {
@@ -465,4 +479,157 @@ async fn monitoring_and_config_get_summarise_instead_of_dumping() {
         !config.contains('{') && config.lines().count() < 30,
         "{config}"
     );
+}
+
+#[tokio::test]
+async fn a_daemon_that_never_answers_is_a_timeout_named_after_the_limit() {
+    let daemon = Daemon::start().await;
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("silent listener");
+    let endpoint = format!("http://{}", silent.local_addr().expect("address"));
+    let started = std::time::Instant::now();
+    let output = cli_command()
+        .args(["--endpoint", &endpoint, "--token-file"])
+        .arg(&daemon.token_file)
+        .args(["--timeout", "300ms", "pool", "list"])
+        .output()
+        .expect("oxiroute CLI");
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(message.starts_with("oxiroute: "), "{message}");
+    assert!(message.contains("did not answer within 300ms"), "{message}");
+    assert!(message.contains("--timeout"), "{message}");
+    assert!(!message.contains("stopped answering"), "{message}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn a_refused_connection_is_not_reported_as_a_timeout() {
+    let daemon = Daemon::start().await;
+    let closed = reserve_tcp_address();
+    let output = cli_command()
+        .args(["--endpoint", &format!("http://{closed}"), "--token-file"])
+        .arg(&daemon.token_file)
+        .args(["--timeout", "2s", "pool", "list"])
+        .output()
+        .expect("oxiroute CLI");
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(message.contains("cannot connect to"), "{message}");
+    assert!(message.contains("is the daemon running?"), "{message}");
+    assert!(!message.contains("did not answer"), "{message}");
+}
+
+#[tokio::test]
+async fn a_timeout_must_be_a_positive_duration() {
+    for value in ["0s", "10", "soon"] {
+        let output = cli_command()
+            .args(["--timeout", value, "status"])
+            .output()
+            .expect("oxiroute CLI");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{value}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("--timeout"),
+            "{value}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[tokio::test]
+async fn ready_wait_returns_once_the_daemon_starts_answering() {
+    let management = reserve_tcp_address();
+    let waiting = cli_command()
+        .args(["--endpoint", &format!("http://{management}")])
+        .args(["--timeout", "30s", "ready", "--wait"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("oxiroute CLI");
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let _daemon = Daemon::start_on(management).await;
+    let output = tokio::task::spawn_blocking(move || waiting.wait_with_output())
+        .await
+        .expect("join")
+        .expect("oxiroute CLI");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("ready"), "{}", stdout(&output));
+}
+
+#[tokio::test]
+async fn ready_wait_gives_up_after_the_timeout_and_names_the_last_failure() {
+    let closed = reserve_tcp_address();
+    let output = cli_command()
+        .args(["--endpoint", &format!("http://{closed}")])
+        .args(["--timeout", "600ms", "ready", "--wait"])
+        .output()
+        .expect("oxiroute CLI");
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(
+        message.contains("readiness did not complete within 600ms"),
+        "{message}"
+    );
+    assert!(message.contains("cannot connect to"), "{message}");
+}
+
+#[tokio::test]
+async fn ready_wait_on_a_draining_daemon_times_out_with_the_http_status() {
+    let daemon = Daemon::start().await;
+    assert!(daemon.run(&["drain"]).status.success());
+    let output = daemon.run(&["--timeout", "600ms", "ready", "--wait"]);
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("the daemon answered HTTP 503"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test]
+async fn generation_reload_wait_prints_the_status_of_the_new_revision() {
+    let mut daemon = Daemon::start().await;
+    let revision = |daemon: &Daemon| {
+        let output = daemon.run(&["--output", "json", "generation", "status"]);
+        let status = serde_json::from_slice::<Value>(&output.stdout).expect("status JSON");
+        status["generation"]["activeRevision"]
+            .as_str()
+            .expect("revision")
+            .to_owned()
+    };
+    let before = revision(&daemon);
+    daemon.rewrite_config(77);
+    let output = daemon.run(&[
+        "--output",
+        "json",
+        "generation",
+        "reload",
+        "--wait",
+        "--timeout",
+        "30s",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let status = serde_json::from_slice::<Value>(&output.stdout).expect("status JSON");
+    let after = status["generation"]["activeRevision"]
+        .as_str()
+        .expect("revision");
+    assert_ne!(after, before);
+    assert_eq!(after, revision(&daemon));
+    assert!(
+        stderr(&output).contains("waiting for the candidate revision"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test]
+async fn generation_reload_wait_succeeds_at_once_when_the_file_is_already_active() {
+    let daemon = Daemon::start().await;
+    let output = daemon.run(&["generation", "reload", "--wait", "--timeout", "10s"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("accepting"), "{}", stdout(&output));
 }

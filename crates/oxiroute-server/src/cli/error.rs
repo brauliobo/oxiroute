@@ -14,6 +14,7 @@ pub(crate) enum CliError {
     Startup(String),
     Local(String),
     Connect(String),
+    Timeout(String),
     Io(std::io::Error),
     Status(u16, String),
     Remote(String),
@@ -35,7 +36,7 @@ impl CliError {
             Self::OutputClosed => 0,
             Self::Startup(_) => EXIT_STARTUP,
             Self::Local(_) => EXIT_LOCAL,
-            Self::Connect(_) | Self::Io(_) => EXIT_CONNECT,
+            Self::Connect(_) | Self::Timeout(_) | Self::Io(_) => EXIT_CONNECT,
             Self::Status(401 | 403, _) => EXIT_AUTH,
             Self::Status(404, _) => EXIT_NOT_FOUND,
             Self::Status(409 | 412, _) => EXIT_CONFLICT,
@@ -51,6 +52,7 @@ impl fmt::Display for CliError {
             Self::Startup(message)
             | Self::Local(message)
             | Self::Connect(message)
+            | Self::Timeout(message)
             | Self::Remote(message) => formatter.write_str(message),
             Self::Status(status, code) => {
                 write!(

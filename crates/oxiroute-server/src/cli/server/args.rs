@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{
     change::{Desired, Plan, Scope, Setting},
-    parse::{nonempty_target, parse_label, parse_ttl},
+    parse::{nonempty_target, parse_duration, parse_label},
 };
 
 #[derive(Subcommand)]
@@ -127,7 +127,7 @@ pub(crate) struct RegisterArgs {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub(super) max_connections: Option<u64>,
     /// Lease length such as `500ms`, `15s` or `2m`; the pool's default when omitted.
-    #[arg(long, value_parser = parse_ttl)]
+    #[arg(long, value_parser = parse_duration)]
     pub(super) ttl: Option<Duration>,
     #[arg(long = "label", value_name = "KEY=VALUE", value_parser = parse_label)]
     pub(super) labels: Vec<(String, String)>,

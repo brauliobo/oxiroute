@@ -18,6 +18,10 @@ use serde_json::Value;
 
 use super::render::Document;
 
+pub(crate) fn rejection_summary(generation: &Value) -> Option<String> {
+    generation::rejection(generation)
+}
+
 pub(crate) fn pool_state(pool: &Value) -> Option<String> {
     pools::administrative_state(pool)
 }

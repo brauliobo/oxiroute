@@ -6,7 +6,7 @@ use super::{
     change::Plan,
     error::CliError,
     global::{Global, Output},
-    net::{Client, Package, Response},
+    net::{Client, Package, Response, Timeouts},
     render::{self, Document},
     view::View,
 };
@@ -40,6 +40,10 @@ impl<'a> Context<'a> {
         self.global.output
     }
 
+    pub(crate) fn timeouts(&self) -> Timeouts {
+        self.global.timeouts()
+    }
+
     pub(crate) const fn quiet(&self) -> bool {
         self.global.quiet
     }
@@ -52,12 +56,16 @@ impl<'a> Context<'a> {
         } else {
             self.global.token(&self.package)?
         };
-        Ok(Client::new(endpoint, token))
+        Ok(Client::new(endpoint, token, self.global.timeouts()))
     }
 
     /// A client for the public probes, which never read the token file.
     pub(crate) fn public_client(&self) -> Result<Client, CliError> {
-        Ok(Client::new(self.global.endpoint(&self.package)?, None))
+        Ok(Client::new(
+            self.global.endpoint(&self.package)?,
+            None,
+            self.global.timeouts(),
+        ))
     }
 
     pub(crate) fn print(&self, value: &Value, view: View) -> Result<(), CliError> {

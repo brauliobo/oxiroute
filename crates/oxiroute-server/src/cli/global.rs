@@ -1,11 +1,15 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use clap::{Args, ValueEnum};
 use zeroize::Zeroizing;
 
 use crate::cli::{
     error::CliError,
-    net::{DEFAULT_ENDPOINT, ENDPOINT_ENV, Endpoint, MANAGEMENT_TOKEN_ENV, Package, read_token},
+    net::{
+        DEFAULT_ENDPOINT, ENDPOINT_ENV, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Timeouts,
+        read_token,
+    },
+    parse::parse_timeout,
 };
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -45,6 +49,18 @@ pub(crate) struct Global {
             /etc/oxiroute/oxiroute.kdl or .lua, then /etc/oxiroute/management.token when it exists."
     )]
     pub(super) token_file: Option<PathBuf>,
+    /// Time limit for connecting and for each answer; `--wait` waits up to the same limit.
+    #[arg(
+        long,
+        global = true,
+        value_parser = parse_timeout,
+        value_name = "DURATION",
+        help_heading = "Connection",
+        long_help = "Time limit for connecting to the daemon and for each answer, such as 500ms, 15s or 2m.\n\n\
+            Without it the CLI waits 5s to connect and 10s for each answer. With --wait on `ready` or `generation reload` the \
+            same limit bounds the whole wait, 30s by default."
+    )]
+    pub(super) timeout: Option<Duration>,
     /// Output format of results.
     #[arg(long, global = true, value_enum, default_value_t = Output::Table, value_name = "FORMAT")]
     pub(super) output: Output,
@@ -54,6 +70,10 @@ pub(crate) struct Global {
 }
 
 impl Global {
+    pub(super) fn timeouts(&self) -> Timeouts {
+        self.timeout.map_or(Timeouts::DEFAULT, Timeouts::limited)
+    }
+
     pub(super) fn endpoint(&self, package: &Package) -> Result<Endpoint, CliError> {
         if let Some(path) = &self.socket {
             return Endpoint::unix(&path.to_string_lossy());

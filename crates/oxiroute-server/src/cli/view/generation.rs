@@ -36,7 +36,7 @@ pub(super) fn fields(generation: &Value) -> Record {
     ]
 }
 
-fn rejection(generation: &Value) -> Option<String> {
+pub(super) fn rejection(generation: &Value) -> Option<String> {
     let rejection = generation
         .get("lastRejection")
         .filter(|value| value.is_object())?;

@@ -9,7 +9,7 @@ Without arguments the help is printed.
 ## Global Options
 
 ```sh
-oxiroute [--endpoint URL | --socket PATH] [--token-file FILE] [--output table|json|plain] [--quiet] COMMAND
+oxiroute [--endpoint URL | --socket PATH] [--token-file FILE] [--timeout DURATION] [--output table|json|plain] [--quiet] COMMAND
 ```
 
 The global options work before and after the command name (`oxiroute status --output json`).
@@ -21,6 +21,11 @@ The global options work before and after the command name (`oxiroute status --ou
 - `OXIROUTE_MANAGEMENT_TOKEN_FILE` is the next source; when unset, the packaged
   `/etc/oxiroute/oxiroute.env` assignment is checked, then the management `token_file` of the packaged
   configuration, followed by the built-in `/etc/oxiroute/management.token` path when that file exists.
+- `--timeout DURATION` (`500ms`, `15s`, `2m`) limits the connection attempt and each answer. Without it the
+  CLI waits 5s to connect and 10s for an answer. A daemon that accepts the connection but does not answer
+  is reported as `did not answer within <limit>` and a connection attempt that hangs as `cannot connect to
+  <endpoint> within <limit>`; both exit 4, with different text from `cannot connect ...; is the daemon
+  running?` (nothing listens) and `stopped answering the request` (the daemon closed the connection).
 - `--output json` writes one JSON value to stdout; diagnostics use stderr. Read commands print the
   management API body unchanged, so its field names stay the stable contract for scripts.
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
@@ -30,6 +35,16 @@ Squid report output includes `capabilities`, a versioned target-checkout registr
 `partial` and `completeParity` is false while any family or directive is partial, unsupported,
 obsolete, or not planned. Only forms with both runtime integration and failure coverage are marked
 `compatible`.
+
+## Waiting
+
+`oxiroute ready --wait` keeps asking `/ready` until the daemon answers 200, which suits a service manager
+or a deploy script that starts the daemon and continues once it serves. A refused connection or a `503`
+counts as not ready yet. `oxiroute generation reload --wait` requests the reload, then polls
+`generation status` until the candidate revision is the active revision (it prints that status) or the
+file is rejected (exit 8, naming the first diagnostic). Both wait up to `--timeout`, 30s when it is not
+given, and then exit 4 with `<what> did not complete within <limit>: <last observation>`. Without `--wait`,
+`reload` returns as soon as the daemon accepts the request.
 
 ## Output
 

@@ -4,7 +4,12 @@ use serde_json::{Value, json};
 
 use super::{CheckArgs, EXIT_UNKNOWN};
 use crate::{
-    cli::{context::Context, global::Output, net::Endpoint, render},
+    cli::{
+        context::Context,
+        global::Output,
+        net::{Endpoint, Timeouts},
+        render,
+    },
     observability::status::{
         check::{Finding, Verdict, plugin_line},
         summary::{Severity, StatusSummary},
@@ -84,12 +89,15 @@ fn collect(context: &Context<'_>, args: &CheckArgs) -> Result<Report, String> {
         .get("/status.json", false)
         .and_then(|response| response.json())
         .map_err(|error| format!("status page unavailable: {error}"))?;
-    let canary = args.canary.then(|| canary(args)).transpose()?;
+    let canary = args
+        .canary
+        .then(|| canary(args, context.timeouts()))
+        .transpose()?;
     assess(document, args, canary)
 }
 
 /// Requests `--url` as a client would; a wrong answer is a finding, a bad URL is a usage error.
-fn canary(args: &CheckArgs) -> Result<Finding, String> {
+fn canary(args: &CheckArgs, timeouts: Timeouts) -> Result<Finding, String> {
     let url = args.url.as_deref().unwrap_or_default();
     let rest = url
         .strip_prefix("http://")
@@ -98,7 +106,7 @@ fn canary(args: &CheckArgs) -> Result<Finding, String> {
     let host = args.host.as_deref().unwrap_or(authority);
     let endpoint = Endpoint::parse(&format!("http://{authority}")).map_err(|e| e.to_string())?;
     let started = Instant::now();
-    let answer = endpoint.get_unchecked(path, host);
+    let answer = endpoint.get_unchecked(path, host, timeouts);
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let at = |severity, message: String| Finding {
         severity,

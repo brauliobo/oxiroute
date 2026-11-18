@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::json;
 
-use super::{Client, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Response, read_token};
+use super::{Client, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Response, Timeouts, read_token};
 use crate::cli::error::{CliError, EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND};
 
 #[test]
@@ -199,6 +199,7 @@ fn authenticated_requests_report_a_missing_token_before_connecting() {
     let client = Client::new(
         Endpoint::parse("http://127.0.0.1:1").expect("endpoint"),
         None,
+        Timeouts::DEFAULT,
     );
     let error = client
         .request("GET", "/api/v1/status", &[], &[], true)

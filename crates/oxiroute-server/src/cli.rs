@@ -36,6 +36,7 @@ mod top;
 mod units;
 mod version;
 mod view;
+mod wait;
 
 #[cfg(test)]
 mod tests;
