@@ -21,22 +21,6 @@
     margin-bottom: var(--ox-gap);
   }
 
-  .ox-ops-feedback {
-    position: sticky;
-    top: var(--ox-space-4);
-    z-index: var(--ox-z-sticky);
-    display: grid;
-    gap: var(--ox-space-3);
-  }
-
-  .ox-ops-feedback:has(.ox-banner) {
-    margin-bottom: var(--ox-gap);
-  }
-
-  .ox-ops-feedback:focus {
-    outline: none;
-  }
-
   .ox-ops-detail {
     margin: var(--ox-space-3) 0 0;
     padding: var(--ox-space-4) var(--ox-space-6) var(--ox-space-4) var(--ox-space-8);

@@ -6,7 +6,6 @@ import Button from '#design/button/Button.vue'
 import Loading from '#design/empty/Loading.vue'
 import Panel from '#design/panel/Panel.vue'
 import Tabs from '#design/tabs/Tabs.vue'
-import ActionFeedback from './operations/ActionFeedback.vue'
 import CapabilitiesTable from './operations/CapabilitiesTable.vue'
 import { dispatch, type Command } from './operations/commands'
 import ForceToggle from './operations/ForceToggle.vue'
@@ -17,8 +16,10 @@ import PoolTable from './operations/PoolTable.vue'
 import RegistrationsPanel from './operations/RegistrationsPanel.vue'
 import RestartBanner from './operations/RestartBanner.vue'
 import ServerList from './operations/ServerList.vue'
-import { useActionRunner } from './operations/useActionRunner'
+import type { Scope } from './operations/types'
 import { useOperationsData } from './operations/useOperationsData'
+import ActionFeedback from './workspace/ActionFeedback.vue'
+import { useActionRunner } from './workspace/actions'
 import './operations/page.css'
 
 const TABS = [
@@ -37,9 +38,10 @@ const force = ref(false)
 const unauthorized = () => emit('unauthorized')
 const { status, generation, listeners, pools, servers, error, loading, activeRevision, snapshot, loaded, load, reset } =
   useOperationsData(() => props.token, unauthorized)
-const { outcome, running, canAct, perform, dismiss } = useActionRunner({
+const { outcome, running, canAct, perform, dismiss } = useActionRunner<Scope, string>({
   token: () => props.token,
-  revision: () => activeRevision.value,
+  context: () => activeRevision.value,
+  conflictHint: 'The runtime changed since this page loaded; the current state was reloaded. Review it and retry.',
   reload: load,
   onUnauthorized: unauthorized,
 })

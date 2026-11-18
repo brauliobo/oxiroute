@@ -80,6 +80,30 @@
     font-weight: var(--ox-weight-normal);
   }
 
+  .ox-feedback {
+    position: sticky;
+    top: var(--ox-space-4);
+    z-index: var(--ox-z-sticky);
+    display: grid;
+    gap: var(--ox-space-3);
+  }
+
+  .ox-feedback:has(.ox-banner) {
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-feedback:focus {
+    outline: none;
+  }
+
+  .ox-feedback-detail {
+    margin: var(--ox-space-3) 0 0;
+    padding: var(--ox-space-4) var(--ox-space-6) var(--ox-space-4) var(--ox-space-8);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    color: var(--ox-muted);
+  }
+
   .ox-panel-note {
     margin-bottom: var(--ox-space-5);
     color: var(--ox-muted);

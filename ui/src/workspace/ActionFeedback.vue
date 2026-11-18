@@ -3,10 +3,10 @@ import { computed, useTemplateRef } from 'vue'
 import Banner from '#design/banner/Banner.vue'
 import Notice from '#design/banner/Notice.vue'
 import Button from '#design/button/Button.vue'
-import type { ActionOutcome, Scope } from './types'
-import './page.css'
+import type { ActionOutcome } from './actions'
+import './styles.css'
 
-const props = defineProps<{ outcome: ActionOutcome | null; scope: Scope }>()
+const props = defineProps<{ outcome: ActionOutcome | null; scope: string }>()
 const emit = defineEmits<{ dismiss: [] }>()
 
 const root = useTemplateRef<HTMLElement>('root')
@@ -21,14 +21,14 @@ function dismiss(): void {
 </script>
 
 <template lang="pug">
-.ox-ops-feedback(ref="root" tabindex="-1" data-feedback)
+.ox-feedback(ref="root" tabindex="-1" data-feedback)
   Notice(kind="status")
     template(v-if="shown && succeeded")
       Banner(:tone="shown.tone")
         strong {{ shown.summary }}
         template(v-slot:actions)
           Button(small @click="dismiss") Dismiss
-      ul.ox-ops-detail(v-if="shown.details.length")
+      ul.ox-feedback-detail(v-if="shown.details.length")
         li(v-for="detail in shown.details" :key="detail") {{ detail }}
   Notice(kind="alert")
     template(v-if="shown && failed")
@@ -36,6 +36,6 @@ function dismiss(): void {
         strong {{ shown.summary }}
         template(v-slot:actions)
           Button(small @click="dismiss") Dismiss
-      ul.ox-ops-detail(v-if="shown.details.length")
+      ul.ox-feedback-detail(v-if="shown.details.length")
         li(v-for="detail in shown.details" :key="detail") {{ detail }}
 </template>

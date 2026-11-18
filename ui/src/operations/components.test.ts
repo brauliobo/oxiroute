@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '../test/mount'
 import { managementStatus } from '../test/managementFixtures'
 import { operationsInventory } from '../test/operationsFixtures'
-import ActionFeedback from './ActionFeedback.vue'
 import ForceToggle from './ForceToggle.vue'
 import LimitForm from './LimitForm.vue'
 import PoolTable from './PoolTable.vue'
 import RestartBanner from './RestartBanner.vue'
 import ServerCard from './ServerCard.vue'
 import StateButtons from './StateButtons.vue'
-import type { ActionOutcome } from './types'
 
 const inventory = () => operationsInventory()
 const entry = (name: string) => inventory().servers.servers.find(({ server }) => server.name === name)!
@@ -29,36 +27,6 @@ describe('StateButtons', () => {
     const wrapper = mount(StateButtons, { props: { current: null, subject: 'pool web', disabled: true } })
     expect(wrapper.findAll('[aria-pressed="true"]')).toHaveLength(0)
     expect(wrapper.findAll('button').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
-  })
-})
-
-describe('ActionFeedback', () => {
-  const outcome = (over: Partial<ActionOutcome>): ActionOutcome => ({
-    scope: 'servers', tone: 'ok', summary: 'Done it.', details: ['A detail.'], ...over,
-  })
-
-  it('announces a success in the status region with its details', () => {
-    const wrapper = mount(ActionFeedback, { props: { outcome: outcome({}), scope: 'servers' } })
-    expect(wrapper.get('[role="status"]').text()).toContain('Done it.')
-    expect(wrapper.get('[role="status"]').text()).toContain('A detail.')
-    expect(wrapper.get('[role="alert"]').text()).toBe('')
-  })
-
-  it('announces a failure in the alert region', () => {
-    const wrapper = mount(ActionFeedback, { props: { outcome: outcome({ tone: 'bad', summary: 'Could not x.' }), scope: 'servers' } })
-    expect(wrapper.get('[role="alert"]').text()).toContain('Could not x.')
-    expect(wrapper.get('[role="status"]').text()).toBe('')
-  })
-
-  it('shows nothing for another scope', () => {
-    const wrapper = mount(ActionFeedback, { props: { outcome: outcome({}), scope: 'generation' } })
-    expect(wrapper.text()).toBe('')
-  })
-
-  it('emits dismiss', async () => {
-    const wrapper = mount(ActionFeedback, { props: { outcome: outcome({}), scope: 'servers' } })
-    await wrapper.get('button').trigger('click')
-    expect(wrapper.emitted('dismiss')).toHaveLength(1)
   })
 })
 

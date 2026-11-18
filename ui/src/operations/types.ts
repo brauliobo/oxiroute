@@ -5,31 +5,12 @@ import type {
   RuntimeStatus,
   ServerInventoryResponse,
 } from '../api'
-import type { ConfirmRequest } from '../shell/confirm'
+import type { ActionOutcome as Outcome, ActionPlan as Plan } from '../workspace/actions'
 
+export type { Success } from '../workspace/actions'
 export type Scope = 'generation' | 'admission' | 'servers'
-export type OutcomeTone = 'ok' | 'warn' | 'bad'
-
-export interface ActionOutcome {
-  scope: Scope
-  tone: OutcomeTone
-  summary: string
-  details: readonly string[]
-}
-
-export interface Success {
-  tone: 'ok' | 'warn'
-  summary: string
-  details?: readonly string[]
-}
-
-export interface ActionPlan<Result> {
-  scope: Scope
-  failure: string
-  confirm?: ConfirmRequest
-  run: (revision: string, token: string) => Promise<Result>
-  succeeded: (result: Result) => Success
-}
+export type ActionOutcome = Outcome<Scope>
+export type ActionPlan<Result> = Plan<Scope, string, Result>
 
 export interface Snapshot {
   status: RuntimeStatus | null
