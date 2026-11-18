@@ -1,11 +1,7 @@
 use std::{
     collections::HashMap,
     net::ToSocketAddrs,
-    path::PathBuf,
-    sync::{
-        Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -33,7 +29,7 @@ use crate::{
     },
 };
 use http::{Method, Uri, uri::Authority};
-use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
+use oxiroute_cache::{Cache, DiskCache};
 use oxiroute_config::{
     CachePurgeAuthorization, HttpPoolSelect, ListenerBind, Protocol, ValidatedConfig,
 };
@@ -41,26 +37,13 @@ use oxiroute_rtmp::{
     PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode,
 };
 
-#[derive(Debug)]
-pub(crate) enum RuntimeAcquisitionError {
-    ServicePlan(ServicePlanError),
-    PreparationTimedOut,
-}
-
-impl From<ServicePlanError> for RuntimeAcquisitionError {
-    fn from(error: ServicePlanError) -> Self {
-        Self::ServicePlan(error)
-    }
-}
-
 #[path = "service_plan/compile/http.rs"]
 mod compile_http;
 #[path = "service_plan/compile/services.rs"]
 mod compile_services;
 mod data_plane;
-#[path = "service_plan/disk/registry.rs"]
-mod disk_registry;
 pub(crate) mod errors;
+mod exclusive;
 mod runtime_plan;
 mod spec;
 pub(crate) mod types;
@@ -71,13 +54,9 @@ use compile_http::*;
 use compile_services::*;
 pub use data_plane::{DataPlane, PlaneSelection, Skip, Skipped};
 pub(crate) use data_plane::{DataPlanePolicy, ListenerPlane, PlaneCapabilities};
-pub(crate) use disk_registry::*;
+pub use exclusive::{ExclusiveStores, StoreOwnershipError};
 pub use runtime_plan::*;
 pub use spec::*;
-
-#[cfg(test)]
-#[path = "service_plan/disk/registry_tests.rs"]
-mod disk_registry_tests;
 
 #[cfg(test)]
 mod rtmp_value_plan_tests;

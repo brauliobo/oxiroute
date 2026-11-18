@@ -1,12 +1,15 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use oxiroute_cache::{
     BaseKey, Cache, CacheConfig, CacheControl, CacheError, CacheKey, CacheResponse, CacheTimeline,
-    CachedResponse, DiskCache, DiskCacheError, DiskFillGuard, FillGuard, FillJoin, FillOutcome,
-    Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput, ResponseTiming, StoreOutcome,
-    Validators,
+    CachedResponse, Clock, DiskCache, DiskCacheConfig, DiskCacheError, DiskFillGuard, FillGuard,
+    FillJoin, FillOutcome, Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput,
+    ResponseTiming, StoreOutcome, SystemClock, Validators,
 };
 use tokio::sync::Semaphore;
 
@@ -82,13 +85,17 @@ pub(crate) enum CacheBackendError {
     IoAtCapacity,
     #[error("persistent cache blocking task failed")]
     BlockingTask,
+    #[error("persistent cache store is not owned by this generation")]
+    NotClaimed,
 }
 
 impl CacheBackendError {
     pub(crate) fn is_invalid_request(&self) -> bool {
         let error = match self {
             Self::Memory(error) | Self::Disk(DiskCacheError::Cache(error)) => error,
-            Self::IoAtCapacity | Self::BlockingTask | Self::Disk(_) => return false,
+            Self::IoAtCapacity | Self::BlockingTask | Self::NotClaimed | Self::Disk(_) => {
+                return false;
+            }
         };
         matches!(
             error,
@@ -112,27 +119,61 @@ impl std::fmt::Debug for HttpCacheBackend {
 }
 
 pub(crate) struct DiskBackend {
-    cache: Arc<DiskCache>,
+    store: String,
+    root: PathBuf,
+    config: DiskCacheConfig,
+    clock: Arc<SystemClock>,
+    cache: OnceLock<Arc<DiskCache>>,
     io: Arc<Semaphore>,
-    _registry: crate::service_plan::DiskBackendRegistryLease,
 }
 
 impl DiskBackend {
-    pub(crate) fn new(
-        cache: Arc<DiskCache>,
-        registry: crate::service_plan::DiskBackendRegistryLease,
-    ) -> Self {
-        let permits = cache.config().memory.max_in_flight;
+    pub(crate) fn new(store: String, root: PathBuf, config: DiskCacheConfig) -> Self {
+        let permits = config.memory.max_in_flight;
         Self {
-            cache,
+            store,
+            root,
+            config,
+            clock: Arc::new(SystemClock::new()),
+            cache: OnceLock::new(),
             io: Arc::new(Semaphore::new(permits)),
-            _registry: registry,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn disk_config(&self) -> &oxiroute_cache::DiskCacheConfig {
-        self.cache.config()
+    pub(crate) fn store_name(&self) -> &str {
+        &self.store
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn config(&self) -> &DiskCacheConfig {
+        &self.config
+    }
+
+    pub(crate) fn claim(&self) -> Result<(), DiskCacheError> {
+        if self.cache.get().is_none() {
+            let cache = DiskCache::with_clock(&self.root, self.config.clone(), self.clock.clone())?;
+            self.cache.get_or_init(|| Arc::new(cache));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reclaim(&self) -> Result<(), DiskCacheError> {
+        self.cache.get().map_or(Ok(()), |cache| cache.reclaim())
+    }
+
+    pub(crate) fn release(&self) -> Result<(), DiskCacheError> {
+        self.cache.get().map_or(Ok(()), |cache| cache.release())
+    }
+
+    fn cache(&self) -> Result<&Arc<DiskCache>, CacheBackendError> {
+        self.cache.get().ok_or(CacheBackendError::NotClaimed)
+    }
+
+    fn now(&self) -> MonoTime {
+        self.clock.now()
     }
 
     async fn run<T, F>(&self, operation: F) -> Result<T, CacheBackendError>
@@ -145,7 +186,7 @@ impl DiskBackend {
             .clone()
             .try_acquire_owned()
             .map_err(|_| CacheBackendError::IoAtCapacity)?;
-        let cache = Arc::clone(&self.cache);
+        let cache = Arc::clone(self.cache()?);
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             operation(&cache)
@@ -208,14 +249,14 @@ impl HttpCacheBackend {
     pub(crate) fn config(&self) -> &CacheConfig {
         match self {
             Self::Memory(cache) => cache.config(),
-            Self::Disk(backend) => &backend.cache.config().memory,
+            Self::Disk(backend) => &backend.config().memory,
         }
     }
 
     pub(crate) fn now(&self) -> MonoTime {
         match self {
             Self::Memory(cache) => cache.now(),
-            Self::Disk(backend) => backend.cache.now(),
+            Self::Disk(backend) => backend.now(),
         }
     }
 
@@ -235,7 +276,7 @@ impl HttpCacheBackend {
                 .prepare_with_timeline(request, response, timeline)
                 .map_err(Into::into),
             Self::Disk(backend) => backend
-                .cache
+                .cache()?
                 .prepare_with_timeline(request, response, timeline)
                 .map_err(Into::into),
         }
@@ -254,7 +295,7 @@ impl HttpCacheBackend {
                 .prepare_not_modified_with_timeline(request, key, not_modified, timing, timeline)
                 .map_err(Into::into),
             Self::Disk(backend) => backend
-                .cache
+                .cache()?
                 .prepare_not_modified_with_timeline(request, key, not_modified, timing, timeline)
                 .map_err(Into::into),
         }

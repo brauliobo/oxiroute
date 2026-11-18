@@ -48,6 +48,15 @@ pub enum ServicePlanError {
         "HTTP service `{service}` route {route} configures cache, but cache runtime is unavailable"
     )]
     CacheRuntimeUnavailable { service: String, route: usize },
+    #[error("disk cache store `{store}` at `{}` is not usable", root.display())]
+    DiskCacheStore {
+        store: String,
+        root: std::path::PathBuf,
+        #[source]
+        source: oxiroute_cache::DiskCacheError,
+    },
+    #[error(transparent)]
+    StoreOwnership(Box<crate::StoreOwnershipError>),
     #[error("listener `{listener}` requires a configured service")]
     MissingListenerService { listener: String },
     #[error("HTTP listener `{listener}` references unknown service `{service}`")]

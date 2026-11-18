@@ -103,8 +103,8 @@ pub use routing::{
 };
 pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
 pub use service_plan::{
-    DataPlane, HttpServicePlan, PlaneSelection, RtmpServicePlan, RuntimePlan, ServiceKind,
-    ServicePlanError, ServiceSpec, Skip, Skipped, runtime_plan,
+    DataPlane, ExclusiveStores, HttpServicePlan, PlaneSelection, RtmpServicePlan, RuntimePlan,
+    ServiceKind, ServicePlanError, ServiceSpec, Skip, Skipped, StoreOwnershipError, runtime_plan,
     runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
 };
 pub use tls::{

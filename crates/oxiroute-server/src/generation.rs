@@ -27,7 +27,6 @@ use crate::generation::retirement::{
 use crate::listener::inventory::{ListenerId, ListenerInventory};
 use crate::routing::ServerAdminState;
 use crate::rtmp::generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
-#[cfg(test)]
 use crate::service_plan::acquire_runtime_services;
 use crate::{
     ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
@@ -38,9 +37,7 @@ use crate::{
     },
     runtime_plan,
     service_plan::validation_plan,
-    service_plan::{
-        RuntimeAcquisitionError, acquire_runtime_services_with_deadline, validate_runtime_services,
-    },
+    service_plan::{ExclusiveStores, validate_runtime_services},
 };
 
 pub(crate) const GENERATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);

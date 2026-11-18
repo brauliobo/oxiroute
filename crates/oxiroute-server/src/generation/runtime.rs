@@ -111,6 +111,13 @@ impl RuntimeGeneration {
         self.resources.tls()
     }
 
+    /// The persistent cache roots and managed ACME state roots this generation writes while it is
+    /// the active one.
+    #[must_use]
+    pub fn exclusive_stores(&self) -> crate::ExclusiveStores {
+        self.resources.stores()
+    }
+
     #[must_use]
     pub fn rtmp_vod_catalog(&self) -> Arc<oxiroute_rtmp::VodCatalog> {
         self.resources.rtmp_vod_catalog()

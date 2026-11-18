@@ -9,11 +9,10 @@ pub(super) fn compile_http_services(
     services: &[HttpServiceBlueprint],
     cache_specs: &[CacheStoreBlueprint],
     pools: &[Arc<UpstreamPlan>],
+    cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<Vec<Arc<HttpServicePlan>>, RuntimeAcquisitionError> {
+) -> Result<Vec<Arc<HttpServicePlan>>, ServicePlanError> {
     let mut http_services = Vec::with_capacity(services.len());
-    let mut cache_backends = HashMap::new();
     for service in services {
         let mut route_plans = Vec::with_capacity(service.routes.len());
         for (route_index, route) in service.routes.iter().enumerate() {
@@ -23,10 +22,8 @@ pub(super) fn compile_http_services(
                 route,
                 pools,
                 cache_specs,
-                &mut cache_backends,
+                cache_backends,
                 service.gzip.is_some(),
-                mode,
-                deadline,
             )?);
         }
         http_services.push(Arc::new(HttpServicePlan::with_http_policy(
@@ -42,10 +39,6 @@ pub(super) fn compile_http_services(
     Ok(http_services)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "route acquisition carries shared pools, caches, and the explicit acquisition mode"
-)]
 fn compile_http_route(
     service: &str,
     route_index: usize,
@@ -54,9 +47,7 @@ fn compile_http_route(
     cache_stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     _has_gzip: bool,
-    mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<Arc<HttpRoutePlan>, RuntimeAcquisitionError> {
+) -> Result<Arc<HttpRoutePlan>, ServicePlanError> {
     let access = route
         .access
         .as_ref()
@@ -84,8 +75,6 @@ fn compile_http_route(
             pools,
             cache_stores,
             cache_backends,
-            mode,
-            deadline,
         )?,
         HttpActionBlueprint::Fixed(plan) => HttpActionPlan::Fixed(plan.clone()),
         HttpActionBlueprint::Redirect(plan) => HttpActionPlan::Redirect(plan.clone()),
@@ -127,19 +116,9 @@ fn compile_proxy_action(
     pools: &[Arc<UpstreamPlan>],
     cache_stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
-    mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<HttpActionPlan, RuntimeAcquisitionError> {
+) -> Result<HttpActionPlan, ServicePlanError> {
     let pool = &pools[pool_index];
-    let cache = acquire_cache_policy(
-        service,
-        route,
-        cache,
-        cache_stores,
-        cache_backends,
-        mode,
-        deadline,
-    )?;
+    let cache = acquire_cache_policy(service, route, cache, cache_stores, cache_backends)?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
         rescue_pool: rescue_pool_index.map(|index| Arc::clone(&pools[index])),
@@ -154,16 +133,13 @@ fn compile_proxy_action(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn acquire_cache_policy(
     service: &str,
     route: usize,
     policy: Option<&CachePolicyBlueprint>,
     stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
-    mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<Option<Arc<HttpCachePlan>>, RuntimeAcquisitionError> {
+) -> Result<Option<Arc<HttpCachePlan>>, ServicePlanError> {
     let Some(policy) = policy else {
         return Ok(None);
     };
@@ -178,30 +154,19 @@ pub(super) fn acquire_cache_policy(
                     unavailable("http_services[].routes[].action.policy.cache.memory")
                 })?),
             )),
-            CacheStoreBlueprint::Disk { root, config, .. } => {
-                if mode == AcquisitionMode::Validate {
-                    DiskCache::validate(root, config).map_err(|_| {
-                        unavailable("http_services[].routes[].action.policy.cache.disk")
-                    })?;
-                    Arc::new(HttpCacheBackend::Memory(Arc::new(
-                        Cache::new(config.memory.clone()).map_err(|_| {
-                            unavailable("http_services[].routes[].action.policy.cache.memory")
-                        })?,
-                    )))
-                } else {
-                    let backend = open_shared_disk_backend_with_deadline(root, config, deadline)
-                        .map_err(|error| match error {
-                            DiskBackendOpenError::Unavailable => {
-                                RuntimeAcquisitionError::ServicePlan(unavailable(
-                                    "http_services[].routes[].action.policy.cache.disk",
-                                ))
-                            }
-                            DiskBackendOpenError::TimedOut => {
-                                RuntimeAcquisitionError::PreparationTimedOut
-                            }
-                        })?;
-                    Arc::new(HttpCacheBackend::Disk(backend))
-                }
+            CacheStoreBlueprint::Disk { name, root, config } => {
+                DiskCache::validate(root, config).map_err(|source| {
+                    ServicePlanError::DiskCacheStore {
+                        store: name.clone(),
+                        root: root.clone(),
+                        source,
+                    }
+                })?;
+                Arc::new(HttpCacheBackend::Disk(Arc::new(DiskBackend::new(
+                    name.clone(),
+                    root.clone(),
+                    config.clone(),
+                ))))
             }
         };
         cache_backends.insert(store_name.to_owned(), Arc::clone(&cache));

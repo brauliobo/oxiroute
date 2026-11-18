@@ -9,7 +9,7 @@ use crate::{
     RuntimePlan, ServiceSpec,
     observability::monitoring::ListenerRegistrationTransaction,
     rtmp::generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
-    service_plan::GenerationAcquisition,
+    service_plan::{ExclusiveStores, GenerationAcquisition},
 };
 
 pub(crate) struct GenerationResources {
@@ -21,6 +21,7 @@ pub(crate) struct GenerationResources {
     health_supervisor: Option<HealthSupervisor>,
     pools: Vec<Arc<RoundRobinPool>>,
     tls: PreparedTls,
+    stores: ExclusiveStores,
     plan: RuntimePlan,
     #[cfg(test)]
     drop_probe: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -34,7 +35,7 @@ impl GenerationResources {
         listener_registration: ListenerRegistrationTransaction,
         rtmp: PreparedRtmpRuntimeSet,
     ) -> Self {
-        let (services, health_supervisor, pools, tls) = acquired.commit();
+        let (services, health_supervisor, pools, tls, stores) = acquired.commit();
         Self {
             rtmp: RtmpGenerationRuntime::new(rtmp),
             listeners: PreparedListenerResources {
@@ -45,6 +46,7 @@ impl GenerationResources {
             health_supervisor,
             pools,
             tls,
+            stores,
             plan,
             #[cfg(test)]
             drop_probe: None,
@@ -86,6 +88,10 @@ impl GenerationResources {
 
     pub(crate) const fn tls(&self) -> &PreparedTls {
         &self.tls
+    }
+
+    pub(crate) fn stores(&self) -> ExclusiveStores {
+        self.stores.clone()
     }
 
     pub(crate) const fn reservations(&self) -> &ListenerReservations {

@@ -15,8 +15,8 @@ use std::{
 
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    AdministrativeState, AdmissionClose, Doorbell, GenerationManager, GenerationStatus,
-    ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot,
+    AdministrativeState, AdmissionClose, Doorbell, ExclusiveStores, GenerationManager,
+    GenerationStatus, ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot,
     WorkerEventSnapshot, WorkerNotice,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
@@ -143,6 +143,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             ));
         }
     };
+    let stores = generation.exclusive_stores();
     let stop = Arc::new(AtomicBool::new(false));
     let mut quiesced = None;
     // The drain request stays open until every in-flight connection and stream has finished. At the
@@ -317,9 +318,12 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             ControlPhase::Quiesce => {
                 lifecycle = WorkerLifecycle::Quiescing;
                 let outcome = quiesce_active(&manager, &mut quiesced);
-                if matches!(outcome, ControlOutcome::Accepted) {
+                let outcome = if matches!(outcome, ControlOutcome::Accepted) {
                     manager.set_registry_writer(false);
-                }
+                    release_stores(&stores)
+                } else {
+                    outcome
+                };
                 let outcome = if matches!(outcome, ControlOutcome::Accepted) {
                     hand_over(&mut control, &manager, &generation)
                 } else {
@@ -341,7 +345,12 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 reporter.report(&mut control, lifecycle)?;
             }
             ControlPhase::Reactivate => {
-                let outcome = reactivate_active(&mut quiesced);
+                let reclaimed = reclaim_stores(&stores);
+                let outcome = if matches!(reclaimed, ControlOutcome::Accepted) {
+                    reactivate_active(&mut quiesced)
+                } else {
+                    reclaimed
+                };
                 manager.set_registry_writer(matches!(outcome, ControlOutcome::Accepted));
                 control.acknowledge(&request, outcome)?;
                 lifecycle = if matches!(outcome, ControlOutcome::Accepted) {
@@ -572,6 +581,26 @@ fn quiesce_active(
     } else {
         ControlOutcome::Rejected(REJECT_RUNTIME)
     }
+}
+
+fn release_stores(stores: &ExclusiveStores) -> ControlOutcome {
+    stores.release().map_or_else(
+        |error| {
+            report_failure(&error);
+            ControlOutcome::Rejected(REJECT_RUNTIME)
+        },
+        |()| ControlOutcome::Accepted,
+    )
+}
+
+fn reclaim_stores(stores: &ExclusiveStores) -> ControlOutcome {
+    stores.reclaim().map_or_else(
+        |error| {
+            report_failure(&error);
+            ControlOutcome::Rejected(REJECT_RUNTIME)
+        },
+        |()| ControlOutcome::Accepted,
+    )
 }
 
 /// Stops the active generation from accepting and reports whether there is one to drain.

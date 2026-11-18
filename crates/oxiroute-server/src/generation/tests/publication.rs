@@ -210,7 +210,7 @@ fn supersession_precedes_runtime_failure_and_quiesce_timeout() {
     second.generation().mark_runtime_failed();
 
     assert!(matches!(
-        manager.publish_reserved_candidate(&second, &reservation, Some(close), false),
+        manager.publish_reserved_candidate(&second, &reservation, Some(close), false, Ok(())),
         Err(GenerationError::CandidateSuperseded)
     ));
     assert!(Arc::ptr_eq(
@@ -241,7 +241,7 @@ fn runtime_failure_precedes_quiesce_timeout_and_uses_runtime_start_quarantine() 
     second.generation().mark_runtime_failed();
 
     assert!(matches!(
-        manager.publish_reserved_candidate(&second, &reservation, Some(close), false),
+        manager.publish_reserved_candidate(&second, &reservation, Some(close), false, Ok(())),
         Err(GenerationError::RuntimePrepare)
     ));
     startup.completed = true;
@@ -361,7 +361,13 @@ fn publication_failure_does_not_undo_a_later_shutdown_close() {
     first.generation().stop_accepting();
 
     assert!(matches!(
-        manager.publish_reserved_candidate(&second, &reservation, Some(activation_close), false,),
+        manager.publish_reserved_candidate(
+            &second,
+            &reservation,
+            Some(activation_close),
+            false,
+            Ok(())
+        ),
         Err(GenerationError::AcceptorQuiesce)
     ));
     assert!(Arc::ptr_eq(

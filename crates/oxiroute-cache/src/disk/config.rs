@@ -70,6 +70,8 @@ pub enum DiskCacheError {
     UnsafeEntry,
     #[error("persistent cache is shut down")]
     Closed,
+    #[error("persistent cache ownership was released to a replacement generation")]
+    Released,
     #[error(transparent)]
     Cache(#[from] CacheError),
     #[cfg(test)]

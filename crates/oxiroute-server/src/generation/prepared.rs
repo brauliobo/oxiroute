@@ -13,7 +13,6 @@ impl PreparedGeneration {
     fn prepare_runtime_components(
         config: &Arc<ValidatedConfig>,
         transaction: &mut PreparedGenerationTransaction,
-        deadline: Option<Instant>,
     ) -> Result<(), GenerationError> {
         transaction.plan =
             Some(runtime_plan(config).map_err(|source| GenerationError::Plan(Box::new(source)))?);
@@ -22,11 +21,8 @@ impl PreparedGeneration {
             .drop_probes
             .push(PreparedTransactionDropProbe::new("plan"));
         transaction.acquired = Some(
-            acquire_runtime_services_with_deadline(
-                transaction.plan.as_ref().expect("provisional runtime plan"),
-                deadline,
-            )
-            .map_err(GenerationError::from)?,
+            acquire_runtime_services(transaction.plan.as_ref().expect("provisional runtime plan"))
+                .map_err(|source| GenerationError::Plan(Box::new(source)))?,
         );
         #[cfg(test)]
         transaction
@@ -134,7 +130,7 @@ impl PreparedGeneration {
         let mut transaction = PreparedGenerationTransaction::new();
         let process = match source {
             ListenerSource::BindOrReuse { previous, process } => {
-                Self::prepare_runtime_components(&config, &mut transaction, deadline)?;
+                Self::prepare_runtime_components(&config, &mut transaction)?;
                 transaction.reservations = Some(ListenerReservations::prepare(&config, previous)?);
                 #[cfg(test)]
                 transaction
@@ -160,7 +156,7 @@ impl PreparedGeneration {
                 transaction
                     .drop_probes
                     .push(PreparedTransactionDropProbe::new("reservations"));
-                Self::prepare_runtime_components(&config, &mut transaction, deadline)?;
+                Self::prepare_runtime_components(&config, &mut transaction)?;
                 Some(process)
             }
             ListenerSource::Validate { previous } => {

@@ -6,9 +6,10 @@ pub(super) struct Shared {
     pub(super) config: DiskCacheConfig,
     pub(super) root: OwnedFd,
     pub(super) root_owner: u32,
-    pub(super) _ownership: OwnedFd,
+    pub(super) ownership: OwnedFd,
     pub(super) state: Mutex<State>,
     pub(super) closed: AtomicBool,
+    pub(super) released: AtomicBool,
     #[cfg(test)]
     pub(super) fault: Mutex<Option<FaultPoint>>,
 }
@@ -45,6 +46,26 @@ impl Shared {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn is_released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
+
+    pub(super) fn forget_missing_records(&self, state: &mut State) {
+        let missing = state
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                !rustix_fs::statat(&self.root, &record.name, AtFlags::SYMLINK_NOFOLLOW)
+                    .is_ok_and(|stat| stat.st_dev == record.device && stat.st_ino == record.inode)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in &missing {
+            state.remove(key);
+            self.cache.remove_without_cancelling_fill(key);
+        }
     }
 
     pub(super) fn touch(&self, state: &mut State, key: &CacheKey) -> Result<(), DiskCacheError> {

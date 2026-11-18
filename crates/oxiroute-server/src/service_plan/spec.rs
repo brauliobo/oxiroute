@@ -326,7 +326,11 @@ pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, Servi
     let plan = runtime_plan(config)?;
     let mut acquired = acquire_runtime_services(&plan)?;
     prepare_rtmp_service_specs(acquired.services(), RtmpPrepareMode::Activation)?;
-    Ok(acquired.commit().0)
+    let (services, _, _, _, stores) = acquired.commit();
+    stores
+        .claim()
+        .map_err(|error| ServicePlanError::StoreOwnership(Box::new(error)))?;
+    Ok(services)
 }
 
 #[cfg(test)]

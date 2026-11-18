@@ -348,4 +348,5 @@ mod publication;
 mod rtmp;
 mod shutdown;
 mod startup;
+mod stores;
 mod transaction;

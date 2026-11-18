@@ -77,9 +77,10 @@ impl DiskCache {
             config,
             root,
             root_owner,
-            _ownership: ownership,
+            ownership,
             state: Mutex::new(state),
             closed: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             #[cfg(test)]
             fault: Mutex::new(None),
         });
@@ -190,6 +191,9 @@ impl DiskCache {
         let mut state = self.shared.lock();
         self.ensure_open()?;
         let result = self.shared.cache.lookup(request)?;
+        if self.shared.is_released() {
+            return Ok(result);
+        }
         let key = match &result {
             Lookup::Hit { response, .. } | Lookup::Revalidate { response, .. } => {
                 Some(response.key.clone())
@@ -214,7 +218,7 @@ impl DiskCache {
         let mut state = self.shared.lock();
         self.ensure_open()?;
         let response = self.shared.cache.stale_if_error(key);
-        if response.is_some() {
+        if response.is_some() && !self.shared.is_released() {
             self.shared.touch(&mut state, key)?;
         }
         Ok(response)
@@ -224,11 +228,11 @@ impl DiskCache {
     ///
     /// # Errors
     ///
-    /// Returns an error after shutdown or for an invalid fill key.
+    /// Returns an error after shutdown or release, or for an invalid fill key.
     pub fn begin_fill(&self, base: BaseKey) -> Result<DiskFillJoin, DiskCacheError> {
         self.ensure_open()?;
         let _state = self.shared.lock();
-        self.ensure_open()?;
+        self.ensure_writable()?;
         match self.shared.cache.begin_fill(base)? {
             FillJoin::Leader(inner) => Ok(DiskFillJoin::Leader(DiskFillGuard {
                 shared: Arc::clone(&self.shared),
@@ -247,7 +251,7 @@ impl DiskCache {
     pub fn purge_exact(&self, key: &CacheKey) -> Result<PurgeResult, DiskCacheError> {
         self.ensure_open()?;
         let mut state = self.shared.lock();
-        self.ensure_open()?;
+        self.ensure_writable()?;
         if let Some(record) = state.records.get(key).cloned() {
             self.shared.remove_record(&record)?;
             state.remove(key);
@@ -264,7 +268,7 @@ impl DiskCache {
     pub fn purge_base(&self, base: &BaseKey) -> Result<PurgeResult, DiskCacheError> {
         self.ensure_open()?;
         let mut state = self.shared.lock();
-        self.ensure_open()?;
+        self.ensure_writable()?;
         let keys = state
             .records
             .keys()
@@ -294,7 +298,7 @@ impl DiskCache {
         self.ensure_open()?;
         validate_tag(tag, self.shared.config.memory.max_tag_bytes)?;
         let mut state = self.shared.lock();
-        self.ensure_open()?;
+        self.ensure_writable()?;
         let keys = state.tags.get(tag).cloned().unwrap_or_default();
         let mut removed = 0usize;
         for key in &keys {
@@ -323,6 +327,63 @@ impl DiskCache {
         }
     }
 
+    /// Hands the root lease to a replacement owner. Resident entries keep serving hits, but
+    /// nothing is written to or removed from the root until [`Self::reclaim`] succeeds: misses are
+    /// not stored, hits do not advance the durable LRU position, and purges are refused. Returns
+    /// only after every write in progress has finished, so the replacement can scan a quiet root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease cannot be unlocked.
+    pub fn release(&self) -> Result<(), DiskCacheError> {
+        let _state = self.shared.lock();
+        if self.shared.released.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        rustix_fs::flock(&self.shared.ownership, FlockOperation::Unlock)
+            .map_err(|source| DiskCacheError::OwnershipLock(source.into()))?;
+        self.shared.released.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Takes the root lease back after an aborted hand-over and rescans the root, dropping resident
+    /// entries whose records the replacement removed while it owned the root. Ownership already
+    /// held is kept. Waits while the replacement still holds the lease, which a replacement that
+    /// failed to activate stops doing by exiting; it does not block reads or writes meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the lease cannot be taken or the root cannot be scanned.
+    pub fn reclaim(&self) -> Result<(), DiskCacheError> {
+        if !self.shared.is_released() {
+            return Ok(());
+        }
+        rustix_fs::flock(&self.shared.ownership, FlockOperation::LockExclusive)
+            .map_err(|source| DiskCacheError::OwnershipLock(source.into()))?;
+        let mut state = self.shared.lock();
+        self.shared.forget_missing_records(&mut state);
+        let shared = &self.shared;
+        match scan_root(
+            &shared.root,
+            shared.root_owner,
+            &shared.config,
+            &shared.cache,
+        ) {
+            Ok(rescanned) => *state = rescanned,
+            Err(error) => {
+                let _ = rustix_fs::flock(&shared.ownership, FlockOperation::Unlock);
+                return Err(error);
+            }
+        }
+        shared.released.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn released(&self) -> bool {
+        self.shared.is_released()
+    }
+
     /// Stops admission, cancels at most the configured number of in-process fills, and performs one
     /// root-directory sync. It never waits for readers or fill leaders. Work is bounded, but the
     /// filesystem controls how long `fsync` itself may block. The root lease is released when the
@@ -338,6 +399,15 @@ impl DiskCache {
         let _state = self.shared.lock();
         self.shared.cache.cancel_all_fills();
         rustix_fs::fsync(&self.shared.root).map_err(storage)
+    }
+
+    fn ensure_writable(&self) -> Result<(), DiskCacheError> {
+        self.ensure_open()?;
+        if self.shared.is_released() {
+            Err(DiskCacheError::Released)
+        } else {
+            Ok(())
+        }
     }
 
     fn ensure_open(&self) -> Result<(), DiskCacheError> {
@@ -380,6 +450,9 @@ impl DiskFillGuard {
         let mut state = self.shared.lock();
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(DiskCacheError::Closed);
+        }
+        if self.shared.is_released() {
+            return Err(DiskCacheError::Released);
         }
         if !inner.is_current() {
             return Ok(StoreOutcome::GenerationLost);

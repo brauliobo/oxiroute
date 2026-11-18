@@ -41,43 +41,6 @@ fn contended_preparation_deadline_expires_without_candidate_or_quarantine_and_re
 }
 
 #[test]
-fn disk_registry_wait_timeout_is_retryable_without_quarantine() {
-    let directory = TempDir::new().expect("disk cache root");
-    let root = directory.path().join("cache");
-    let (hook, reached, release) =
-        crate::service_plan::install_disk_registry_opening_hook(root.clone());
-    let opener_manager = GenerationManager::new();
-    let opener_thread_manager = opener_manager.clone();
-    let opener_document = disk_cache_document(&root);
-    let opener = thread::spawn(move || opener_thread_manager.prepare(opener_document));
-    reached.wait();
-
-    let manager = GenerationManager::new();
-    let deadline = Instant::now() + Duration::from_millis(25);
-    let Err(error) = manager.prepare_with_deadline(disk_cache_document(&root), deadline) else {
-        panic!("disk registry waiter did not time out")
-    };
-
-    assert!(matches!(error, GenerationError::PreparationTimedOut));
-    assert!(Instant::now() >= deadline);
-    let status = manager.status();
-    assert_eq!(status.candidate_revision, None);
-    assert_eq!(status.quarantined_revision, None);
-    assert_eq!(status.last_failure, Some("generation_prepare_timeout"));
-    assert_eq!(status.failures, 1);
-
-    release.wait();
-    opener
-        .join()
-        .expect("disk backend opener thread")
-        .expect("disk backend opener generation");
-    drop(hook);
-    manager
-        .prepare(disk_cache_document(&root))
-        .expect("disk registry timeout retry");
-}
-
-#[test]
 fn ordinary_preparation_failure_quarantines_even_after_deadline() {
     let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied listener");
     let address = occupied.local_addr().expect("occupied address");

@@ -21,6 +21,7 @@ pub(crate) struct GenerationAcquisition {
     health_supervisor: Option<HealthSupervisor>,
     pools: Option<Vec<Arc<RoundRobinPool>>>,
     tls: Option<PreparedTls>,
+    stores: ExclusiveStores,
 }
 
 impl GenerationAcquisition {
@@ -34,6 +35,7 @@ impl GenerationAcquisition {
             health_supervisor: None,
             pools: None,
             tls: None,
+            stores: ExclusiveStores::default(),
         }
     }
 
@@ -62,6 +64,7 @@ impl GenerationAcquisition {
         Option<HealthSupervisor>,
         Vec<Arc<RoundRobinPool>>,
         PreparedTls,
+        ExclusiveStores,
     ) {
         self.l4_services.take();
         self.forward_services.take();
@@ -72,6 +75,7 @@ impl GenerationAcquisition {
             self.health_supervisor.take(),
             self.pools.take().expect("uncommitted pools"),
             self.tls.take().expect("uncommitted TLS"),
+            std::mem::take(&mut self.stores),
         )
     }
 }
@@ -194,39 +198,19 @@ fn runtime_plan_with_passive_failure_policy_internal(
 pub(crate) fn acquire_runtime_services(
     plan: &RuntimePlan,
 ) -> Result<GenerationAcquisition, ServicePlanError> {
-    acquire_runtime_services_with_deadline(plan, None).map_err(|error| match error {
-        RuntimeAcquisitionError::ServicePlan(error) => error,
-        RuntimeAcquisitionError::PreparationTimedOut => {
-            unreachable!("unbounded runtime acquisition cannot time out")
-        }
-    })
-}
-
-pub(crate) fn acquire_runtime_services_with_deadline(
-    plan: &RuntimePlan,
-    deadline: Option<Instant>,
-) -> Result<GenerationAcquisition, RuntimeAcquisitionError> {
-    acquire_runtime_services_with_mode(plan, AcquisitionMode::Activate, deadline)
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Activate)
 }
 
 pub(crate) fn validate_runtime_services(
     plan: &RuntimePlan,
 ) -> Result<GenerationAcquisition, ServicePlanError> {
-    acquire_runtime_services_with_mode(plan, AcquisitionMode::Validate, None).map_err(|error| {
-        match error {
-            RuntimeAcquisitionError::ServicePlan(error) => error,
-            RuntimeAcquisitionError::PreparationTimedOut => {
-                unreachable!("runtime validation has no deadline")
-            }
-        }
-    })
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Validate)
 }
 
 fn acquire_runtime_services_with_mode(
     plan: &RuntimePlan,
     mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<GenerationAcquisition, RuntimeAcquisitionError> {
+) -> Result<GenerationAcquisition, ServicePlanError> {
     let blueprint = GenerationCompiler::compile(&plan.source, &plan.plane_capabilities)?;
     let mut acquired = GenerationAcquisition::empty();
     acquired.tls = Some(
@@ -241,6 +225,7 @@ fn acquire_runtime_services_with_mode(
     )?);
     let cache_specs = blueprint.cache_specs?;
     let http_service_specs = blueprint.http_service_specs?;
+    let mut cache_backends = HashMap::new();
     acquired.http_services = Some(compile_http_services(
         &http_service_specs,
         &cache_specs,
@@ -249,15 +234,24 @@ fn acquire_runtime_services_with_mode(
             .as_ref()
             .expect("acquired pools")
             .plans,
+        &mut cache_backends,
         mode,
-        deadline,
     )?);
     acquired.forward_services = Some(compile_forward_proxy_services(
         &blueprint.forward_service_specs?,
         &cache_specs,
-        mode,
-        deadline,
+        &mut cache_backends,
     )?);
+    acquired.stores = ExclusiveStores::new(
+        cache_backends
+            .values()
+            .filter_map(|backend| match &**backend {
+                HttpCacheBackend::Disk(disk) => Some(Arc::clone(disk)),
+                HttpCacheBackend::Memory(_) => None,
+            })
+            .collect(),
+        acquired.tls().acme_reconcilers().to_vec(),
+    );
     let rtmp_services = compile_rtmp_services(&blueprint.rtmp_specs?, mode)?;
     acquired.l4_services = Some(compile_l4_services(
         &blueprint.l4_service_specs?,

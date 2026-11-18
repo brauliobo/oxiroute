@@ -52,6 +52,8 @@ pub enum GenerationError {
     Metrics(#[from] crate::MetricsError),
     #[error("candidate RTMP preparation failed")]
     Rtmp(#[from] crate::ServicePlanError),
+    #[error("candidate stores could not be taken over: {0}")]
+    StoreOwnership(#[source] Box<crate::StoreOwnershipError>),
     #[error("candidate management token preparation failed")]
     ManagementToken,
     #[error("no prepared candidate is available")]
@@ -70,15 +72,6 @@ pub enum GenerationError {
     NoPrevious,
     #[error("the previous generation revision is quarantined")]
     QuarantinedRevision,
-}
-
-impl From<RuntimeAcquisitionError> for GenerationError {
-    fn from(error: RuntimeAcquisitionError) -> Self {
-        match error {
-            RuntimeAcquisitionError::ServicePlan(error) => Self::Plan(Box::new(error)),
-            RuntimeAcquisitionError::PreparationTimedOut => Self::PreparationTimedOut,
-        }
-    }
 }
 
 pub(super) fn map_rtmp_runtime_set_error(error: RtmpRuntimeSetError) -> GenerationError {
@@ -104,6 +97,7 @@ impl GenerationError {
             Self::Listener(_) => "listener_reservation",
             Self::Metrics(_) => "metrics_prepare",
             Self::Rtmp(_) => "rtmp_prepare",
+            Self::StoreOwnership(_) => "store_ownership",
             Self::ManagementToken => "management_token_prepare",
             Self::NoCandidate => "candidate_missing",
             Self::CandidateSuperseded => "candidate_superseded",

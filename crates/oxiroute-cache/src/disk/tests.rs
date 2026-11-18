@@ -215,3 +215,109 @@ fn recovered_entries_receive_the_current_cache_identity() {
         DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("leader"),
     }
 }
+
+fn stored_entry(cache: &DiskCache, path: &str) -> CacheKey {
+    let request_headers = HeaderMap::new();
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    let now = cache.now();
+    let entry = cache
+        .prepare(
+            RequestKeyInput {
+                path,
+                ..request(&request_headers)
+            },
+            StatusCode::OK,
+            &response_headers,
+            Bytes::from_static(b"body"),
+            ResponseTiming {
+                request_started: now,
+                response_received: now,
+                response_received_wall: SystemTime::now(),
+            },
+            &[],
+        )
+        .expect("entry");
+    let key = entry.key().clone();
+    match cache.begin_fill(key.base().clone()).expect("fill") {
+        DiskFillJoin::Leader(leader) => {
+            leader.store(entry).expect("store");
+        }
+        DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("leader"),
+    }
+    key
+}
+
+fn lookup_hits(cache: &DiskCache, path: &str) -> bool {
+    let headers = HeaderMap::new();
+    matches!(
+        cache.lookup(RequestKeyInput {
+            path,
+            ..request(&headers)
+        }),
+        Ok(Lookup::Hit { .. })
+    )
+}
+
+#[test]
+fn released_cache_serves_hits_but_never_writes_until_reclaimed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join("cache");
+    let cache = DiskCache::open(&root, test_config()).expect("cache");
+    let key = stored_entry(&cache, "/kept");
+
+    cache.release().expect("release");
+    assert!(cache.released());
+    assert!(lookup_hits(&cache, "/kept"));
+    assert!(matches!(
+        cache.begin_fill(key.base().clone()),
+        Err(DiskCacheError::Released)
+    ));
+    assert!(matches!(
+        cache.purge_exact(&key),
+        Err(DiskCacheError::Released)
+    ));
+    let replacement = DiskCache::open(&root, test_config()).expect("replacement takes the root");
+    assert_eq!(replacement.stats().disk_entries, 1);
+    assert!(lookup_hits(&replacement, "/kept"));
+    let cache = Arc::new(cache);
+    let reclaiming = {
+        let cache = Arc::clone(&cache);
+        std::thread::spawn(move || cache.reclaim())
+    };
+    assert!(lookup_hits(&cache, "/kept"));
+    drop(replacement);
+    reclaiming
+        .join()
+        .expect("reclaim thread")
+        .expect("reclaim once the replacement left");
+    assert!(!cache.released());
+    stored_entry(&cache, "/after-reclaim");
+    assert_eq!(cache.stats().disk_entries, 2);
+}
+
+#[test]
+fn reclaim_forgets_entries_the_replacement_evicted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join("cache");
+    let cache = DiskCache::open(&root, test_config()).expect("cache");
+    stored_entry(&cache, "/first");
+    stored_entry(&cache, "/second");
+    cache.release().expect("release");
+
+    let mut smaller = test_config();
+    smaller.max_disk_files = 1;
+    let replacement = DiskCache::open(&root, smaller).expect("replacement");
+    assert_eq!(replacement.stats().disk_entries, 1);
+    drop(replacement);
+
+    cache.reclaim().expect("reclaim");
+    assert_eq!(cache.stats().disk_entries, 1);
+    assert_eq!(
+        usize::from(lookup_hits(&cache, "/first")) + usize::from(lookup_hits(&cache, "/second")),
+        1
+    );
+}

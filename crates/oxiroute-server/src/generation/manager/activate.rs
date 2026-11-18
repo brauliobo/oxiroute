@@ -78,7 +78,27 @@ impl GenerationManager {
         let quiesced = previous_close
             .as_ref()
             .is_none_or(|close| close.wait(quiesce_timeout));
-        self.publish_reserved_candidate(candidate, &reservation, previous_close, quiesced)
+        let previous_stores = reservation
+            .previous
+            .as_ref()
+            .map(|previous| previous.exclusive_stores());
+        let candidate_stores = candidate.generation.exclusive_stores();
+        let handed_over = quiesced.then(|| {
+            ExclusiveStores::hand_over(previous_stores.as_ref(), &candidate_stores)
+                .map_err(|error| GenerationError::StoreOwnership(Box::new(error)))
+        });
+        let stores_taken = handed_over.as_ref().is_some_and(Result::is_ok);
+        let published = self.publish_reserved_candidate(
+            candidate,
+            &reservation,
+            previous_close,
+            quiesced,
+            handed_over.unwrap_or(Ok(())),
+        );
+        if stores_taken && published.is_err() {
+            ExclusiveStores::roll_back(previous_stores.as_ref(), &candidate_stores);
+        }
+        published
     }
 
     pub(in super::super) fn reserve_activation(
@@ -170,6 +190,7 @@ impl GenerationManager {
         reservation: &ActivationReservation,
         previous_close: Option<AdmissionClose>,
         quiesced: bool,
+        stores: Result<(), GenerationError>,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
         let operation = self.operations.acquire();
         let mut state = self
@@ -187,12 +208,15 @@ impl GenerationManager {
         let close_current = previous_close
             .as_ref()
             .is_none_or(AdmissionClose::is_current);
+        let stores_error = stores.err();
         let failure = if state.shutting_down {
             Some(GenerationError::MutationInProgress)
         } else if !owns_reservation || !candidate_current || !previous_current {
             Some(GenerationError::CandidateSuperseded)
         } else if candidate.generation.runtime_failed() {
             Some(GenerationError::RuntimePrepare)
+        } else if stores_error.is_some() {
+            stores_error
         } else if !quiesced || !close_current {
             Some(GenerationError::AcceptorQuiesce)
         } else if state

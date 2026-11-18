@@ -4,10 +4,8 @@ use super::*;
 pub(super) fn compile_forward_proxy_services(
     services: &[crate::forward_proxy::ForwardServiceBlueprint],
     cache_specs: &[CacheStoreBlueprint],
-    mode: AcquisitionMode,
-    deadline: Option<Instant>,
-) -> Result<Vec<Arc<ForwardHttp1ServicePlan>>, RuntimeAcquisitionError> {
-    let mut cache_backends = HashMap::new();
+    cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
+) -> Result<Vec<Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
     services
         .iter()
         .map(|service| {
@@ -16,9 +14,7 @@ pub(super) fn compile_forward_proxy_services(
                 0,
                 service.cache.as_ref(),
                 cache_specs,
-                &mut cache_backends,
-                mode,
-                deadline,
+                cache_backends,
             )?;
             let plan =
                 ForwardHttp1ServicePlan::acquire(service.clone(), cache).map_err(|source| {
