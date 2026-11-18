@@ -60,5 +60,7 @@ while IFS=$'\t' read -r package binary; do
       "${qemu}" -cpu "${cpu}" "${binary}" --test-threads=1 --nocapture
   done
 done < "${work}/tests"
-OXIROUTE_CPU_LEVEL=avx512 RUSTFLAGS='-C target-cpu=native' CARGO_TARGET_DIR=${target}/native \
+native=${target}/native-$("${repo}/scripts/lib/cpu_id.sh")
+printf 'native build in %s on: %s\n' "${native}" "$(grep -m1 '^model name' /proc/cpuinfo)"
+OXIROUTE_CPU_LEVEL=avx512 RUSTFLAGS='-C target-cpu=native' CARGO_TARGET_DIR=${native} \
   nice cargo test --release --locked -p oxiroute-cpu -p oxiroute-h1-head --jobs 4 -- --test-threads=4

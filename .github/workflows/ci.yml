@@ -43,6 +43,11 @@ jobs:
           ./scripts/verify/name_prefixes.sh
           ./scripts/verify/return_traps.sh
 
+      - name: Test and verify the CI cache keys
+        run: |
+          ./scripts/test/rust_cache_keys.sh
+          ./scripts/verify/rust_cache_keys.sh
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -200,12 +205,11 @@ jobs:
 
       - name: Identify the runner CPU
         id: cpu
-        run: echo "id=$(grep -E -m2 '^(model name|flags)' /proc/cpuinfo | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        run: echo "id=$(./scripts/lib/cpu_id.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Cargo dependencies per CPU
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cpu-targets
           key: ${{ steps.cpu.outputs.id }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

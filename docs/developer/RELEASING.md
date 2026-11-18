@@ -315,6 +315,12 @@ the external `httparse` oracle assumes AVX2 implies its compiler-required SSE fe
 CPUID combination. These masks establish primitive dispatch coverage, not full application coverage.
 AVX-512 requires a capable native host or an emulator that implements it; requesting it on an AVX2-only emulator
 does not establish AVX-512 coverage.
+The native build lives in `target/cpu-targets/native-<CPU>`, where `<CPU>` is the identity printed by
+`scripts/lib/cpu_id.sh` (a digest of the model name and feature flags): cargo fingerprints `-C target-cpu=native` by
+name, so dependency objects built on another CPU model would otherwise be linked into the test binary and raise
+`SIGILL` on the first instruction the runner lacks. The CI job keys its Rust cache by the same identity, and
+`scripts/verify/rust_cache_keys.sh` rejects a workflow that sets both `shared-key` and `key` (`rust-cache` ignores `key`
+then) or that caches a native lane without the CPU identity in the key.
 For a host whose libraries require x86-64-v3, set `QEMU_LD_PREFIX=/path/to/baseline-sysroot` to compatible generic
 loader, glibc and compiler runtime libraries. This changes the emulated loader; it does not alter the host libraries.
 `cpu-targets.sh` fails with that instruction when the host loader raises `SIGILL` on a baseline CPU model before any
