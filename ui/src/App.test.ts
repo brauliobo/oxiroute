@@ -14,7 +14,7 @@ import {
   jsonResponse,
 } from './test/contractFixtures'
 
-const fill = (element: Element) => (element as HTMLElement).style.getPropertyValue('--fill')
+const fill = (element: Element) => (element as HTMLElement).style.getPropertyValue('--ox-w')
 
 const exactHealthCounter = '18446744073709551615'
 const catalog = contractCatalog()
@@ -48,11 +48,12 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.get('.listener-list').text()).toContain('Listening')
-    expect(wrapper.get('.listener-failed').text()).toContain('Live edge')
-    expect(wrapper.get('.listener-failed .listener-state').text()).toBe('Failed')
-    expect(wrapper.get('.listener-stopped').text()).toContain('Forward H3')
-    expect(wrapper.get('.listener-stopped .listener-state').text()).toBe('Stopped')
+    const rows = wrapper.findAll('[data-section="listeners"] tbody')
+    expect(rows[0]!.text()).toContain('LISTENING')
+    expect(rows[1]!.text()).toContain('Live edge')
+    expect(rows[1]!.get('.ox-badge').text()).toBe('FAILED')
+    expect(rows[2]!.text()).toContain('Forward H3')
+    expect(rows[2]!.get('.ox-badge').text()).toBe('STOPPED')
     wrapper.unmount()
   })
 
@@ -91,49 +92,45 @@ describe('monitoring dashboard', () => {
       '/api/v1/topology',
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }),
     )
-    expect(wrapper.get('.topology-section').text()).toContain('Network topology')
-    expect(wrapper.get('.topology-section').text()).toContain('127.0.0.1:3000')
-    expect(wrapper.get('.traffic-panel').text()).toContain('42')
-    expect(wrapper.get('.traffic-panel').text()).toContain('12,345')
-    expect(wrapper.get('.host-panel').text()).toContain('0.42')
-    expect(wrapper.findAll('.load-track span').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
-    expect(fill(wrapper.get('.memory-track span').element)).toBe('75')
-    expect(wrapper.get('.process-panel').text()).toContain('12.5%')
+    expect(wrapper.get('[data-section="topology"]').text()).toContain('Network topology')
+    expect(wrapper.get('[data-section="topology"]').text()).toContain('127.0.0.1:3000')
+    expect(wrapper.get('[data-section="traffic"]').text()).toContain('42')
+    expect(wrapper.get('[data-section="traffic"]').text()).toContain('12,345')
+    expect(wrapper.get('[data-section="host"]').text()).toContain('0.42')
+    expect(wrapper.findAll('.ox-loads .ox-meter-fill').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
+    expect(fill(wrapper.get('[aria-label="Host memory used"] .ox-meter-fill').element)).toBe('75')
+    expect(wrapper.get('[data-section="process"]').text()).toContain('12.5%')
     expect(wrapper.get('.ox-readouts').text()).toContain('75%')
     expect(wrapper.get('.ox-readouts').text()).toContain('1d 1h')
-    expect(wrapper.get('.rtmp-panel').text()).toContain('768 MiB')
-    expect(wrapper.get('.listener-section').text()).toContain('HTTP ingress')
-    expect(wrapper.get('.listener-section').text()).toContain('127.0.0.1:8080')
-    expect(wrapper.get('.listener-section').text()).toContain(
+    expect(wrapper.get('[data-section="rtmp"]').text()).toContain('768 MiB')
+    expect(wrapper.get('[data-section="listeners"]').text()).toContain('HTTP ingress')
+    expect(wrapper.get('[data-section="listeners"]').text()).toContain('127.0.0.1:8080')
+    expect(wrapper.get('[data-section="listeners"]').text()).toContain(
       `14 / 1,000`,
     )
-    expect(wrapper.get('.listener-section').text()).toContain('28 / Unbounded')
-    expect(wrapper.get('.pool-section').text()).toContain('web-backends')
-    expect(wrapper.get('.pool-section').text()).toContain('Least connections')
-    expect(wrapper.get('.pool-section').text()).toContain('Active connections: 3')
-    expect(wrapper.get('.pool-section').text()).toContain('Degraded')
-    expect(wrapper.get('.pool-section').text()).toContain('1 / 2 endpoints available')
-    expect(wrapper.get('.pool-summary').text()).toContain(
-      '18,446,744,073,709,551,615 unavailable selections',
-    )
-    expect(wrapper.get('.endpoint-checks').text()).toContain(
-      '18,446,744,073,709,551,615 passed / 1 failed',
-    )
-    expect(wrapper.get('.endpoint-streak').text()).toContain('4 passed / 0 failed')
-    expect(wrapper.get('.endpoint-failure').text()).toContain('Last failure: Connection failed')
+    expect(wrapper.get('[data-section="listeners"]').text()).toContain('28 / Unbounded')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('web-backends')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('Least connections')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('3 / 100')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('DEGRADED')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('1 of 2 servers available')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('18,446,744,073,709,551,615')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('18,446,744,073,709,551,615 passed / 1 failed')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('4 passed / 0 failed in a row')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('Last failure: Connection failed')
 
     expect(wrapper.text()).toContain('live / camera')
     expect(wrapper.text()).toContain('12 viewers')
     expect(wrapper.text()).toContain('AAC')
     expect(wrapper.text()).toContain('AVC')
-    expect(wrapper.get('.recorder-panel').text()).toContain('Recording supported')
-    expect(wrapper.get('.recorder-panel').text()).toContain('Manual')
-    expect(wrapper.get('.recorder-panel').text()).toContain('Continuous')
-    expect(wrapper.get('.recorder-panel').text()).toContain('1 MiB written')
-    expect(wrapper.get('.recorder-panel').text()).toContain('2 segments')
-    expect(wrapper.get('.recorder-panel').text()).toContain('1 discontinuity')
-    expect(wrapper.get('.recorder-panel').text()).toContain('live/camera-001.flv')
-    expect(wrapper.get('.recorder-panel').text()).toContain('live/.camera-002.partial')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('Recording supported')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('Manual')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('Continuous')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('1 MiB written')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('2 segments')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('1 discontinuity')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('live/camera-001.flv')
+    expect(wrapper.get('[data-section="recorders"]').text()).toContain('live/.camera-002.partial')
     await wrapper.get('[data-recorder-action]').trigger('click')
     await flushPromises()
 
@@ -168,8 +165,8 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.get('.host-panel').text()).toContain('Unavailable')
-    expect(wrapper.get('.process-panel').text()).toContain('Unavailable')
+    expect(wrapper.get('[data-section="host"]').text()).toContain('Unavailable')
+    expect(wrapper.get('[data-section="process"]').text()).toContain('Unavailable')
     expect(wrapper.get('.ox-readouts').text()).toContain('Host memory usedUnavailable')
     wrapper.unmount()
 
@@ -194,8 +191,8 @@ describe('monitoring dashboard', () => {
 
     const zeroWrapper = mount(App)
     await flushPromises()
-    expect(zeroWrapper.get('.host-panel').text()).toContain('0.00')
-    expect(zeroWrapper.get('.process-panel').text()).toContain('0%')
+    expect(zeroWrapper.get('[data-section="host"]').text()).toContain('0.00')
+    expect(zeroWrapper.get('[data-section="process"]').text()).toContain('0%')
     expect(zeroWrapper.get('.ox-readouts').text()).toContain('Host memory used0%')
     zeroWrapper.unmount()
   })
@@ -219,7 +216,7 @@ describe('monitoring dashboard', () => {
 
     expect(wrapper.get('.ox-notices .ox-loading').attributes('role')).toBe('status')
     expect(wrapper.get('.ox-notices .ox-loading').text()).toContain('Establishing telemetry')
-    expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
+    expect(wrapper.find('[data-section="monitoring"]').exists()).toBe(false)
 
     pendingMonitoring.resolve(jsonResponse(monitoringSample()))
     pendingCatalog.resolve(jsonResponse(catalog))
@@ -244,8 +241,8 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.get('.traffic-panel').text()).toContain('42')
-    expect(wrapper.get('.topology-section').text()).toContain('Network topology')
+    expect(wrapper.get('[data-section="traffic"]').text()).toContain('42')
+    expect(wrapper.get('[data-section="topology"]').text()).toContain('Network topology')
     expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('Loading stream inventory')
     wrapper.unmount()
   })
@@ -277,7 +274,7 @@ describe('monitoring dashboard', () => {
 
     await wrapper.get('a[href="#/overview"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('.traffic-panel').text()).toContain('42')
+    expect(wrapper.get('[data-section="traffic"]').text()).toContain('42')
     expect(requestCounts.get('/api/v1/monitoring')).toBe(2)
     wrapper.unmount()
   })
@@ -404,7 +401,7 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.ox-notices [role="alert"]').attributes('role')).toBe('alert')
     expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('Monitoring unavailable')
     expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('metrics offline')
-    expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
+    expect(wrapper.find('[data-section="monitoring"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -422,7 +419,7 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.get('.pool-section').text()).toContain('No upstream pools are configured.')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('No upstream pools are configured.')
     wrapper.unmount()
   })
 
@@ -454,12 +451,12 @@ describe('monitoring dashboard', () => {
     pendingMonitoring.reject(new Error('gateway timeout'))
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(wrapper.get('.traffic-panel').text()).toContain('42')
+    expect(wrapper.get('[data-section="traffic"]').text()).toContain('42')
     expect(wrapper.get('.ox-notices [role="status"]').attributes('role')).toBe('status')
     expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('Retaining the last valid sample')
     expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('gateway timeout')
     expect(wrapper.get('.ox-feed').text()).toContain('Stale')
-    expect(wrapper.get('.pool-section').text()).toContain('web-backends')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('web-backends')
     wrapper.unmount()
   })
 })

@@ -1,208 +1,101 @@
-<template lang="pug">
-section.monitoring-overview(aria-labelledby="monitoring-heading")
-  .section-heading.monitoring-heading
-    div
-      p.eyebrow Live infrastructure
-      h2#monitoring-heading Monitoring overview
-    p.snapshot-time Snapshot {{ formatTime(monitoring.sampledAtUnixMs) }} / {{ formatSampleAge(currentUnixMs, monitoring.sampledAtUnixMs) }}
-
-  .monitor-grid
-    article.monitor-panel.traffic-panel
-      header.panel-heading
-        div
-          p.eyebrow Aggregate network
-          h3 Traffic
-        span.panel-index 01
-      .traffic-primary
-        div
-          strong.metric-display {{ formatCount(monitoring.traffic.activeConnections) }}
-          span.metric-caption Connections active now
-        .connection-total
-          span.label Lifetime accepted
-          strong {{ formatCount(monitoring.traffic.acceptedConnections) }}
-      .direction-grid
-        .direction-card
-          span.direction-arrow(aria-hidden="true") IN
-          div
-            span.label Inbound
-            strong {{ formatBytes(monitoring.traffic.bytesReceived) }}
-        .direction-card
-          span.direction-arrow.outbound(aria-hidden="true") OUT
-          div
-            span.label Outbound
-            strong {{ formatBytes(monitoring.traffic.bytesSent) }}
-
-    article.monitor-panel.host-panel
-      header.panel-heading
-        div
-          p.eyebrow Host pressure
-          h3 Load / memory
-        span.panel-index 02
-      .load-list(aria-label="Host load averages")
-        .load-row(v-for="load in hostLoads" :key="load.label")
-          span.load-window {{ load.label }}
-          .load-track(aria-hidden="true")
-            span(v-css-vars="{ '--fill': loadFillPercent(load.value) }")
-          strong {{ formatDecimal(load.value) }}
-      .memory-readout
-        .memory-copy
-          span.label Memory used
-          strong {{ formatOptionalBytes(usedMemoryBytes(monitoring.host)) }} / {{ formatOptionalBytes(monitoring.host.totalMemoryBytes) }}
-        .memory-track(aria-hidden="true")
-          span(v-css-vars="{ '--fill': memoryUsagePercent(monitoring.host) ?? 0 }")
-        span.available-copy {{ formatOptionalBytes(monitoring.host.availableMemoryBytes) }} available
-
-    article.monitor-panel.process-panel
-      header.panel-heading
-        div
-          p.eyebrow OxiRoute process
-          h3 Runtime
-        span.panel-index 03
-      .process-primary
-        span.label CPU utilization
-        strong.metric-display {{ formatOptionalPercent(monitoring.process.cpuPercent) }}
-      .process-grid
-        .compact-metric
-          span.label Resident
-          strong {{ formatOptionalBytes(monitoring.process.residentMemoryBytes) }}
-        .compact-metric
-          span.label Virtual
-          strong {{ formatOptionalBytes(monitoring.process.virtualMemoryBytes) }}
-        .compact-metric
-          span.label Threads
-          strong {{ formatOptionalCount(monitoring.process.threadCount) }}
-        .compact-metric
-          span.label Open files
-          strong {{ formatOptionalCount(monitoring.process.openFileDescriptors) }}
-
-    article.monitor-panel.rtmp-panel
-      header.panel-heading
-        div
-          p.eyebrow Media plane
-          h3 RTMP pulse
-        span.panel-index 04
-      .rtmp-signal
-        span.signal-ring(aria-hidden="true")
-        div
-          strong.metric-display {{ formatCount(monitoring.rtmp.activeStreams) }}
-          span.metric-caption Active {{ monitoring.rtmp.activeStreams === 1 ? 'stream' : 'streams' }}
-      .rtmp-grid
-        .compact-metric
-          span.label Publishers
-          strong {{ formatCount(monitoring.rtmp.publishers) }}
-        .compact-metric
-          span.label Subscribers
-          strong {{ formatCount(monitoring.rtmp.subscribers) }}
-        .compact-metric.payload-metric
-          span.label Active media
-          strong {{ formatBytes(monitoring.rtmp.mediaPayloadBytesReceived) }}
-
-  section.listener-section(aria-labelledby="listener-heading")
-    .listener-heading
-      div
-        p.eyebrow Bound surfaces
-        h3#listener-heading Listeners
-      span.listener-count {{ monitoring.listeners.length }} {{ monitoring.listeners.length === 1 ? 'endpoint' : 'endpoints' }}
-    p.listener-empty(v-if="monitoring.listeners.length === 0") No listeners are currently bound.
-    .listener-list(v-else)
-      article.listener-row(
-        v-for="listener in monitoring.listeners"
-        :key="`${listener.protocol}:${listener.name}:${listener.bind}`"
-        :class="`listener-${listener.state}`"
-      )
-        header.listener-identity
-          span.protocol-badge(:class="`protocol-${listener.protocol}`") {{ listenerProtocolLabels[listener.protocol] }}
-          div
-            h4 {{ listener.name }}
-            code {{ listener.bind }}
-          span.listener-state(:class="`listener-state-${listener.state}`") {{ listenerStateLabels[listener.state] }}
-        .listener-metrics
-          .listener-metric
-            span.label Active / limit
-            strong {{ formatCount(listener.activeConnections) }} / {{ formatLimit(listener.maxConnections) }}
-          .listener-metric
-            span.label Accepted
-            strong {{ formatCount(listener.acceptedConnections) }}
-          .listener-metric
-            span.label Received
-            strong {{ formatBytes(listener.bytesReceived) }}
-          .listener-metric
-            span.label Sent
-            strong {{ formatBytes(listener.bytesSent) }}
-
-  section.pool-section(aria-labelledby="pool-heading")
-    .listener-heading
-      div
-        p.eyebrow Origin readiness
-        h3#pool-heading Upstream pools
-      span.listener-count {{ monitoring.upstreamPools.length }} {{ monitoring.upstreamPools.length === 1 ? 'pool' : 'pools' }}
-    p.listener-empty(v-if="monitoring.upstreamPools.length === 0") No upstream pools are configured.
-    .pool-grid(v-else)
-      article.pool-card(v-for="pool in monitoring.upstreamPools" :key="pool.name")
-        header.pool-heading
-          div
-            h4 {{ pool.name }}
-            span.pool-algorithm Routing: {{ poolAlgorithmLabels[pool.algorithm] }}
-          .pool-summary
-            strong {{ poolAvailabilityLabel(pool) }}
-            span {{ pool.availableEndpoints }} / {{ pool.totalEndpoints }} endpoints available
-            span {{ formatCount(pool.unavailableSelections) }} unavailable selections
-        ul.endpoint-list(:aria-label="`${pool.name} endpoints`")
-          li.endpoint-row(v-for="endpoint in pool.endpoints" :key="endpoint.address")
-            code {{ endpoint.address }}
-            span.health-state(:class="`health-${endpoint.state}`") {{ endpointHealthLabels[endpoint.state] }}
-            span.endpoint-leases Active connections: {{ formatCount(endpoint.activeConnections) }}
-            span.endpoint-observation {{ endpoint.lastCheckedAtUnixMs === null ? 'No checks completed' : `Last checked ${formatSampleAge(currentUnixMs, endpoint.lastCheckedAtUnixMs)}` }}
-            span.endpoint-checks Total checks: {{ formatCount(endpoint.successfulChecks) }} passed / {{ formatCount(endpoint.failedChecks) }} failed
-            span.endpoint-streak Consecutive checks: {{ formatCount(endpoint.consecutiveSuccesses) }} passed / {{ formatCount(endpoint.consecutiveFailures) }} failed
-            span.endpoint-failure(v-if="endpoint.lastFailure") Last failure: {{ healthFailureLabels[endpoint.lastFailure] }}
-</template>
-
-<script setup lang="ts" vapor>
+<script setup vapor lang="ts">
 import { computed } from 'vue'
-
-import type { MonitoringPool, MonitoringSnapshot } from '../api'
-import { vCssVars } from '#design/directives/cssVars'
-import { formatBytes, formatTime, formatCount } from '../formatters'
-import { listenerStateLabels } from '../runtimeStates'
-import { endpointHealthLabels, healthFailureLabels, listenerProtocolLabels, poolAlgorithmLabels } from './labels'
+import EmptyState from '#design/empty/EmptyState.vue'
+import Meter from '#design/meter/Meter.vue'
+import Card from '#design/panel/Card.vue'
+import Panel from '#design/panel/Panel.vue'
+import type { MonitoringSnapshot } from '../api'
+import { formatBytes, formatCount, formatTime, pluralize } from '../formatters'
+import ListenerTable from './ListenerTable.vue'
+import MetricList from './MetricList.vue'
+import PoolCard from './PoolCard.vue'
+import type { Metric } from './metric'
 import {
-  formatDecimal,
-  formatLimit,
-  formatOptionalBytes,
-  formatOptionalCount,
-  formatOptionalPercent,
-  formatSampleAge,
-  memoryUsagePercent,
+  formatDecimal, formatOptionalBytes, formatOptionalCount, formatOptionalPercent, formatSampleAge, memoryUsagePercent,
   usedMemoryBytes,
 } from './telemetry'
+import './styles.css'
 
-const props = defineProps<{
-  monitoring: MonitoringSnapshot
-  currentUnixMs: number
-}>()
+const props = defineProps<{ monitoring: MonitoringSnapshot; currentUnixMs: number }>()
 
 const hostLoads = computed(() => [
-  { label: '01m', value: props.monitoring.host.loadAverage1m },
-  { label: '05m', value: props.monitoring.host.loadAverage5m },
-  { label: '15m', value: props.monitoring.host.loadAverage15m },
+  { label: '1 min', value: props.monitoring.host.loadAverage1m },
+  { label: '5 min', value: props.monitoring.host.loadAverage5m },
+  { label: '15 min', value: props.monitoring.host.loadAverage15m },
 ])
-const maximumHostLoad = computed(() => Math.max(
-  1,
-  ...hostLoads.value.flatMap(({ value }) => value === null ? [] : [value]),
-))
+const maximumHostLoad = computed(() => Math.max(1, ...hostLoads.value.map(({ value }) => value ?? 0)))
+const memoryPercent = computed(() => memoryUsagePercent(props.monitoring.host))
+const memoryText = computed(() => formatOptionalPercent(memoryPercent.value))
 
-function poolAvailabilityLabel(pool: MonitoringPool): string {
-  if (pool.availableEndpoints === 0) return 'Unavailable'
-  if (pool.availableEndpoints === pool.totalEndpoints) return 'Fully available'
-  return 'Degraded'
-}
-
-function loadFillPercent(value: number | null): number {
-  if (value === null || value <= 0) return 0
-  return Math.max(4, (value / maximumHostLoad.value) * 100)
-}
+const traffic = computed<Metric[]>(() => [
+  { label: 'Active connections', value: formatCount(props.monitoring.traffic.activeConnections) },
+  { label: 'Accepted in total', value: formatCount(props.monitoring.traffic.acceptedConnections) },
+  { label: 'Received', value: formatBytes(props.monitoring.traffic.bytesReceived) },
+  { label: 'Sent', value: formatBytes(props.monitoring.traffic.bytesSent) },
+])
+const memory = computed<Metric[]>(() => [
+  { label: 'Used', value: formatOptionalBytes(usedMemoryBytes(props.monitoring.host)) },
+  { label: 'Total', value: formatOptionalBytes(props.monitoring.host.totalMemoryBytes) },
+  { label: 'Available', value: formatOptionalBytes(props.monitoring.host.availableMemoryBytes) },
+])
+const runtime = computed<Metric[]>(() => [
+  { label: 'CPU utilization', value: formatOptionalPercent(props.monitoring.process.cpuPercent) },
+  { label: 'Resident memory', value: formatOptionalBytes(props.monitoring.process.residentMemoryBytes) },
+  { label: 'Virtual memory', value: formatOptionalBytes(props.monitoring.process.virtualMemoryBytes) },
+  { label: 'Threads', value: formatOptionalCount(props.monitoring.process.threadCount) },
+  { label: 'Open files', value: formatOptionalCount(props.monitoring.process.openFileDescriptors) },
+])
+const rtmp = computed<Metric[]>(() => [
+  { label: 'Active streams', value: formatCount(props.monitoring.rtmp.activeStreams) },
+  { label: 'Publishers', value: formatCount(props.monitoring.rtmp.publishers) },
+  { label: 'Subscribers', value: formatCount(props.monitoring.rtmp.subscribers) },
+  { label: 'Media received', value: formatBytes(props.monitoring.rtmp.mediaPayloadBytesReceived) },
+])
 </script>
 
-<style scoped src="./base.css"></style>
-<style scoped src="./MonitoringOverview.css"></style>
+<template lang="pug">
+Panel.ox-view-section(title="Monitoring overview" data-section="monitoring")
+  p.ox-muted Snapshot {{ formatTime(monitoring.sampledAtUnixMs) }} ({{ formatSampleAge(currentUnixMs, monitoring.sampledAtUnixMs) }})
+  .ox-cards
+    Card(data-section="traffic")
+      h3 Traffic
+      MetricList(large :items="traffic")
+    Card(data-section="host")
+      h3 Host load and memory
+      .ox-loads(role="group" aria-label="Host load averages")
+        .ox-load(v-for="load in hostLoads" :key="load.label")
+          span {{ load.label }}
+          Meter(
+            :value="load.value ?? 0"
+            :max="maximumHostLoad"
+            :label="`Load average ${load.label}`"
+            :value-text="formatDecimal(load.value)"
+          )
+          strong {{ formatDecimal(load.value) }}
+      .ox-load
+        span Memory
+        Meter(:value="memoryPercent ?? 0" label="Host memory used" :value-text="memoryText")
+        strong {{ memoryText }}
+      MetricList(:items="memory")
+    Card(data-section="process")
+      h3 OxiRoute process
+      MetricList(:items="runtime")
+    Card(data-section="rtmp")
+      h3 RTMP media
+      MetricList(:items="rtmp")
+
+Panel.ox-view-section(title="Listeners" data-section="listeners")
+  p.ox-muted {{ pluralize(monitoring.listeners.length, 'listener') }}
+  EmptyState(v-if="monitoring.listeners.length === 0") No listeners are currently bound.
+  ListenerTable(v-else :listeners="monitoring.listeners")
+
+Panel.ox-view-section(title="Upstream pools" data-section="pools")
+  p.ox-muted {{ pluralize(monitoring.upstreamPools.length, 'pool') }}
+  EmptyState(v-if="monitoring.upstreamPools.length === 0") No upstream pools are configured.
+  PoolCard(
+    v-for="pool in monitoring.upstreamPools"
+    :key="pool.name"
+    :pool="pool"
+    :sampled-at-unix-ms="monitoring.sampledAtUnixMs"
+  )
+</template>

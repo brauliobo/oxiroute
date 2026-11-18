@@ -1,0 +1,119 @@
+@layer ox.page {
+  .ox-view-section {
+    margin-top: var(--ox-gap);
+  }
+
+  .ox-view-section > p.ox-muted {
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-view-section > .ox-metrics {
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+    gap: var(--ox-gap);
+    align-items: start;
+  }
+
+  .ox-cards > .ox-card,
+  .ox-pool {
+    display: grid;
+    gap: var(--ox-space-5);
+    min-width: 0;
+  }
+
+  .ox-pool + .ox-pool {
+    margin-top: var(--ox-gap);
+  }
+
+  .ox-card > h3,
+  .ox-card-head h3 {
+    font-size: var(--ox-text-base);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-3) var(--ox-space-5);
+  }
+
+  .ox-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr));
+    gap: var(--ox-space-4) var(--ox-space-6);
+    margin: 0;
+  }
+
+  .ox-metrics > div {
+    display: grid;
+    align-content: start;
+    gap: var(--ox-space-1);
+    min-width: 0;
+  }
+
+  .ox-metrics dt {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+  }
+
+  .ox-metrics dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ox-metrics-large dd {
+    font-size: var(--ox-text-xl);
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-mono {
+    font-family: var(--ox-mono);
+    font-size: var(--ox-text-sm);
+  }
+
+  .ox-loads {
+    display: grid;
+    gap: var(--ox-space-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ox-load {
+    display: grid;
+    grid-template-columns: 4.5rem minmax(0, 1fr) 3.5rem;
+    align-items: center;
+    gap: var(--ox-space-5);
+  }
+
+  .ox-load > :last-child {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ox-cell-note {
+    display: block;
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+    font-weight: var(--ox-weight-normal);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-view-section .ox-table td,
+  .ox-view-section .ox-table tbody th {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 45rem) {
+    .ox-metrics-large dd {
+      font-size: var(--ox-text-lg);
+    }
+  }
+}

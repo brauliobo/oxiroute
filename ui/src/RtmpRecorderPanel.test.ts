@@ -139,4 +139,46 @@ describe('RtmpRecorderPanel', () => {
     expect(wrapper.text()).not.toContain('cannot be recorded')
     expect(wrapper.find('[data-recorder-action]').exists()).toBe(false)
   })
+
+  it('shows recorder phases and relays as words with a shape, never by colour alone', () => {
+    const failed = recorder({ id: 'recorder-3', phase: { state: 'failed', operation_id: 'op', code: 'write_failed' } })
+    const recording = recorder({ id: 'recorder-4', phase: { state: 'recording', operation_id: 'op', started_at_unix_ms: 1 } })
+    const withRelay = stream([recorder(), failed, recording])
+    withRelay.relays = [{
+      id: 'relay-1',
+      destination: { address: '192.0.2.5:1935', application: 'ingest', stream_name: 'camera' },
+      phase: 'backoff',
+      last_failure: 'connect',
+      reconnects: '1',
+      events_dropped: '2',
+      payload_bytes_sent: '2048',
+    } as StreamSnapshot['relays'][number]]
+    const wrapper = mount(RtmpRecorderPanel, { props: { stream: withRelay, manualRecording: true, busyRecorderId: null } })
+
+    const badges = wrapper.findAll('.ox-badge')
+    expect(badges.map((badge) => badge.text())).toEqual(['IDLE', 'FAILED', 'RECORDING', 'BACKOFF'])
+    expect(badges.map((badge) => badge.classes().find((name) => name.startsWith('ox-tone-')))).toEqual([
+      'ox-tone-neutral', 'ox-tone-bad', 'ox-tone-ok', 'ox-tone-warn',
+    ])
+    expect(wrapper.text()).toContain('1 reconnect')
+    expect(wrapper.text()).toContain('2 drops')
+    expect(wrapper.text()).toContain('2 KiB sent')
+    expect(wrapper.text()).toContain('Last operational failure: connect')
+  })
+
+  it('labels automatic recorders and names the stop button as dangerous', () => {
+    const wrapper = mount(RtmpRecorderPanel, {
+      props: {
+        stream: stream([
+          recorder({ manual: false }),
+          recorder({ id: 'recorder-5', phase: { state: 'recording', operation_id: 'op', started_at_unix_ms: 1 } }),
+        ]),
+        manualRecording: true,
+        busyRecorderId: null,
+      },
+    })
+
+    expect(wrapper.text()).toContain('AUTOMATIC')
+    expect(wrapper.get('[data-recorder-action]').classes()).toContain('ox-danger')
+  })
 })

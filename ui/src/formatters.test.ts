@@ -29,6 +29,9 @@ describe('shared presentation formatters', () => {
     expect(pluralize(2, 'application')).toBe('2 applications')
     expect(pluralize(1, 'discontinuity', 'discontinuities')).toBe('1 discontinuity')
     expect(pluralize(3, 'discontinuity', 'discontinuities')).toBe('3 discontinuities')
+    expect(pluralize('1', 'segment')).toBe('1 segment')
+    expect(pluralize('18446744073709551615', 'drop')).toBe('18,446,744,073,709,551,615 drops')
+    expect(pluralize(1500, 'listener')).toBe('1,500 listeners')
   })
 
   it('shortens revisions and preserves the absent revision label', () => {
