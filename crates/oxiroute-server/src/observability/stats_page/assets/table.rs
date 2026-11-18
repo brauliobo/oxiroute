@@ -7,9 +7,9 @@ pub(super) const SHELL: &str = include_str!("../../../../assets/stats/index.html
 
 pub(super) static ASSETS: &[Asset] = &[
     Asset {
-        name: "stats-B-jgxAdY.js",
-        etag: "\"e27e2f193fca3b4805707cfa7ac56b77\"",
-        body: include_bytes!("../../../../assets/stats/assets/stats-B-jgxAdY.js"),
+        name: "stats-BbJs1m8I.js",
+        etag: "\"a7ab6dc6e7cc1ebf63b1835a38d9cbe0\"",
+        body: include_bytes!("../../../../assets/stats/assets/stats-BbJs1m8I.js"),
     },
     Asset {
         name: "stats-D0HIhk1l.css",
