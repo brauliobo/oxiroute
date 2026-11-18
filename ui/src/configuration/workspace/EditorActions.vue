@@ -3,6 +3,7 @@ footer.editor-actions
   button.secondary-button(type="button" :disabled="!dirty || validating || saving" :title="resetDisabledReason" @click="emit('reset')") Reset draft
   button.primary-button(type="button" :disabled="validating || saving || stale" :title="validationDisabledReason" @click="emit('validate')")
     | {{ validating ? 'Validating...' : 'Validate candidate' }}
+  span.diagnostic-summary(v-if="summary") {{ summary }}
   button.review-button(type="button" :disabled="!canReview || saving" :title="reviewDisabledReason" @click="emit('review', $event)") Review save
 </template>
 
@@ -17,6 +18,7 @@ const props = defineProps<{
   compositional: boolean
   validationCurrent: boolean
   canReview: boolean
+  summary: string
 }>()
 const emit = defineEmits<{ reset: []; validate: []; review: [event: Event] }>()
 

@@ -1,6 +1,5 @@
 <template lang="pug">
-fieldset.object-block.limit-control(:data-field="fieldPath")
-  legend {{ legend }}
+ConfigGroup.object-block.limit-control(:path="fieldPath" :legend="legend")
   .field-grid
     label.field
       span {{ modeLabel }}
@@ -14,6 +13,7 @@ fieldset.object-block.limit-control(:data-field="fieldPath")
 
 <script setup lang="ts" vapor>
 import { integerInRange } from '../valueGuards'
+import ConfigGroup from './fields/ConfigGroup.vue'
 
 const props = withDefaults(
   defineProps<{

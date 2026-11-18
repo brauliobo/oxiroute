@@ -4,29 +4,25 @@ article.route-card
     strong Endpoint {{ index + 1 }}
     button.danger-link(type="button" :aria-label="`Remove endpoint ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
-    label.field(data-field="upstream_pools[].servers[].endpoint.type")
-      span Endpoint type
+    ConfigField(path="upstream_pools[].servers[].endpoint.type" label="Endpoint type")
       select(:value="endpoint.type" @change="changeType")
         option(value="socket") Network socket
         option(value="dns") DNS name
         option(value="unix") Unix socket
-    label.field(v-if="endpoint.type === 'socket'" data-field="upstream_pools[].servers[].endpoint.address")
-      span Socket address
+    ConfigField(v-if="endpoint.type === 'socket'" path="upstream_pools[].servers[].endpoint.address" label="Socket address")
       input(type="text" v-model="endpoint.address" placeholder="127.0.0.1:3000")
     template(v-else-if="endpoint.type === 'dns'")
-      label.field(data-field="upstream_pools[].servers[].endpoint.host")
-        span DNS host
+      ConfigField(path="upstream_pools[].servers[].endpoint.host" label="DNS host")
         input(type="text" v-model="endpoint.host" placeholder="backend.example.test")
-      label.field(data-field="upstream_pools[].servers[].endpoint.port")
-        span Port
+      ConfigField(path="upstream_pools[].servers[].endpoint.port" label="Port")
         input(type="number" min="1" max="65535" step="1" v-model.number="endpoint.port")
-    label.field(v-else data-field="upstream_pools[].servers[].endpoint.path")
-      span Unix socket path
+    ConfigField(v-else path="upstream_pools[].servers[].endpoint.path" label="Unix socket path")
       input(type="text" v-model="endpoint.path" placeholder="/run/oxiroute/backend.sock")
 </template>
 
 <script setup lang="ts" vapor>
 import type { UpstreamEndpoint } from '../config'
+import ConfigField from './fields/ConfigField.vue'
 
 defineProps<{
   endpoint: UpstreamEndpoint

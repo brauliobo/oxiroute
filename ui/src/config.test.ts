@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
+import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig, isConfigDiagnostic } from './config'
 import { canonicalConfig } from './test/configurationWorkspace'
 import { contractConfigSnapshot } from './test/contractFixtures'
 
@@ -533,5 +533,12 @@ describe('canonical field registry', () => {
     expect(isCanonicalConfig(config)).toBe(false)
     delete (recorder as Partial<typeof recorder>).retention_max_age_ms
     expect(isCanonicalConfig(config)).toBe(false)
+  })
+
+  it('keeps the explanation and the line of a diagnostic and rejects malformed ones', () => {
+    const diagnostic = { code: 'E_PARSE', severity: 'error', stage: 'parse', message: 'm', path: '/a', detail: 'why', line: 3 }
+    expect(isConfigDiagnostic(diagnostic)).toBe(true)
+    expect(isConfigDiagnostic({ ...diagnostic, detail: 4 })).toBe(false)
+    expect(isConfigDiagnostic({ ...diagnostic, line: '3' })).toBe(false)
   })
 })

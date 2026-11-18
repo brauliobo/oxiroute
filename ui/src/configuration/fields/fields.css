@@ -1,0 +1,61 @@
+@layer ox.page {
+  .config-field {
+    display: grid;
+    min-width: 0;
+    align-content: start;
+    gap: var(--ox-space-3);
+  }
+
+  .stack-list,
+  .time-range-list {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .field-issues {
+    display: grid;
+    gap: var(--ox-space-2);
+  }
+
+  .field-error {
+    margin: 0;
+    padding: var(--ox-space-3) var(--ox-space-4);
+    border-left: var(--ox-space-2) solid var(--ox-bad);
+    background: var(--ox-surface);
+    color: var(--ox-fg);
+    font-size: var(--ox-text-xs);
+    font-weight: var(--ox-weight-normal);
+    letter-spacing: 0;
+    line-height: var(--ox-leading-body);
+    text-transform: none;
+  }
+
+  .field-error strong {
+    color: var(--ox-bad);
+  }
+
+  .field-error[data-severity='warning'] {
+    border-left-color: var(--ox-warn);
+  }
+
+  .field-error[data-severity='warning'] strong {
+    color: var(--ox-warn);
+  }
+
+  .field-error-detail {
+    display: block;
+  }
+
+  .field-error-path {
+    display: block;
+    color: var(--ox-muted);
+    font-family: var(--ox-mono);
+    overflow-wrap: anywhere;
+  }
+
+  [data-issue-wired][aria-invalid='true'] {
+    border-color: var(--ox-bad);
+  }
+}

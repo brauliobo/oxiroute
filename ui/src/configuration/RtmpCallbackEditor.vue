@@ -1,52 +1,40 @@
 <template lang="pug">
-fieldset.object-block(:data-field="fieldPath")
-  legend {{ legend }}
+ConfigGroup.object-block(:path="fieldPath" :legend="legend")
   .field-grid
-    label.field(:data-field="`${fieldPath}.on_connect`")
-      span Connect callback
+    ConfigField(:path="`${fieldPath}.on_connect`" label="Connect callback")
       input(type="text" v-model="callbacks.on_connect" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_disconnect`")
-      span Disconnect callback
+    ConfigField(:path="`${fieldPath}.on_disconnect`" label="Disconnect callback")
       input(type="text" v-model="callbacks.on_disconnect" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_publish`")
-      span Publish callback
+    ConfigField(:path="`${fieldPath}.on_publish`" label="Publish callback")
       input(type="text" v-model="callbacks.on_publish" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_publish_done`")
-      span Publish done callback
+    ConfigField(:path="`${fieldPath}.on_publish_done`" label="Publish done callback")
       input(type="text" v-model="callbacks.on_publish_done" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_play`")
-      span Play callback
+    ConfigField(:path="`${fieldPath}.on_play`" label="Play callback")
       input(type="text" v-model="callbacks.on_play" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_play_done`")
-      span Play done callback
+    ConfigField(:path="`${fieldPath}.on_play_done`" label="Play done callback")
       input(type="text" v-model="callbacks.on_play_done" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_done`")
-      span Done callback
+    ConfigField(:path="`${fieldPath}.on_done`" label="Done callback")
       input(type="text" v-model="callbacks.on_done" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.on_update`")
-      span Update callback
+    ConfigField(:path="`${fieldPath}.on_update`" label="Update callback")
       input(type="text" v-model="callbacks.on_update" autocomplete="off")
-    label.field(:data-field="`${fieldPath}.notify_method`")
-      span Callback method
+    ConfigField(:path="`${fieldPath}.notify_method`" label="Callback method")
       select(v-model="callbacks.notify_method")
         option(value="post") POST
         option(value="get") GET
-    label.field(:data-field="`${fieldPath}.timeout_ms`")
-      span Callback timeout (ms)
+    ConfigField(:path="`${fieldPath}.timeout_ms`" label="Callback timeout (ms)")
       input(type="number" min="1" max="86400000" step="1" v-model.number="callbacks.timeout_ms")
-    label.field(:data-field="`${fieldPath}.notify_update_timeout_ms`")
-      span Update timeout (ms)
+    ConfigField(:path="`${fieldPath}.notify_update_timeout_ms`" label="Update timeout (ms)")
       input(type="number" min="1" max="86400000" step="1" v-model.number="callbacks.notify_update_timeout_ms")
-    label.enable-row.compact-enable(:data-field="`${fieldPath}.notify_update_strict`")
+    ConfigField.compact-enable(:path="`${fieldPath}.notify_update_strict`" label="Require update callback success" check)
       input(type="checkbox" v-model="callbacks.notify_update_strict")
-      span Require update callback success
-    label.enable-row.compact-enable(:data-field="`${fieldPath}.notify_relay_redirect`")
+    ConfigField.compact-enable(:path="`${fieldPath}.notify_relay_redirect`" label="Notify relay redirects" check)
       input(type="checkbox" v-model="callbacks.notify_relay_redirect")
-      span Notify relay redirects
 </template>
 
 <script setup lang="ts" vapor>
 import type { RtmpCallbackConfig } from '../config'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
 
 defineProps<{
   callbacks: RtmpCallbackConfig

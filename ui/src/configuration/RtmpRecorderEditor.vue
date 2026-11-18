@@ -1,47 +1,35 @@
 <template lang="pug">
-article.route-card.recorder-card
+ItemScope.route-card.recorder-card(:index="index")
   header.route-card-heading
     strong Recorder {{ index + 1 }}
     button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
-    label.field(data-field="rtmp_services[].applications[].recorders[].name")
-      span Stable name
+    ConfigField(path="rtmp_services[].applications[].recorders[].name" label="Stable name")
       input(type="text" v-model="recorder.name" required)
-    label.field(data-field="rtmp_services[].applications[].recorders[].start")
-      span Start policy
+    ConfigField(path="rtmp_services[].applications[].recorders[].start" label="Start policy")
       select(v-model="recorder.start")
         option(value="continuous") Continuous
         option(value="manual") Manual control
-    label.field(data-field="rtmp_services[].applications[].recorders[].root_directory")
-      span Recording root directory
+    ConfigField(path="rtmp_services[].applications[].recorders[].root_directory" label="Recording root directory")
       input(type="text" v-model="recorder.root_directory" required placeholder="/var/lib/oxiroute/recordings")
-  fieldset.object-block(data-field="rtmp_services[].applications[].recorders[].record_mask")
-    legend Media selection
+  ConfigGroup.object-block(path="rtmp_services[].applications[].recorders[].record_mask" legend="Media selection")
     .field-grid
-      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.audio")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].record_mask.audio" label="Include audio" check)
         input(type="checkbox" v-model="recorder.record_mask.audio")
-        span Include audio
-      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.video")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].record_mask.video" label="Include video" check)
         input(type="checkbox" v-model="recorder.record_mask.video")
-        span Include video
-      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.keyframes")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].record_mask.keyframes" label="Keep keyframes only" check)
         input(type="checkbox" v-model="recorder.record_mask.keyframes")
-        span Keep keyframes only
-    label.field(data-field="rtmp_services[].applications[].recorders[].suffix_template")
-      span File suffix template
+    ConfigField(path="rtmp_services[].applications[].recorders[].suffix_template" label="File suffix template")
       input(type="text" v-model="recorder.suffix_template" required placeholder="-%Y-%m-%dT%H-%M-%S.flv")
-    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].append_unix_seconds")
+    ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].append_unix_seconds" label="Append Unix seconds to file names" check)
       input(type="checkbox" v-model="recorder.append_unix_seconds")
-      span Append Unix seconds to file names
-    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].append")
+    ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].append" label="Resume a valid existing segment" check)
       input(type="checkbox" v-model="recorder.append")
-      span Resume a valid existing segment
-    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].lock")
+    ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].lock" label="Lock the active file" check)
       input(type="checkbox" v-model="recorder.lock")
-      span Lock the active file
-    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].notify")
+    ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].notify" label="Retain recorder notifications" check)
       input(type="checkbox" v-model="recorder.notify")
-      span Retain recorder notifications
   .field-grid
     NullableLimitField(
       v-model="recorder.max_size"
@@ -61,17 +49,14 @@ article.route-card.recorder-card
       :max="1_000_000_000"
       unbounded-label="No recording frame limit"
     )
-    label.field(data-field="rtmp_services[].applications[].recorders[].timezone")
-      span Filename timezone
+    ConfigField(path="rtmp_services[].applications[].recorders[].timezone" label="Filename timezone")
       input(type="text" v-model="recorder.timezone" required placeholder="America/Argentina/Buenos_Aires")
       small Use `utc` or an IANA timezone name.
-    label.field(data-field="rtmp_services[].applications[].recorders[].time_basis")
-      span Filename time basis
+    ConfigField(path="rtmp_services[].applications[].recorders[].time_basis" label="Filename time basis")
       select(v-model="recorder.time_basis")
         option(value="segment_start") Segment start
         option(value="segment_end") Segment end
-    label.field(data-field="rtmp_services[].applications[].recorders[].segment_naming")
-      span Rotation naming
+    ConfigField(path="rtmp_services[].applications[].recorders[].segment_naming" label="Rotation naming")
       select(v-model="recorder.segment_naming")
         option(value="safe_unique") Sequenced safe names
         option(value="nginx_compatible") Rerender suffix each segment
@@ -89,15 +74,12 @@ article.route-card.recorder-card
   fieldset.object-block.recorder-limits
     legend Queue and shutdown
     .field-grid
-      label.field(data-field="rtmp_services[].applications[].recorders[].max_queue_messages")
-        span Maximum queued messages
+      ConfigField(path="rtmp_services[].applications[].recorders[].max_queue_messages" label="Maximum queued messages")
         input(type="number" min="1" max="65536" step="1" v-model.number="recorder.max_queue_messages")
-      label.field(data-field="rtmp_services[].applications[].recorders[].max_queue_bytes")
-        span Maximum queued bytes
+      ConfigField(path="rtmp_services[].applications[].recorders[].max_queue_bytes" label="Maximum queued bytes")
         input(type="number" min="1" :max="recorder.max_storage_bytes === null ? 1073741824 : Math.min(1073741824, recorder.max_storage_bytes)" step="1" v-model.number="recorder.max_queue_bytes")
         small Must not exceed a configured storage byte limit.
-      label.field(data-field="rtmp_services[].applications[].recorders[].shutdown_timeout_ms")
-        span Shutdown timeout (ms)
+      ConfigField(path="rtmp_services[].applications[].recorders[].shutdown_timeout_ms" label="Shutdown timeout (ms)")
         input(type="number" min="1" max="60000" step="1" v-model.number="recorder.shutdown_timeout_ms")
   fieldset.object-block.recorder-limits
     legend Shared storage limits
@@ -120,11 +102,9 @@ article.route-card.recorder-card
       unbounded-label="No file quota"
     )
     .field-grid
-      label.field(data-field="rtmp_services[].applications[].recorders[].max_active_recorders")
-        span Maximum active recorders
+      ConfigField(path="rtmp_services[].applications[].recorders[].max_active_recorders" label="Maximum active recorders")
         input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")
-      label.field(data-field="rtmp_services[].applications[].recorders[].retention")
-        span When a storage quota is reached
+      ConfigField(path="rtmp_services[].applications[].recorders[].retention" label="When a storage quota is reached")
         Select(:model-value="recorder.retention" :options="retentionOptions" @update:modelValue="setRetention")
         small Delete oldest removes the oldest finished recordings in the root, never an active one.
     NullableLimitField(
@@ -143,6 +123,9 @@ import Select from '#design/field/Select.vue'
 import type { SelectOption } from '#design/field/types'
 import type { RtmpRecorderConfig, RtmpRecorderRetention } from '../config'
 import NullableLimitField from './NullableLimitField.vue'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
+import ItemScope from './fields/ItemScope.vue'
 
 const props = defineProps<{
   recorder: RtmpRecorderConfig

@@ -1,18 +1,14 @@
 <template lang="pug">
 SectionHeading(eyebrow="Optional object" title="Management" path="Config.management")
-label.enable-row(data-field="management")
+ConfigField(path="management" label="Enable the loopback management listener" check)
   input(type="checkbox" :checked="config.management !== null" @change="toggleManagement")
-  span Enable the loopback management listener
 .field-grid(v-if="config.management")
-  label.field(data-field="management.bind")
-    span Bind address
+  ConfigField(path="management.bind" label="Bind address")
     input(type="text" v-model="config.management.bind" placeholder="127.0.0.1:9080")
-  label.field(data-field="management.ui_dir")
-    span Prebuilt UI directory
+  ConfigField(path="management.ui_dir" label="Prebuilt UI directory")
     input(type="text" :value="config.management.ui_dir ?? ''" placeholder="/opt/oxiroute/ui/dist" @input="setUiDir")
     small Optional; empty writes null.
-  label.field(data-field="management.token_file")
-    span Management token file
+  ConfigField(path="management.token_file" label="Management token file")
     input(type="text" :value="config.management.token_file ?? ''" placeholder="/etc/oxiroute/management.token" @input="setTokenFile")
     small Optional; empty falls back to OXIROUTE_MANAGEMENT_TOKEN_FILE. The token itself is never stored here.
 </template>
@@ -21,6 +17,7 @@ label.enable-row(data-field="management")
 import type { CanonicalConfig } from '../../config'
 import { nullableInput } from './inputValues'
 import SectionHeading from './SectionHeading.vue'
+import ConfigField from '../fields/ConfigField.vue'
 
 const props = defineProps<{ config: CanonicalConfig }>()
 

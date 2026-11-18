@@ -179,7 +179,9 @@ export function isConfigDiagnostic(value: unknown): value is ConfigDiagnostic {
     ['error', 'warning'].includes(String(value.severity)) &&
     ['read', 'parse', 'validation', 'render', 'conflict', 'write', 'sync', 'rollback', 'activation']
       .includes(String(value.stage)) && typeof value.message === 'string' &&
-    (value.path === undefined || typeof value.path === 'string')
+    (value.path === undefined || typeof value.path === 'string') &&
+    (value.detail === undefined || typeof value.detail === 'string') &&
+    (value.line === undefined || typeof value.line === 'number')
 }
 
 export function errorDiagnosticsFrom(value: unknown): ConfigDiagnostic[] {

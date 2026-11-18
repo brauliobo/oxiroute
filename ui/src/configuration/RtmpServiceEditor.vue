@@ -11,352 +11,275 @@ RtmpExecProfilesEditor(
   @remove="removeExecProfile"
   @add-environment="addExecEnvironment"
 )
-fieldset.route-list(data-field="rtmp_services[].applications")
-  .route-heading
-    legend Applications
-    button.add-row(
-      type="button"
-      :disabled="service.applications.length >= 256"
-      :title="service.applications.length >= 256 ? 'The server allows at most 256 applications per RTMP service.' : undefined"
-      @click="addApplication"
-    ) + Add application
+ConfigGroup.route-list(path="rtmp_services[].applications")
+  template(#legend)
+    .route-heading
+      legend Applications
+      button.add-row(
+        type="button"
+        :disabled="service.applications.length >= 256"
+        :title="service.applications.length >= 256 ? 'The server allows at most 256 applications per RTMP service.' : undefined"
+        @click="addApplication"
+      ) + Add application
   p.empty-list(v-if="service.applications.length === 0") At least one application is required.
-  article.route-card(v-for="(application, applicationIndex) in service.applications" :key="applicationIndex")
+  ItemScope.route-card(v-for="(application, applicationIndex) in service.applications" :key="applicationIndex" :index="applicationIndex")
     header.route-card-heading
       strong Application {{ applicationIndex + 1 }}
       button.danger-link(type="button" :aria-label="`Remove RTMP application ${applicationIndex + 1}`" @click="removeApplication(applicationIndex)") Remove
     .field-grid
-      label.field(data-field="rtmp_services[].applications[].name")
-        span Application name
+      ConfigField(path="rtmp_services[].applications[].name" label="Application name")
         input(type="text" v-model="application.name")
-      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].live")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].live" label="Allow live publishing" check)
         input(
           type="checkbox"
           v-model="application.live"
           :disabled="application.recorders.length > 0"
           :title="application.recorders.length > 0 ? 'Remove configured recorders before disabling live publishing.' : undefined"
         )
-        span Allow live publishing
-      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].idle_streams")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].idle_streams" label="Allow viewers before a publisher" check)
         input(type="checkbox" v-model="application.idle_streams")
-        span Allow viewers before a publisher
       RtmpAccessPolicyEditor(:policy="application.publish" operation="publish")
       RtmpAccessPolicyEditor(:policy="application.play" operation="play")
-      fieldset.object-block(data-field="rtmp_services[].applications[].limits")
-        legend Session ceilings
+      ConfigGroup.object-block(path="rtmp_services[].applications[].limits" legend="Session ceilings")
         .field-grid
-          label.field(data-field="rtmp_services[].applications[].limits.max_connections")
-            span Maximum connections
+          ConfigField(path="rtmp_services[].applications[].limits.max_connections" label="Maximum connections")
             input(type="number" min="1" max="100000" step="1" v-model.number="application.limits.max_connections")
-          label.field(data-field="rtmp_services[].applications[].limits.max_publishers")
-            span Maximum publishers
+          ConfigField(path="rtmp_services[].applications[].limits.max_publishers" label="Maximum publishers")
             input(type="number" min="1" max="10000" step="1" v-model.number="application.limits.max_publishers")
-          label.field(data-field="rtmp_services[].applications[].limits.max_viewers")
-            span Maximum viewers
+          ConfigField(path="rtmp_services[].applications[].limits.max_viewers" label="Maximum viewers")
             input(type="number" min="1" max="1000000" step="1" v-model.number="application.limits.max_viewers")
-      fieldset.object-block(data-field="rtmp_services[].applications[].hls")
-        legend HLS output
+      ConfigGroup.object-block(path="rtmp_services[].applications[].hls" legend="HLS output")
         label.enable-row
           input(type="checkbox" :checked="application.hls != null" @change="toggleHls(application, $event)")
           span Publish HLS media output
         template(v-if="application.hls")
           .field-grid
-            label.field(data-field="rtmp_services[].applications[].hls.root_directory")
-              span HLS root directory
+            ConfigField(path="rtmp_services[].applications[].hls.root_directory" label="HLS root directory")
               input(type="text" v-model="application.hls.root_directory" placeholder="/var/lib/oxiroute/hls")
-            label.field(data-field="rtmp_services[].applications[].hls.segment_duration_ms")
-              span Segment duration (ms)
+            ConfigField(path="rtmp_services[].applications[].hls.segment_duration_ms" label="Segment duration (ms)")
               input(type="number" min="100" max="60000" step="1" v-model.number="application.hls.segment_duration_ms")
-            label.field(data-field="rtmp_services[].applications[].hls.max_segment_duration_ms")
-              span Maximum segment duration (ms)
+            ConfigField(path="rtmp_services[].applications[].hls.max_segment_duration_ms" label="Maximum segment duration (ms)")
               input(type="number" min="100" max="120000" step="1" v-model.number="application.hls.max_segment_duration_ms")
-            label.field(data-field="rtmp_services[].applications[].hls.playlist_length_ms")
-              span Playlist length (ms)
+            ConfigField(path="rtmp_services[].applications[].hls.playlist_length_ms" label="Playlist length (ms)")
               input(type="number" min="100" max="86400000" step="1" v-model.number="application.hls.playlist_length_ms")
-            label.field(data-field="rtmp_services[].applications[].hls.fragment_naming")
-              span Fragment naming
+            ConfigField(path="rtmp_services[].applications[].hls.fragment_naming" label="Fragment naming")
               select(v-model="application.hls.fragment_naming")
                 option(value="sequential") Sequential
                 option(value="timestamp") Timestamp
                 option(value="system") System
-            label.field(data-field="rtmp_services[].applications[].hls.max_segment_bytes")
-              span Maximum segment bytes
+            ConfigField(path="rtmp_services[].applications[].hls.max_segment_bytes" label="Maximum segment bytes")
               input(type="number" min="1" max="1073741824" step="1" v-model.number="application.hls.max_segment_bytes")
-            label.field(data-field="rtmp_services[].applications[].hls.max_queue_messages")
-              span Maximum queue messages
+            ConfigField(path="rtmp_services[].applications[].hls.max_queue_messages" label="Maximum queue messages")
               input(type="number" min="1" max="65536" step="1" v-model.number="application.hls.max_queue_messages")
-            label.field(data-field="rtmp_services[].applications[].hls.max_storage_bytes")
-              span Maximum storage bytes
+            ConfigField(path="rtmp_services[].applications[].hls.max_storage_bytes" label="Maximum storage bytes")
               input(type="number" min="1" max="1099511627776" step="1" v-model.number="application.hls.max_storage_bytes")
-            label.field(data-field="rtmp_services[].applications[].hls.max_storage_files")
-              span Maximum storage files
+            ConfigField(path="rtmp_services[].applications[].hls.max_storage_files" label="Maximum storage files")
               input(type="number" min="1" max="1000000" step="1" v-model.number="application.hls.max_storage_files")
-            label.field(data-field="rtmp_services[].applications[].hls.max_active_streams")
-              span Maximum active streams
+            ConfigField(path="rtmp_services[].applications[].hls.max_active_streams" label="Maximum active streams")
               input(type="number" min="1" max="100000" step="1" v-model.number="application.hls.max_active_streams")
           .field-grid
-            label.enable-row.compact-enable(data-field="rtmp_services[].applications[].hls.nested")
+            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.nested" label="Nest media under the stream name" check)
               input(type="checkbox" v-model="application.hls.nested")
-              span Nest media under the stream name
-            label.enable-row.compact-enable(data-field="rtmp_services[].applications[].hls.cleanup")
+            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.cleanup" label="Remove expired media files" check)
               input(type="checkbox" v-model="application.hls.cleanup")
-              span Remove expired media files
-          fieldset.object-block(data-field="rtmp_services[].applications[].hls.keys")
-            legend AES-128 keys
+          ConfigGroup.object-block(path="rtmp_services[].applications[].hls.keys" legend="AES-128 keys")
             label.enable-row
               input(type="checkbox" :checked="application.hls.keys != null" @change="toggleHlsKeys(application, $event)")
               span Rotate encrypted HLS keys
             .field-grid(v-if="application.hls.keys")
-              label.field(data-field="rtmp_services[].applications[].hls.keys.rotation_segments")
-                span Segments per key
+              ConfigField(path="rtmp_services[].applications[].hls.keys.rotation_segments" label="Segments per key")
                 input(type="number" min="1" max="10000" step="1" v-model.number="application.hls.keys.rotation_segments")
-              label.field(data-field="rtmp_services[].applications[].hls.keys.url_prefix")
-                span Key URL prefix
+              ConfigField(path="rtmp_services[].applications[].hls.keys.url_prefix" label="Key URL prefix")
                 input(type="text" v-model="application.hls.keys.url_prefix" placeholder="/media/keys/")
-          fieldset.route-list(data-field="rtmp_services[].applications[].hls.variants")
-            .route-heading
-              legend HLS variants
-              button.add-row(type="button" :disabled="application.hls.variants.length >= 16" @click="application.hls.variants.push({ name: '', bandwidth: 1000000, codecs: null, width: null, height: null })") + Add variant
-            article.route-card(v-for="(variant, variantIndex) in application.hls.variants" :key="variantIndex")
+          ConfigGroup.route-list(path="rtmp_services[].applications[].hls.variants")
+            template(#legend)
+              .route-heading
+                legend HLS variants
+                button.add-row(type="button" :disabled="application.hls.variants.length >= 16" @click="application.hls.variants.push({ name: '', bandwidth: 1000000, codecs: null, width: null, height: null })") + Add variant
+            ItemScope.route-card(v-for="(variant, variantIndex) in application.hls.variants" :key="variantIndex" :index="variantIndex")
               header.route-card-heading
                 strong Variant {{ variantIndex + 1 }}
                 button.danger-link(type="button" @click="application.hls.variants.splice(variantIndex, 1)") Remove
               .field-grid
-                label.field(data-field="rtmp_services[].applications[].hls.variants[].name")
-                  span Name
+                ConfigField(path="rtmp_services[].applications[].hls.variants[].name" label="Name")
                   input(type="text" v-model="variant.name")
-                label.field(data-field="rtmp_services[].applications[].hls.variants[].bandwidth")
-                  span Bandwidth (bps)
+                ConfigField(path="rtmp_services[].applications[].hls.variants[].bandwidth" label="Bandwidth (bps)")
                   input(type="number" min="1" max="1000000000" step="1" v-model.number="variant.bandwidth")
-                label.field(data-field="rtmp_services[].applications[].hls.variants[].codecs")
-                  span Codecs
+                ConfigField(path="rtmp_services[].applications[].hls.variants[].codecs" label="Codecs")
                   input(type="text" :value="variant.codecs ?? ''" @input="setNullableVariantField(variant, 'codecs', $event)")
-                label.field(data-field="rtmp_services[].applications[].hls.variants[].width")
-                  span Width
+                ConfigField(path="rtmp_services[].applications[].hls.variants[].width" label="Width")
                   input(type="number" min="1" max="10000" step="1" :value="variant.width ?? ''" @input="setNullableVariantField(variant, 'width', $event)")
-                label.field(data-field="rtmp_services[].applications[].hls.variants[].height")
-                  span Height
+                ConfigField(path="rtmp_services[].applications[].hls.variants[].height" label="Height")
                   input(type="number" min="1" max="10000" step="1" :value="variant.height ?? ''" @input="setNullableVariantField(variant, 'height', $event)")
-      fieldset.object-block(data-field="rtmp_services[].applications[].dash")
-        legend MPEG-DASH output
+      ConfigGroup.object-block(path="rtmp_services[].applications[].dash" legend="MPEG-DASH output")
         label.enable-row
           input(type="checkbox" :checked="application.dash != null" @change="toggleDash(application, $event)")
           span Configure DASH output (validation reports unsupported runtime capability)
         .field-grid(v-if="application.dash")
-          label.field(data-field="rtmp_services[].applications[].dash.root_directory")
-            span DASH root directory
+          ConfigField(path="rtmp_services[].applications[].dash.root_directory" label="DASH root directory")
             input(type="text" v-model="application.dash.root_directory" placeholder="/var/lib/oxiroute/dash")
-          label.field(data-field="rtmp_services[].applications[].dash.segment_duration_ms")
-            span Segment duration (ms)
+          ConfigField(path="rtmp_services[].applications[].dash.segment_duration_ms" label="Segment duration (ms)")
             input(type="number" min="100" max="60000" step="1" v-model.number="application.dash.segment_duration_ms")
-          label.field(data-field="rtmp_services[].applications[].dash.max_segment_duration_ms")
-            span Maximum segment duration (ms)
+          ConfigField(path="rtmp_services[].applications[].dash.max_segment_duration_ms" label="Maximum segment duration (ms)")
             input(type="number" min="100" max="120000" step="1" v-model.number="application.dash.max_segment_duration_ms")
-          label.field(data-field="rtmp_services[].applications[].dash.playlist_length_ms")
-            span Playlist length (ms)
+          ConfigField(path="rtmp_services[].applications[].dash.playlist_length_ms" label="Playlist length (ms)")
             input(type="number" min="100" max="86400000" step="1" v-model.number="application.dash.playlist_length_ms")
-          label.field(data-field="rtmp_services[].applications[].dash.segment_naming")
-            span Segment naming
+          ConfigField(path="rtmp_services[].applications[].dash.segment_naming" label="Segment naming")
             select(v-model="application.dash.segment_naming")
               option(value="sequential") Sequential
               option(value="timestamp") Timestamp
               option(value="system") System
-          label.field(data-field="rtmp_services[].applications[].dash.max_segment_bytes")
-            span Maximum segment bytes
+          ConfigField(path="rtmp_services[].applications[].dash.max_segment_bytes" label="Maximum segment bytes")
             input(type="number" min="1" max="67108864" step="1" v-model.number="application.dash.max_segment_bytes")
-          label.field(data-field="rtmp_services[].applications[].dash.max_queue_messages")
-            span Maximum queue messages
+          ConfigField(path="rtmp_services[].applications[].dash.max_queue_messages" label="Maximum queue messages")
             input(type="number" min="1" max="65536" step="1" v-model.number="application.dash.max_queue_messages")
-          label.field(data-field="rtmp_services[].applications[].dash.max_storage_bytes")
-            span Maximum storage bytes
+          ConfigField(path="rtmp_services[].applications[].dash.max_storage_bytes" label="Maximum storage bytes")
             input(type="number" min="1" max="1099511627776" step="1" v-model.number="application.dash.max_storage_bytes")
-          label.field(data-field="rtmp_services[].applications[].dash.max_storage_files")
-            span Maximum storage files
+          ConfigField(path="rtmp_services[].applications[].dash.max_storage_files" label="Maximum storage files")
             input(type="number" min="1" max="1000000" step="1" v-model.number="application.dash.max_storage_files")
-          label.field(data-field="rtmp_services[].applications[].dash.max_active_streams")
-            span Maximum active streams
+          ConfigField(path="rtmp_services[].applications[].dash.max_active_streams" label="Maximum active streams")
             input(type="number" min="1" max="100000" step="1" v-model.number="application.dash.max_active_streams")
-          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].dash.nested")
+          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.nested" label="Nest media under the stream name" check)
             input(type="checkbox" v-model="application.dash.nested")
-            span Nest media under the stream name
-          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].dash.cleanup")
+          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.cleanup" label="Remove expired media files" check)
             input(type="checkbox" v-model="application.dash.cleanup")
-            span Remove expired media files
-      fieldset.object-block(data-field="rtmp_services[].applications[].relay")
-        legend Relay bounds
+      ConfigGroup.object-block(path="rtmp_services[].applications[].relay" legend="Relay bounds")
         .field-grid
-          label.field(data-field="rtmp_services[].applications[].relay.max_queue_messages")
-            span Maximum relay messages
+          ConfigField(path="rtmp_services[].applications[].relay.max_queue_messages" label="Maximum relay messages")
             input(type="number" min="1" max="65536" step="1" v-model.number="application.relay.max_queue_messages")
-          label.field(data-field="rtmp_services[].applications[].relay.max_queue_bytes")
-            span Maximum relay bytes
+          ConfigField(path="rtmp_services[].applications[].relay.max_queue_bytes" label="Maximum relay bytes")
             input(type="number" min="1" max="1073741824" step="1" v-model.number="application.relay.max_queue_bytes")
-          label.field(data-field="rtmp_services[].applications[].relay.buffer_ms")
-            span Relay buffer (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.buffer_ms" label="Relay buffer (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.buffer_ms")
-          label.field(data-field="rtmp_services[].applications[].relay.push_reconnect_ms")
-            span Push reconnect (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.push_reconnect_ms" label="Push reconnect (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.push_reconnect_ms")
-          label.field(data-field="rtmp_services[].applications[].relay.pull_reconnect_ms")
-            span Pull reconnect (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.pull_reconnect_ms" label="Pull reconnect (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.pull_reconnect_ms")
-          label.field(data-field="rtmp_services[].applications[].relay.dns_refresh_ms")
-            span DNS refresh (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.dns_refresh_ms" label="DNS refresh (ms)")
             input(type="number" min="1000" max="300000" step="1" v-model.number="application.relay.dns_refresh_ms")
-          label.field(data-field="rtmp_services[].applications[].relay.connect_timeout_ms")
-            span Relay connect timeout (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.connect_timeout_ms" label="Relay connect timeout (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.connect_timeout_ms")
-          label.field(data-field="rtmp_services[].applications[].relay.handshake_timeout_ms")
-            span Relay handshake timeout (ms)
+          ConfigField(path="rtmp_services[].applications[].relay.handshake_timeout_ms" label="Relay handshake timeout (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.handshake_timeout_ms")
       RtmpCallbackEditor(
         :callbacks="application.callbacks"
         field-path="rtmp_services[].applications[].callbacks"
         legend="Application callbacks"
       )
-    fieldset.object-block(data-field="rtmp_services[].applications[].fanout")
-      legend Fanout bounds
+    ConfigGroup.object-block(path="rtmp_services[].applications[].fanout" legend="Fanout bounds")
       .field-grid
-        label.field(data-field="rtmp_services[].applications[].fanout.max_subscribers")
-          span Maximum subscribers
+        ConfigField(path="rtmp_services[].applications[].fanout.max_subscribers" label="Maximum subscribers")
           input(type="number" min="1" max="1000000" step="1" v-model.number="application.fanout.max_subscribers")
-        label.field(data-field="rtmp_services[].applications[].fanout.max_queue_messages_per_subscriber")
-          span Queue messages per subscriber
+        ConfigField(path="rtmp_services[].applications[].fanout.max_queue_messages_per_subscriber" label="Queue messages per subscriber")
           input(type="number" min="1" max="65536" step="1" v-model.number="application.fanout.max_queue_messages_per_subscriber")
-        label.field(data-field="rtmp_services[].applications[].fanout.max_queue_bytes_per_subscriber")
-          span Queue bytes per subscriber
+        ConfigField(path="rtmp_services[].applications[].fanout.max_queue_bytes_per_subscriber" label="Queue bytes per subscriber")
           input(type="number" min="1" max="1073741824" step="1" v-model.number="application.fanout.max_queue_bytes_per_subscriber")
-    fieldset.route-list(data-field="rtmp_services[].applications[].pull_targets")
-      .route-heading
-        legend Pull relays
-        button.add-row(type="button" :disabled="application.pull_targets.length >= 16" @click="addPullTarget(applicationIndex)") + Add pull target
+    ConfigGroup.route-list(path="rtmp_services[].applications[].pull_targets")
+      template(#legend)
+        .route-heading
+          legend Pull relays
+          button.add-row(type="button" :disabled="application.pull_targets.length >= 16" @click="addPullTarget(applicationIndex)") + Add pull target
       p.empty-list(v-if="application.pull_targets.length === 0") No inbound relay is configured.
-      article.route-card(v-for="(target, targetIndex) in application.pull_targets" :key="targetIndex")
+      ItemScope.route-card(v-for="(target, targetIndex) in application.pull_targets" :key="targetIndex" :index="targetIndex")
         header.route-card-heading
           strong Pull target {{ targetIndex + 1 }}
           button.danger-link(type="button" @click="removePullTarget(applicationIndex, targetIndex)") Remove
         .field-grid
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].host")
-            span Host
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].host" label="Host")
             input(type="text" v-model="target.host")
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].port")
-            span Port
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].port" label="Port")
             input(type="number" min="1" max="65535" step="1" v-model.number="target.port")
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].application")
-            span Source application
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].application" label="Source application")
             input(type="text" v-model="target.application")
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].stream_name")
-            span Source stream
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].stream_name" label="Source stream")
             input(type="text" v-model="target.stream_name")
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].scheme")
-            span Transport
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].scheme" label="Transport")
             select(v-model="target.scheme")
               option(value="rtmp") RTMP
               option(value="rtmps") RTMPS
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].tc_url")
-            span TC URL
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].tc_url" label="TC URL")
             input(type="text" :value="target.tc_url ?? ''" @input="setNullableTargetField(target, 'tc_url', $event)")
-          label.field(data-field="rtmp_services[].applications[].pull_targets[].flash_version")
-            span Flash version
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].flash_version" label="Flash version")
             input(type="text" :value="target.flash_version ?? ''" @input="setNullableTargetField(target, 'flash_version', $event)")
-          label.enable-row(data-field="rtmp_services[].applications[].pull_targets[].credentials")
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials" label="Use credentials" check)
             input(type="checkbox" :checked="target.credentials !== null" @change="toggleTargetCredentials(target)")
-            span Use credentials
           template(v-if="target.credentials")
-            label.field(data-field="rtmp_services[].applications[].pull_targets[].credentials.username")
-              span Username
+            ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials.username" label="Username")
               input(type="text" v-model="target.credentials.username")
-            label.field(data-field="rtmp_services[].applications[].pull_targets[].credentials.secret_file")
-              span Secret file
+            ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials.secret_file" label="Secret file")
               input(type="text" v-model="target.credentials.secret_file" autocomplete="off")
-    fieldset.route-list(data-field="rtmp_services[].applications[].push_targets")
-      .route-heading
-        legend Push relays
-        button.add-row(type="button" :disabled="!application.live || application.push_targets.length >= 16" @click="addPushTarget(applicationIndex)") + Add push target
+    ConfigGroup.route-list(path="rtmp_services[].applications[].push_targets")
+      template(#legend)
+        .route-heading
+          legend Push relays
+          button.add-row(type="button" :disabled="!application.live || application.push_targets.length >= 16" @click="addPushTarget(applicationIndex)") + Add push target
       p.empty-list(v-if="application.push_targets.length === 0") No outbound relay is configured.
-      article.route-card(v-for="(target, targetIndex) in application.push_targets" :key="targetIndex")
+      ItemScope.route-card(v-for="(target, targetIndex) in application.push_targets" :key="targetIndex" :index="targetIndex")
         header.route-card-heading
           strong Push target {{ targetIndex + 1 }}
           button.danger-link(type="button" @click="removePushTarget(applicationIndex, targetIndex)") Remove
         .field-grid
-          label.field(data-field="rtmp_services[].applications[].push_targets[].host")
-            span Host
+          ConfigField(path="rtmp_services[].applications[].push_targets[].host" label="Host")
             input(type="text" v-model="target.host")
-          label.field(data-field="rtmp_services[].applications[].push_targets[].port")
-            span Port
+          ConfigField(path="rtmp_services[].applications[].push_targets[].port" label="Port")
             input(type="number" min="1" max="65535" step="1" v-model.number="target.port")
-          label.field(data-field="rtmp_services[].applications[].push_targets[].application")
-            span Destination application
+          ConfigField(path="rtmp_services[].applications[].push_targets[].application" label="Destination application")
             input(type="text" v-model="target.application" placeholder="$name")
             small Use $name for the exact source stream name.
-          label.field(data-field="rtmp_services[].applications[].push_targets[].scheme")
-            span Transport
+          ConfigField(path="rtmp_services[].applications[].push_targets[].scheme" label="Transport")
             select(v-model="target.scheme")
               option(value="rtmp") RTMP
               option(value="rtmps") RTMPS
-          label.field(data-field="rtmp_services[].applications[].push_targets[].stream_name")
-            span Stream name override
+          ConfigField(path="rtmp_services[].applications[].push_targets[].stream_name" label="Stream name override")
             input(type="text" :value="target.stream_name ?? ''" @input="setNullableTargetField(target, 'stream_name', $event)")
-          label.field(data-field="rtmp_services[].applications[].push_targets[].tc_url")
-            span TC URL
+          ConfigField(path="rtmp_services[].applications[].push_targets[].tc_url" label="TC URL")
             input(type="text" :value="target.tc_url ?? ''" @input="setNullableTargetField(target, 'tc_url', $event)")
-          label.field(data-field="rtmp_services[].applications[].push_targets[].flash_version")
-            span Flash version
+          ConfigField(path="rtmp_services[].applications[].push_targets[].flash_version" label="Flash version")
             input(type="text" :value="target.flash_version ?? ''" @input="setNullableTargetField(target, 'flash_version', $event)")
-          label.enable-row(data-field="rtmp_services[].applications[].push_targets[].credentials")
+          ConfigField(path="rtmp_services[].applications[].push_targets[].credentials" label="Use credentials" check)
             input(type="checkbox" :checked="target.credentials !== null" @change="toggleTargetCredentials(target)")
-            span Use credentials
           template(v-if="target.credentials")
-            label.field(data-field="rtmp_services[].applications[].push_targets[].credentials.username")
-              span Username
+            ConfigField(path="rtmp_services[].applications[].push_targets[].credentials.username" label="Username")
               input(type="text" v-model="target.credentials.username")
-            label.field(data-field="rtmp_services[].applications[].push_targets[].credentials.secret_file")
-              span Secret file
+            ConfigField(path="rtmp_services[].applications[].push_targets[].credentials.secret_file" label="Secret file")
               input(type="text" v-model="target.credentials.secret_file" autocomplete="off")
-    fieldset.object-block(data-field="rtmp_services[].applications[].vod")
-      legend VOD sources
+    ConfigGroup.object-block(path="rtmp_services[].applications[].vod" legend="VOD sources")
       label.enable-row
         input(type="checkbox" :checked="application.vod !== null" @change="toggleVod(application)")
         span Enable VOD playback
       template(v-if="application.vod")
         .field-grid
-          label.field(data-field="rtmp_services[].applications[].vod.max_sessions")
-            span Maximum VOD sessions
+          ConfigField(path="rtmp_services[].applications[].vod.max_sessions" label="Maximum VOD sessions")
             input(type="number" min="1" max="100000" step="1" v-model.number="application.vod.max_sessions")
-          label.field(data-field="rtmp_services[].applications[].vod.max_file_bytes")
-            span Maximum VOD file bytes
+          ConfigField(path="rtmp_services[].applications[].vod.max_file_bytes" label="Maximum VOD file bytes")
             input(type="number" min="1" max="1073741824" step="1" v-model.number="application.vod.max_file_bytes")
-          label.field(data-field="rtmp_services[].applications[].vod.max_duration_ms")
-            span Maximum VOD duration (ms)
+          ConfigField(path="rtmp_services[].applications[].vod.max_duration_ms" label="Maximum VOD duration (ms)")
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.vod.max_duration_ms")
-        .stack-list(data-field="rtmp_services[].applications[].vod.sources")
-          article.object-block(v-for="(source, sourceIndex) in application.vod.sources" :key="sourceIndex")
+        ConfigGroup.stack-list(path="rtmp_services[].applications[].vod.sources")
+          ItemScope.object-block(v-for="(source, sourceIndex) in application.vod.sources" :key="sourceIndex" :index="sourceIndex")
             .field-grid
-              label.field(data-field="rtmp_services[].applications[].vod.sources[].type")
-                span Source type
+              ConfigField(path="rtmp_services[].applications[].vod.sources[].type" label="Source type")
                 select(:value="source.type" @change="changeVodSource(application, sourceIndex, $event)")
                   option(value="local") Local files
                   option(value="http") HTTP origin
-              label.field(data-field="rtmp_services[].applications[].vod.sources[].name")
-                span Source name
+              ConfigField(path="rtmp_services[].applications[].vod.sources[].name" label="Source name")
                 input(type="text" v-model="source.name")
-              label.field(v-if="source.type === 'local'" data-field="rtmp_services[].applications[].vod.sources[].root_directory")
-                span Root directory
+              ConfigField(v-if="source.type === 'local'" path="rtmp_services[].applications[].vod.sources[].root_directory" label="Root directory")
                 input(type="text" v-model="source.root_directory")
-              label.field(v-else data-field="rtmp_services[].applications[].vod.sources[].origin")
-                span HTTP origin
+              ConfigField(v-else path="rtmp_services[].applications[].vod.sources[].origin" label="HTTP origin")
                 input(type="url" v-model="source.origin")
               button.danger-button(type="button" @click="application.vod.sources.splice(sourceIndex, 1)") Remove source
         button.secondary-button(type="button" @click="application.vod.sources.push({ type: 'local', name: '', root_directory: '' })") Add source
-    fieldset.route-list.recorder-list(data-field="rtmp_services[].applications[].recorders")
-      .route-heading
-        legend Recorders
-        button.add-row(
-          type="button"
-          :disabled="!application.live || application.recorders.length >= 8"
-          :title="recorderAddReason(application)"
-          @click="addRecorder(applicationIndex)"
-        ) + Add recorder
+    ConfigGroup.route-list.recorder-list(path="rtmp_services[].applications[].recorders")
+      template(#legend)
+        .route-heading
+          legend Recorders
+          button.add-row(
+            type="button"
+            :disabled="!application.live || application.recorders.length >= 8"
+            :title="recorderAddReason(application)"
+            @click="addRecorder(applicationIndex)"
+          ) + Add recorder
       p.empty-list(v-if="application.recorders.length === 0") No recorder is configured for this application.
       RtmpRecorderEditor(
         v-for="(recorder, recorderIndex) in application.recorders"
@@ -386,6 +309,9 @@ import RtmpExecProfilesEditor from './RtmpExecProfilesEditor.vue'
 import RtmpCallbackEditor from './RtmpCallbackEditor.vue'
 import RtmpRecorderEditor from './RtmpRecorderEditor.vue'
 import RtmpServicePolicyEditor from './RtmpServicePolicyEditor.vue'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
+import ItemScope from './fields/ItemScope.vue'
 
 const props = defineProps<{ service: RtmpServiceConfig }>()
 const emit = defineEmits<{

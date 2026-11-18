@@ -5,15 +5,12 @@ header.form-heading
     h3 {{ service.name || 'Unnamed HTTP service' }}
   button.danger-button(type="button" @click="emit('remove')") Remove service
 .field-grid
-  label.field(data-field="http_services[].name")
-    span Stable name
+  ConfigField(path="http_services[].name" label="Stable name")
     input(type="text" v-model="service.name")
-  label.field(data-field="http_services[].upstream_io_timeout_ms")
-    span Upstream I/O timeout (ms)
+  ConfigField(path="http_services[].upstream_io_timeout_ms" label="Upstream I/O timeout (ms)")
     input(type="number" min="1" step="1" v-model.number="service.upstream_io_timeout_ms")
-  label.field.checkbox(data-field="http_services[].automatic_response_headers")
+  ConfigField(path="http_services[].automatic_response_headers" label="Generate Date and Connection response headers" check)
     input(type="checkbox" v-model="service.automatic_response_headers")
-    span Generate Date and Connection response headers
 NullableLimitField(
   v-model="service.max_request_body_bytes"
   :default-value="10485760"
@@ -21,10 +18,11 @@ NullableLimitField(
   legend="Request body limit"
   input-label="Maximum request body (bytes)"
 )
-fieldset.route-list(data-field="http_services[].routes")
-  .route-heading
-    legend Routes
-    button.add-row(type="button" @click="addRoute") + Add route
+ConfigGroup.route-list(path="http_services[].routes")
+  template(#legend)
+    .route-heading
+      legend Routes
+      button.add-row(type="button" @click="addRoute") + Add route
   p.empty-list(v-if="service.routes.length === 0") At least one route is required.
   HttpRouteEditor(
     v-for="(route, routeIndex) in service.routes"
@@ -43,6 +41,8 @@ import type { HttpServiceConfig } from '../config'
 import HttpRouteEditor from './HttpRouteEditor.vue'
 import NullableLimitField from './NullableLimitField.vue'
 import { defaultHttpRoute } from './httpDefaults'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
 
 const props = defineProps<{
   service: HttpServiceConfig

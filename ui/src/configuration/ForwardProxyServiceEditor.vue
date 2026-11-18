@@ -7,32 +7,25 @@ header.form-heading
   button.danger-button(type="button" @click="emit('remove')") Remove forward proxy
 
 .field-grid
-  label.field(data-field="forward_proxy_services[].name")
-    span Stable name
+  ConfigField(path="forward_proxy_services[].name" label="Stable name")
     input(type="text" v-model="service.name" required)
-  label.field(data-field="forward_proxy_services[].audit_mode")
-    span Audit mode
+  ConfigField(path="forward_proxy_services[].audit_mode" label="Audit mode")
     select(v-model="service.audit_mode")
       option(value="off") Off
       option(value="metadata") Metadata only
-  label.enable-row.compact-enable(data-field="forward_proxy_services[].allow_absolute_form")
+  ConfigField.compact-enable(path="forward_proxy_services[].allow_absolute_form" label="Allow absolute-form requests" check)
     input(type="checkbox" v-model="service.allow_absolute_form")
-    span Allow absolute-form requests
-  label.enable-row.compact-enable(data-field="forward_proxy_services[].tls_required")
+  ConfigField.compact-enable(path="forward_proxy_services[].tls_required" label="Require TLS on network listeners" check)
     input(type="checkbox" v-model="service.tls_required")
-    span Require TLS on network listeners
 
-fieldset.retry-triggers(data-field="forward_proxy_services[].enabled_versions")
-  legend Enabled HTTP versions
+ConfigGroup.retry-triggers(path="forward_proxy_services[].enabled_versions" legend="Enabled HTTP versions")
   label.enable-row(v-for="version in FORWARD_HTTP_VERSIONS" :key="version")
     input(type="checkbox" :checked="service.enabled_versions.includes(version)" :disabled="service.enabled_versions.length === 1 && service.enabled_versions.includes(version)" @change="toggleVersion(version, $event)")
     span {{ version.toUpperCase() }}
 
-fieldset.object-block(data-field="forward_proxy_services[].connect")
-  legend CONNECT tunneling
-  label.enable-row(data-field="forward_proxy_services[].connect.enabled")
+ConfigGroup.object-block(path="forward_proxy_services[].connect" legend="CONNECT tunneling")
+  ConfigField(path="forward_proxy_services[].connect.enabled" label="Enable CONNECT authority tunneling" check)
     input(type="checkbox" v-model="service.connect.enabled")
-    span Enable CONNECT authority tunneling
   NumberListField(
     v-model="service.connect.allowed_ports"
     label="Allowed CONNECT ports"
@@ -45,11 +38,9 @@ fieldset.object-block(data-field="forward_proxy_services[].connect")
     hint="At least one unique nonzero port is required while CONNECT is enabled."
   )
 
-fieldset.object-block(data-field="forward_proxy_services[].connect_udp")
-  legend CONNECT-UDP tunneling
-  label.enable-row(data-field="forward_proxy_services[].connect_udp.enabled")
+ConfigGroup.object-block(path="forward_proxy_services[].connect_udp" legend="CONNECT-UDP tunneling")
+  ConfigField(path="forward_proxy_services[].connect_udp.enabled" label="Enable CONNECT-UDP tunneling" check)
     input(type="checkbox" v-model="service.connect_udp.enabled")
-    span Enable CONNECT-UDP tunneling
   NumberListField(
     v-model="service.connect_udp.allowed_ports"
     label="Allowed CONNECT-UDP ports"
@@ -62,93 +53,77 @@ fieldset.object-block(data-field="forward_proxy_services[].connect_udp")
     hint="At least one unique nonzero port is required while CONNECT-UDP is enabled."
   )
 
-fieldset.object-block(data-field="forward_proxy_services[].peer_policy")
-  legend Static HTTP/1 peers
+ConfigGroup.object-block(path="forward_proxy_services[].peer_policy" legend="Static HTTP/1 peers")
   .field-grid
-    label.field(data-field="forward_proxy_services[].peer_policy.direct_fallback")
-      span Direct fallback
+    ConfigField(path="forward_proxy_services[].peer_policy.direct_fallback" label="Direct fallback")
       select(v-model="service.peer_policy.direct_fallback")
         option(value="allowed") Allowed
         option(value="denied") Denied
         option(value="required") Required
-    label.field(data-field="forward_proxy_services[].peer_policy.max_retries")
-      span Peer retry budget
+    ConfigField(path="forward_proxy_services[].peer_policy.max_retries" label="Peer retry budget")
       input(type="number" min="0" max="15" step="1" v-model.number="service.peer_policy.max_retries")
-  fieldset.route-list(data-field="forward_proxy_services[].peer_policy.peers")
-    .route-heading
-      legend Peer endpoints
-      button.add-row(type="button" :disabled="service.peer_policy.peers.length >= 16" @click="addPeer") + Add peer
+  ConfigGroup.route-list(path="forward_proxy_services[].peer_policy.peers")
+    template(#legend)
+      .route-heading
+        legend Peer endpoints
+        button.add-row(type="button" :disabled="service.peer_policy.peers.length >= 16" @click="addPeer") + Add peer
     p.empty-list(v-if="service.peer_policy.peers.length === 0") No static peers configured.
-    article.route-card(v-for="(peer, peerIndex) in service.peer_policy.peers" :key="peerIndex")
+    ItemScope.route-card(v-for="(peer, peerIndex) in service.peer_policy.peers" :key="peerIndex" :index="peerIndex")
       header.route-card-heading
         strong Peer {{ peerIndex + 1 }}
         button.danger-link(type="button" :aria-label="`Remove forward peer ${peerIndex + 1}`" @click="removePeer(peerIndex)") Remove
       .field-grid
-        label.field(data-field="forward_proxy_services[].peer_policy.peers[].host")
-          span Peer host
+        ConfigField(path="forward_proxy_services[].peer_policy.peers[].host" label="Peer host")
           input(type="text" v-model="peer.host" placeholder="proxy.example.test")
-        label.field(data-field="forward_proxy_services[].peer_policy.peers[].port")
-          span Peer port
+        ConfigField(path="forward_proxy_services[].peer_policy.peers[].port" label="Peer port")
           input(type="number" min="1" max="65535" step="1" v-model.number="peer.port")
 
-fieldset.object-block(data-field="forward_proxy_services[].auth")
-  legend Client authentication
+ConfigGroup.object-block(path="forward_proxy_services[].auth" legend="Client authentication")
   label.enable-row
     input(type="checkbox" :checked="service.auth !== null" @change="toggleAuth")
     span Require credentials loaded from a server file
   .field-grid(v-if="service.auth")
-    label.field(data-field="forward_proxy_services[].auth.type")
-      span Authentication type
+    ConfigField(path="forward_proxy_services[].auth.type" label="Authentication type")
       select(:value="service.auth.type" @change="changeAuthType")
         option(value="bearer_token_file") Bearer token file
         option(value="basic_htpasswd_file") Basic htpasswd file
         option(value="mutual_tls") Mutual TLS (reserved)
-    label.field(v-if="service.auth.type === 'bearer_token_file'" data-field="forward_proxy_services[].auth.token_file_path")
-      span Token file path
+    ConfigField(v-if="service.auth.type === 'bearer_token_file'" path="forward_proxy_services[].auth.token_file_path" label="Token file path")
       input(type="text" v-model="service.auth.token_file_path" autocomplete="off" placeholder="/run/secrets/forward-proxy")
       small Authenticated configuration only; this path is suppressed from topology views.
     template(v-else-if="service.auth.type === 'basic_htpasswd_file'")
-      label.field(data-field="forward_proxy_services[].auth.htpasswd_file_path")
-        span htpasswd file path
+      ConfigField(path="forward_proxy_services[].auth.htpasswd_file_path" label="htpasswd file path")
         input(type="text" v-model="service.auth.htpasswd_file_path" autocomplete="off" placeholder="/etc/oxiroute/proxy.htpasswd")
-      label.field(data-field="forward_proxy_services[].auth.realm")
-        span Realm
+      ConfigField(path="forward_proxy_services[].auth.realm" label="Realm")
         input(type="text" v-model="service.auth.realm")
-      label.field(data-field="forward_proxy_services[].auth.credential_ttl_ms")
-        span Validated credential TTL (ms)
+      ConfigField(path="forward_proxy_services[].auth.credential_ttl_ms" label="Validated credential TTL (ms)")
         input(type="number" min="1" max="86400000" step="1" :value="service.auth.credential_ttl_ms ?? ''" @input="updateCredentialTtl")
-      label.enable-row.compact-enable(data-field="forward_proxy_services[].auth.username_case_sensitive")
+      ConfigField.compact-enable(path="forward_proxy_services[].auth.username_case_sensitive" label="Match usernames case-sensitively" check)
         input(type="checkbox" v-model="service.auth.username_case_sensitive")
-        span Match usernames case-sensitively
-    label.field(v-else data-field="forward_proxy_services[].auth.client_ca_file_path")
-      span Client CA file path
+    ConfigField(v-else path="forward_proxy_services[].auth.client_ca_file_path" label="Client CA file path")
       input(type="text" v-model="service.auth.client_ca_file_path" autocomplete="off" placeholder="/etc/oxiroute/client-ca.pem")
 
-fieldset.object-block(data-field="forward_proxy_services[].access_policy")
-  legend Ordered access policy
+ConfigGroup.object-block(path="forward_proxy_services[].access_policy" legend="Ordered access policy")
   label.enable-row
     input(type="checkbox" :checked="service.access_policy !== null" @change="toggleAccessPolicy")
     span Evaluate first-match access rules
   template(v-if="service.access_policy")
-    label.field(data-field="forward_proxy_services[].access_policy.default_action")
-      span Default action
+    ConfigField(path="forward_proxy_services[].access_policy.default_action" label="Default action")
       select(v-model="service.access_policy.default_action")
         option(value="deny") Deny
         option(value="allow") Allow
-    .stack-list(data-field="forward_proxy_services[].access_policy.rules")
-      article.object-block(v-for="(rule, ruleIndex) in service.access_policy.rules" :key="ruleIndex")
+    ConfigGroup.stack-list(path="forward_proxy_services[].access_policy.rules")
+      ItemScope.object-block(v-for="(rule, ruleIndex) in service.access_policy.rules" :key="ruleIndex" :index="ruleIndex")
         .field-grid
-          label.field(data-field="forward_proxy_services[].access_policy.rules[].action")
-            span Rule action
+          ConfigField(path="forward_proxy_services[].access_policy.rules[].action" label="Rule action")
             select(v-model="rule.action")
               option(value="deny") Deny
               option(value="allow") Allow
           button.danger-button(type="button" @click="removeAccessRule(ruleIndex)") Remove rule
-        .stack-list(data-field="forward_proxy_services[].access_policy.rules[].conditions")
-          article.object-block(v-for="(condition, conditionIndex) in rule.conditions" :key="conditionIndex")
+        ConfigGroup.stack-list(path="forward_proxy_services[].access_policy.rules[].conditions")
+          ItemScope.object-block(v-for="(condition, conditionIndex) in rule.conditions" :key="conditionIndex" :index="conditionIndex")
             .field-grid
-              label.field(data-field="forward_proxy_services[].access_policy.rules[].conditions[].type")
-                span Matcher
+              ConfigField(path="forward_proxy_services[].access_policy.rules[].conditions[].type" label="Matcher")
                 select(:value="condition.type" @change="changeConditionType(ruleIndex, conditionIndex, $event)")
                   option(value="all") All requests
                   option(value="methods") Methods
@@ -158,35 +133,29 @@ fieldset.object-block(data-field="forward_proxy_services[].access_policy")
                   option(value="destination_local") Destination local
                   option(value="destination_link_local") Destination link-local
                   option(value="manager") Manager
-              label.enable-row.compact-enable(data-field="forward_proxy_services[].access_policy.rules[].conditions[].negated")
+              ConfigField.compact-enable(path="forward_proxy_services[].access_policy.rules[].conditions[].negated" label="Negate matcher" check)
                 input(type="checkbox" v-model="condition.negated")
-                span Negate matcher
               button.danger-button(type="button" @click="removeCondition(ruleIndex, conditionIndex)") Remove condition
             StringListField(v-if="condition.type === 'methods'" v-model="condition.methods" label="Methods" item-label="method" field-path="forward_proxy_services[].access_policy.rules[].conditions[].methods" :max-items="256")
             StringListField(v-if="condition.type === 'source_cidrs'" v-model="condition.cidrs" label="Source CIDRs" item-label="CIDR" field-path="forward_proxy_services[].access_policy.rules[].conditions[].cidrs" :max-items="256")
-            .stack-list(v-if="condition.type === 'destination_ports'" data-field="forward_proxy_services[].access_policy.rules[].conditions[].ranges")
-              .field-grid(v-for="(range, rangeIndex) in condition.ranges" :key="rangeIndex")
-                label.field(data-field="forward_proxy_services[].access_policy.rules[].conditions[].ranges[].start")
-                  span Start port
+            ConfigGroup.stack-list(v-if="condition.type === 'destination_ports'" path="forward_proxy_services[].access_policy.rules[].conditions[].ranges")
+              ItemScope.field-grid(v-for="(range, rangeIndex) in condition.ranges" :key="rangeIndex" :index="rangeIndex")
+                ConfigField(path="forward_proxy_services[].access_policy.rules[].conditions[].ranges[].start" label="Start port")
                   input(type="number" min="1" max="65535" step="1" v-model.number="range.start")
-                label.field(data-field="forward_proxy_services[].access_policy.rules[].conditions[].ranges[].end")
-                  span End port
+                ConfigField(path="forward_proxy_services[].access_policy.rules[].conditions[].ranges[].end" label="End port")
                   input(type="number" :min="range.start" max="65535" step="1" v-model.number="range.end")
                 button.danger-button(type="button" :disabled="condition.ranges.length === 1" @click="condition.ranges.splice(rangeIndex, 1)") Remove range
               button.secondary-button(type="button" @click="condition.ranges.push({ start: 443, end: 443 })") Add range
           button.secondary-button(type="button" @click="addCondition(ruleIndex)") Add condition
       button.secondary-button(type="button" @click="addAccessRule") Add rule
 
-fieldset.object-block(data-field="forward_proxy_services[].header_policy")
-  legend Forwarded metadata
+ConfigGroup.object-block(path="forward_proxy_services[].header_policy" legend="Forwarded metadata")
   .field-grid
-    label.field(data-field="forward_proxy_services[].header_policy.forwarded_for")
-      span Forwarded and X-Forwarded-For
+    ConfigField(path="forward_proxy_services[].header_policy.forwarded_for" label="Forwarded and X-Forwarded-For")
       select(v-model="service.header_policy.forwarded_for")
         option(value="delete") Delete
         option(value="preserve") Preserve
-    label.field(data-field="forward_proxy_services[].header_policy.via")
-      span Via
+    ConfigField(path="forward_proxy_services[].header_policy.via" label="Via")
       select(v-model="service.header_policy.via")
         option(value="delete") Delete
         option(value="preserve") Preserve
@@ -198,99 +167,79 @@ HttpCachePolicyEditor(
   @update:model-value="service.cache = $event"
 )
 
-fieldset.object-block(data-field="forward_proxy_services[].destination_policy")
-  legend Destination policy
-  label.enable-row(data-field="forward_proxy_services[].destination_policy.deny_private")
+ConfigGroup.object-block(path="forward_proxy_services[].destination_policy" legend="Destination policy")
+  ConfigField(path="forward_proxy_services[].destination_policy.deny_private" label="Deny private and special-purpose destinations" check)
     input(type="checkbox" v-model="service.destination_policy.deny_private")
-    span Deny private and special-purpose destinations
   .field-grid
     StringListField(v-model="service.destination_policy.allow_domains" label="Allowed domains" item-label="domain" field-path="forward_proxy_services[].destination_policy.allow_domains" :max-items="256")
     StringListField(v-model="service.destination_policy.deny_domains" label="Denied domains" item-label="domain" field-path="forward_proxy_services[].destination_policy.deny_domains" :max-items="256")
     StringListField(v-model="service.destination_policy.allow_cidrs" label="Allowed CIDRs" item-label="CIDR" field-path="forward_proxy_services[].destination_policy.allow_cidrs" :max-items="256")
     StringListField(v-model="service.destination_policy.deny_cidrs" label="Denied CIDRs" item-label="CIDR" field-path="forward_proxy_services[].destination_policy.deny_cidrs" :max-items="256")
-  .time-range-list(data-field="forward_proxy_services[].destination_policy.allow_times")
-    .route-heading
-      legend Allow windows
-      button.secondary-button(type="button" @click="addTimeRange('allow_times')") Add window
-    article.object-block(v-for="(range, rangeIndex) in service.destination_policy.allow_times" :key="`allow-${rangeIndex}`")
+  ConfigGroup.time-range-list(path="forward_proxy_services[].destination_policy.allow_times")
+    template(#legend)
+      .route-heading
+        legend Allow windows
+        button.secondary-button(type="button" @click="addTimeRange('allow_times')") Add window
+    ItemScope.object-block(v-for="(range, rangeIndex) in service.destination_policy.allow_times" :key="`allow-${rangeIndex}`" :index="rangeIndex")
       .field-grid
-        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].days")
-          span Days
+        ConfigField(path="forward_proxy_services[].destination_policy.allow_times[].days" label="Days")
           select(multiple v-model="range.days")
             option(v-for="day in FORWARD_WEEKDAYS" :key="day" :value="day") {{ day }}
-        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].start")
-          span Start (UTC)
+        ConfigField(path="forward_proxy_services[].destination_policy.allow_times[].start" label="Start (UTC)")
           input(type="time" v-model="range.start")
-        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].end")
-          span End (UTC)
+        ConfigField(path="forward_proxy_services[].destination_policy.allow_times[].end" label="End (UTC)")
           input(type="time" v-model="range.end")
         button.danger-button(type="button" @click="removeTimeRange('allow_times', rangeIndex)") Remove window
-  .time-range-list(data-field="forward_proxy_services[].destination_policy.deny_times")
-    .route-heading
-      legend Deny windows
-      button.secondary-button(type="button" @click="addTimeRange('deny_times')") Add window
-    article.object-block(v-for="(range, rangeIndex) in service.destination_policy.deny_times" :key="`deny-${rangeIndex}`")
+  ConfigGroup.time-range-list(path="forward_proxy_services[].destination_policy.deny_times")
+    template(#legend)
+      .route-heading
+        legend Deny windows
+        button.secondary-button(type="button" @click="addTimeRange('deny_times')") Add window
+    ItemScope.object-block(v-for="(range, rangeIndex) in service.destination_policy.deny_times" :key="`deny-${rangeIndex}`" :index="rangeIndex")
       .field-grid
-        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].days")
-          span Days
+        ConfigField(path="forward_proxy_services[].destination_policy.deny_times[].days" label="Days")
           select(multiple v-model="range.days")
             option(v-for="day in FORWARD_WEEKDAYS" :key="day" :value="day") {{ day }}
-        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].start")
-          span Start (UTC)
+        ConfigField(path="forward_proxy_services[].destination_policy.deny_times[].start" label="Start (UTC)")
           input(type="time" v-model="range.start")
-        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].end")
-          span End (UTC)
+        ConfigField(path="forward_proxy_services[].destination_policy.deny_times[].end" label="End (UTC)")
           input(type="time" v-model="range.end")
         button.danger-button(type="button" @click="removeTimeRange('deny_times', rangeIndex)") Remove window
 
 fieldset.object-block
   legend Finite service limits
   .field-grid
-    label.field(data-field="forward_proxy_services[].connect_timeout_ms")
-      span Connect timeout (ms)
+    ConfigField(path="forward_proxy_services[].connect_timeout_ms" label="Connect timeout (ms)")
       input(type="number" min="1" max="86400000" step="1" v-model.number="service.connect_timeout_ms")
-    label.field(data-field="forward_proxy_services[].idle_timeout_ms")
-      span Idle timeout (ms)
+    ConfigField(path="forward_proxy_services[].idle_timeout_ms" label="Idle timeout (ms)")
       input(type="number" min="1" max="86400000" step="1" v-model.number="service.idle_timeout_ms")
-    label.field(data-field="forward_proxy_services[].lifetime_timeout_ms")
-      span Lifetime timeout (ms)
+    ConfigField(path="forward_proxy_services[].lifetime_timeout_ms" label="Lifetime timeout (ms)")
       input(type="number" min="1" max="86400000" step="1" v-model.number="service.lifetime_timeout_ms")
-    label.field(data-field="forward_proxy_services[].max_request_body_bytes")
-      span Maximum request body bytes
+    ConfigField(path="forward_proxy_services[].max_request_body_bytes" label="Maximum request body bytes")
       input(type="number" min="1" max="1073741824" step="1" v-model.number="service.max_request_body_bytes" required)
       small Forward proxy validation requires a finite non-null value.
-    label.field(data-field="forward_proxy_services[].max_header_bytes")
-      span Maximum header bytes
+    ConfigField(path="forward_proxy_services[].max_header_bytes" label="Maximum header bytes")
       input(type="number" min="8192" max="1048576" step="1" v-model.number="service.max_header_bytes")
-    label.field(data-field="forward_proxy_services[].max_connections")
-      span Maximum connections
+    ConfigField(path="forward_proxy_services[].max_connections" label="Maximum connections")
       input(type="number" min="1" max="1000000" step="1" v-model.number="service.max_connections")
 
-fieldset.object-block(data-field="forward_proxy_services[].resolver")
-  legend Bounded DNS resolver
+ConfigGroup.object-block(path="forward_proxy_services[].resolver" legend="Bounded DNS resolver")
   StringListField(v-model="service.resolver.nameservers" label="Nameservers" item-label="IP address" field-path="forward_proxy_services[].resolver.nameservers" :max-items="8")
   .field-grid
-    label.field(data-field="forward_proxy_services[].resolver.max_cache_entries")
-      span Maximum cache entries
+    ConfigField(path="forward_proxy_services[].resolver.max_cache_entries" label="Maximum cache entries")
       input(type="number" min="1" max="1000000" step="1" v-model.number="service.resolver.max_cache_entries")
-    label.field(data-field="forward_proxy_services[].resolver.max_concurrent_queries")
-      span Maximum concurrent queries
+    ConfigField(path="forward_proxy_services[].resolver.max_concurrent_queries" label="Maximum concurrent queries")
       input(type="number" min="1" max="65536" step="1" v-model.number="service.resolver.max_concurrent_queries")
-    label.field(data-field="forward_proxy_services[].resolver.max_addresses_per_name")
-      span Maximum addresses per name
+    ConfigField(path="forward_proxy_services[].resolver.max_addresses_per_name" label="Maximum addresses per name")
       input(type="number" min="1" max="256" step="1" v-model.number="service.resolver.max_addresses_per_name")
-    label.field(data-field="forward_proxy_services[].resolver.min_ttl_ms")
-      span Minimum TTL (ms)
+    ConfigField(path="forward_proxy_services[].resolver.min_ttl_ms" label="Minimum TTL (ms)")
       input(type="number" min="1" :max="service.resolver.max_ttl_ms" step="1" v-model.number="service.resolver.min_ttl_ms")
-    label.field(data-field="forward_proxy_services[].resolver.max_ttl_ms")
-      span Maximum TTL (ms)
+    ConfigField(path="forward_proxy_services[].resolver.max_ttl_ms" label="Maximum TTL (ms)")
       input(type="number" :min="service.resolver.min_ttl_ms" max="86400000" step="1" v-model.number="service.resolver.max_ttl_ms")
-    label.field(data-field="forward_proxy_services[].resolver.negative_ttl_ms")
-      span Negative TTL (ms)
+    ConfigField(path="forward_proxy_services[].resolver.negative_ttl_ms" label="Negative TTL (ms)")
       input(type="number" min="0" max="86400000" step="1" v-model.number="service.resolver.negative_ttl_ms")
-    label.enable-row.compact-enable(data-field="forward_proxy_services[].resolver.revalidate_on_connect")
+    ConfigField.compact-enable(path="forward_proxy_services[].resolver.revalidate_on_connect" label="Revalidate on connect" check)
       input(type="checkbox" v-model="service.resolver.revalidate_on_connect")
-      span Revalidate on connect
 </template>
 
 <script setup lang="ts" vapor>
@@ -306,6 +255,9 @@ import {
 } from './canonicalDefaults'
 import HttpCachePolicyEditor from './HttpCachePolicyEditor.vue'
 import NumberListField from './NumberListField.vue'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
+import ItemScope from './fields/ItemScope.vue'
 
 const props = defineProps<{ service: ForwardProxyServiceConfig; cacheStoreNames: string[] }>()
 const emit = defineEmits<{ remove: []; changed: [] }>()

@@ -5,67 +5,51 @@ header.form-heading
     h3 {{ profile.name || 'Unnamed SNI profile' }}
   button.danger-button(type="button" @click="emit('remove')") Remove profile
 .field-grid
-  label.field(data-field="tls_profiles[].name")
-    span Stable name
+  ConfigField(path="tls_profiles[].name" label="Stable name")
     input(type="text" v-model="profile.name")
-  label.field(data-field="tls_profiles[].default_certificate")
-    span Default certificate
+  ConfigField(path="tls_profiles[].default_certificate" label="Default certificate")
     select(v-model="profile.default_certificate" required)
       option(value="") Select a certificate
       option(v-for="name in certificateNames" :key="name" :value="name") {{ name }}
-  label.field(data-field="tls_profiles[].min_version")
-    span Minimum TLS version
+  ConfigField(path="tls_profiles[].min_version" label="Minimum TLS version")
     select(v-model="profile.min_version")
       option(value="1.2" :disabled="profile.alpn.includes('h3')") TLS 1.2
       option(value="1.3") TLS 1.3
-  label.field(data-field="tls_profiles[].alpn")
-    span ALPN policy
+  ConfigField(path="tls_profiles[].alpn" label="ALPN policy")
     select(:value="profile.alpn.join(',')" @change="setAlpnPolicy")
       option(value="http/1.1") HTTP/1.1
       option(value="h2") HTTP/2 only
       option(value="h2,http/1.1") HTTP/2, then HTTP/1.1
       option(value="h3") HTTP/3 only
-  label.field(data-field="tls_profiles[].policy.cipher_list")
-    span OpenSSL cipher list
+  ConfigField(path="tls_profiles[].policy.cipher_list" label="OpenSSL cipher list")
     input(type="text" :value="profile.policy.cipher_list ?? ''" @input="setNullableText('cipher_list', $event)")
-  label.field(data-field="tls_profiles[].policy.dh_parameters_path")
-    span DH parameters path
+  ConfigField(path="tls_profiles[].policy.dh_parameters_path" label="DH parameters path")
     input(type="text" :value="profile.policy.dh_parameters_path ?? ''" @input="setNullableText('dh_parameters_path', $event)")
-  label.field(data-field="tls_profiles[].policy.client_auth.mode")
-    span Client certificate policy
+  ConfigField(path="tls_profiles[].policy.client_auth.mode" label="Client certificate policy")
     select(v-model="profile.policy.client_auth.mode")
       option(value="disabled") Disabled
       option(value="optional") Optional
       option(value="required") Required
-  label.field(data-field="tls_profiles[].policy.client_auth.ca_certificate_path")
-    span Client CA bundle path
+  ConfigField(path="tls_profiles[].policy.client_auth.ca_certificate_path" label="Client CA bundle path")
     input(type="text" :value="profile.policy.client_auth.ca_certificate_path ?? ''" :disabled="profile.policy.client_auth.mode === 'disabled'" @input="setClientCaPath")
-  label.field(data-field="tls_profiles[].policy.session_cache.name")
-    span Shared session cache name
+  ConfigField(path="tls_profiles[].policy.session_cache.name" label="Shared session cache name")
     input(type="text" :value="profile.policy.session_cache?.name ?? ''" @input="setSessionCacheName")
-  label.field(data-field="tls_profiles[].policy.session_cache.size_bytes")
-    span Session cache bytes
+  ConfigField(path="tls_profiles[].policy.session_cache.size_bytes" label="Session cache bytes")
     input(type="number" min="256" step="256" :disabled="profile.policy.session_cache === null" :value="profile.policy.session_cache?.size_bytes ?? 10485760" @input="setSessionCacheSize")
-  label.field(data-field="tls_profiles[].policy.session_timeout_seconds")
-    span Session timeout seconds
+  ConfigField(path="tls_profiles[].policy.session_timeout_seconds" label="Session timeout seconds")
     input(type="number" min="1" step="1" :value="profile.policy.session_timeout_seconds ?? ''" @input="setSessionTimeout")
-  label.checkbox-field(data-field="tls_profiles[].policy.session_tickets")
+  ConfigField(path="tls_profiles[].policy.session_tickets" label="Enable session tickets" check)
     input(type="checkbox" v-model="profile.policy.session_tickets")
-    span Enable session tickets
-  label.checkbox-field(data-field="tls_profiles[].policy.prefer_server_ciphers")
+  ConfigField(path="tls_profiles[].policy.prefer_server_ciphers" label="Prefer server cipher order" check)
     input(type="checkbox" v-model="profile.policy.prefer_server_ciphers")
-    span Prefer server cipher order
-  label.field(data-field="tls_profiles[].policy.backend")
-    span TLS library
+  ConfigField(path="tls_profiles[].policy.backend" label="TLS library")
     select(v-model="profile.policy.backend")
       option(:value="null") Default (rustls; OpenSSL when DH parameters or a DHE cipher list need it)
       option(value="rustls") rustls (no DH parameters, no DHE cipher suites)
       option(value="openssl") OpenSSL
-  label.field(data-field="tls_profiles[].policy.key_exchange_groups")
-    span Key exchange groups, in preference order (x25519, secp256r1, secp384r1, x25519mlkem768; empty keeps the default list)
+  ConfigField(path="tls_profiles[].policy.key_exchange_groups" label="Key exchange groups, in preference order (x25519, secp256r1, secp384r1, x25519mlkem768; empty keeps the default list)")
     input(type="text" :value="(profile.policy.key_exchange_groups ?? []).join(', ')" @input="setKeyExchangeGroups")
-  label.field(data-field="tls_profiles[].policy.ktls")
-    span Kernel TLS
+  ConfigField(path="tls_profiles[].policy.ktls" label="Kernel TLS")
     select(v-model="profile.policy.ktls")
       option(value="off") Off
       option(value="auto") Automatic (kernel TLS when available)
@@ -90,6 +74,7 @@ StringListField(
 <script setup lang="ts" vapor>
 import type { AlpnProtocol, TlsProfileConfig } from '../config'
 import StringListField from '../StringListField.vue'
+import ConfigField from './fields/ConfigField.vue'
 
 const props = defineProps<{
   profile: TlsProfileConfig

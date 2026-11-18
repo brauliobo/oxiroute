@@ -1,8 +1,7 @@
 <template lang="pug">
 SectionHeading(eyebrow="Root object" title="General" path="Config")
 .field-grid
-  label.field(data-field="version")
-    span Version
+  ConfigField(path="version" label="Version")
     input(type="number" min="1" step="1" v-model.number="config.version")
     small Current canonical schema version.
 </template>
@@ -10,6 +9,7 @@ SectionHeading(eyebrow="Root object" title="General" path="Config")
 <script setup lang="ts" vapor>
 import type { CanonicalConfig } from '../../config'
 import SectionHeading from './SectionHeading.vue'
+import ConfigField from '../fields/ConfigField.vue'
 
 defineProps<{ config: CanonicalConfig }>()
 </script>

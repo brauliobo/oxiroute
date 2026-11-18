@@ -1,6 +1,5 @@
 <template lang="pug">
-fieldset.list-field(:data-field="fieldPath")
-  legend {{ label }}
+ConfigGroup.list-field(:path="fieldPath" :legend="label")
   p.field-hint(v-if="hint") {{ hint }}
   .list-row(v-for="(value, index) in modelValue" :key="index")
     label.sr-only(:for="`${id}-${index}`") {{ itemLabel }} {{ index + 1 }}
@@ -26,6 +25,7 @@ fieldset.list-field(:data-field="fieldPath")
 
 <script setup lang="ts" vapor>
 import { useId } from 'vue'
+import ConfigGroup from './configuration/fields/ConfigGroup.vue'
 
 const props = withDefaults(
   defineProps<{

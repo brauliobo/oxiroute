@@ -5,28 +5,26 @@ header.form-heading
     h3 {{ pool.name || 'Unnamed pool' }}
   button.danger-button(type="button" @click="emit('remove')") Remove pool
 .field-grid
-  label.field(data-field="upstream_pools[].name")
-    span Stable name
+  ConfigField(path="upstream_pools[].name" label="Stable name")
     input(type="text" v-model="pool.name")
-  label.field(data-field="upstream_pools[].algorithm")
-    span Selection algorithm
+  ConfigField(path="upstream_pools[].algorithm" label="Selection algorithm")
     select(:value="algorithmType" @change="setAlgorithm")
       option(value="round_robin") Round robin
       option(value="weighted_round_robin") Weighted round robin
       option(value="least_connections") Least connections
       option(value="power_of_two_choices") Power of two choices
       option(value="first") First server
-fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
-  .route-heading
-    legend Servers
-    button.add-row(type="button" @click="addServer") + Add server
+ConfigGroup.route-list.endpoint-editor(path="upstream_pools[].servers")
+  template(#legend)
+    .route-heading
+      legend Servers
+      button.add-row(type="button" @click="addServer") + Add server
   p.empty-list(v-if="pool.servers.length === 0") At least one server is required.
-  article.route-card(v-for="(server, serverIndex) in pool.servers" :key="serverIndex")
+  ItemScope.route-card(v-for="(server, serverIndex) in pool.servers" :key="serverIndex" :index="serverIndex")
     header.route-card-heading
       strong Server {{ serverIndex + 1 }}
       button.danger-link(type="button" :aria-label="`Remove upstream server ${serverIndex + 1}`" @click="removeServer(serverIndex)") Remove
-    label.field(data-field="upstream_pools[].servers[].name")
-      span Stable server name
+    ConfigField(path="upstream_pools[].servers[].name" label="Stable server name")
       input(type="text" v-model="server.name" required)
     UpstreamEndpointField(
       :endpoint="server.endpoint"
@@ -51,8 +49,7 @@ fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
       )
       small Relative capacity for weighted round robin. Use an integer from 1 to 100.
       p.field-error(v-if="weightErrors[serverIndex]" :id="`server-weight-error-${serverIndex}`" role="alert") {{ weightErrors[serverIndex] }}
-fieldset.object-block(data-field="upstream_pools[].health_check")
-  legend Health check
+ConfigGroup.object-block(path="upstream_pools[].health_check" legend="Health check")
   label.enable-row
     input(
       type="checkbox"
@@ -64,68 +61,51 @@ fieldset.object-block(data-field="upstream_pools[].health_check")
     span Enable active health checks
   template(v-if="pool.health_check")
     .field-grid
-      label.field(data-field="upstream_pools[].health_check.type")
-        span Probe type
+      ConfigField(path="upstream_pools[].health_check.type" label="Probe type")
         select(v-model="pool.health_check.type" @change="normalizeHealthFields")
           option(value="tcp") TCP connect
           option(value="http") HTTP 200
-      label.field(data-field="upstream_pools[].health_check.interval_ms")
-        span Interval (ms)
+      ConfigField(path="upstream_pools[].health_check.interval_ms" label="Interval (ms)")
         input(type="number" min="1000" max="86400000" step="1" v-model.number="pool.health_check.interval_ms")
-      label.field(data-field="upstream_pools[].health_check.timeout_ms")
-        span Timeout (ms)
+      ConfigField(path="upstream_pools[].health_check.timeout_ms" label="Timeout (ms)")
         input(type="number" min="1" max="30000" step="1" v-model.number="pool.health_check.timeout_ms")
-      label.field(data-field="upstream_pools[].health_check.healthy_threshold")
-        span Healthy threshold
+      ConfigField(path="upstream_pools[].health_check.healthy_threshold" label="Healthy threshold")
         input(type="number" min="1" max="100" step="1" v-model.number="pool.health_check.healthy_threshold")
-      label.field(data-field="upstream_pools[].health_check.unhealthy_threshold")
-        span Unhealthy threshold
+      ConfigField(path="upstream_pools[].health_check.unhealthy_threshold" label="Unhealthy threshold")
         input(type="number" min="1" max="100" step="1" v-model.number="pool.health_check.unhealthy_threshold")
     .field-grid(v-if="pool.health_check.type === 'http'")
-      label.field(data-field="upstream_pools[].health_check.host")
-        span Host authority
+      ConfigField(path="upstream_pools[].health_check.host" label="Host authority")
         input(type="text" :value="pool.health_check.host ?? ''" @input="pool.health_check.host = nullableInput($event)")
-      label.field(data-field="upstream_pools[].health_check.path")
-        span Probe path
+      ConfigField(path="upstream_pools[].health_check.path" label="Probe path")
         input(type="text" :value="pool.health_check.path ?? ''" @input="pool.health_check.path = nullableInput($event)")
-fieldset.object-block(data-field="upstream_pools[].passive_health")
-  legend Passive health
+ConfigGroup.object-block(path="upstream_pools[].passive_health" legend="Passive health")
   label.enable-row
     input(type="checkbox" :checked="pool.passive_health !== null" @change="togglePassiveHealth")
     span Enable passive health tracking
   template(v-if="pool.passive_health")
     .field-grid
-      label.field(data-field="upstream_pools[].passive_health.observe")
-        span Observe
+      ConfigField(path="upstream_pools[].passive_health.observe" label="Observe")
         select(v-model="pool.passive_health.observe")
           option(value="layer4") Layer 4
           option(value="layer7") Layer 7
-      label.field(data-field="upstream_pools[].passive_health.on_error")
-        span On error
+      ConfigField(path="upstream_pools[].passive_health.on_error" label="On error")
         select(v-model="pool.passive_health.on_error")
           option(value="count") Count
           option(value="immediately") Immediately
           option(value="mark_down") Mark down
-      label.field(data-field="upstream_pools[].passive_health.error_limit")
-        span Error limit
+      ConfigField(path="upstream_pools[].passive_health.error_limit" label="Error limit")
         input(type="number" min="1" max="100" step="1" v-model.number="pool.passive_health.error_limit")
-      label.enable-row(data-field="upstream_pools[].passive_health.mark_down")
+      ConfigField(path="upstream_pools[].passive_health.mark_down" label="Mark down on threshold" check)
         input(type="checkbox" v-model="pool.passive_health.mark_down")
-        span Mark down on threshold
-      label.enable-row(data-field="upstream_pools[].passive_health.mark_up")
+      ConfigField(path="upstream_pools[].passive_health.mark_up" label="Mark up after recovery" check)
         input(type="checkbox" v-model="pool.passive_health.mark_up")
-        span Mark up after recovery
-      label.field(data-field="upstream_pools[].passive_health.initial_backoff_ms")
-        span Initial backoff (ms)
+      ConfigField(path="upstream_pools[].passive_health.initial_backoff_ms" label="Initial backoff (ms)")
         input(type="number" min="1" max="86400000" step="1" v-model.number="pool.passive_health.initial_backoff_ms")
-      label.field(data-field="upstream_pools[].passive_health.max_backoff_ms")
-        span Maximum backoff (ms)
+      ConfigField(path="upstream_pools[].passive_health.max_backoff_ms" label="Maximum backoff (ms)")
         input(type="number" min="1" max="86400000" step="1" v-model.number="pool.passive_health.max_backoff_ms")
-      label.field(data-field="upstream_pools[].passive_health.recovery_threshold")
-        span Recovery threshold
+      ConfigField(path="upstream_pools[].passive_health.recovery_threshold" label="Recovery threshold")
         input(type="number" min="1" max="100" step="1" v-model.number="pool.passive_health.recovery_threshold")
-fieldset.object-block(data-field="upstream_pools[].tls")
-  legend Upstream TLS
+ConfigGroup.object-block(path="upstream_pools[].tls" legend="Upstream TLS")
   label.enable-row
     input(
       type="checkbox"
@@ -136,50 +116,37 @@ fieldset.object-block(data-field="upstream_pools[].tls")
     )
     span Enable origin TLS
   .field-grid(v-if="pool.tls")
-    label.field(data-field="upstream_pools[].tls.verify")
-      span Certificate verification
+    ConfigField(path="upstream_pools[].tls.verify" label="Certificate verification")
       select(:value="pool.tls.verify ?? 'full'" @change="setTlsVerify")
         option(value="full") Verify chain and server name
         option(value="none") None (accept any certificate)
-    label.field(data-field="upstream_pools[].tls.server_name")
-      span SNI and verification server name
+    ConfigField(path="upstream_pools[].tls.server_name" label="SNI and verification server name")
       input(type="text" :value="pool.tls.server_name ?? ''" @input="pool.tls.server_name = nullableInput($event)")
-    label.field(data-field="upstream_pools[].tls.ca_certificate_path")
-      span Custom CA certificate path
+    ConfigField(path="upstream_pools[].tls.ca_certificate_path" label="Custom CA certificate path")
       input(type="text" :value="pool.tls.ca_certificate_path ?? ''" @input="pool.tls.ca_certificate_path = nullableInput($event)")
-fieldset.object-block(data-field="upstream_pools[].http_versions")
-  legend Upstream HTTP versions
+ConfigGroup.object-block(path="upstream_pools[].http_versions" legend="Upstream HTTP versions")
   .field-grid
-    label.field(data-field="upstream_pools[].http_versions.min")
-      span Minimum
+    ConfigField(path="upstream_pools[].http_versions.min" label="Minimum")
       select(v-model="pool.http_versions.min" @change="normalizeHttpVersions('min')")
         option(value="1.1") HTTP/1.1
         option(value="2" :disabled="pool.tls === null") HTTP/2
-    label.field(data-field="upstream_pools[].http_versions.max")
-      span Maximum
+    ConfigField(path="upstream_pools[].http_versions.max" label="Maximum")
       select(v-model="pool.http_versions.max" @change="normalizeHttpVersions('max')")
         option(value="1.1") HTTP/1.1
         option(value="2" :disabled="pool.tls === null") HTTP/2
-fieldset.object-block(data-field="upstream_pools[].resilience")
-  legend Resilience
-  label.enable-row(data-field="upstream_pools[].resilience.fail_open")
+ConfigGroup.object-block(path="upstream_pools[].resilience" legend="Resilience")
+  ConfigField(path="upstream_pools[].resilience.fail_open" label="Serve the least-bad server when none is healthy" check)
     input(type="checkbox" v-model="pool.resilience.fail_open")
-    span Serve the least-bad server when none is healthy
   .field-grid
-    label.field(data-field="upstream_pools[].resilience.min_members")
-      span Minimum selectable servers kept by passive ejection
+    ConfigField(path="upstream_pools[].resilience.min_members" label="Minimum selectable servers kept by passive ejection")
       input(type="number" min="0" step="1" placeholder="1 with fail-open, otherwise 0" :value="pool.resilience.min_members ?? ''" @input="pool.resilience.min_members = nullableIntegerInput($event)")
-    label.field(data-field="upstream_pools[].resilience.ejection_jitter_percent")
-      span Ejection duration jitter (%)
+    ConfigField(path="upstream_pools[].resilience.ejection_jitter_percent" label="Ejection duration jitter (%)")
       input(type="number" min="0" max="50" step="1" v-model.number="pool.resilience.ejection_jitter_percent")
-    label.field(data-field="upstream_pools[].resilience.queue_while_unavailable_ms")
-      span Wait for a recovering server (ms)
+    ConfigField(path="upstream_pools[].resilience.queue_while_unavailable_ms" label="Wait for a recovering server (ms)")
       input(type="number" min="1" max="86400000" step="1" :value="pool.resilience.queue_while_unavailable_ms ?? ''" @input="pool.resilience.queue_while_unavailable_ms = nullableIntegerInput($event)")
-    label.field(data-field="upstream_pools[].resilience.unavailable_retry_after_seconds")
-      span Retry-After of the unavailable 503 (s)
+    ConfigField(path="upstream_pools[].resilience.unavailable_retry_after_seconds" label="Retry-After of the unavailable 503 (s)")
       input(type="number" min="1" max="86400" step="1" :value="pool.resilience.unavailable_retry_after_seconds ?? ''" @input="pool.resilience.unavailable_retry_after_seconds = nullableIntegerInput($event)")
-    label.field(data-field="upstream_pools[].resilience.unavailable_body")
-      span Body of the unavailable 503
+    ConfigField(path="upstream_pools[].resilience.unavailable_body" label="Body of the unavailable 503")
       input(type="text" maxlength="1024" :value="pool.resilience.unavailable_body ?? ''" @input="pool.resilience.unavailable_body = nullableInput($event)")
 </template>
 
@@ -197,6 +164,9 @@ import {
   type WeightedRoundRobinAlgorithm,
 } from '../config'
 import UpstreamEndpointField from './UpstreamEndpointField.vue'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
+import ItemScope from './fields/ItemScope.vue'
 
 const props = defineProps<{
   pool: UpstreamPoolConfig

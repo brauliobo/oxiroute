@@ -1,29 +1,32 @@
 <template lang="pug">
-section.diagnostics-section(:inert="reviewOpen || undefined" aria-labelledby="diagnostics-heading")
+section.diagnostics-section(aria-labelledby="diagnostics-heading")
   header.output-heading
     div
       p.eyebrow Server analysis
       h3#diagnostics-heading(tabindex="-1") Validation diagnostics
-    span.output-count {{ diagnostics.length }} {{ diagnostics.length === 1 ? 'item' : 'items' }}
-  p.output-empty(v-if="diagnostics.length === 0") No diagnostics reported for the current {{ context }}.
-  ol.diagnostic-list(v-else aria-live="polite")
-    li.diagnostic(v-for="(diagnostic, index) in diagnostics" :key="`${diagnostic.code}-${index}`" :class="`severity-${diagnostic.severity}`")
+    span.output-count {{ summary }}
+  p.output-empty(v-if="placed.length === 0") No diagnostics reported for the current {{ context }}.
+  ol.diagnostic-list(v-else)
+    li.diagnostic(v-for="item in placed" :key="item.id" :class="`severity-${item.diagnostic.severity}`")
       .diagnostic-code
-        span {{ diagnostic.severity }}
-        code {{ diagnostic.code }}
-      button.diagnostic-target(v-if="diagnostic.path" type="button" @click="emit('focusField', diagnostic.path)")
-        strong {{ diagnostic.message }}
-        p.diagnostic-meta {{ diagnostic.stage }}{{ diagnostic.path ? ` / ${diagnostic.path}` : '' }}
+        span {{ item.diagnostic.severity }}
+        code {{ item.diagnostic.code }}
+      button.diagnostic-target(v-if="item.location" type="button" @click="emit('focusField', item)")
+        DiagnosticText(:diagnostic="item.diagnostic")
       div(v-else)
-        strong {{ diagnostic.message }}
-        p.diagnostic-meta {{ diagnostic.stage }}
+        DiagnosticText(:diagnostic="item.diagnostic")
 </template>
 
 <script setup lang="ts" vapor>
-import type { ConfigDiagnostic } from '../../config'
+import { computed } from 'vue'
 
-defineProps<{ diagnostics: ConfigDiagnostic[]; context: string; reviewOpen: boolean }>()
-const emit = defineEmits<{ focusField: [path: string] }>()
+import type { PlacedDiagnostic } from '../fields/context'
+import DiagnosticText from './DiagnosticText.vue'
+import { summarizeDiagnostics } from './diagnosticSummary'
+
+const props = defineProps<{ placed: PlacedDiagnostic[]; context: string }>()
+const emit = defineEmits<{ focusField: [item: PlacedDiagnostic] }>()
+const summary = computed(() => summarizeDiagnostics(props.placed.map(({ diagnostic }) => diagnostic)))
 </script>
 
 <style scoped src="./base.css"></style>

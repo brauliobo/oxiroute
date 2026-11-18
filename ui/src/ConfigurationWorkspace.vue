@@ -131,6 +131,8 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             @remove="removeSelected('rtmp_services')"
           )
 
+        DiagnosticsSection(:placed="placedDiagnostics" :context="diagnosticContext" @focus-field="focusDiagnostic")
+
         EditorActions(
           :dirty="isDirty"
           :validating="validating"
@@ -139,17 +141,11 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           :compositional="snapshot.compositional"
           :validation-current="validationCurrent"
           :can-review="canReviewSave"
+          :summary="actionSummary"
           @reset="resetDraft"
-          @validate="runValidation"
+          @validate="validate"
           @review="openReview"
         )
-
-    DiagnosticsSection(
-      :diagnostics="visibleDiagnostics"
-      :context="diagnosticContext"
-      :review-open="reviewOpen"
-      @focus-field="focusDiagnostic"
-    )
 
     ValidationOutput(v-if="validationCurrent && validationResult" :result="validationResult" :review-open="reviewOpen")
 
@@ -168,12 +164,13 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
 </template>
 
 <script setup lang="ts" vapor>
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
-import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot } from './config'
+import { locateDiagnostic, type CanonicalConfig, type ConfigDiagnostic, type ConfigSnapshot } from './config'
 import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
 import CertificateEditor from './configuration/CertificateEditor.vue'
 import { clone } from './configuration/clone'
+import { issueId, provideFieldDiagnostics } from './configuration/fields/context'
 import ForwardProxyServiceEditor from './configuration/ForwardProxyServiceEditor.vue'
 import HttpServiceEditor from './configuration/HttpServiceEditor.vue'
 import L4ServiceEditor from './configuration/L4ServiceEditor.vue'
@@ -195,7 +192,9 @@ import RevisionBanners from './configuration/workspace/RevisionBanners.vue'
 import RevisionBoard from './configuration/workspace/RevisionBoard.vue'
 import SaveReviewDialog from './configuration/workspace/SaveReviewDialog.vue'
 import StatsSection from './configuration/workspace/StatsSection.vue'
+import { hasErrors, summarizeDiagnostics } from './configuration/workspace/diagnosticSummary'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
+import { useLiveRegion } from '#design/composables/useLiveRegion'
 import { useReviewDialog } from './configuration/workspace/useReviewDialog'
 import { useSnapshotLoader } from './configuration/workspace/useSnapshotLoader'
 import { useTlsAlpnPreparation } from './configuration/workspace/useTlsAlpnPreparation'
@@ -302,6 +301,28 @@ const {
 })
 
 const focusDiagnostic = useDiagnosticFocus(workspaceRoot, selectedKey)
+const { announce } = useLiveRegion()
+
+const placedDiagnostics = computed(() => visibleDiagnostics.value.map((diagnostic, index) => ({
+  id: issueId(index),
+  diagnostic,
+  location: draft.value && diagnostic.path ? locateDiagnostic(draft.value, diagnostic.path) : null,
+})))
+const actionSummary = computed(() => visibleDiagnostics.value.length > 0
+  ? summarizeDiagnostics(visibleDiagnostics.value)
+  : validationCurrent.value ? 'Validated: no diagnostics' : '')
+provideFieldDiagnostics({ placed: placedDiagnostics, selectedKey })
+
+async function validate(): Promise<void> {
+  await runValidation()
+  const diagnostics = visibleDiagnostics.value
+  announce(`Validation finished: ${summarizeDiagnostics(diagnostics)}.`, hasErrors(diagnostics) ? 'assertive' : 'polite')
+  if (diagnostics.length === 0) return
+  await nextTick()
+  const heading = workspaceRoot.value?.querySelector<HTMLElement>('#diagnostics-heading')
+  heading?.focus()
+  heading?.scrollIntoView?.({ block: 'center' })
+}
 
 function ensureSelection(): void {
   if (!selectionExists(selectedKey.value)) selectedKey.value = 'general'

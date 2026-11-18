@@ -5,8 +5,7 @@ header.form-heading
     h3 {{ certificate.name || 'Unnamed certificate' }}
   button.danger-button(type="button" @click="emit('remove')") Remove certificate
 .field-grid
-  label.field(data-field="certificates[].name")
-    span Stable name
+  ConfigField(path="certificates[].name" label="Stable name")
     input(type="text" v-model="certificate.name")
   StringListField(
     v-model="certificate.dns_names"
@@ -15,35 +14,27 @@ header.form-heading
     field-path="certificates[].dns_names"
     hint="Exact and one-label wildcard names are supported."
   )
-fieldset.object-block(data-field="certificates[].source")
-  legend Certificate source
-  label.field(data-field="certificates[].source.type")
-    span Source type
+ConfigGroup.object-block(path="certificates[].source" legend="Certificate source")
+  ConfigField(path="certificates[].source.type" label="Source type")
     select(:value="certificate.source.type" @change="changeSource")
       option(value="files") Direct files
       option(value="certbot") Certbot lineage
       option(value="acme_managed") Managed ACME
       option(value="self_signed_development") Development self-signed
   .field-grid(v-if="certificate.source.type === 'files'")
-    label.field(data-field="certificates[].source.certificate_chain_path")
-      span Certificate chain path
+    ConfigField(path="certificates[].source.certificate_chain_path" label="Certificate chain path")
       input(type="text" v-model="certificate.source.certificate_chain_path")
-    label.field(data-field="certificates[].source.private_key_path")
-      span Private key path
+    ConfigField(path="certificates[].source.private_key_path" label="Private key path")
       input(type="text" v-model="certificate.source.private_key_path")
   .field-grid(v-else-if="certificate.source.type === 'certbot'")
-    label.field(data-field="certificates[].source.live_directory_path")
-      span Live directory path
+    ConfigField(path="certificates[].source.live_directory_path" label="Live directory path")
       input(type="text" v-model="certificate.source.live_directory_path")
-    label.field(data-field="certificates[].source.archive_directory_path")
-      span Archive directory path
+    ConfigField(path="certificates[].source.archive_directory_path" label="Archive directory path")
       input(type="text" v-model="certificate.source.archive_directory_path")
   .field-grid(v-else-if="certificate.source.type === 'acme_managed'")
-    label.field(data-field="certificates[].source.directory_url")
-      span ACME directory URL
+    ConfigField(path="certificates[].source.directory_url" label="ACME directory URL")
       input(type="url" v-model="certificate.source.directory_url")
-    label.field(data-field="certificates[].source.state_root")
-      span State root
+    ConfigField(path="certificates[].source.state_root" label="State root")
       input(type="text" v-model="certificate.source.state_root")
     StringListField(
       v-model="certificate.source.contacts"
@@ -51,11 +42,9 @@ fieldset.object-block(data-field="certificates[].source")
       item-label="mailto contact"
       field-path="certificates[].source.contacts"
     )
-    label.field(data-field="certificates[].source.terms_agreed")
-      span Terms agreed
+    ConfigField(path="certificates[].source.terms_agreed" label="Terms agreed")
       input(type="checkbox" v-model="certificate.source.terms_agreed")
-    label.field(data-field="certificates[].source.challenge")
-      span Challenge
+    ConfigField(path="certificates[].source.challenge" label="Challenge")
       select(
         :value="certificate.source.challenge"
         :aria-describedby="certificate.source.challenge === 'tls_alpn01' ? 'tls-alpn-deployment-note' : undefined"
@@ -67,8 +56,7 @@ fieldset.object-block(data-field="certificates[].source")
       small#tls-alpn-deployment-note.challenge-note(v-if="certificate.source.challenge === 'tls_alpn01'")
         | TLS-ALPN-01 requires a deployed listener reachable on public TCP port 443.
         | Selecting it records the challenge choice only; it does not create or deploy that listener by itself. Use the draft assistant below to prepare it.
-    label.field(data-field="certificates[].source.key_type")
-      span Leaf key type
+    ConfigField(path="certificates[].source.key_type" label="Leaf key type")
       select(v-model="certificate.source.key_type")
         option(value="ecdsa_p256") ECDSA P-256
         option(value="rsa_2048") RSA 2048
@@ -78,32 +66,25 @@ fieldset.object-block(data-field="certificates[].source")
       item-label="DNS suffix"
       field-path="certificates[].source.allowed_dns_suffixes"
     )
-    label.field(data-field="certificates[].source.retained_revisions")
-      span Retained revisions
+    ConfigField(path="certificates[].source.retained_revisions" label="Retained revisions")
       input(type="number" min="1" max="32" step="1" v-model.number="certificate.source.retained_revisions")
-    label.field(data-field="certificates[].source.retention_days")
-      span Retention days
+    ConfigField(path="certificates[].source.retention_days" label="Retention days")
       input(type="number" min="1" max="3650" step="1" v-model.number="certificate.source.retention_days")
     .field-grid(v-if="certificate.source.challenge === 'dns01' && certificate.source.dns01")
-      label.field(data-field="certificates[].source.dns01.provider")
-        span DNS provider
+      ConfigField(path="certificates[].source.dns01.provider" label="DNS provider")
         input(type="text" v-model="certificate.source.dns01.provider")
-      label.field(data-field="certificates[].source.dns01.credential_file")
-        span Credential file
+      ConfigField(path="certificates[].source.dns01.credential_file" label="Credential file")
         input(type="text" v-model="certificate.source.dns01.credential_file")
-      label.field(data-field="certificates[].source.dns01.timeout_seconds")
-        span Provider timeout (seconds)
+      ConfigField(path="certificates[].source.dns01.timeout_seconds" label="Provider timeout (seconds)")
         input(type="number" min="1" max="600" step="1" v-model.number="certificate.source.dns01.timeout_seconds")
     .tls-alpn-deployment(v-if="certificate.source.challenge === 'tls_alpn01'")
       strong Prepare the TLS-ALPN listener in this draft
       p The assistant reuses a compatible TCP/TLS listener on port 443 or adds an isolated 404 HTTP service, TLS profile, and listener. Nothing is deployed until validation, review, and the revision-checked save.
       button.add-row(type="button" data-action="prepare-tls-alpn-listener" @click="emit('prepare-tls-alpn')") Prepare TLS-ALPN listener
   .field-grid(v-else)
-    label.field(data-field="certificates[].source.validity_days")
-      span Validity days
+    ConfigField(path="certificates[].source.validity_days" label="Validity days")
       input(type="number" min="1" max="30" step="1" :value="certificate.source.validity_days" @input="setSelfSignedValidity")
-    label.field(data-field="certificates[].source.key_type")
-      span Key type
+    ConfigField(path="certificates[].source.key_type" label="Key type")
       select(:value="certificate.source.key_type" @change="setSelfSignedKeyType")
         option(value="ecdsa_p256") ECDSA P-256
         option(value="rsa_2048") RSA 2048
@@ -112,6 +93,8 @@ fieldset.object-block(data-field="certificates[].source")
 <script setup lang="ts" vapor>
 import type { CertificateConfig, SelfSignedKeyType } from '../config'
 import StringListField from '../StringListField.vue'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
 
 const props = defineProps<{ certificate: CertificateConfig }>()
 const emit = defineEmits<{

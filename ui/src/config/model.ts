@@ -864,6 +864,8 @@ export interface ConfigDiagnostic {
   stage: DiagnosticStage
   message: string
   path?: string
+  detail?: string
+  line?: number
 }
 
 export type ConfigFormat = 'kdl' | 'lua' | 'uci' | 'hocon'

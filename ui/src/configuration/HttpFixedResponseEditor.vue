@@ -1,11 +1,9 @@
 <template lang="pug">
 .action-editor
   .field-grid
-    label.field(data-field="http_services[].routes[].action.status")
-      span HTTP status
+    ConfigField(path="http_services[].routes[].action.status" label="HTTP status")
       input(type="number" min="200" max="599" step="1" v-model.number="action.status")
-    label.field.field-wide(data-field="http_services[].routes[].action.body")
-      span Response body
+    ConfigField.field-wide(path="http_services[].routes[].action.body" label="Response body")
       textarea(
         v-model="action.body"
         rows="5"
@@ -15,29 +13,30 @@
       )
       small(:id="bodyHintId") Status 204, 205, and 304 require an empty body. Maximum 65,536 UTF-8 bytes.
       small.field-warning(v-if="bodyForbiddenWithContent" role="alert") Clear the body for status {{ action.status }}.
-  fieldset.route-list(data-field="http_services[].routes[].action.headers")
-    .route-heading
-      legend Response headers
-      button.add-row(type="button" :disabled="action.headers.length >= 32" :title="action.headers.length >= 32 ? 'The server allows at most 32 fixed response headers.' : undefined" @click="addHeader") + Add header
-    article.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex")
+  ConfigGroup.route-list(path="http_services[].routes[].action.headers")
+    template(#legend)
+      .route-heading
+        legend Response headers
+        button.add-row(type="button" :disabled="action.headers.length >= 32" :title="action.headers.length >= 32 ? 'The server allows at most 32 fixed response headers.' : undefined" @click="addHeader") + Add header
+    ItemScope.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex" :index="headerIndex")
       header.route-card-heading
         strong Header {{ headerIndex + 1 }}
         button.danger-link(type="button" :aria-label="`Remove fixed response header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
       .field-grid
-        label.field(data-field="http_services[].routes[].action.headers[].name")
-          span Header name
+        ConfigField(path="http_services[].routes[].action.headers[].name" label="Header name")
           input(type="text" v-model="header.name")
-        label.field(data-field="http_services[].routes[].action.headers[].value")
-          span Header value
+        ConfigField(path="http_services[].routes[].action.headers[].value" label="Header value")
           input(type="text" v-model="header.value")
-        label.enable-row(data-field="http_services[].routes[].action.headers[].always")
+        ConfigField(path="http_services[].routes[].action.headers[].always" label="Add on every response status" check)
           input(type="checkbox" v-model="header.always")
-          span Add on every response status
 </template>
 
 <script setup lang="ts" vapor>
 import { computed, useId } from 'vue'
 import type { HttpFixedResponseActionConfig } from '../config'
+import ConfigField from './fields/ConfigField.vue'
+import ConfigGroup from './fields/ConfigGroup.vue'
+import ItemScope from './fields/ItemScope.vue'
 
 const props = defineProps<{ action: HttpFixedResponseActionConfig }>()
 const emit = defineEmits<{ changed: [] }>()
