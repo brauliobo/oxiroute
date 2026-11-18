@@ -25,6 +25,13 @@ describe('ConfirmHost', () => {
     expect(wrapper.findAll('li').map((item) => item.text())).toEqual(['2 servers', '14 active connections'])
   })
 
+  it('opens with the cancel button focused', async () => {
+    const wrapper = mount(ConfirmHost, { attachTo: document.body })
+    void confirmAction(request)
+    await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[data-close]').element)
+  })
+
   it('resolves true on confirm and closes', async () => {
     const wrapper = mount(ConfirmHost)
     const answer = confirmAction({ ...request, danger: true })

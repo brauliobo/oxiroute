@@ -123,8 +123,6 @@ test.describe('operations workspace', () => {
     await drainPrimary(page).click()
     const dialog = page.getByRole('dialog', { name: 'Drain server primary' })
 
-    await expect(dialog).toBeFocused()
-    await page.keyboard.press('Tab')
     await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(dialog.getByRole('button', { name: 'Drain', exact: true })).toBeFocused()

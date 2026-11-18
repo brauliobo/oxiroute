@@ -19,7 +19,7 @@ const onClick = (event: MouseEvent) => {
 }
 
 onMounted(sync)
-watch(() => props.open, sync)
+watch(() => props.open, sync, { flush: 'post' })
 </script>
 
 <template lang="pug">
