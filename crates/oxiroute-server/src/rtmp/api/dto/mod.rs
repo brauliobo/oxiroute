@@ -8,6 +8,7 @@ mod mutation;
 mod observability;
 mod recordings;
 mod rtmp;
+mod ticket;
 mod tls;
 mod topology;
 
@@ -44,6 +45,7 @@ pub(crate) use rtmp::{
     RtmpRecorderResponse, RtmpSessionControlResponse, RtmpSessionRevisionConflictResponse,
     RtmpSessionRoleConflictResponse, RtmpStatsResponse, RtmpStreamResponse,
 };
+pub(crate) use ticket::{MediaTicketRequest, TicketResponse, VodTicketRequest};
 pub(crate) use tls::{
     TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,
     TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest,

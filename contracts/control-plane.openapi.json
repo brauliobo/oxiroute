@@ -1257,6 +1257,25 @@
         ],
         "type": "string"
       },
+      "MediaTicketRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "ttlSeconds": {
+            "default": null,
+            "format": "uint32",
+            "maximum": 600,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ttlSeconds"
+        ],
+        "type": "object"
+      },
       "NoneDto": {
         "enum": [
           "none"
@@ -1761,6 +1780,33 @@
         ],
         "type": "string"
       },
+      "TicketResponse": {
+        "properties": {
+          "expiresAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ticket",
+          "path",
+          "expiresAtUnixMs",
+          "ttlSeconds"
+        ],
+        "type": "object"
+      },
       "TlsClientAuthDto": {
         "properties": {
           "allowedDnsNameCount": {
@@ -1855,6 +1901,29 @@
           "udp"
         ],
         "type": "string"
+      },
+      "VodTicketRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "default": null,
+            "format": "uint32",
+            "maximum": 600,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "ttlSeconds"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1865,7 +1934,7 @@
     }
   },
   "info": {
-    "description": "Checked contract for the registry-owned protected read-only management endpoints.",
+    "description": "Checked contract for the registry-owned protected management endpoints.",
     "title": "OxiRoute Control Plane API",
     "version": "7.0.0"
   },
@@ -2152,6 +2221,318 @@
                   "type": "string"
                 }
               },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/rtmp/media/{service}/{application}/{stream}/ticket": {
+      "post": {
+        "operationId": "createMediaTicket",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stream",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaTicketRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body or the requested lifetime is invalid.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The media output or VOD source does not exist.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/rtmp/vod/{service}/{application}/{source}/ticket": {
+      "post": {
+        "operationId": "createVodTicket",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VodTicketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body or the requested lifetime is invalid.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The media output or VOD source does not exist.",
+            "headers": {
               "X-Correlation-Id": {
                 "description": "Request correlation identifier.",
                 "schema": {

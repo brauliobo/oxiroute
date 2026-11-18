@@ -69,6 +69,7 @@ mod config;
 mod events;
 mod helpers;
 mod status;
+mod tickets;
 
 #[allow(clippy::wildcard_imports)]
 use helpers::*;

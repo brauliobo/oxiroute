@@ -3,7 +3,8 @@ use std::time::SystemTime;
 use http::{
     HeaderValue, Response, StatusCode,
     header::{
-        ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, WWW_AUTHENTICATE,
+        ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName,
+        WWW_AUTHENTICATE,
     },
 };
 use serde::Serialize;
@@ -75,6 +76,12 @@ impl ApiResponse {
 
     pub(crate) fn with_cache_control(mut self, cache_control: &'static str) -> Self {
         self.cache_control = Some(cache_control);
+        self
+    }
+
+    pub(crate) fn with_ticket_privacy(mut self) -> Self {
+        self.cache_control = Some("no-store");
+        self.headers.push(("referrer-policy", "no-referrer"));
         self
     }
 

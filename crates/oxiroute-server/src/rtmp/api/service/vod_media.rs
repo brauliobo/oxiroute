@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::rtmp::api::ticket::playlist::carry_ticket;
 
 impl RtmpManagementApi {
     pub(super) async fn vod_response(
@@ -74,6 +75,7 @@ impl RtmpManagementApi {
     pub(super) async fn media_response(
         &self,
         route: MediaRoute<'_>,
+        ticket: Option<&str>,
         session: &ServerSession,
     ) -> ApiResponse {
         if session.req_header().method.as_str() != "GET" {
@@ -91,7 +93,7 @@ impl RtmpManagementApi {
         let application = route.application.to_owned();
         let stream = route.stream.to_owned();
         let object = route.object.to_owned();
-        let object = match tokio::task::spawn_blocking(move || {
+        let mut object = match tokio::task::spawn_blocking(move || {
             let _generation = active;
             catalog.read_object(&service, &application, &stream, &object)
         })
@@ -101,6 +103,13 @@ impl RtmpManagementApi {
             Ok(Err(error)) => return media_error_response(error),
             Err(_) => return ApiResponse::error(503, "media_unavailable", "media worker failed"),
         };
+        if let Some(ticket) = ticket {
+            object.body = carry_ticket(
+                object.content_type,
+                std::mem::take(&mut object.body),
+                ticket,
+            );
+        }
         let total = u64::try_from(object.body.len()).unwrap_or(u64::MAX);
         let range_header = session
             .req_header()

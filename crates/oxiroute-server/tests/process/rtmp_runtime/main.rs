@@ -15,6 +15,7 @@ mod rtmp_support;
 mod ended;
 mod hevc;
 mod inventory;
+mod media_ticket;
 mod quota;
 mod recording;
 

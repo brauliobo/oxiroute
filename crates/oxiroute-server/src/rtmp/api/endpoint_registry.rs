@@ -6,6 +6,8 @@ pub(super) enum EndpointId {
     Servers,
     Generations,
     Requests,
+    MediaTicket,
+    VodTicket,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +28,25 @@ pub(super) enum SuccessSchema {
     Servers,
     Generations,
     Requests,
+    Ticket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RequestSchema {
+    MediaTicket,
+    VodTicket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RequestBody {
+    pub(super) schema: RequestSchema,
+    pub(super) required: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Failure {
+    pub(super) status: &'static str,
+    pub(super) description: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,10 +57,23 @@ pub(super) struct EndpointSpec {
     pub(super) method: &'static str,
     pub(super) auth: AuthPolicy,
     pub(super) response: ResponseMode,
+    pub(super) request: Option<RequestBody>,
     pub(super) success_schema: SuccessSchema,
+    pub(super) failures: &'static [Failure],
 }
 
-const ENDPOINTS: [EndpointSpec; 6] = [
+const TICKET_FAILURES: &[Failure] = &[
+    Failure {
+        status: "400",
+        description: "The request body or the requested lifetime is invalid.",
+    },
+    Failure {
+        status: "404",
+        description: "The media output or VOD source does not exist.",
+    },
+];
+
+const ENDPOINTS: [EndpointSpec; 8] = [
     EndpointSpec {
         id: EndpointId::Status,
         operation_id: "getStatus",
@@ -47,6 +81,8 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Status,
     },
     EndpointSpec {
@@ -56,6 +92,8 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Listeners,
     },
     EndpointSpec {
@@ -65,6 +103,8 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Pools,
     },
     EndpointSpec {
@@ -74,6 +114,8 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Servers,
     },
     EndpointSpec {
@@ -83,6 +125,8 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Generations,
     },
     EndpointSpec {
@@ -92,18 +136,67 @@ const ENDPOINTS: [EndpointSpec; 6] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        request: None,
+        failures: &[],
         success_schema: SuccessSchema::Requests,
+    },
+    EndpointSpec {
+        id: EndpointId::MediaTicket,
+        operation_id: "createMediaTicket",
+        path: "/api/v1/rtmp/media/{service}/{application}/{stream}/ticket",
+        method: "POST",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: Some(RequestBody {
+            schema: RequestSchema::MediaTicket,
+            required: false,
+        }),
+        failures: TICKET_FAILURES,
+        success_schema: SuccessSchema::Ticket,
+    },
+    EndpointSpec {
+        id: EndpointId::VodTicket,
+        operation_id: "createVodTicket",
+        path: "/api/v1/rtmp/vod/{service}/{application}/{source}/ticket",
+        method: "POST",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: Some(RequestBody {
+            schema: RequestSchema::VodTicket,
+            required: true,
+        }),
+        failures: TICKET_FAILURES,
+        success_schema: SuccessSchema::Ticket,
     },
 ];
 
-pub(super) fn all() -> &'static [EndpointSpec; 6] {
+pub(super) fn all() -> &'static [EndpointSpec] {
     &ENDPOINTS
+}
+
+impl EndpointSpec {
+    fn matches(&self, path: &str) -> bool {
+        let mut template = self.path.split('/');
+        let mut actual = path.split('/');
+        loop {
+            match (template.next(), actual.next()) {
+                (None, None) => return true,
+                (Some(expected), Some(segment)) if expected.starts_with('{') => {
+                    if segment.is_empty() {
+                        return false;
+                    }
+                }
+                (Some(expected), Some(segment)) if expected == segment => {}
+                _ => return false,
+            }
+        }
+    }
 }
 
 pub(super) fn match_path(path: &str) -> Option<EndpointId> {
     all()
         .iter()
-        .find(|endpoint| endpoint.path == path)
+        .find(|endpoint| endpoint.matches(path))
         .map(|endpoint| endpoint.id)
 }
 
@@ -120,8 +213,8 @@ mod tests {
 
     #[test]
     fn registry_owns_the_protected_read_only_management_endpoints() {
-        assert_eq!(all().len(), 6);
-        for (endpoint, expected) in all().iter().zip([
+        assert_eq!(all().len(), 8);
+        for (endpoint, expected) in all().iter().take(6).zip([
             (
                 EndpointId::Status,
                 "getStatus",
@@ -168,6 +261,31 @@ mod tests {
             assert_eq!(endpoint.response, ResponseMode::Json);
             assert_eq!(endpoint.success_schema, expected.3);
             assert_eq!(match_path(endpoint.path), Some(endpoint.id));
+        }
+    }
+
+    #[test]
+    fn registry_owns_the_ticket_minting_endpoints() {
+        assert_eq!(
+            match_path("/api/v1/rtmp/media/live/cam/main/ticket"),
+            Some(EndpointId::MediaTicket)
+        );
+        assert_eq!(
+            match_path("/api/v1/rtmp/vod/live/cam/archive/ticket"),
+            Some(EndpointId::VodTicket)
+        );
+        for endpoint in &all()[6..] {
+            assert_eq!(endpoint.method, "POST");
+            assert_eq!(endpoint.path.matches('{').count(), 3);
+        }
+        for path in [
+            "/api/v1/rtmp/media/live/cam/ticket",
+            "/api/v1/rtmp/media/live/cam/main/index.m3u8",
+            "/api/v1/rtmp/media/live//main/ticket",
+            "/api/v1/rtmp/media/live/cam/main/ticket/extra",
+            "/api/v1/rtmp/vod/live/cam/archive/a/b/ticket",
+        ] {
+            assert_eq!(match_path(path), None, "unexpected endpoint match: {path}");
         }
     }
 

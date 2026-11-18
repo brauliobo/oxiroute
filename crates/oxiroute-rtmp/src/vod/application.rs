@@ -192,6 +192,11 @@ impl VodApplication {
         self.limits
     }
 
+    #[must_use]
+    pub fn has_source(&self, source: &str) -> bool {
+        self.sources.contains_key(source)
+    }
+
     /// Opens one bounded VOD object and acquires its concurrent-session lease.
     ///
     /// # Errors

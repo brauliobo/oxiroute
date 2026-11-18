@@ -77,6 +77,21 @@ impl MediaCatalog {
         }
     }
 
+    /// The public object that starts playback of an application's live output: the HLS playlist
+    /// when HLS is configured, else the DASH manifest. `None` when the application has no media
+    /// output.
+    #[must_use]
+    pub fn entry_object(&self, service: &str, application: &str) -> Option<&'static str> {
+        let media = self
+            .applications
+            .get(&(service.to_owned(), application.to_owned()))?;
+        if media.hls.is_some() {
+            Some("index.m3u8")
+        } else {
+            media.dash.as_ref().map(|_| "manifest.mpd")
+        }
+    }
+
     pub(crate) fn read(
         &self,
         service: &str,

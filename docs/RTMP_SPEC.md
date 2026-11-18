@@ -614,6 +614,25 @@ fragmented MP4 output, retains a bounded MPD window, preserves sequence continui
 publisher restart, and supports authenticated single contiguous byte ranges. DASH media is never
 represented as MPEG-TS.
 
+Browsers cannot attach a Bearer header to media element requests, so `POST
+/api/v1/rtmp/media/{service}/{application}/{stream}/ticket` (management Bearer) mints a media
+ticket and `POST /api/v1/rtmp/vod/{service}/{application}/{source}/ticket` (body `{"path"}`) mints
+one for a VOD object. Both accept an optional `ttlSeconds` of 1 through 600 (default 90), return
+`{ticket, path, expiresAtUnixMs, ttlSeconds}`, answer `404` when the application has no media
+output or the VOD source does not exist, and are audited as `media_ticket_mint`. A ticket is
+`<expiry unix ms>.<base64url HMAC-SHA256>` over a domain tag, a typed scope string
+(`stream:<service>/<application>/<stream>` for live media, `vod:<service>/<application>/<source>/<path>`
+for one VOD object) and the expiry, keyed by 32 random bytes owned by the process-level
+`RtmpManagementApi`: generation reloads keep it, a restart invalidates every ticket. The MAC is
+compared in constant time. The `ticket` query parameter is honored only on `GET` of the media and VOD
+routes and only when no `Authorization` header is present; `?access_token=` stays refused. A forged,
+altered, repeated or wrong-scope ticket returns `401 invalid_ticket`; an authentic but expired one
+returns `401 ticket_expired`. Because relative playlist and manifest references drop the request
+query, a ticketed response rewrites every relative `URI=` (HLS tags and variant lines) and DASH
+`sourceURL`/`media` reference to carry the same ticket; absolute references are untouched. Ticketed
+responses and mint responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; the
+ticket is never logged, audited or placed in events or error text.
+
 Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
 backpressures when that bound is full, but waits outside registry and recorder-controller locks, so
 catalog snapshots and controller observation remain available. Each worker stops accepting events

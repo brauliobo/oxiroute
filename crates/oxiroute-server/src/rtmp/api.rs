@@ -16,6 +16,7 @@ mod route;
 mod rtmp;
 mod service;
 mod streams;
+mod ticket;
 mod ui;
 mod vod;
 mod wire;

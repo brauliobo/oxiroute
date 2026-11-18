@@ -5,10 +5,11 @@ use serde_json::{Map, Value, json};
 
 use super::{
     dto::{
-        ErrorResponse, GenerationResponse, ListenerInventoryResponse, PoolInventoryResponse,
-        RequestListResponse, ServerInventoryResponse, StatusResponse,
+        ErrorResponse, GenerationResponse, ListenerInventoryResponse, MediaTicketRequest,
+        PoolInventoryResponse, RequestListResponse, ServerInventoryResponse, StatusResponse,
+        TicketResponse, VodTicketRequest,
     },
-    endpoint_registry::{self, EndpointSpec, SuccessSchema},
+    endpoint_registry::{self, EndpointSpec, RequestSchema, SuccessSchema},
 };
 
 const ARTIFACT_RELATIVE_PATH: &str = "../../contracts/control-plane.openapi.json";
@@ -21,6 +22,9 @@ pub(super) fn generated_openapi() -> Value {
 
     for endpoint in endpoint_registry::all() {
         register_success_schema(&mut generator, endpoint.success_schema);
+        if let Some(request) = endpoint.request {
+            register_request_schema(&mut generator, request.schema);
+        }
     }
     generator.subschema_for::<ErrorResponse>();
 
@@ -42,7 +46,7 @@ pub(super) fn generated_openapi() -> Value {
         "info": {
             "title": "OxiRoute Control Plane API",
             "version": "7.0.0",
-            "description": "Checked contract for the registry-owned protected read-only management endpoints."
+            "description": "Checked contract for the registry-owned protected management endpoints."
         },
         "paths": paths,
         "components": {
@@ -77,11 +81,24 @@ fn register_success_schema(generator: &mut schemars::SchemaGenerator, schema: Su
         SuccessSchema::Requests => {
             generator.subschema_for::<RequestListResponse>();
         }
+        SuccessSchema::Ticket => {
+            generator.subschema_for::<TicketResponse>();
+        }
+    }
+}
+
+fn register_request_schema(generator: &mut schemars::SchemaGenerator, schema: RequestSchema) {
+    match schema {
+        RequestSchema::MediaTicket => {
+            generator.subschema_for::<MediaTicketRequest>();
+        }
+        RequestSchema::VodTicket => {
+            generator.subschema_for::<VodTicketRequest>();
+        }
     }
 }
 
 fn operation(endpoint: &EndpointSpec) -> Value {
-    debug_assert_eq!(endpoint.method, "GET");
     debug_assert_eq!(
         endpoint.response,
         super::endpoint_registry::ResponseMode::Json
@@ -90,32 +107,78 @@ fn operation(endpoint: &EndpointSpec) -> Value {
         endpoint.auth,
         super::endpoint_registry::AuthPolicy::ManagementBearer
     );
-    json!({
-        "operationId": endpoint.operation_id,
-        "tags": ["Management"],
-        "security": [{ "managementBearer": [] }],
-        "responses": {
-            "200": {
-                "description": "Successful response",
-                "headers": {
-                    "X-Correlation-Id": {
-                        "description": "Request correlation identifier.",
-                        "schema": { "type": "string" }
-                    }
-                },
-                "content": {
-                    "application/json": {
-                        "schema": schema_ref(success_schema_name(endpoint.success_schema))
-                    }
+    let mut responses = Map::new();
+    responses.insert(
+        "200".into(),
+        json!({
+            "description": "Successful response",
+            "headers": {
+                "X-Correlation-Id": {
+                    "description": "Request correlation identifier.",
+                    "schema": { "type": "string" }
                 }
             },
-            "401": error_response("Authentication is required.", true),
-            "405": error_response("The HTTP method is not allowed.", false)
-        }
+            "content": {
+                "application/json": {
+                    "schema": schema_ref(success_schema_name(endpoint.success_schema))
+                }
+            }
+        }),
+    );
+    for failure in endpoint.failures {
+        responses.insert(
+            failure.status.into(),
+            error_response(failure.description, false, false),
+        );
+    }
+    responses.insert(
+        "401".into(),
+        error_response("Authentication is required.", true, false),
+    );
+    responses.insert(
+        "405".into(),
+        error_response("The HTTP method is not allowed.", false, true),
+    );
+    let mut operation = Map::new();
+    operation.insert("operationId".into(), json!(endpoint.operation_id));
+    operation.insert("tags".into(), json!(["Management"]));
+    operation.insert("security".into(), json!([{ "managementBearer": [] }]));
+    let parameters = endpoint
+        .path
+        .split('/')
+        .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+        .map(path_parameter)
+        .collect::<Vec<_>>();
+    if !parameters.is_empty() {
+        operation.insert("parameters".into(), Value::Array(parameters));
+    }
+    if let Some(request) = endpoint.request {
+        operation.insert(
+            "requestBody".into(),
+            json!({
+                "required": request.required,
+                "content": {
+                    "application/json": {
+                        "schema": schema_ref(request_schema_name(request.schema))
+                    }
+                }
+            }),
+        );
+    }
+    operation.insert("responses".into(), Value::Object(responses));
+    Value::Object(operation)
+}
+
+fn path_parameter(name: &str) -> Value {
+    json!({
+        "name": name,
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
     })
 }
 
-fn error_response(description: &str, authenticate: bool) -> Value {
+fn error_response(description: &str, authenticate: bool, allow: bool) -> Value {
     let mut headers = Map::new();
     headers.insert(
         "X-Correlation-Id".into(),
@@ -132,7 +195,8 @@ fn error_response(description: &str, authenticate: bool) -> Value {
                 "schema": { "type": "string" }
             }),
         );
-    } else {
+    }
+    if allow {
         headers.insert(
             "Allow".into(),
             json!({
@@ -164,6 +228,14 @@ fn success_schema_name(schema: SuccessSchema) -> &'static str {
         SuccessSchema::Servers => "ServerInventoryResponse",
         SuccessSchema::Generations => "GenerationResponse",
         SuccessSchema::Requests => "RequestListResponse",
+        SuccessSchema::Ticket => "TicketResponse",
+    }
+}
+
+fn request_schema_name(schema: RequestSchema) -> &'static str {
+    match schema {
+        RequestSchema::MediaTicket => "MediaTicketRequest",
+        RequestSchema::VodTicket => "VodTicketRequest",
     }
 }
 

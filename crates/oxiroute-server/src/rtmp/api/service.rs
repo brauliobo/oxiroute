@@ -18,6 +18,7 @@ use super::{
     response::{system_time_ms, to_http_response},
     rtmp::{self, Route as RtmpRoute},
     streams::{self, Route as StreamRoute},
+    ticket::{Scope, TicketKey},
     ui::UiAssets,
     vod::{self, Route as VodRoute},
 };
@@ -75,6 +76,7 @@ pub struct RtmpManagementApi {
     ui: Option<UiAssets>,
     audit: Arc<AuditStore>,
     process_shutdown: Option<Arc<AtomicBool>>,
+    tickets: TicketKey,
 }
 
 pub struct RtmpManagementHttpApp {
@@ -100,6 +102,7 @@ impl RtmpManagementApi {
             ui: None,
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             process_shutdown: None,
+            tickets: TicketKey::generate(),
         }
     }
 
@@ -126,6 +129,7 @@ impl RtmpManagementApi {
             ui: Some(UiAssets::load(directory.as_ref())?),
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             process_shutdown: None,
+            tickets: TicketKey::generate(),
         })
     }
 
@@ -577,6 +581,8 @@ impl RtmpManagementApi {
             EndpointId::Requests => {
                 observability::requests(method, session.req_header().uri.query())
             }
+            EndpointId::MediaTicket => self.mint_media_ticket(method, session).await,
+            EndpointId::VodTicket => self.mint_vod_ticket(method, session).await,
         }
     }
 
@@ -626,6 +632,7 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
 
 mod events;
 mod http_app;
+mod media_access;
 mod recording_stream;
 mod request;
 mod vod_media;

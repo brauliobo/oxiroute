@@ -154,6 +154,8 @@ authorization returns `400 duplicate_authorization`; missing, malformed, or inco
 returns `401` with `WWW-Authenticate: Bearer`.
 The token is hashed after startup loading and compared in constant time. Non-configuration routes
 apply the same authentication check; only exact `GET /ready`, `GET /metrics` and `GET /status.json` bypass it.
+The one other credential is a short-lived signed media ticket (`?ticket=`), accepted only on `GET` of
+`/api/v1/rtmp/media/...` and `/api/v1/rtmp/vod/...` objects it was minted for (see RTMP_SPEC.md).
 
 ### Configuration routes
 

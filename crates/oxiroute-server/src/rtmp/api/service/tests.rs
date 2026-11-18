@@ -109,6 +109,26 @@ fn version_two_sse_uses_the_complete_matching_event_vocabulary() {
 }
 
 #[test]
+fn minting_media_tickets_is_audited_as_a_control_operation() {
+    for path in [
+        "/api/v1/rtmp/media/live/cam/front/ticket",
+        "/api/v1/rtmp/vod/live/cam/archive/ticket",
+    ] {
+        assert!(matches!(
+            audited_api_operation("POST", path),
+            Some((
+                "media_ticket_mint",
+                crate::observability::operational_event::AuditCategory::Control
+            ))
+        ));
+        assert!(audited_api_operation("GET", path).is_none());
+    }
+    assert!(
+        audited_api_operation("POST", "/api/v1/rtmp/media/live/cam/front/index.m3u8").is_none()
+    );
+}
+
+#[test]
 fn evacuations_are_audited_as_control_operations() {
     for (path, operation) in [
         ("/api/v1/servers/evacuate", "server_evacuate"),

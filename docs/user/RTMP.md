@@ -211,6 +211,47 @@ oxiroute rtmp recorder stop STREAM_ID RECORDER_ID
 Start and stop transitions may return before the worker reaches its settled phase. Read the returned
 snapshot or refresh the stream before issuing a conflicting action.
 
+## Play HLS Or DASH In A Browser
+
+A browser `<video>` element cannot send an `Authorization` header, and `?access_token=` is refused.
+Mint a short-lived media ticket with the management token and give the returned URL to the player:
+
+```sh
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"ttlSeconds": 120}' \
+  http://127.0.0.1:9900/api/v1/rtmp/media/SERVICE/APPLICATION/STREAM/ticket
+```
+
+```json
+{
+  "ticket": "1893456000000.q1w2e3...",
+  "path": "/api/v1/rtmp/media/SERVICE/APPLICATION/STREAM/index.m3u8?ticket=1893456000000.q1w2e3...",
+  "expiresAtUnixMs": 1893456000000,
+  "ttlSeconds": 120
+}
+```
+
+The body is optional; `ttlSeconds` defaults to 90 and accepts 1 through 600. The request returns
+`404` when the application has no HLS or DASH output. `path` names the HLS playlist, or the DASH
+manifest when only DASH is configured.
+
+- A ticket authorizes `GET` of every object of that one stream (playlists, segments, keys, DASH
+  initialization and fragments). It is refused (`401`) on any other stream, route or method, never
+  replaces the management token elsewhere, and is not accepted in a header.
+- Playlists and manifests served for a ticketed request carry the same `ticket` on every relative
+  segment, key, map and variant reference, so a player that resolves them against the playlist URL
+  needs nothing else. Responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+- A ticket is checked when each request arrives. A live view that outlasts it fails with `401
+  ticket_expired`; mint a new ticket and reload before `expiresAtUnixMs`.
+- Tickets are signed with a random secret generated when the daemon starts. A restart invalidates
+  every outstanding ticket; a configuration reload does not.
+- The ticket is never written to logs, audit records or events, and minting is audited as
+  `media_ticket_mint`.
+
+Stored VOD objects use the same mechanism. `POST
+/api/v1/rtmp/vod/SERVICE/APPLICATION/SOURCE/ticket` with `{"path": "movie.flv"}` (plus an optional
+`ttlSeconds`) returns a ticket and a ready `path` valid for that one object.
+
 ## Refresh Relay Destination DNS
 
 Push and pull targets resolve during runtime planning and retain their canonical hostname. To refresh

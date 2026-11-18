@@ -151,25 +151,36 @@ impl HttpServerApp for RtmpManagementHttpApp {
                         return None;
                     }
                 };
-                if let Some(response) =
-                    self.api
-                        .authentication_error(&method, &path, &path_and_query, &session)
-                {
-                    if write_buffered_response(
-                        &mut session,
-                        response.with_correlation(context.correlation_id.clone()),
-                    )
-                    .await
-                    {
-                        return finish_http_session(session).await;
+                let ticket = match self.api.media_access(
+                    &Scope::from(&route),
+                    &method,
+                    &path,
+                    &path_and_query,
+                    &session,
+                ) {
+                    Ok(ticket) => ticket.is_some(),
+                    Err(response) => {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(context.correlation_id.clone()),
+                        )
+                        .await
+                        {
+                            return finish_http_session(session).await;
+                        }
+                        return None;
                     }
-                    return None;
-                }
+                };
                 let response = self
                     .api
                     .vod_response(route, &session)
                     .await
                     .with_correlation(context.correlation_id.clone());
+                let response = if ticket {
+                    response.with_ticket_privacy()
+                } else {
+                    response
+                };
                 RtmpManagementApi::audit_api_operation(&method, &path, &context, &response);
                 if !write_buffered_response(&mut session, response).await {
                     return None;
@@ -230,25 +241,36 @@ impl HttpServerApp for RtmpManagementHttpApp {
                         return None;
                     }
                 };
-                if let Some(response) =
-                    self.api
-                        .authentication_error(&method, &path, &path_and_query, &session)
-                {
-                    if write_buffered_response(
-                        &mut session,
-                        response.with_correlation(context.correlation_id.clone()),
-                    )
-                    .await
-                    {
-                        return finish_http_session(session).await;
+                let ticket = match self.api.media_access(
+                    &Scope::from(&route),
+                    &method,
+                    &path,
+                    &path_and_query,
+                    &session,
+                ) {
+                    Ok(ticket) => ticket,
+                    Err(response) => {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(context.correlation_id.clone()),
+                        )
+                        .await
+                        {
+                            return finish_http_session(session).await;
+                        }
+                        return None;
                     }
-                    return None;
-                }
+                };
                 let response = self
                     .api
-                    .media_response(route, &session)
+                    .media_response(route, ticket, &session)
                     .await
                     .with_correlation(context.correlation_id.clone());
+                let response = if ticket.is_some() {
+                    response.with_ticket_privacy()
+                } else {
+                    response
+                };
                 RtmpManagementApi::audit_api_operation(&method, &path, &context, &response);
                 if !write_buffered_response(&mut session, response).await {
                     return None;
