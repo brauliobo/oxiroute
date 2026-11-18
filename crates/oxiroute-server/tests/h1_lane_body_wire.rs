@@ -269,6 +269,9 @@ async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
             }
         }
         let _ = aborted.send(total);
+        let (mut next, _) = listener.accept().await.expect("origin accept");
+        read_request(&mut next).await.expect("the next request");
+        next.write_all(OK).await.unwrap();
     });
     let origin = Origin {
         address,
@@ -288,6 +291,8 @@ async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
     // The proxy goes on.
     let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
     client.write_all(post(0).as_bytes()).await.unwrap();
+    let (head, _) = read_response(&mut client).await;
+    assert_eq!(status(&head), "HTTP/1.1 200 OK");
     assert_eq!(served(wire), 2);
 }
 
