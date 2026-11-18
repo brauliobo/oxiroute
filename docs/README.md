@@ -24,6 +24,7 @@ and failure behavior. Use the
 - [Developer guide](developer/README.md): setup, ownership, and contribution workflow.
 - [Architecture](developer/ARCHITECTURE.md): configuration resolution, generations, and runtime boundaries.
 - [Testing](developer/TESTING.md): focused commands, required gates, and what each layer proves.
+- [UI design system](developer/UI_DESIGN_SYSTEM.md): tokens, primitives, density, Pug style, and the stats page budget.
 - [Environment variables](developer/ENV_TO_CONFIG.md): runtime inputs and their configuration equivalents.
 - [Benchmarks](BENCHMARKS.md): what was measured and what the results establish; the [7.0 report](../benchmarks/reports/7.0/README.md) holds the full tables.
 - [Documentation maintenance](developer/DOCUMENTATION.md): language, examples, and evidence policy.

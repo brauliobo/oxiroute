@@ -34,7 +34,7 @@ gzip budget JS <= 90 KiB and CSS <= 12 KiB (`scripts/verify/stats/budget.mjs`). 
 | `rates.ts` | `createRateTracker().update(sample, maxGapMs)`: outcome `first/rates/same/gap/reset`; no rate across restart, generation change or gap |
 | `percentiles.ts` | `quantile(hist, bounds, q, {interpolate})` (nearest rank, bucket upper bound, `overflow` flag), `summarizeLatency` |
 | `series.ts` | `Ring`, `SeriesBook` (shared timeline, unknown points are `undefined`) |
-| `format.ts` | `formatBytes/Count/Exact/Rate/ByteRate/Duration/Age/Timestamp/Percent`, `truncate`, `UNKNOWN`; no Intl locale dependence |
+| `../design/format.ts` | shared with the console: `formatBytes` (IEC KiB), `Count/Exact/Rate/ByteRate/Duration/Age/Timestamp/Percent`, `truncate`, `UNKNOWN`; no Intl locale dependence |
 | `urlState.ts` | `ViewState`, `parseViewState(search)`, `formatViewState(view)`, `replaceUrlState`; keys `q state problems sort paused interval theme open closed` |
 | `query.ts` | `queryPools(pools, view)`, `queryListeners(listeners, view)`: text, status chips, problems only, `SORT_COLUMNS` |
 | `poll.ts` | `createPoller`, `fetchSnapshot`, `snapshotUrl`; backoff 1x, 2x, ... 30 s on 503 `stats_unavailable`, network, HTTP and decode errors; schema mismatch stops |
@@ -59,11 +59,17 @@ templates unwrapped (`const { model, status } = useStatsStore()`).
 `StatsShell` provides the store and composes skip link, header (title, `StatsStatus`, CSV and JSON links), `StatsToolbar`,
 `StatusBanner`, `AdminActions` (only when `model.admin` and `generation.activeRevision`), `<main id="ox-main">` with
 `StatsDashboard` (the data views), `Footer` and `ShortcutsDialog`. It applies `view.theme` to `<html data-theme>`
-(`theme.ts`; `auto` removes it) and installs the single-key shortcuts of `shortcuts.ts` (`/ ? p r t f`, never while typing,
+(`useTheme` from the design system; `auto` removes it) and installs the single-key shortcuts of `shortcuts.ts` through `useShortcuts` (`/ ? p r t f`, never while typing,
 behind a dialog or with Ctrl/Alt/Meta). Leaf controls are pure props/emits (`update:modelValue` style); `StatsToolbar`
 wires them to the store. `banner.ts` turns `status` + `failure` into the banner text (no ticking values: it is an alert
-region). `admin.ts` posts the urlencoded form to the page path. `stats.css` holds the `--ox-*` tokens (`light-dark()`,
-system scheme unless `data-theme` forces one), focus ring, forced-colors, reduced-motion, narrow-screen and print rules.
+region). `admin.ts` posts the urlencoded form to the page path.
+
+Controls, tables, badges, dialog, banner, sparkline and the page shell are primitives of the design system
+(`ui/src/design`, see `docs/developer/UI_DESIGN_SYSTEM.md`); this folder holds only what is specific to the statistics
+page. Tokens, base styles (focus ring, forced colours, more contrast, reduced motion, print, the no-script table) come
+from `#design/index.css`; each primitive imports its own `styles.css`, so unused ones never reach the bundle. `stats.css`
+and `components/*.css` are page styles in the `ox.page` layer, written with tokens only (stylelint enforces it). The page
+sets `data-density="compact"` in `ui/stats.html`. Budget: JS <= 90 KiB gzip, CSS <= 12 KiB gzip.
 
 The shell (`ui/stats.html`, built into the embedded `crates/oxiroute-server/assets/stats/index.html`) keeps the refresh
 meta and the server-rendered table (`__stats_table__`) inside `<noscript>`, so a browser with script shows neither.
