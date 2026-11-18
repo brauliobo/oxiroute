@@ -18,6 +18,7 @@ use crate::cli::{
     fs::{MAX_FILE_BYTES, read_regular_file},
     net::{Client, Response},
     render,
+    view::View,
 };
 
 const SLICE: Duration = Duration::from_millis(100);
@@ -115,7 +116,7 @@ pub(super) fn keep_registered(
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .map_err(|error| CliError::Local(error.to_string()))?;
     }
-    context.print(&registered.output_value()?)?;
+    context.print(&registered.output_value()?, View::Generic)?;
     let ttl_ms = registered.json()?["ttlMs"]
         .as_u64()
         .ok_or_else(|| CliError::Remote("registration response has no ttlMs".into()))?;

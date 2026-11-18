@@ -8,6 +8,7 @@ pub use context::ServeFn;
 use error::CliError;
 use global::Global;
 
+mod change;
 mod check;
 mod command;
 mod config;
@@ -32,7 +33,9 @@ mod server;
 mod shorthand;
 mod tls;
 mod top;
+mod units;
 mod version;
+mod view;
 
 #[cfg(test)]
 mod tests;

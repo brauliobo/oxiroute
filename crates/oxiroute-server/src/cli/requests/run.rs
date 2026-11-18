@@ -1,13 +1,34 @@
+use serde_json::Value;
+
 use super::RequestsCommand;
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
+    view::View,
 };
 
 impl Execute for RequestsCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
-        context.show(&self.path())
+        match self {
+            Self::List { .. } => context.show(&self.path(), View::Requests),
+            Self::Show { id } => show(context, id, &self.path()),
+        }
     }
+}
+
+fn show(context: &Context<'_>, id: &str, path: &str) -> Result<(), CliError> {
+    let value = context.client()?.get(path, true)?.json()?;
+    if value
+        .get("requests")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return Err(CliError::Status(
+            404,
+            format!("request_not_found: no in-flight request has id {id}"),
+        ));
+    }
+    context.print(&value, View::Request)
 }
 
 impl RequestsCommand {

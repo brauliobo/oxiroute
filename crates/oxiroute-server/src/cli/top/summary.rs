@@ -1,4 +1,5 @@
-use super::{rates::Sampling, units};
+use super::rates::Sampling;
+use crate::cli::units;
 use crate::observability::stats_page::model::{ProcessStats, StatsSnapshot, WorkerScaling};
 
 pub(super) fn lines(sampling: &Sampling) -> [String; 3] {

@@ -24,8 +24,9 @@ redacted reports are also available through the authenticated management API/UI,
 remain read-only. The current management listener stays loopback-only.
 
 The management listener is configuration-owned and is restricted to a loopback address. Configure
-it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON value on stdout;
-diagnostics use stderr. Exit categories are stable: `2` usage, `3` local input/token, `4` transport,
+it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON value on stdout (the
+management API body, unchanged); `--output table` and `--output plain` are the curated forms described in
+[reference/CLI.md](reference/CLI.md#output). Diagnostics use stderr. Exit categories are stable: `2` usage, `3` local input/token, `4` transport,
 `5` authentication, `6` missing resource, `7` revision/state conflict, `8` remote/protocol failure,
 and `9` intentionally unsupported. `oxiroute check` is the one exception: it exits with the
 monitoring-plugin codes `0` OK, `1` WARNING, `2` CRITICAL and `3` UNKNOWN (see below).

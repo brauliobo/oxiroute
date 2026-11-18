@@ -12,7 +12,6 @@ mod run;
 mod session;
 mod source;
 mod summary;
-mod units;
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 use super::{Cell, Column, Row, Tone};
 use crate::{
-    cli::top::{rates::Sampling, units},
+    cli::{top::rates::Sampling, units},
     observability::stats_page::model::{
         AdministrativeState, Histogram, HttpOutcome, ListenerState, ListenerStats, TcpRelayOutcome,
     },

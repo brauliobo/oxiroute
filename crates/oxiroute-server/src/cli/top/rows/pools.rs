@@ -3,7 +3,7 @@ use super::{
     traffic::{self, Counted},
 };
 use crate::{
-    cli::top::{rates::Sampling, units},
+    cli::{top::rates::Sampling, units},
     observability::stats_page::model::{PoolStats, PoolStatus},
 };
 

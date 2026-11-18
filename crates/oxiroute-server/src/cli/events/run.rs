@@ -6,12 +6,14 @@ use super::EventsCommand;
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
+    global::Output,
+    view::View,
 };
 
 impl Execute for EventsCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
-            Self::List { after, limit } => context.show(&path(*after, *limit)),
+            Self::List { after, limit } => context.show(&path(*after, *limit), View::Events),
             Self::Follow {
                 after,
                 limit,
@@ -30,10 +32,17 @@ fn follow(context: &Context<'_>, after: u64, limit: u16, interval_ms: u64) -> Re
     let mut cursor = after;
     loop {
         let value = client.get(&path(cursor, limit), true)?.json()?;
-        if let Some(events) = value.get("events").and_then(Value::as_array) {
-            for event in events {
-                context.print(event)?;
+        match (
+            context.output(),
+            value.get("events").and_then(Value::as_array),
+        ) {
+            (Output::Json, Some(events)) => {
+                for event in events {
+                    context.print(event, View::Generic)?;
+                }
             }
+            (Output::Json, None) => {}
+            _ => context.print_stream(&value, View::Events)?,
         }
         cursor = value
             .get("cursor")

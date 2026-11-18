@@ -1,4 +1,4 @@
-use crate::cli::top::units;
+use crate::cli::units;
 
 #[test]
 fn counts_and_rates_scale_to_short_readable_text() {

@@ -9,6 +9,7 @@ use crate::cli::{
     fs::{MAX_FILE_BYTES, read_regular_file, unreadable_config},
     net::Client,
     render,
+    view::View,
 };
 
 impl Execute for ConfigCommand {
@@ -16,7 +17,7 @@ impl Execute for ConfigCommand {
         match self {
             Self::Check { config } => render::emit(&check::report(config)?),
             Self::Compose { format, configs } => render::emit(&compose(configs, (*format).into())?),
-            Self::Get => context.show("/api/v1/config"),
+            Self::Get => context.show("/api/v1/config", View::Config),
             Self::Validate { file } => validate(context, file),
             Self::Apply { file } => apply(context, file),
             Self::Diff { file } => diff(context, file),
@@ -31,7 +32,7 @@ fn validate(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
         &json!({ "config": config_file(file)? }),
         &[],
     )?;
-    context.print_response(&response)
+    context.print_response(&response, View::Generic)
 }
 
 fn apply(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
@@ -47,7 +48,7 @@ fn apply(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
         &json!({ "config": config_file(file)? }),
         &[("If-Config-Revision", revision)],
     )?;
-    context.print_response(&response)
+    context.print_response(&response, View::Generic)
 }
 
 fn diff(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
@@ -56,11 +57,14 @@ fn diff(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
         .cloned()
         .ok_or_else(|| CliError::Local("configuration response has no config field".into()))?;
     let candidate = config_file(file)?;
-    context.print(&json!({
-        "different": active != candidate,
-        "active": active,
-        "candidate": candidate,
-    }))
+    context.print(
+        &json!({
+            "different": active != candidate,
+            "active": active,
+            "candidate": candidate,
+        }),
+        View::ConfigDiff,
+    )
 }
 
 fn current_config(client: &Client) -> Result<Value, CliError> {

@@ -4,6 +4,7 @@ use super::args::{RecorderCommand, RelayCommand, RtmpCommand, StreamCommand};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
+    view::View,
 };
 
 const NO_CANCELLATION_HANDLE: &str =
@@ -22,8 +23,10 @@ impl Execute for RtmpCommand {
 impl Execute for StreamCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
-            Self::List => context.show("/api/v1/rtmp/streams"),
-            Self::Show { stream } => context.show(&format!("/api/v1/rtmp/streams/{stream}")),
+            Self::List => context.show("/api/v1/rtmp/streams", View::RtmpStreams),
+            Self::Show { stream } => {
+                context.show(&format!("/api/v1/rtmp/streams/{stream}"), View::RtmpStream)
+            }
             Self::Disconnect { .. } => Err(CliError::Unsupported(NO_CANCELLATION_HANDLE)),
         }
     }
@@ -39,7 +42,7 @@ impl Execute for RecorderCommand {
         let response = context
             .client()?
             .generation_json("POST", &path, &json!({}))?;
-        context.print_response(&response)
+        context.print_response(&response, View::Generic)
     }
 }
 

@@ -3,7 +3,10 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use crate::cli::parse::{nonempty_target, parse_label, parse_ttl};
+use crate::cli::{
+    change::{Desired, Plan, Scope, Setting},
+    parse::{nonempty_target, parse_label, parse_ttl},
+};
 
 #[derive(Subcommand)]
 pub(crate) enum ServerCommand {
@@ -73,6 +76,17 @@ pub(crate) struct ServerTarget {
 }
 
 impl ServerTarget {
+    pub(super) fn plan(&self, setting: Setting, desired: Desired) -> Plan {
+        Plan::new(Scope::Server, setting, desired, self.names())
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.pools
+            .iter()
+            .map(|pool| format!("{pool}/{}", self.server))
+            .collect()
+    }
+
     pub(super) fn body(&self, mut fields: Value) -> Value {
         fields["targets"] = self
             .pools
@@ -168,4 +182,13 @@ impl HealthValue {
 pub(crate) enum Toggle {
     Enable,
     Disable,
+}
+
+impl Toggle {
+    pub(super) const fn as_state(self) -> &'static str {
+        match self {
+            Self::Enable => "enabled",
+            Self::Disable => "disabled",
+        }
+    }
 }

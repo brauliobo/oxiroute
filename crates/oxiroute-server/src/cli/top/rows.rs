@@ -2,7 +2,8 @@ use std::cmp::Ordering;
 
 use clap::ValueEnum;
 
-use super::{rates::Sampling, units};
+use super::rates::Sampling;
+use crate::cli::units;
 
 mod listeners;
 mod pools;

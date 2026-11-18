@@ -10,8 +10,9 @@ use super::{
     app::{App, Mode},
     rates::Sampling,
     rows::{Table, Tone, View},
-    summary, units,
+    summary,
 };
+use crate::cli::units;
 
 const MAX_WIDTH: usize = 40;
 const HELP: &str =

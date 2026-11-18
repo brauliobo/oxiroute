@@ -1,7 +1,5 @@
-use super::{
-    rows::{Cell, Tone},
-    units,
-};
+use super::rows::{Cell, Tone};
+use crate::cli::units;
 use crate::observability::stats_page::model::{
     Histogram, ListenerStats, PoolStats, ServerStats, StatsSnapshot,
 };

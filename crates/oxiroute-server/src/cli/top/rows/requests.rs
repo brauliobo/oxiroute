@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::{Cell, Column, Row, Tone};
-use crate::{cli::top::units, rtmp::api::dto::DecimalCounter};
+use crate::{cli::units, rtmp::api::dto::DecimalCounter};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -319,3 +319,150 @@ async fn a_rejected_configuration_names_the_failing_setting() {
         "{message}"
     );
 }
+
+#[tokio::test]
+async fn tables_are_aligned_columns_without_json_and_plain_is_one_record_per_line() {
+    let daemon = Daemon::start().await;
+    let table = daemon.run(&["server", "list"]);
+    assert!(table.status.success(), "{}", stderr(&table));
+    let text = stdout(&table);
+    let mut lines = text.lines();
+    let header = lines.next().expect("header");
+    assert!(header.starts_with("POOL  SERVER  ADDRESS"), "{text}");
+    assert!(
+        header.contains("HEALTH") && header.contains("WEIGHT"),
+        "{text}"
+    );
+    assert_eq!(lines.count(), 2, "{text}");
+    assert!(!text.contains('{') && !text.contains('['), "{text}");
+
+    let plain = daemon.run(&["--output", "plain", "server", "list"]);
+    let records = stdout(&plain);
+    assert_eq!(records.lines().count(), 2, "{records}");
+    assert!(
+        records
+            .lines()
+            .all(|line| line.starts_with("pool=farm server=")),
+        "{records}"
+    );
+    assert!(
+        records.contains("weight=1") && records.contains("max=4"),
+        "{records}"
+    );
+}
+
+#[tokio::test]
+async fn status_leads_with_the_build_the_active_revision_and_the_listeners() {
+    let daemon = Daemon::start().await;
+    let json = daemon.run(&["--output", "json", "status"]);
+    let status = serde_json::from_slice::<Value>(&json.stdout).expect("status JSON");
+    let revision = status["activeRevision"].as_str().expect("active revision");
+    let text = stdout(&daemon.run(&["status"]));
+    assert!(text.starts_with("build "), "{text}");
+    assert!(text.contains("state           healthy"), "{text}");
+    assert!(text.contains(&revision[..12]), "{text}");
+    assert!(text.contains("\n\nNAME     PROTOCOL  BIND"), "{text}");
+    assert!(text.contains("traffic  http"), "{text}");
+}
+
+#[tokio::test]
+async fn an_empty_result_is_an_explicit_line_on_stderr_and_not_a_failure() {
+    let daemon = Daemon::start().await;
+    for (words, notice) in [
+        (&["tls", "list"][..], "no certificates"),
+        (&["requests", "list"], "no requests"),
+        (&["rtmp", "stream", "list"], "no streams"),
+    ] {
+        let output = daemon.run(words);
+        assert!(output.status.success(), "{words:?}: {}", stderr(&output));
+        assert!(stdout(&output).is_empty(), "{words:?}: {}", stdout(&output));
+        assert_eq!(stderr(&output).trim_end(), notice, "{words:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_request_id_is_not_found() {
+    let daemon = Daemon::start().await;
+    let output = daemon.run(&["requests", "show", "no-such-request"]);
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty());
+    assert!(
+        stderr(&output).contains("no-such-request"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test]
+async fn mutations_name_their_targets_and_report_what_really_changed() {
+    let daemon = Daemon::start().await;
+    let drain = || daemon.run(&["server", "drain", "--pool", "farm", "alpha"]);
+    let first = stdout(&drain());
+    assert!(first.starts_with("TARGET"), "{first}");
+    assert!(first.contains("farm/alpha"), "{first}");
+    assert!(first.trim_end().ends_with("changed"), "{first}");
+    let again = stdout(&drain());
+    assert!(again.trim_end().ends_with("unchanged"), "{again}");
+
+    let pools = daemon.run(&["--output", "plain", "pool", "drain", "farm"]);
+    assert_eq!(
+        stdout(&pools),
+        "target=farm setting=state value=drain change=changed\n"
+    );
+    let ready = daemon.run(&["--output", "plain", "pool", "ready", "farm"]);
+    assert_eq!(
+        stdout(&ready),
+        "target=farm setting=state value=ready change=changed\n"
+    );
+
+    let weight = daemon.run(&[
+        "--output", "plain", "server", "weight", "set", "--pool", "farm", "alpha", "7",
+    ]);
+    assert_eq!(
+        stdout(&weight),
+        "target=farm/alpha setting=weight value=7 change=changed\n"
+    );
+    let listener = daemon.run(&["--output", "plain", "listener", "drain", "traffic"]);
+    assert_eq!(
+        stdout(&listener),
+        "target=traffic setting=state value=drain change=changed\n"
+    );
+}
+
+#[tokio::test]
+async fn json_mutations_pass_the_server_body_through() {
+    let daemon = Daemon::start().await;
+    let output = daemon.run(&["--output", "json", "pool", "drain", "farm"]);
+    let body = serde_json::from_slice::<Value>(&output.stdout).expect("JSON");
+    assert_eq!(body["outcome"], "applied", "{body}");
+    assert_eq!(body["changed"], 1, "{body}");
+}
+
+#[tokio::test]
+async fn metrics_print_the_prometheus_text_as_the_server_wrote_it() {
+    let daemon = Daemon::start().await;
+    let output = daemon.run(&["metrics"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("oxiroute_build_info{version=\""), "{text}");
+    assert!(text.lines().count() > 10, "{text}");
+    let plain = stdout(&daemon.run(&["--output", "plain", "metrics"]));
+    assert!(plain.starts_with("oxiroute_build_info"), "{plain}");
+}
+
+#[tokio::test]
+async fn monitoring_and_config_get_summarise_instead_of_dumping() {
+    let daemon = Daemon::start().await;
+    let monitoring = stdout(&daemon.run(&["monitoring"]));
+    assert!(monitoring.starts_with("uptime"), "{monitoring}");
+    assert!(monitoring.contains("memory"), "{monitoring}");
+    assert!(monitoring.contains("\nNAME  ALGORITHM"), "{monitoring}");
+    assert!(!monitoring.contains('{'), "{monitoring}");
+    let config = stdout(&daemon.run(&["config", "get"]));
+    assert!(config.contains("listeners               1"), "{config}");
+    assert!(config.contains("upstream pools          1"), "{config}");
+    assert!(
+        !config.contains('{') && config.lines().count() < 30,
+        "{config}"
+    );
+}

@@ -21,7 +21,8 @@ The global options work before and after the command name (`oxiroute status --ou
 - `OXIROUTE_MANAGEMENT_TOKEN_FILE` is the next source; when unset, the packaged
   `/etc/oxiroute/oxiroute.env` assignment is checked, then the management `token_file` of the packaged
   configuration, followed by the built-in `/etc/oxiroute/management.token` path when that file exists.
-- `--output json` writes one JSON value to stdout; diagnostics use stderr.
+- `--output json` writes one JSON value to stdout; diagnostics use stderr. Read commands print the
+  management API body unchanged, so its field names stay the stable contract for scripts.
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
   use the bearer token according to their route contract.
 
@@ -29,6 +30,31 @@ Squid report output includes `capabilities`, a versioned target-checkout registr
 `partial` and `completeParity` is false while any family or directive is partial, unsupported,
 obsolete, or not planned. Only forms with both runtime integration and failure coverage are marked
 `compatible`.
+
+## Output
+
+`--output table` (the default) prints what an operator reads: aligned columns with units (`1.5K`,
+`2m05s`, `3.8M`), short revisions, and `-` for a missing value. A single object (`status`,
+`generation status`, `config get`, `server show`) prints as aligned `label  value` lines. `status`
+leads with the build version, health state, active revision and generation age, then lists the
+listeners; `monitoring` adds process, host and traffic figures, listeners and pools; `config get`
+prints the configuration format, revisions and the number of entries per section instead of the
+document (use `--output json` for the document).
+
+`--output plain` prints one `key=value` record per line with raw numbers and no padding, for `grep`,
+`awk` and `read`. Keys carry their unit as a suffix (`age_ms`, `received_bytes`); values with spaces
+are double-quoted; an unknown value is left out. A command that prints more than one kind of record
+starts each line with `record=<name>`.
+
+A command that finds nothing prints no table and one line on stderr (`no certificates`,
+`no requests`, `no streams`) and exits 0. `requests show ID` for an id that is not in flight exits 6.
+`oxiroute metrics` prints the Prometheus text exposition unchanged in `table` and `plain`.
+
+Commands that change a pool, server or listener print one row per target (`TARGET SETTING VALUE
+CHANGE`). `CHANGE` is `changed` when the target had another value before, `unchanged` when it already
+had it (draining a drained server) and `applied` when the previous value cannot be compared (resetting
+a weight). The comparison reads the target first, so `--output json` skips it and passes the server
+body through, where `changed` counts the targets of the request.
 
 ## Command Families
 
