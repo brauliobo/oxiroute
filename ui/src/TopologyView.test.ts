@@ -1,5 +1,5 @@
 import { mount } from './test/mount'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TopologyView from './TopologyView.vue'
 import type { TopologySnapshot } from './api'
@@ -108,114 +108,146 @@ const topology: TopologySnapshot = {
 }
 
 describe('TopologyView', () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn()
+  })
+
   it('positions the stage and nodes with custom properties instead of inline style bindings', () => {
     const wrapper = mount(TopologyView, { props: { topology } })
     const property = (element: Element, name: string) => (element as HTMLElement).style.getPropertyValue(name)
 
-    expect(property(wrapper.get('.topology-stage').element, '--stage-width')).toMatch(/^\d+px$/)
-    expect(property(wrapper.get('.topology-stage').element, '--stage-height')).toMatch(/^\d+px$/)
-    const nodes = wrapper.findAll('.topology-node')
-    expect(nodes).toHaveLength(topology.nodes.length)
-    for (const node of nodes) {
-      expect(property(node.element, '--node-x')).toMatch(/^\d+px$/)
-      expect(property(node.element, '--node-y')).toMatch(/^\d+px$/)
+    for (const name of ['--stage-width', '--stage-height', '--node-w', '--node-h']) {
+      expect(property(wrapper.get('.ox-topology-stage').element, name)).toMatch(/^\d+px$/)
+    }
+    const slots = wrapper.findAll('.ox-node-slot')
+    expect(slots).toHaveLength(topology.nodes.length)
+    for (const slot of slots) {
+      expect(property(slot.element, '--node-x')).toMatch(/^\d+px$/)
+      expect(property(slot.element, '--node-y')).toMatch(/^\d+px$/)
     }
   })
 
   it.each([
-    ['starting', 'Starting'],
-    ['degraded', 'Degraded'],
-  ] as const)('renders the %s runtime status and light truthfully', (runtime, label) => {
+    ['active', 'ACTIVE'],
+    ['starting', 'STARTING'],
+    ['degraded', 'DEGRADED'],
+  ] as const)('shows the %s runtime status as the shared word', (runtime, label) => {
     const snapshot = structuredClone(topology)
     snapshot.state.runtime = runtime
 
     const wrapper = mount(TopologyView, { props: { topology: snapshot } })
-    const status = wrapper.get('.topology-state')
+    const status = wrapper.get('.ox-topology-state')
 
-    expect(status.classes()).toContain(`state-${runtime}`)
-    expect(status.text()).toBe(`${label} / schema 1`)
-    expect(status.attributes('aria-label')).toBe(`Runtime status: ${label}; topology schema 1`)
-    expect(status.get('.state-light').classes()).toContain(`state-light-${runtime}`)
+    expect(status.attributes('role')).toBe('status')
+    expect(status.text()).toBe(`${label}schema 1`)
   })
 
-  it('renders real nodes, typed connectors, distinct symbols, and runtime labels', () => {
+  it('renders every node as a button with the visible text as its only name, typed connectors and symbols', () => {
     const wrapper = mount(TopologyView, { props: { topology } })
+    const nodes = wrapper.findAll('.ox-node')
 
-    expect(wrapper.findAll('.topology-node')).toHaveLength(topology.nodes.length)
-    expect(wrapper.findAll('.connector')).toHaveLength(topology.edges.length)
-    expect(wrapper.find('.node-listener path').exists()).toBe(true)
-    expect(wrapper.find('.node-rtmp_listener circle').exists()).toBe(true)
-    expect(wrapper.find('.node-tls_profile path').exists()).toBe(true)
-    expect(wrapper.find('.node-certificate path').exists()).toBe(true)
-    expect(wrapper.find('.node-http_service rect').exists()).toBe(true)
-    expect(wrapper.find('.node-http_route path').exists()).toBe(true)
-    expect(wrapper.find('.node-upstream_pool path').exists()).toBe(true)
-    expect(wrapper.find('.node-endpoint circle').exists()).toBe(true)
-    expect(wrapper.findAll('.topology-node').every((node) => Boolean(node.attributes('aria-label')))).toBe(true)
-    expect(wrapper.findAll('.node-icon').every((icon) => icon.attributes('aria-hidden') === 'true')).toBe(true)
-    expect(wrapper.findAll('.relation-link')).toHaveLength(topology.edges.length)
-    expect(wrapper.get('.topology-relations').text()).toContain('edge')
-    expect(wrapper.get('.topology-relations').text()).toContain('Dispatches to service')
-    expect(wrapper.get('.state-degraded').text()).toContain('Degraded')
-    expect(wrapper.get('.state-healthy').text()).toContain('Healthy')
+    expect(nodes).toHaveLength(topology.nodes.length)
+    expect(nodes.every((node) => node.element.tagName === 'BUTTON' && node.attributes('aria-label') === undefined)).toBe(true)
+    expect(nodes.every((node) => node.attributes('aria-pressed') === 'false')).toBe(true)
+    expect(wrapper.findAll('.ox-connector')).toHaveLength(topology.edges.length)
+    expect(wrapper.findAll('.ox-connector-tls')).toHaveLength(2)
+    expect(wrapper.findAll('.ox-node-icon').every((icon) => icon.attributes('aria-hidden') === 'true')).toBe(true)
+    expect(wrapper.findAll('.ox-relation')).toHaveLength(topology.edges.length)
+    expect(wrapper.get('.ox-relations').text()).toContain('Dispatches to service')
     expect(wrapper.text()).toContain('Socket / 0.0.0.0:443')
     expect(wrapper.text()).toContain('DNS / backend.example.test:3000')
     expect(wrapper.text()).toContain('7 active connections')
     expect(wrapper.text()).toContain('3 active connections')
-    expect(wrapper.find('.inspector').exists()).toBe(false)
+    expect(wrapper.get('[data-node-id="upstream_pool:3:web"]').text()).toContain('DEGRADED')
+    expect(wrapper.get('[data-node-id="endpoint:3:web:14:127.0.0.1:3000"]').text()).toContain('UP')
+    expect(wrapper.find('.ox-inspector').exists()).toBe(false)
   })
 
-  it('opens a redacted inspector and supports arrow-key focus navigation', async () => {
+  it('never cuts node text: long names stay complete in the node', () => {
+    const long = structuredClone(topology)
+    long.nodes[0]!.name = 'a-very-long-listener-name-that-must-wrap-instead-of-being-truncated'
+    const wrapper = mount(TopologyView, { props: { topology: long } })
+    expect(wrapper.get('[data-node-id="listener:4:edge"]').text()).toContain(long.nodes[0]!.name)
+  })
+
+  it('docks a redacted inspector beside the graph, as definition lists with readable labels', async () => {
     const wrapper = mount(TopologyView, { props: { topology }, attachTo: document.body })
-    const certificate = wrapper.get('[data-node-id="certificate:6:public"]')
+    await wrapper.get('[data-node-id="certificate:6:public"]').trigger('click')
 
-    await certificate.trigger('click')
-
-    const inspector = wrapper.get('.inspector')
+    const inspector = wrapper.get('.ox-inspector')
+    expect(wrapper.get('[data-node-id="certificate:6:public"]').attributes('aria-pressed')).toBe('true')
     expect(inspector.text()).toContain('/certificates/0')
     expect(inspector.text()).toContain('certificate:6:public')
-    expect(inspector.text()).toContain('privateKeyPath')
+    expect(inspector.text()).toContain('Private key path')
     expect(inspector.text()).toContain('<redacted>')
     expect(inspector.text()).toContain('/etc/oxiroute/public.pem')
-    expect(inspector.text()).not.toContain('private-key.pem')
+    expect(inspector.text()).toContain('DNS names')
+    expect(inspector.text()).not.toContain('privateKeyPath')
+    expect(inspector.text()).not.toContain('{')
+    expect(inspector.find('pre').exists()).toBe(false)
+    expect(inspector.findAll('dl').length).toBeGreaterThan(1)
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
-    const rtmpListener = wrapper.get('[data-node-id="rtmp_listener:4:live"]')
-    await rtmpListener.trigger('click')
-    expect(wrapper.get('.inspector').text()).toContain('manualRecorderCount')
+  it('shows limits, runtime metrics and identity of the selected node', async () => {
+    const wrapper = mount(TopologyView, { props: { topology }, attachTo: document.body })
 
-    const first = wrapper.get('.topology-node')
-    ;(first.element as HTMLButtonElement).focus()
-    await first.trigger('keydown', { key: 'ArrowRight' })
-    expect(document.activeElement).toBe(wrapper.findAll('.topology-node')[1]!.element)
-
-    await wrapper.get('.inspector-close').trigger('click')
-    expect(wrapper.find('.inspector').exists()).toBe(false)
-    expect(document.activeElement).toBe(rtmpListener.element)
-
-    await wrapper.findAll('.relation-link')[0]!.trigger('click')
-    expect(wrapper.get('.inspector').text()).toContain('web')
-
-    await wrapper.get('[data-node-id="upstream_pool:3:web"]').trigger('click')
-    expect(wrapper.get('.inspector').text()).toContain('/etc/oxiroute/origin-ca.pem')
+    await wrapper.get('[data-node-id="rtmp_listener:4:live"]').trigger('click')
+    expect(wrapper.get('.ox-inspector').text()).toContain('Manual recorder count')
+    expect(wrapper.get('.ox-inspector').text()).toContain('1 KiB')
 
     await wrapper.get('[data-node-id="listener:4:edge"]').trigger('click')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Connection limit')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Unbounded')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Active connections')
+    expect(wrapper.get('.ox-inspector').text()).toContain('Connection limit')
+    expect(wrapper.get('.ox-inspector').text()).toContain('Unbounded')
+    expect(wrapper.get('.ox-inspector').text()).toContain('Active connections')
 
     await wrapper.get('[data-node-id="endpoint:3:web:14:127.0.0.1:3000"]').trigger('click')
-    expect(wrapper.get('.inspector-identity').text()).toContain('DNS / backend.example.test:3000')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Active connections')
+    expect(wrapper.get('.ox-inspector').text()).toContain('DNS / backend.example.test:3000')
 
     await wrapper.get('[data-node-id="http_service:3:web"]').trigger('click')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Request body limit')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Unbounded')
+    expect(wrapper.get('.ox-inspector').text()).toContain('Request body limit')
+    expect(wrapper.get('.ox-inspector').text()).toContain('30 s')
+    wrapper.unmount()
+  })
 
+  it('keeps redacted paths out of the inspector', async () => {
+    const wrapper = mount(TopologyView, { props: { topology }, attachTo: document.body })
     await wrapper.get('[data-node-id="http_route:3:web:0::1:/:0:"]').trigger('click')
-    expect(wrapper.get('.inspector').text()).not.toContain('tokenFilePath')
-    expect(wrapper.get('.inspector').text()).not.toContain('/run/private/token')
-    expect(wrapper.get('.inspector').text()).not.toContain('rootDirectory')
-    expect(wrapper.get('.inspector').text()).not.toContain('/srv/private-www')
+    const text = wrapper.get('.ox-inspector').text()
+    for (const secret of ['tokenFilePath', 'Token file path', '/run/private/token', 'rootDirectory', 'Root directory', '/srv/private-www']) {
+      expect(text).not.toContain(secret)
+    }
+    expect(text).toContain('Spa fallback')
+    wrapper.unmount()
+  })
+
+  it('moves focus with the arrow, Home and End keys, inspects through the relations, and closes with Escape', async () => {
+    const wrapper = mount(TopologyView, { props: { topology }, attachTo: document.body })
+    const nodes = wrapper.findAll('.ox-node')
+    ;(nodes[0]!.element as HTMLButtonElement).focus()
+
+    await nodes[0]!.trigger('keydown', { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(nodes[1]!.element)
+    await nodes[1]!.trigger('keydown', { key: 'End' })
+    expect(document.activeElement).toBe(nodes.at(-1)!.element)
+    await nodes.at(-1)!.trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(nodes[0]!.element)
+    await nodes[0]!.trigger('keydown', { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(nodes.at(-1)!.element)
+    await nodes[0]!.trigger('keydown', { key: 'Home' })
+    expect(document.activeElement).toBe(nodes[0]!.element)
+
+    await wrapper.findAll('.ox-relation')[0]!.trigger('click')
+    expect(wrapper.get('.ox-inspector').text()).toContain('web')
+
+    await wrapper.get('[data-inspector-close]').trigger('click')
+    expect(wrapper.find('.ox-inspector').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('[data-node-id="http_service:3:web"]').element)
+
+    await wrapper.get('[data-node-id="listener:4:edge"]').trigger('click')
+    await wrapper.get('[data-section="topology"]').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('.ox-inspector').exists()).toBe(false)
     wrapper.unmount()
   })
 })

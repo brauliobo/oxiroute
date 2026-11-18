@@ -1,0 +1,208 @@
+@layer ox.page {
+  .ox-topology-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-4) var(--ox-space-6);
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-topology-head p {
+    margin: 0;
+  }
+
+  .ox-topology-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-topology {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ox-gap);
+    align-items: start;
+  }
+
+  .ox-topology-graph {
+    display: grid;
+    gap: var(--ox-gap);
+    min-width: 0;
+  }
+
+  .ox-topology-viewport {
+    overflow-x: auto;
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius);
+    background: var(--ox-bg);
+  }
+
+  .ox-topology-stage {
+    position: relative;
+    width: var(--stage-width);
+    height: var(--stage-height);
+  }
+
+  .ox-connectors {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  .ox-connector {
+    fill: none;
+    stroke: var(--ox-control);
+    stroke-width: 1.25;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .ox-connector-tls {
+    stroke: var(--ox-info);
+  }
+
+  #ox-topology-arrow path {
+    fill: var(--ox-control);
+  }
+
+  .ox-node-slot {
+    position: absolute;
+    top: var(--node-y);
+    left: var(--node-x);
+    width: var(--node-w);
+    min-height: var(--node-h);
+  }
+
+  .ox-node {
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    align-items: start;
+    gap: var(--ox-space-4);
+    width: 100%;
+    min-height: var(--node-h);
+    padding: var(--ox-space-4);
+    text-align: left;
+  }
+
+  .ox-node-icon {
+    width: 2rem;
+    height: 2rem;
+    overflow: visible;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.35;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .ox-node-copy {
+    display: grid;
+    gap: var(--ox-space-1);
+    min-width: 0;
+    font-size: var(--ox-text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-node-copy > strong {
+    font-size: var(--ox-text-sm);
+  }
+
+  .ox-node-copy > .ox-badge {
+    justify-self: start;
+  }
+
+  .ox-node-kind {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-2xs);
+    letter-spacing: var(--ox-tracking-label);
+    text-transform: uppercase;
+  }
+
+  .ox-relations {
+    display: none;
+  }
+
+  .ox-inspector {
+    display: grid;
+    gap: var(--ox-space-5);
+    min-width: 0;
+  }
+
+  .ox-inspector > .ox-badge {
+    justify-self: start;
+  }
+
+  .ox-inspector section {
+    display: grid;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-inspector h4 {
+    font-size: var(--ox-text-base);
+  }
+
+  @media (min-width: 80rem) {
+    .ox-topology {
+      grid-template-columns: minmax(0, 1fr) 20rem;
+    }
+  }
+
+  @media (max-width: 45rem) {
+    .ox-connectors {
+      display: none;
+    }
+
+    .ox-topology-stage {
+      display: grid;
+      gap: var(--ox-space-4);
+      width: auto;
+      height: auto;
+      padding: var(--ox-space-4);
+    }
+
+    .ox-node-slot {
+      position: static;
+      width: auto;
+      min-height: 0;
+    }
+
+    .ox-node {
+      min-height: 0;
+    }
+
+    .ox-relations {
+      display: grid;
+      gap: var(--ox-space-4);
+    }
+
+    .ox-relations ul {
+      display: grid;
+      gap: var(--ox-space-4);
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .ox-relation {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: var(--ox-space-4);
+      width: 100%;
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+
+    .ox-relation span {
+      color: var(--ox-muted);
+      font-size: var(--ox-text-xs);
+      text-align: center;
+    }
+
+    .ox-relation strong:last-child {
+      text-align: right;
+    }
+  }
+}
