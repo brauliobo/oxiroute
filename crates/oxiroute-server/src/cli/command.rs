@@ -4,6 +4,7 @@ use clap::Subcommand;
 
 use super::{
     check::{self, CheckArgs},
+    completions::CompletionsArgs,
     config::ConfigCommand,
     context::{Context, Execute},
     error::CliError,
@@ -11,6 +12,7 @@ use super::{
     generation::GenerationCommand,
     import::ImportCommand,
     listener::ListenerCommand,
+    man::ManArgs,
     pool::PoolCommand,
     process::ProcessCommand,
     registry::RegistryCommand,
@@ -93,6 +95,10 @@ pub(crate) enum Command {
     },
     /// Print the build version.
     Version(VersionArgs),
+    /// Print a shell completion script for oxiroute and oxr.
+    Completions(CompletionsArgs),
+    /// Print the manual page.
+    Man(ManArgs),
 }
 
 impl Command {
@@ -114,6 +120,8 @@ impl Command {
             Self::Registry { command } => command.run(context),
             Self::Import { command } => command.run(context),
             Self::Version(args) => args.run(context),
+            Self::Completions(args) => args.run(context),
+            Self::Man(args) => args.run(context),
         }
         .map(|()| ExitCode::SUCCESS)
     }

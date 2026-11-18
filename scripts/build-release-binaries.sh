@@ -207,6 +207,15 @@ pack() (
   root=${stage}/${name}
   install -Dm755 "${shipped}" "${root}/bin/oxiroute"
   ln -s oxiroute "${root}/bin/oxr"
+  install -d "${root}/share/bash-completion/completions" "${root}/share/zsh/site-functions" \
+    "${root}/share/fish/vendor_completions.d" "${root}/share/man/man1"
+  local alias
+  for alias in oxiroute oxr; do
+    "${shipped}" completions bash --name "${alias}" > "${root}/share/bash-completion/completions/${alias}"
+    "${shipped}" completions zsh --name "${alias}" > "${root}/share/zsh/site-functions/_${alias}"
+    "${shipped}" completions fish --name "${alias}" > "${root}/share/fish/vendor_completions.d/${alias}.fish"
+    "${shipped}" man --name "${alias}" > "${root}/share/man/man1/${alias}.1"
+  done
   install -Dm755 "${release}/oxiroute-worker-launcher" "${root}/lib/oxiroute/oxiroute-worker-launcher"
   install -Dm644 "${repo}/LICENSE" "${root}/LICENSE"
   cat > "${root}/BUILD-INFO.json" <<JSON

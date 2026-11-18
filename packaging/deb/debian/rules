@@ -10,6 +10,10 @@ override_dh_auto_configure override_dh_auto_build override_dh_auto_test override
 override_dh_auto_install:
 	install -Dm755 $(stage)/payload/bin/oxiroute $(root)/usr/bin/oxiroute
 	ln -s oxiroute $(root)/usr/bin/oxr
+	install -Dm644 -t $(root)/usr/share/bash-completion/completions $(stage)/payload/share/bash-completion/completions/*
+	install -Dm644 -t $(root)/usr/share/zsh/site-functions $(stage)/payload/share/zsh/site-functions/*
+	install -Dm644 -t $(root)/usr/share/fish/vendor_completions.d $(stage)/payload/share/fish/vendor_completions.d/*
+	install -Dm644 -t $(root)/usr/share/man/man1 $(stage)/payload/share/man/man1/*
 	install -Dm755 $(stage)/payload/lib/oxiroute/oxiroute-worker-launcher $(root)/usr/lib/oxiroute/oxiroute-worker-launcher
 	install -Dm644 -t $(root)/etc/oxiroute $(stage)/layout/oxiroute.env $(stage)/layout/oxiroute.kdl $(stage)/layout/oxiroute.lua
 	install -Dm644 $(stage)/layout/oxiroute.modules $(root)/usr/lib/modules-load.d/oxiroute.conf

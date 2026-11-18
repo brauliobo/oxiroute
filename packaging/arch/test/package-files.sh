@@ -17,15 +17,33 @@ usr/lib/oxiroute/oxiroute-worker-launcher
 usr/lib/systemd/system/oxiroute.service
 usr/lib/sysusers.d/oxiroute.conf
 usr/lib/tmpfiles.d/oxiroute.conf
+usr/share/bash-completion/completions/oxiroute
+usr/share/bash-completion/completions/oxr
 usr/share/doc/oxiroute/arch-packaging.md
 usr/share/doc/oxiroute/management-cli.md
-usr/share/licenses/oxiroute/LICENSE'
+usr/share/fish/vendor_completions.d/oxiroute.fish
+usr/share/fish/vendor_completions.d/oxr.fish
+usr/share/licenses/oxiroute/LICENSE
+usr/share/man/man1/oxiroute.1
+usr/share/man/man1/oxr.1
+usr/share/zsh/site-functions/_oxiroute
+usr/share/zsh/site-functions/_oxr'
 
 # Stub build output for the layout each recipe's package() expects, relative to its "oxiroute-${pkgver}*" directory.
 stub_tree() {
   local dir=$1 binary=$2 launcher=$3
-  mkdir -p -- "${dir}/$(dirname -- "${binary}")" "${dir}/$(dirname -- "${launcher}")" "${dir}/docs"
-  printf 'binary\n' >"${dir}/${binary}"
+  local name
+  mkdir -p -- "${dir}/$(dirname -- "${binary}")" "${dir}/$(dirname -- "${launcher}")" "${dir}/docs" \
+    "${dir}/share/bash-completion/completions" "${dir}/share/zsh/site-functions" \
+    "${dir}/share/fish/vendor_completions.d" "${dir}/share/man/man1"
+  printf '#!/usr/bin/bash\nprintf "generated %%s\\n" "$*"\n' >"${dir}/${binary}"
+  chmod 755 "${dir}/${binary}"
+  for name in oxiroute oxr; do
+    printf 'completion\n' >"${dir}/share/bash-completion/completions/${name}"
+    printf 'completion\n' >"${dir}/share/zsh/site-functions/_${name}"
+    printf 'completion\n' >"${dir}/share/fish/vendor_completions.d/${name}.fish"
+    printf 'manual\n' >"${dir}/share/man/man1/${name}.1"
+  done
   printf 'launcher\n' >"${dir}/${launcher}"
   printf 'license\n' >"${dir}/LICENSE"
   printf 'management\n' >"${dir}/docs/MANAGEMENT_CLI.md"

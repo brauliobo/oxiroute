@@ -65,6 +65,15 @@ check_files() {
   done
   [[ $(readlink /usr/bin/oxr) == oxiroute ]] || fail '/usr/bin/oxr is not an alias of oxiroute'
   [[ -x /usr/bin/oxiroute && -x /usr/lib/oxiroute/oxiroute-worker-launcher ]] || fail 'a binary is missing'
+  local asset
+  for asset in /usr/share/bash-completion/completions/{oxiroute,oxr} /usr/share/zsh/site-functions/_{oxiroute,oxr} \
+    /usr/share/fish/vendor_completions.d/{oxiroute,oxr}.fish; do
+    [[ -s ${asset} ]] || fail "${asset} is missing or empty"
+  done
+  grep -q '^_oxr()' /usr/share/bash-completion/completions/oxr || fail 'the oxr completion does not complete oxr'
+  for asset in oxiroute oxr; do
+    compgen -G "/usr/share/man/man1/${asset}.1*" > /dev/null || fail "the ${asset} manual page is missing"
+  done
   compgen -G '/usr/share/doc/oxiroute/INSTALL.md*' > /dev/null && [[ -f /usr/share/doc/oxiroute/BUILD-INFO.json ]] ||
     fail 'documentation is missing'
   pass 'the files of the layout are installed and equal the ones of packaging/arch'

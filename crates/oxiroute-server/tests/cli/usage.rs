@@ -279,3 +279,50 @@ fn config_check_needs_no_management_token_and_names_the_variable_that_would_add_
         "{message}"
     );
 }
+
+#[test]
+fn completions_and_the_manual_page_need_no_daemon_and_cover_both_command_names() {
+    for (shell, marker) in [
+        ("bash", "_{name}()"),
+        ("zsh", "#compdef {name}"),
+        ("fish", "complete -c {name} "),
+    ] {
+        for name in ["oxiroute", "oxr"] {
+            let output = cli()
+                .args(["completions", shell, "--name", name])
+                .output()
+                .expect("oxiroute");
+            assert!(
+                output.status.success(),
+                "{shell} {name}: {}",
+                stderr(&output)
+            );
+            let script = String::from_utf8(output.stdout).expect("UTF-8 script");
+            assert!(
+                script.contains(&marker.replace("{name}", name)),
+                "{shell} {name}: {script}"
+            );
+            assert!(script.contains("generation"), "{shell} {name}");
+        }
+    }
+    for name in ["oxiroute", "oxr"] {
+        let output = cli()
+            .args(["man", "--name", name])
+            .output()
+            .expect("oxiroute");
+        assert!(output.status.success(), "{}", stderr(&output));
+        let page = String::from_utf8(output.stdout).expect("UTF-8 page");
+        assert!(page.contains(&format!(".TH {name} 1")), "{page}");
+        assert!(page.contains(&format!("{name} server drain")), "{page}");
+    }
+}
+
+#[test]
+fn an_unsupported_shell_is_a_usage_error() {
+    let output = cli()
+        .args(["completions", "powershell"])
+        .output()
+        .expect("oxiroute");
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+}

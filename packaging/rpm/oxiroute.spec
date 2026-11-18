@@ -30,6 +30,10 @@ cp -p %{stage}/payload/LICENSE %{stage}/payload/BUILD-INFO.json %{stage}/docs/*.
 %install
 install -Dm755 %{stage}/payload/bin/oxiroute %{buildroot}%{_bindir}/oxiroute
 ln -s oxiroute %{buildroot}%{_bindir}/oxr
+install -Dm644 -t %{buildroot}%{_datadir}/bash-completion/completions %{stage}/payload/share/bash-completion/completions/*
+install -Dm644 -t %{buildroot}%{_datadir}/zsh/site-functions %{stage}/payload/share/zsh/site-functions/*
+install -Dm644 -t %{buildroot}%{_datadir}/fish/vendor_completions.d %{stage}/payload/share/fish/vendor_completions.d/*
+install -Dm644 -t %{buildroot}%{_mandir}/man1 %{stage}/payload/share/man/man1/*
 install -Dm755 %{stage}/payload/lib/oxiroute/oxiroute-worker-launcher %{buildroot}%{_prefix}/lib/oxiroute/oxiroute-worker-launcher
 install -Dm644 %{stage}/layout/oxiroute.service %{buildroot}%{_unitdir}/oxiroute.service
 install -Dm644 %{stage}/layout/oxiroute.sysusers %{buildroot}%{_sysusersdir}/oxiroute.conf
@@ -55,6 +59,14 @@ install -Dm644 -t %{buildroot}%{_sysconfdir}/oxiroute %{stage}/layout/oxiroute.e
 %doc MANAGEMENT_CLI.md INSTALL.md BUILD-INFO.json
 %{_bindir}/oxiroute
 %{_bindir}/oxr
+%{_datadir}/bash-completion/completions/oxiroute
+%{_datadir}/bash-completion/completions/oxr
+%{_datadir}/zsh/site-functions/_oxiroute
+%{_datadir}/zsh/site-functions/_oxr
+%{_datadir}/fish/vendor_completions.d/oxiroute.fish
+%{_datadir}/fish/vendor_completions.d/oxr.fish
+%{_mandir}/man1/oxiroute.1*
+%{_mandir}/man1/oxr.1*
 %dir %{_prefix}/lib/oxiroute
 %{_prefix}/lib/oxiroute/oxiroute-worker-launcher
 %{_unitdir}/oxiroute.service

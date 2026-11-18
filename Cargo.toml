@@ -52,6 +52,8 @@ base64 = "0.23"
 bcrypt = "0.19"
 bytes = "1.12"
 clap = { version = "4.6.7", features = ["derive", "env"] }
+clap_complete = "4.6"
+clap_mangen = "0.3"
 env_logger = "0.11"
 futures-util = "0.3.34"
 h2 = "0.4.20"

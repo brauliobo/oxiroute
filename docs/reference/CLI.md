@@ -46,6 +46,19 @@ file is rejected (exit 8, naming the first diagnostic). Both wait up to `--timeo
 given, and then exit 4 with `<what> did not complete within <limit>: <last observation>`. Without `--wait`,
 `reload` returns as soon as the daemon accepts the request.
 
+## Completions And Manual Page
+
+`oxiroute completions bash|zsh|fish` prints a completion script and `oxiroute man` prints the manual page
+(roff). Neither needs a daemon or a token. `--name oxr` produces the script or page for the short alias; the
+packages install both names (`/usr/share/bash-completion/completions/{oxiroute,oxr}`,
+`/usr/share/zsh/site-functions/_{oxiroute,oxr}`, `/usr/share/fish/vendor_completions.d/{oxiroute,oxr}.fish`,
+`/usr/share/man/man1/{oxiroute,oxr}.1`). To try one without a package:
+
+```sh
+source <(oxiroute completions bash)
+oxiroute man | man -l -
+```
+
 ## Output
 
 `--output table` (the default) prints what an operator reads: aligned columns with units (`1.5K`,
@@ -78,6 +91,7 @@ body through, where `changed` counts the targets of the request.
 | Process | `serve`, `status`, `ready`, `metrics`, `monitoring`, `topology`, `drain`, `shutdown` | Start and inspect the daemon |
 | Monitoring | `check` | One line and a Nagios exit code for cron and monitoring systems |
 | Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
+| Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|diff|validate|apply` | Inspect and change canonical configuration |
 | Events | `events list|follow` | Poll the bounded in-memory event ring |

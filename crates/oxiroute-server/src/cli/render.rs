@@ -11,7 +11,7 @@ pub(super) fn emit(text: &str) -> Result<(), CliError> {
     emit_bytes(text.as_bytes())
 }
 
-fn emit_bytes(bytes: &[u8]) -> Result<(), CliError> {
+pub(super) fn emit_bytes(bytes: &[u8]) -> Result<(), CliError> {
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(bytes)

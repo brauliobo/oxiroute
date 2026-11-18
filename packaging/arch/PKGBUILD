@@ -82,6 +82,15 @@ package() {
   install -Dm755 "target/${_target}/release/oxiroute" \
     "${pkgdir}/usr/bin/oxiroute"
   ln -s oxiroute "${pkgdir}/usr/bin/oxr"
+  install -d -m755 "${pkgdir}/usr/share/bash-completion/completions" "${pkgdir}/usr/share/zsh/site-functions" \
+    "${pkgdir}/usr/share/fish/vendor_completions.d" "${pkgdir}/usr/share/man/man1"
+  local name
+  for name in oxiroute oxr; do
+    "${pkgdir}/usr/bin/oxiroute" completions bash --name "${name}" >"${pkgdir}/usr/share/bash-completion/completions/${name}"
+    "${pkgdir}/usr/bin/oxiroute" completions zsh --name "${name}" >"${pkgdir}/usr/share/zsh/site-functions/_${name}"
+    "${pkgdir}/usr/bin/oxiroute" completions fish --name "${name}" >"${pkgdir}/usr/share/fish/vendor_completions.d/${name}.fish"
+    "${pkgdir}/usr/bin/oxiroute" man --name "${name}" >"${pkgdir}/usr/share/man/man1/${name}.1"
+  done
   install -d -m755 "${pkgdir}/usr/lib/oxiroute"
   install -m755 "target/${_target}/release/oxiroute-worker-launcher" \
     "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
