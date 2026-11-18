@@ -386,7 +386,7 @@ fn recorder_storage_failure_does_not_fail_live_ingest() {
         matches!(
             phase,
             RecorderPhase::Failed {
-                code: RecorderErrorCode::WriteFailed,
+                code: RecorderErrorCode::QuotaBytes,
                 ..
             }
         )

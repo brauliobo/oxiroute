@@ -83,7 +83,7 @@ pub(super) fn recording_files(root: &Path) -> Vec<std::path::PathBuf> {
     fs::read_dir(root)
         .expect("recording entries")
         .map(|entry| entry.expect("recording entry"))
-        .filter(|entry| entry.file_name() != ".oxiroute-recording.lock")
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
         .map(|entry| entry.path())
         .collect()
 }

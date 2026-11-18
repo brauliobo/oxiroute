@@ -10,6 +10,7 @@ mod endpoint_registry;
 mod management;
 mod media;
 mod observability;
+mod recordings;
 pub(crate) mod response;
 mod route;
 mod rtmp;

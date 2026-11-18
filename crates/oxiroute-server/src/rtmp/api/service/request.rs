@@ -47,6 +47,13 @@ pub(super) fn audited_api_operation(
     if method == "GET" {
         return None;
     }
+    if method == "DELETE"
+        && path
+            .strip_prefix("/api/v1/rtmp/recordings/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return Some(("recording_delete", AuditCategory::Control));
+    }
     let (operation, category) = match path {
         "/api/v1/config" => ("configuration_reload", AuditCategory::Reload),
         "/api/v1/generations/reload" => ("generation_reload", AuditCategory::Reload),

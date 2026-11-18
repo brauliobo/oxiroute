@@ -42,6 +42,7 @@ fn runtime_set(
         runtimes,
         Arc::new(VodCatalog::default()),
         Arc::new(MediaCatalog::default()),
+        Arc::new(crate::RecordingCatalog::default()),
     )
 }
 

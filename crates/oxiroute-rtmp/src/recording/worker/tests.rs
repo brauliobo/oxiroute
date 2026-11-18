@@ -258,6 +258,7 @@ fn queued_finalization_cancels_without_waiting_for_the_busy_root_worker() {
             .expect("recording entries")
             .filter_map(Result::ok)
             .filter(|entry| entry.path().is_file())
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
             .count(),
         4
     );

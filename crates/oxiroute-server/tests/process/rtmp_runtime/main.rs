@@ -12,6 +12,7 @@ mod revision_support;
 #[path = "../../support/rtmp.rs"]
 mod rtmp_support;
 
+mod inventory;
 mod quota;
 mod recording;
 
@@ -835,7 +836,7 @@ async fn wait_for_recording_file_count(root: &Path, expected: usize) -> Vec<std:
                             .file_name()
                             .and_then(|name| name.to_str())
                             .is_some_and(|name| {
-                                name != ".oxiroute-recording.lock" && !name.ends_with(".partial")
+                                !name.starts_with('.') && !name.ends_with(".partial")
                             })
                 })
                 .collect::<Vec<_>>();

@@ -76,6 +76,9 @@ pub use media::storage::{
     MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats,
 };
 pub(crate) use media::storage::{MediaStore, RtmpMediaStoreRegistry};
+pub use recording::catalog::{
+    CatalogRecording, RecorderSource, RecordingCatalog, RecordingCatalogError, RecordingRootStatus,
+};
 pub use recording::path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
@@ -86,8 +89,9 @@ pub(crate) use recording::store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
 pub use recording::store::{
-    RecordingEvictions, RecordingQuotaScope, RecordingRetention, RecordingStoreError,
-    RecordingStoreLimits, RecordingStoreLimitsError, RecordingStoreStats,
+    RecordingEntry, RecordingEvictions, RecordingMeta, RecordingQuotaScope, RecordingRetention,
+    RecordingStatus, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
+    RecordingStoreStats,
 };
 #[cfg(test)]
 pub(crate) use recording::worker::RecorderShutdown;

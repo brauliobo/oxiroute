@@ -30,6 +30,7 @@ are migrated.
 | Events v2 | `GET /api/v2/events?after={cursor}&limit={n}`, `GET /api/v2/events/stream` | Management bearer token; authoritative latest cursor and corrected vocabulary |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
+| RTMP recordings | `GET /api/v1/rtmp/recordings`, `GET\|DELETE /api/v1/rtmp/recordings/{recordingId}`, `GET /api/v1/rtmp/recordings/{recordingId}/content` | Management bearer token; recording inventory, metadata, ranged download and audited delete |
 | RTMP VOD | `GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Management bearer token; one contiguous byte range and bounded source/session policy |
 | RTMP HLS/DASH media | `GET /api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Management bearer token; bounded HLS playlists/fragments or DASH `manifest.mpd`, `init.mp4`, and `.m4s` objects; one contiguous byte range |
 | In-flight requests | `GET /api/v1/requests?pool=&route=&phase=&min_age_ms=&limit=&requestId=` | Management bearer token; live requests oldest first (default limit 100, at most 1000) with `total` and `truncated`; in the OpenAPI artifact as `getRequests` |
@@ -80,6 +81,59 @@ revision returns `409` and does not perform a last-writer-wins write.
 - Management responses return `X-Correlation-ID`; a valid caller-supplied value is retained within
   the 64-byte safe-character bound, otherwise the service generates one.
 - A `503` sampling or canonical-state error is not replaced with fabricated zeroes.
+
+## RTMP Recordings
+
+The recording inventory covers every recorder `root_directory` of the active generation. A recording
+id is a stable opaque 24-character hex string derived from the configured root and the file name, so
+it survives restarts; a file deleted and recreated under the same name keeps its id.
+
+`GET /api/v1/rtmp/recordings?stream=&recorder=&status=&limit=&cursor=` returns, newest first:
+
+```json
+{
+  "recordings": [{
+    "id": "0123456789abcdef01234567",
+    "name": "camera-1.flv",
+    "status": "complete",
+    "stream": "camera",
+    "started_at_unix_ms": 1721657969000,
+    "ended_at_unix_ms": 1721657999000,
+    "duration_ms": 30000,
+    "size_bytes": "1048576",
+    "modified_at_unix_ms": 1721657999000,
+    "video_codec": "avc",
+    "audio_codec": "aac",
+    "recorders": [{"service": "live", "application": "cam", "recorder": "archive"}]
+  }],
+  "next_cursor": null,
+  "roots": [{
+    "recorders": [{"service": "live", "application": "cam", "recorder": "archive"}],
+    "bytes_used": "1048576", "max_bytes": "10737418240",
+    "files": 1, "max_files": 10000,
+    "retention": "reject", "retention_max_age_ms": null,
+    "evicted_files": "0", "evicted_bytes": "0"
+  }]
+}
+```
+
+- `status` is `recording` while a recorder of this process writes the file, `complete` once the
+  recorder finalized it, and `partial` when a recorder was cut short (crash, failed recorder) and no
+  recorder owns it any more. Files without a metadata sidecar (written before sidecars existed) are
+  `complete` when their FLV tail is intact and `partial` otherwise.
+- `stream` is the published stream name without its query string or key. `duration_ms`, the codecs
+  and the start time come from a sidecar `.oxiroute-meta-<name>.json` the recorder writes next to
+  each recording; they are `null` for files that have none. `recorders` lists the recorders that
+  share the recording's root.
+- `limit` is 1 through 1000 (default 100). A `next_cursor` is returned while more recordings match;
+  pass it back as `cursor`. Unknown query parameters are a `400`.
+- `GET /api/v1/rtmp/recordings/{recordingId}` returns one recording object; `404 recording_not_found`.
+- `GET .../{recordingId}/content` streams the file (`video/x-flv`) with `Accept-Ranges: bytes`,
+  one contiguous `Range`, `Content-Disposition: attachment` and `Cache-Control: no-store`; an
+  unsatisfiable range is `416`.
+- `DELETE .../{recordingId}` removes the recording and its sidecar and returns `{"deleted": {...}}`;
+  a recording being written is refused with `409 recording_active`. Every delete is audited as
+  `recording_delete`.
 
 ## Example Calls
 

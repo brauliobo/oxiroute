@@ -16,6 +16,8 @@ pub(super) struct StoreShared {
     pub(super) root: OwnedFd,
     root_owner: u32,
     pub(super) limits: RecordingStoreLimits,
+    pub(super) id_scope: [u8; 8],
+    pub(super) startup_partials: OnceLock<Vec<RecordingEntry>>,
     state: Mutex<StoreState>,
     incarnation_changed: Condvar,
     pub(super) finalizer: RecordingFinalizer,
@@ -125,7 +127,8 @@ impl RecordingStore {
         limits: RecordingStoreLimits,
         deadline: Option<Instant>,
     ) -> Result<Self, RecordingStoreError> {
-        let root = open_pinned_directory(root.as_ref())
+        let root_path = root.as_ref();
+        let root = open_pinned_directory(root_path)
             .map_err(|source| RecordingStoreError::RootOpen(source.into()))?;
         let root_metadata = verify_root_control(&root)?;
         let root_owner = root_metadata.st_uid;
@@ -163,6 +166,8 @@ impl RecordingStore {
             root,
             root_owner,
             limits,
+            id_scope: id_scope(root_path),
+            startup_partials: OnceLock::new(),
             state: Mutex::new(state),
             incarnation_changed: Condvar::new(),
             finalizer,
@@ -260,7 +265,7 @@ impl RecordingStore {
             state.files += 1;
         }
 
-        let (descriptor, relative_name) =
+        let (descriptor, relative_name, reservation) =
             match create_recording_entry(&shared, &claim, final_relative_name, lock) {
                 Ok(created) => created,
                 Err(error) => {
@@ -271,7 +276,7 @@ impl RecordingStore {
                     return Err(error);
                 }
             };
-        shared.lock().active.insert(relative_name.clone());
+        reservation.disarm();
         drop(claim);
         Ok(RecordingFile {
             incarnation: self.handle.incarnation,
@@ -300,6 +305,17 @@ impl RecordingStore {
             }),
             resumed: false,
         })
+    }
+
+    #[must_use]
+    pub fn is_same_store(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.handle, &other.handle)
+    }
+
+    #[must_use]
+    pub fn limits(&self) -> RecordingStoreLimits {
+        self.shared()
+            .map_or(RecordingStoreLimits::unbounded(), |shared| shared.limits)
     }
 
     #[must_use]
@@ -369,6 +385,9 @@ impl RecordingStore {
             .claim(self.handle.incarnation)
             .ok_or(RecordingStoreError::CreationCancelled)?;
         let ownership = acquire_shared_ownership(&shared.root, &|| false)?;
+        let reservation = shared
+            .reserve_active(relative_name)
+            .ok_or(RecordingStoreError::RecordingActive)?;
         let descriptor = rustix_fs::openat(
             &shared.root,
             relative_name,
@@ -407,7 +426,7 @@ impl RecordingStore {
             return Err(RecordingStoreError::CreationCancelled);
         }
         drop(claim);
-        shared.lock().active.insert(relative_name.to_owned());
+        reservation.disarm();
         Ok(RecordingResume {
             file: RecordingFile {
                 incarnation: self.handle.incarnation,

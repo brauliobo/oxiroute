@@ -552,6 +552,15 @@ queue accordingly. Aligned rotations therefore create neither an unbounded threa
 storm nor a media-worker wait at the following rotation; exhausting the bounded backlog fails
 explicitly as finalization while preserving the current segment.
 
+Each recording has a metadata sidecar `.oxiroute-meta-<name>.json` in the same root, written when
+the segment opens (`complete=0`) and rewritten after the segment is published (`complete=1`, end,
+duration, codecs). Sidecars are hidden files: they do not count toward the file quota and are
+removed with their recording. The inventory is derived from the directory, so a recording without a
+valid sidecar is still listed. A sidecar still marked incomplete whose file no recorder of the
+process owns is a `partial` recording; when a recorder starts for the same stream its status carries
+the newest such name as `recoverable_partial_name`. The management API lists, downloads (ranged),
+and deletes recordings through opaque ids; deleting a recording a recorder is writing is refused.
+
 A recording root enforces `max_storage_files`, `max_storage_bytes`, and the optional retention
 policy. Before a segment is created or grows past a quota the store re-reads the root, so space
 freed outside the process counts. With `retention = "reject"` a reached quota fails the recorder

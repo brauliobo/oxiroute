@@ -117,6 +117,11 @@ impl RuntimeGeneration {
     }
 
     #[must_use]
+    pub fn rtmp_recording_catalog(&self) -> Arc<oxiroute_rtmp::RecordingCatalog> {
+        self.resources.rtmp_recording_catalog()
+    }
+
+    #[must_use]
     pub fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
         self.resources.rtmp_media_catalog()
     }

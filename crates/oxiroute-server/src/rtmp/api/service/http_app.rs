@@ -18,6 +18,17 @@ async fn write_buffered_response(session: &mut ServerSession, response: ApiRespo
     }
 }
 
+async fn reply_and_finish(
+    mut session: ServerSession,
+    response: ApiResponse,
+) -> Option<ReusedHttpStream> {
+    if write_buffered_response(&mut session, response).await {
+        finish_http_session(session).await
+    } else {
+        None
+    }
+}
+
 async fn finish_http_session(session: ServerSession) -> Option<ReusedHttpStream> {
     let persistent_settings = HttpPersistentSettings::for_session(&session);
     match session.finish().await {
@@ -164,6 +175,45 @@ impl HttpServerApp for RtmpManagementHttpApp {
                     return None;
                 }
                 return finish_http_session(session).await;
+            }
+            if let Some(recordings::Route::Content(id)) = recordings::match_route(&path) {
+                let context = match request_context(&session) {
+                    Ok(context) => context,
+                    Err(response) => {
+                        return reply_and_finish(
+                            session,
+                            response.with_correlation(AuditContext::generated().correlation_id),
+                        )
+                        .await;
+                    }
+                };
+                if let Some(response) =
+                    self.api
+                        .authentication_error(&method, &path, &path_and_query, &session)
+                {
+                    return reply_and_finish(
+                        session,
+                        response.with_correlation(context.correlation_id),
+                    )
+                    .await;
+                }
+                match self.api.recording_content(id, &session).await {
+                    recordings::ContentOutcome::Reply(response) => {
+                        return reply_and_finish(
+                            session,
+                            response.with_correlation(context.correlation_id),
+                        )
+                        .await;
+                    }
+                    recordings::ContentOutcome::Stream(stream) => {
+                        if !write_recording_stream(&mut session, stream, &context.correlation_id)
+                            .await
+                        {
+                            return None;
+                        }
+                        return finish_http_session(session).await;
+                    }
+                }
             }
             if let Some(route) = media::match_route(&path) {
                 let context = match request_context(&session) {

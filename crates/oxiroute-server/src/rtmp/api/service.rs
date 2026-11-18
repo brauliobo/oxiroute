@@ -14,6 +14,7 @@ use super::{
     management::{self, ManagementState},
     media::{self, Route as MediaRoute},
     observability::{self, Route as ObservabilityRoute},
+    recordings::{self, Route as RecordingsRoute},
     response::{system_time_ms, to_http_response},
     rtmp::{self, Route as RtmpRoute},
     streams::{self, Route as StreamRoute},
@@ -55,6 +56,7 @@ const CORRELATION_ID: HeaderName = HeaderName::from_static("x-correlation-id");
 enum ApiRoute<'a> {
     Config(ConfigRoute),
     Observability(ObservabilityRoute),
+    Recordings(RecordingsRoute<'a>),
     Rtmp(RtmpRoute<'a>),
     Stream(StreamRoute<'a>),
     Vod,
@@ -237,6 +239,9 @@ impl RtmpManagementApi {
                 self.topology.as_ref(),
                 self.generations.as_ref(),
             ),
+            ApiRoute::Recordings(route) => {
+                recordings::handle(route, method, &self.control.recording_catalog(), None)
+            }
             ApiRoute::Rtmp(route) => rtmp::handle(route, method, &self.control, None),
             ApiRoute::Stream(route) => streams::handle(route, method, &self.control, now_unix_ms),
             ApiRoute::Vod | ApiRoute::Media => ApiResponse::method_not_allowed("GET"),
@@ -256,6 +261,16 @@ impl RtmpManagementApi {
         } else {
             ApiResponse::method_not_allowed("GET")
         })
+    }
+
+    fn recording_catalog(&self) -> Arc<oxiroute_rtmp::RecordingCatalog> {
+        self.generations
+            .as_ref()
+            .and_then(GenerationManager::active)
+            .map_or_else(
+                || self.control.recording_catalog(),
+                |generation| generation.rtmp_recording_catalog(),
+            )
     }
 
     fn handle_at_system_time(&self, method: &str, path: &str) -> ApiResponse {
@@ -364,6 +379,16 @@ impl RtmpManagementApi {
             return self
                 .handle_at_system_time(&method, &path)
                 .with_correlation(context.correlation_id);
+        }
+        if let Some(route) = recordings::match_route(&path) {
+            let response = recordings::handle(
+                route,
+                &method,
+                &self.recording_catalog(),
+                session.req_header().uri.query(),
+            );
+            Self::audit_api_operation(&method, &path, &context, &response);
+            return response.with_correlation(context.correlation_id);
         }
         if let Some(route) = rtmp::match_route(&path) {
             let response = rtmp::handle(route, &method, &self.control, Some(session));
@@ -592,6 +617,7 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
     config::match_route(path)
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))
+        .or_else(|| recordings::match_route(path).map(ApiRoute::Recordings))
         .or_else(|| rtmp::match_route(path).map(ApiRoute::Rtmp))
         .or_else(|| streams::match_route(path).map(ApiRoute::Stream))
         .or_else(|| vod::match_route(path).map(|_| ApiRoute::Vod))
@@ -600,12 +626,14 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
 
 mod events;
 mod http_app;
+mod recording_stream;
 mod request;
 mod vod_media;
 
 use events::{accepts_event_stream, last_event_id, parse_event_stream_cursor};
 #[cfg(test)]
 use events::{heartbeat_frame, operational_frame, operational_frame_v2, ready_frame, resync_frame};
+use recording_stream::write_recording_stream;
 use request::{audit_result_for_status, audited_api_operation, request_context, request_parts};
 
 #[cfg(test)]

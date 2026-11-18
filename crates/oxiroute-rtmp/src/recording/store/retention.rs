@@ -1,6 +1,26 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+pub(super) struct ActiveReservation {
+    shared: Arc<StoreShared>,
+    name: String,
+    armed: bool,
+}
+
+impl ActiveReservation {
+    pub(super) fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ActiveReservation {
+    fn drop(&mut self) {
+        if self.armed {
+            self.shared.lock().active.remove(&self.name);
+        }
+    }
+}
+
 pub(super) struct FinishedRecording {
     pub(super) name: String,
     pub(super) bytes: u64,
@@ -8,6 +28,17 @@ pub(super) struct FinishedRecording {
 }
 
 impl StoreShared {
+    pub(super) fn reserve_active(self: &Arc<Self>, name: &str) -> Option<ActiveReservation> {
+        self.lock()
+            .active
+            .insert(name.to_owned())
+            .then(|| ActiveReservation {
+                shared: Arc::clone(self),
+                name: name.to_owned(),
+                armed: true,
+            })
+    }
+
     pub(super) fn finished_recordings(
         &self,
         state: &StoreState,

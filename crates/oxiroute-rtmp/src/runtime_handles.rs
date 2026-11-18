@@ -8,13 +8,13 @@ use std::{
 
 use crate::{
     CatalogError, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog, RecorderId,
-    RecorderSnapshot, RtmpAutoPushStatus, RtmpCallbackEventPlan, RtmpCallbackPlan,
-    RtmpCallbackPolicy, RtmpCapabilities, RtmpCatalogSnapshot, RtmpClientOptions,
-    RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpPrepareContext,
-    RtmpPrepareMode, RtmpRecorderLifecycle, RtmpRecorderStoreRegistry, RtmpRegistry,
-    RtmpServicePlan, RtmpServicePreparation, RtmpServiceRuntime, RtmpSession,
-    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
-    RtmpSessionPolicy, SessionId, StreamId, VodApplication, VodCatalog,
+    RecorderSnapshot, RecorderSource, RecordingCatalog, RecordingStore, RtmpAutoPushStatus,
+    RtmpCallbackEventPlan, RtmpCallbackPlan, RtmpCallbackPolicy, RtmpCapabilities,
+    RtmpCatalogSnapshot, RtmpClientOptions, RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan,
+    RtmpMediaStoreRegistry, RtmpPrepareContext, RtmpPrepareMode, RtmpRecorderLifecycle,
+    RtmpRecorderStoreRegistry, RtmpRegistry, RtmpServicePlan, RtmpServicePreparation,
+    RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction, RtmpSessionControlError,
+    RtmpSessionControlOutcome, RtmpSessionPolicy, SessionId, StreamId, VodApplication, VodCatalog,
 };
 
 #[cfg(test)]
@@ -66,6 +66,7 @@ pub struct RtmpControlHandle {
     services: Arc<Vec<RtmpServiceHandle>>,
     service_ids: Option<Arc<BTreeSet<String>>>,
     vod_catalog: Arc<VodCatalog>,
+    recording_catalog: Arc<RecordingCatalog>,
 }
 
 impl RtmpControlHandle {
@@ -74,6 +75,7 @@ impl RtmpControlHandle {
         services: Vec<RtmpServiceHandle>,
         vod_catalog: Arc<VodCatalog>,
         media_catalog: Arc<MediaCatalog>,
+        recording_catalog: Arc<RecordingCatalog>,
     ) -> Self {
         let service_ids = services
             .iter()
@@ -85,7 +87,14 @@ impl RtmpControlHandle {
             services: Arc::new(services),
             service_ids: Some(Arc::new(service_ids)),
             vod_catalog,
+            recording_catalog,
         }
+    }
+
+    /// Returns the recording inventory built from this runtime set's recorders.
+    #[must_use]
+    pub fn recording_catalog(&self) -> Arc<RecordingCatalog> {
+        Arc::clone(&self.recording_catalog)
     }
 
     /// Returns the VOD catalog built from this runtime set's prepared applications.
@@ -323,6 +332,7 @@ struct PreparedRtmpService {
     service_id: String,
     preparation: RtmpServicePreparation,
     vod_applications: Vec<Arc<VodApplication>>,
+    recording_sources: Vec<(RecorderSource, RecordingStore)>,
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
@@ -434,6 +444,7 @@ impl PreparedRtmpRuntimeSet {
         let mut runtimes = Vec::with_capacity(self.services.len());
         let mut media_applications = Vec::new();
         let mut vod_applications = Vec::new();
+        let mut recording_sources = Vec::new();
         for service in self.services {
             #[cfg(test)]
             self.start_events
@@ -470,6 +481,7 @@ impl PreparedRtmpRuntimeSet {
                 Ok(runtime) => {
                     media_applications.extend(service.media_applications);
                     vod_applications.extend(service.vod_applications);
+                    recording_sources.extend(service.recording_sources);
                     runtimes.push(runtime);
                 }
                 Err(error) => {
@@ -490,6 +502,7 @@ impl PreparedRtmpRuntimeSet {
             runtimes,
             VodCatalog::from_applications(vod_applications),
             Arc::new(MediaCatalog::from_applications(media_applications)),
+            Arc::new(RecordingCatalog::from_recorders(recording_sources)),
         )
     }
 
@@ -519,6 +532,7 @@ fn prepare_service(
     let mut media_applications = Vec::new();
     let mut service_hub = None;
     let mut vod_applications = Vec::new();
+    let mut recording_sources = Vec::new();
     for application in plan.applications() {
         ensure_preparation_deadline(service_id, deadline)?;
         let hub = application.fanout().runtime_hub();
@@ -591,10 +605,9 @@ fn prepare_service(
                 media.clone(),
             ));
         }
-        let recorders = application
-            .recorders()
-            .iter()
-            .map(|recorder| {
+        let mut recorders = Vec::new();
+        for recorder in application.recorders() {
+            {
                 let store = recorder_stores
                     .prepare(
                         recorder.root_directory(),
@@ -611,11 +624,19 @@ fn prepare_service(
                             preparation_error(service_id, "recorder store")
                         }
                     })?;
-                Ok(store.map(|store| recorder.build_policy(store)))
-            })
-            .collect::<Result<Vec<_>, RtmpRuntimeSetError>>()?
-            .into_iter()
-            .flatten();
+                if let Some(store) = store {
+                    recording_sources.push((
+                        RecorderSource {
+                            service: service_id.to_owned(),
+                            application: application.name().to_owned(),
+                            recorder: recorder.name().to_owned(),
+                        },
+                        store.clone(),
+                    ));
+                    recorders.push(recorder.build_policy(store));
+                }
+            }
+        }
         applications.push(application.build_runtime_application(
             hub,
             push_targets,
@@ -648,6 +669,7 @@ fn prepare_service(
         service_id: service_id.to_owned(),
         preparation,
         vod_applications,
+        recording_sources,
     })
 }
 
@@ -749,6 +771,7 @@ impl RtmpRuntimeSet {
         runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
         vod_catalog: Arc<VodCatalog>,
         media_catalog: Arc<MediaCatalog>,
+        recording_catalog: Arc<RecordingCatalog>,
     ) -> Result<Self, RtmpRuntimeSetError> {
         let mut services = Vec::new();
         let mut service_index = BTreeMap::new();
@@ -763,8 +786,13 @@ impl RtmpRuntimeSet {
             service_index.insert(service_id, services.len());
             services.push(RtmpServiceHandle::new(runtime));
         }
-        let control =
-            RtmpControlHandle::new(registry, services.clone(), vod_catalog, media_catalog);
+        let control = RtmpControlHandle::new(
+            registry,
+            services.clone(),
+            vod_catalog,
+            media_catalog,
+            recording_catalog,
+        );
         let shutdown = RtmpShutdown::new(recorder_lifecycles(&services));
         Ok(Self {
             services,

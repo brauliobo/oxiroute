@@ -134,6 +134,12 @@ starts only after an exact stream and recorder control request:
 }
 ```
 
+Recordings inventory: `GET /api/v1/rtmp/recordings` lists every recording with its stream, start,
+end, duration, size, codecs and status (`recording`, `complete`, or `partial` after a crash), and
+`GET /api/v1/rtmp/recordings/{id}/content` downloads one with `Range` support; `DELETE` removes a
+finished recording. Each recording has a hidden sidecar `.oxiroute-meta-<name>.json` next to it.
+Ids are stable across restarts. See the API reference.
+
 Storage quotas and retention: `max_storage_files` and `max_storage_bytes` bound the whole recording
 root. With the default `retention "reject"`, reaching a quota fails the recorder with the specific
 reason `quota_files` or `quota_bytes` (visible in `GET /api/v1/rtmp/streams` as

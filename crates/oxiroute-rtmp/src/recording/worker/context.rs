@@ -64,6 +64,10 @@ pub(super) fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         _lease: lease,
     };
 
+    shared.lock_status().recoverable_partial_name = context
+        .store
+        .startup_partial(&String::from_utf8_lossy(&context.stream_name));
+
     loop {
         match shared.next_event() {
             NextEvent::Event(event) => {
@@ -236,6 +240,7 @@ impl WorkerContext {
                 &headers,
                 Arc::clone(&self.shared.bytes_written),
                 &self.shared,
+                self.segment_identity(started_at_unix_seconds),
             )?;
             let elapsed = Duration::from_secs(
                 arrived_at_unix_seconds.saturating_sub(started_at_unix_seconds),
@@ -264,6 +269,7 @@ impl WorkerContext {
                 &headers,
                 Arc::clone(&self.shared.bytes_written),
                 &self.shared,
+                self.segment_identity(arrived_at_unix_seconds),
             )?;
             let segment_name = segment.partial_relative_name.clone();
             (
@@ -307,6 +313,13 @@ impl WorkerContext {
             status.segments_started = status.segments_started.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn segment_identity(&self, started_at_unix_seconds: u64) -> SegmentIdentity {
+        SegmentIdentity {
+            stream: String::from_utf8_lossy(&self.stream_name).into_owned(),
+            started_unix_ms: started_at_unix_seconds.saturating_mul(1000),
+        }
     }
 
     fn resumable_segment(

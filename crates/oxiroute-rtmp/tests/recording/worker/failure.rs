@@ -153,7 +153,7 @@ fn simulated_full_disk_fails_only_the_recorder_and_leaves_live_playback_healthy(
     let status = shutdown(worker);
     assert_eq!(
         status.phase,
-        RecorderWorkerPhase::Failed(RecorderFailure::Write)
+        RecorderWorkerPhase::Failed(RecorderFailure::QuotaBytes)
     );
     assert_eq!(status.bytes_written, 13);
     assert_eq!(status.segments_completed, 0);

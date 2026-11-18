@@ -76,6 +76,10 @@ impl GenerationResources {
         self.rtmp.control().vod_catalog()
     }
 
+    pub(crate) fn rtmp_recording_catalog(&self) -> Arc<oxiroute_rtmp::RecordingCatalog> {
+        self.rtmp.control().recording_catalog()
+    }
+
     pub(crate) fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
         self.rtmp.control().media_catalog()
     }

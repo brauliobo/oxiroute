@@ -27,6 +27,7 @@ mod error;
 mod file;
 mod finalizer;
 mod fsutil;
+mod inventory;
 mod limits;
 mod registry;
 mod retention;
@@ -39,9 +40,10 @@ pub(crate) use finalizer::*;
 pub(crate) use fsutil::is_root_byte_quota_error;
 #[allow(clippy::wildcard_imports)]
 use fsutil::*;
+pub use inventory::*;
 pub use limits::*;
 pub use registry::*;
-use retention::is_sidecar;
+use retention::{ActiveReservation, FinishedRecording, is_hidden_name, is_sidecar, sidecar_name};
 pub use root::*;
 
 mod flv;

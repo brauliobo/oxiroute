@@ -1,12 +1,18 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod record;
+
+use record::SegmentRecord;
+
 pub(super) struct Segment {
     muxer: FlvMuxer<CountedRecordingFile>,
     pub(super) partial_relative_name: String,
     preserve_partial: Arc<AtomicBool>,
     pub(super) partial_exists: Arc<AtomicBool>,
     frame_count: u64,
+    store: RecordingStore,
+    record: SegmentRecord,
 }
 
 pub(super) struct PreparedSegment {
@@ -14,6 +20,13 @@ pub(super) struct PreparedSegment {
     pub(super) finalizer: crate::recording::store::RecordingFinalizerAuthority,
     pub(super) partial_relative_name: String,
     pub(super) partial_exists: Arc<AtomicBool>,
+    store: RecordingStore,
+    record: SegmentRecord,
+}
+
+pub(super) struct SegmentIdentity {
+    pub(super) stream: String,
+    pub(super) started_unix_ms: u64,
 }
 
 impl Segment {
@@ -23,6 +36,7 @@ impl Segment {
         headers: &[MediaEvent],
         bytes_written: Arc<AtomicU64>,
         shared: &WorkerShared,
+        identity: SegmentIdentity,
     ) -> Result<Self, WorkerError> {
         let file = store
             .create_unless_with_options(
@@ -73,15 +87,22 @@ impl Segment {
         };
         let mut muxer =
             FlvMuxer::new(counted).map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        let mut record = SegmentRecord::new(identity.stream, identity.started_unix_ms);
         for header in headers {
             write_to_muxer(&mut muxer, header)?;
+            record.observe(header);
         }
+        store
+            .write_sidecar(&partial_relative_name, &record.meta(false))
+            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
         Ok(Self {
             muxer,
             partial_relative_name,
             preserve_partial,
             partial_exists,
             frame_count: 0,
+            store: store.clone(),
+            record,
         })
     }
 
@@ -91,6 +112,7 @@ impl Segment {
         headers: &[MediaEvent],
         bytes_written: Arc<AtomicU64>,
         shared: &WorkerShared,
+        identity: SegmentIdentity,
     ) -> Result<Self, WorkerError> {
         let resume = store
             .resume_with_options(relative_name, shared.lock, shared.max_size)
@@ -108,21 +130,29 @@ impl Segment {
             bytes_written,
         };
         let mut muxer = FlvMuxer::resume(counted, resume.flags, resume.last_timestamp_ms);
+        let mut record = SegmentRecord::new(identity.stream, identity.started_unix_ms);
         for header in headers {
             write_to_muxer(&mut muxer, header)?;
+            record.observe(header);
         }
+        store
+            .write_sidecar(&partial_relative_name, &record.meta(false))
+            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
         Ok(Self {
             muxer,
             partial_relative_name,
             preserve_partial,
             partial_exists,
             frame_count: 0,
+            store: store.clone(),
+            record,
         })
     }
 
     pub(super) fn write(&mut self, event: &MediaEvent) -> Result<(), WorkerError> {
         let projected = self.projected_bytes(event)?;
         write_to_muxer(&mut self.muxer, event).map(|()| {
+            self.record.observe(event);
             if projected > 0 && is_frame_event(event) {
                 self.frame_count = self.frame_count.saturating_add(1);
             }
@@ -182,15 +212,25 @@ impl Segment {
             finalizer,
             partial_relative_name: self.partial_relative_name,
             partial_exists: self.partial_exists,
+            store: self.store,
+            record: self.record,
         })
     }
 }
 
 impl PreparedSegment {
     pub(super) fn finish(self) -> Result<RecordingCommit, WorkerError> {
-        self.file
+        let commit = self
+            .file
             .commit()
-            .map_err(|error| WorkerError::finalization(&error))
+            .map_err(|error| WorkerError::finalization(&error))?;
+        let _ = self
+            .store
+            .write_sidecar(&commit.relative_name, &self.record.meta(true));
+        if commit.relative_name != self.partial_relative_name {
+            self.store.remove_sidecar(&self.partial_relative_name);
+        }
+        Ok(commit)
     }
 }
 

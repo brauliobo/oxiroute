@@ -35,6 +35,12 @@ pub enum RecordingStoreError {
     ActiveRecorderLimit { maximum: usize },
     #[error("recording cannot be deleted")]
     RecordingDelete(#[source] io::Error),
+    #[error("recording cannot be opened for reading")]
+    RecordingOpen(#[source] io::Error),
+    #[error("recording is being written")]
+    RecordingActive,
+    #[error("recording metadata cannot be written")]
+    SidecarWrite(#[source] io::Error),
     #[error("recording file limit of {maximum} reached")]
     FileLimit { maximum: usize },
     #[error("recording partial-name collision retry limit reached")]

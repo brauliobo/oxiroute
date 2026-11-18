@@ -87,11 +87,11 @@ pub(super) fn validate_relative_name(name: &str) -> Result<(), RecordingStoreErr
 }
 
 pub(super) fn create_recording_entry(
-    shared: &StoreShared,
+    shared: &Arc<StoreShared>,
     claim: &StoreOperationClaim,
     final_relative_name: &str,
     lock: bool,
-) -> Result<(OwnedFd, String), RecordingStoreError> {
+) -> Result<(OwnedFd, String, ActiveReservation), RecordingStoreError> {
     for attempt in 0..MAX_NAME_ATTEMPTS {
         let Some(relative_name) = (if attempt == 0 {
             Some(final_relative_name.to_owned())
@@ -99,6 +99,9 @@ pub(super) fn create_recording_entry(
             collision_recording_filename(final_relative_name, attempt)
         }) else {
             break;
+        };
+        let Some(reservation) = shared.reserve_active(&relative_name) else {
+            continue;
         };
         match rustix_fs::openat(
             &shared.root,
@@ -120,7 +123,7 @@ pub(super) fn create_recording_entry(
                     unlink_created_entry(shared, &relative_name)?;
                     return Err(RecordingStoreError::CreationCancelled);
                 }
-                return Ok((descriptor, relative_name));
+                return Ok((descriptor, relative_name, reservation));
             }
             Err(Errno::EXIST) => {}
             Err(source) => return Err(RecordingStoreError::PartialCreate(source.into())),
