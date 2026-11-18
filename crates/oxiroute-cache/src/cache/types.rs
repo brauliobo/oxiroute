@@ -282,6 +282,8 @@ pub enum CacheError {
     VaryChanged,
     #[error("fill response does not belong to the fill's base key")]
     FillKeyMismatch,
+    #[error("caches read different clocks, so entry ages cannot move between them")]
+    ClockMismatch,
     #[error("prepared entry belongs to a different cache storage identity")]
     PreparedEntryOwnerMismatch,
     #[error("fill key is not a bounded GET representation key")]

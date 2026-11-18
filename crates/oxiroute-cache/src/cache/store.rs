@@ -12,9 +12,9 @@ pub struct Cache {
 }
 
 pub(super) struct Shared {
-    identity: Arc<CacheIdentity>,
+    pub(super) identity: Arc<CacheIdentity>,
     pub(super) config: CacheConfig,
-    clock: Arc<dyn Clock>,
+    pub(super) clock: Arc<dyn Clock>,
     pub(super) shards: Box<[Shard]>,
     pub(super) hasher: RandomState,
     pub(super) usage: Arc<Usage>,

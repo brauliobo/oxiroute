@@ -22,6 +22,16 @@ pub(crate) struct GenerationAcquisition {
     pools: Option<Vec<Arc<RoundRobinPool>>>,
     tls: Option<PreparedTls>,
     stores: ExclusiveStores,
+    warm: WarmCaches,
+}
+
+pub(crate) struct CommittedAcquisition {
+    pub(crate) services: Vec<ServiceSpec>,
+    pub(crate) health_supervisor: Option<HealthSupervisor>,
+    pub(crate) pools: Vec<Arc<RoundRobinPool>>,
+    pub(crate) tls: PreparedTls,
+    pub(crate) stores: ExclusiveStores,
+    pub(crate) warm: WarmCaches,
 }
 
 impl GenerationAcquisition {
@@ -36,6 +46,7 @@ impl GenerationAcquisition {
             pools: None,
             tls: None,
             stores: ExclusiveStores::default(),
+            warm: WarmCaches::default(),
         }
     }
 
@@ -57,26 +68,19 @@ impl GenerationAcquisition {
         self.tls.as_ref().expect("uncommitted TLS")
     }
 
-    pub(crate) fn commit(
-        &mut self,
-    ) -> (
-        Vec<ServiceSpec>,
-        Option<HealthSupervisor>,
-        Vec<Arc<RoundRobinPool>>,
-        PreparedTls,
-        ExclusiveStores,
-    ) {
+    pub(crate) fn commit(&mut self) -> CommittedAcquisition {
         self.l4_services.take();
         self.forward_services.take();
         self.http_services.take();
         self.compiled_pools.take();
-        (
-            self.services.take().expect("uncommitted services"),
-            self.health_supervisor.take(),
-            self.pools.take().expect("uncommitted pools"),
-            self.tls.take().expect("uncommitted TLS"),
-            std::mem::take(&mut self.stores),
-        )
+        CommittedAcquisition {
+            services: self.services.take().expect("uncommitted services"),
+            health_supervisor: self.health_supervisor.take(),
+            pools: self.pools.take().expect("uncommitted pools"),
+            tls: self.tls.take().expect("uncommitted TLS"),
+            stores: std::mem::take(&mut self.stores),
+            warm: std::mem::take(&mut self.warm),
+        }
     }
 }
 
@@ -252,6 +256,7 @@ fn acquire_runtime_services_with_mode(
             .collect(),
         acquired.tls().acme_reconcilers().to_vec(),
     );
+    acquired.warm = WarmCaches::from_backends(&cache_backends);
     let rtmp_services = compile_rtmp_services(&blueprint.rtmp_specs?, mode)?;
     acquired.l4_services = Some(compile_l4_services(
         &blueprint.l4_service_specs?,

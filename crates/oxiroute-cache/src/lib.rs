@@ -10,7 +10,7 @@ mod policy;
 
 pub use cache::{
     Cache, CacheConfig, CacheError, CacheResponse, CacheStats, CachedResponse, FillGuard, FillJoin,
-    FillOutcome, FillWaiter, FreshHit, Lookup, LookupStatus, PreparedEntry, PurgeResult,
+    FillOutcome, FillWaiter, FreshHit, Inherited, Lookup, LookupStatus, PreparedEntry, PurgeResult,
     StoreOutcome, Variants,
 };
 pub use clock::{Clock, MonoTime, SystemClock};

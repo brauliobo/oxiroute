@@ -9,7 +9,7 @@ use crate::{
     RuntimePlan, ServiceSpec,
     observability::monitoring::ListenerRegistrationTransaction,
     rtmp::generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
-    service_plan::{ExclusiveStores, GenerationAcquisition},
+    service_plan::{ExclusiveStores, GenerationAcquisition, WarmCaches},
 };
 
 pub(crate) struct GenerationResources {
@@ -22,6 +22,7 @@ pub(crate) struct GenerationResources {
     pools: Vec<Arc<RoundRobinPool>>,
     tls: PreparedTls,
     stores: ExclusiveStores,
+    warm: WarmCaches,
     plan: RuntimePlan,
     #[cfg(test)]
     drop_probe: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -35,18 +36,19 @@ impl GenerationResources {
         listener_registration: ListenerRegistrationTransaction,
         rtmp: PreparedRtmpRuntimeSet,
     ) -> Self {
-        let (services, health_supervisor, pools, tls, stores) = acquired.commit();
+        let committed = acquired.commit();
         Self {
             rtmp: RtmpGenerationRuntime::new(rtmp),
             listeners: PreparedListenerResources {
                 registration: Mutex::new(Some(listener_registration)),
                 reservations,
             },
-            services,
-            health_supervisor,
-            pools,
-            tls,
-            stores,
+            services: committed.services,
+            health_supervisor: committed.health_supervisor,
+            pools: committed.pools,
+            tls: committed.tls,
+            stores: committed.stores,
+            warm: committed.warm,
             plan,
             #[cfg(test)]
             drop_probe: None,
@@ -92,6 +94,10 @@ impl GenerationResources {
 
     pub(crate) fn stores(&self) -> ExclusiveStores {
         self.stores.clone()
+    }
+
+    pub(crate) const fn warm(&self) -> &WarmCaches {
+        &self.warm
     }
 
     pub(crate) const fn reservations(&self) -> &ListenerReservations {

@@ -28,6 +28,7 @@ const TAG_ACCOUNTING_OVERHEAD: usize = 16;
 mod config;
 mod entries;
 mod flight;
+mod inherit;
 mod store;
 mod types;
 mod variants;
@@ -36,6 +37,7 @@ pub use config::*;
 use entries::{Entries, StoredEntry};
 #[allow(clippy::wildcard_imports)]
 use flight::*;
+pub use inherit::Inherited;
 pub use store::*;
 pub use types::*;
 pub use variants::Variants;

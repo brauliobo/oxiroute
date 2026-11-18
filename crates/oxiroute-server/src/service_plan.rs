@@ -29,7 +29,7 @@ use crate::{
     },
 };
 use http::{Method, Uri, uri::Authority};
-use oxiroute_cache::{Cache, DiskCache};
+use oxiroute_cache::DiskCache;
 use oxiroute_config::{
     CachePurgeAuthorization, HttpPoolSelect, ListenerBind, Protocol, ValidatedConfig,
 };
@@ -47,6 +47,7 @@ mod exclusive;
 mod runtime_plan;
 mod spec;
 pub(crate) mod types;
+mod warm;
 
 #[allow(clippy::wildcard_imports)]
 use compile_http::*;
@@ -57,6 +58,7 @@ pub(crate) use data_plane::{DataPlanePolicy, ListenerPlane, PlaneCapabilities};
 pub use exclusive::{ExclusiveStores, StoreOwnershipError};
 pub use runtime_plan::*;
 pub use spec::*;
+pub use warm::WarmCaches;
 
 #[cfg(test)]
 mod rtmp_value_plan_tests;

@@ -97,12 +97,42 @@ struct Instance {
     _directory: tempfile::TempDir,
 }
 
+fn disk_store(root: &Path, max_bytes: u64) -> CacheStore {
+    CacheStore::Disk {
+        name: "disk".into(),
+        root_directory: root.to_owned(),
+        max_bytes,
+        max_files: 128,
+        max_object_bytes: 4096,
+        max_header_bytes: 2 * 1024,
+        max_key_bytes: 1024,
+        max_tag_bytes: 256,
+        max_tags_per_object: 8,
+        max_in_flight_fills: 16,
+        max_followers_per_fill: 16,
+    }
+}
+
+fn memory_store(max_entries: u64) -> CacheStore {
+    CacheStore::Memory {
+        name: "disk".into(),
+        max_bytes: 1024 * 1024,
+        max_entries,
+        max_object_bytes: 4096,
+        max_header_bytes: 2 * 1024,
+        max_key_bytes: 1024,
+        max_tag_bytes: 256,
+        max_tags_per_object: 8,
+        max_in_flight_fills: 16,
+        max_followers_per_fill: 16,
+    }
+}
+
 fn cached_config(
     management: SocketAddr,
     listener: SocketAddr,
     origin: SocketAddr,
-    root: &Path,
-    max_bytes: u64,
+    store: CacheStore,
 ) -> ConfigDraft {
     let mut config = ConfigDraft {
         management: Some(Management {
@@ -122,19 +152,7 @@ fn cached_config(
             h2_initial_stream_window: None,
             h2_initial_connection_window: None,
         }],
-        cache_stores: vec![CacheStore::Disk {
-            name: "disk".into(),
-            root_directory: root.to_owned(),
-            max_bytes,
-            max_files: 128,
-            max_object_bytes: 4096,
-            max_header_bytes: 2 * 1024,
-            max_key_bytes: 1024,
-            max_tag_bytes: 256,
-            max_tags_per_object: 8,
-            max_in_flight_fills: 16,
-            max_followers_per_fill: 16,
-        }],
+        cache_stores: vec![store],
         upstream_pools: vec![UpstreamPool {
             name: "origin".into(),
             servers: Vec::new(),
@@ -214,11 +232,19 @@ fn disk_cache_policy() -> HttpCachePolicy {
 
 impl Instance {
     async fn start(body_bytes: usize, max_bytes: u64) -> Self {
+        Self::start_with(body_bytes, |root| disk_store(root, max_bytes)).await
+    }
+
+    async fn start_memory(body_bytes: usize, max_entries: u64) -> Self {
+        Self::start_with(body_bytes, |_| memory_store(max_entries)).await
+    }
+
+    async fn start_with(body_bytes: usize, store: impl FnOnce(&Path) -> CacheStore) -> Self {
         let origin = spawn_origin(body_bytes);
         let (management, listener) = (reserve_tcp_address(), reserve_tcp_address());
         let directory = tempfile::tempdir().expect("cache parent");
         let root = directory.path().join("cache");
-        let config = cached_config(management, listener, origin.address, &root, max_bytes);
+        let config = cached_config(management, listener, origin.address, store(&root));
         let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(listener).await;
@@ -238,6 +264,18 @@ impl Instance {
         http_request(self.listener, "GET", path, &[("Connection", "close")], &[])
             .await
             .status
+    }
+
+    async fn warm(&self, path: &str) {
+        let before = self.origin.requests.load(Ordering::SeqCst);
+        for _ in 0..2 {
+            assert_eq!(self.status_of(path).await, 200);
+        }
+        assert_eq!(
+            self.origin.requests.load(Ordering::SeqCst),
+            before + 1,
+            "{path} was not cached after one origin request"
+        );
     }
 
     async fn active_revision(&self) -> Value {
@@ -357,19 +395,7 @@ async fn a_generation_swap_applies_a_changed_disk_cache_limit() {
     let root = instance.root.clone();
     instance
         .apply(|config| {
-            config.cache_stores = vec![CacheStore::Disk {
-                name: "disk".into(),
-                root_directory: root,
-                max_bytes: 4096,
-                max_files: 128,
-                max_object_bytes: 4096,
-                max_header_bytes: 2 * 1024,
-                max_key_bytes: 1024,
-                max_tag_bytes: 256,
-                max_tags_per_object: 8,
-                max_in_flight_fills: 16,
-                max_followers_per_fill: 16,
-            }];
+            config.cache_stores = vec![disk_store(&root, 4096)];
         })
         .await;
 
@@ -427,5 +453,47 @@ async fn a_generation_that_cannot_claim_its_store_leaves_the_previous_owner_writ
     assert_eq!(instance.status_of("/after-failure").await, 200);
     instance.wait_for_records(2).await;
     drop(foreign_lock);
+    instance.server.shutdown();
+}
+
+#[tokio::test]
+async fn a_generation_swap_keeps_the_warm_memory_cache() {
+    let mut instance = Instance::start_memory(256, 100).await;
+    instance.warm("/warm").await;
+
+    instance.apply(|_| {}).await;
+
+    assert_eq!(instance.status_of("/warm").await, 200);
+    assert_eq!(
+        instance.origin.requests.load(Ordering::SeqCst),
+        1,
+        "the warm entry did not survive the generation swap"
+    );
+    instance.server.shutdown();
+}
+
+#[tokio::test]
+async fn a_generation_swap_resizes_the_memory_cache_in_place() {
+    let mut instance = Instance::start_memory(256, 100).await;
+    for path in ["/a", "/b", "/c"] {
+        instance.warm(path).await;
+    }
+
+    instance
+        .apply(|config| config.cache_stores = vec![memory_store(1)])
+        .await;
+
+    assert_eq!(instance.status_of("/c").await, 200);
+    assert_eq!(
+        instance.origin.requests.load(Ordering::SeqCst),
+        3,
+        "the most recent entry did not survive the resize"
+    );
+    assert_eq!(instance.status_of("/a").await, 200);
+    assert_eq!(
+        instance.origin.requests.load(Ordering::SeqCst),
+        4,
+        "an entry above the new bound survived the resize"
+    );
     instance.server.shutdown();
 }

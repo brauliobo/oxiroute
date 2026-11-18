@@ -149,11 +149,13 @@ pub(super) fn acquire_cache_policy(
         Arc::clone(cache)
     } else {
         let cache = match &stores[policy.store] {
-            CacheStoreBlueprint::Memory { config, .. } => Arc::new(HttpCacheBackend::Memory(
-                Arc::new(Cache::new(config.clone()).map_err(|_| {
-                    unavailable("http_services[].routes[].action.policy.cache.memory")
-                })?),
-            )),
+            CacheStoreBlueprint::Memory { config, .. } => {
+                Arc::new(HttpCacheBackend::Memory(Arc::new(
+                    crate::http::cache::memory_cache(config.clone()).map_err(|_| {
+                        unavailable("http_services[].routes[].action.policy.cache.memory")
+                    })?,
+                )))
+            }
             CacheStoreBlueprint::Disk { name, root, config } => {
                 DiskCache::validate(root, config).map_err(|source| {
                     ServicePlanError::DiskCacheStore {

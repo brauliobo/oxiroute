@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock, OnceLock},
 };
 
 use bytes::Bytes;
@@ -24,6 +24,12 @@ mod compression;
 pub(crate) use compression::{CacheCompression, CompressionPolicy};
 
 const MAX_COLLAPSED_FILL_WAITS: u8 = 2;
+
+static MEMORY_CLOCK: LazyLock<Arc<SystemClock>> = LazyLock::new(|| Arc::new(SystemClock::new()));
+
+pub(crate) fn memory_cache(config: CacheConfig) -> Result<Cache, CacheError> {
+    Cache::with_clock(config, MEMORY_CLOCK.clone())
+}
 
 pub(crate) struct HttpCachePlan {
     pub(crate) cache: Arc<HttpCacheBackend>,
