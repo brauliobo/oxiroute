@@ -20,6 +20,9 @@ pub(super) fn run(cli: &Cli) -> Result<(), CliError> {
         None
     };
     let client = Client { endpoint, token };
+    if let Command::Top(args) = cli.command() {
+        return top::run(cli, args, client);
+    }
     if execute(cli, &client)? == FollowOutcome::Follow {
         follow_events(cli, &client)?;
     }
@@ -369,6 +372,7 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         }
         Command::Serve { .. }
         | Command::Check(_)
+        | Command::Top(_)
         | Command::Import { .. }
         | Command::Version
         | Command::Registry { .. }

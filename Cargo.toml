@@ -76,6 +76,7 @@ openssl = "0.10.82"
 parking_lot = { version = "0.13", features = ["arc_lock"] }
 pingora = { version = "=0.9.1", features = ["lb", "openssl", "proxy"] }
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 rml_rtmp = "=0.8.0"
 rustix = { version = "1.1.6", features = ["event", "fs", "net", "pipe", "process", "stdio"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws-lc-rs", "prefer-post-quantum", "ring", "std", "tls12"] }

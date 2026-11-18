@@ -9,7 +9,7 @@ mod cache;
 mod contract;
 mod csv;
 mod html;
-mod model;
+pub(crate) mod model;
 mod page;
 
 pub use page::HaproxyStatsPage;

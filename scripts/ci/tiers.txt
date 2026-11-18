@@ -235,6 +235,7 @@ oxiroute::process_listener_workers                    planes
 oxiroute::process_management                          core
 oxiroute::process_registry                            planes
 oxiroute::process_rtmp_runtime                        planes
+oxiroute::process_top                                 planes
 oxiroute::process_udp_drain                           core
 oxiroute::process_worker_scaling                      planes
 oxiroute::queue_cancel_wire                           planes,tls

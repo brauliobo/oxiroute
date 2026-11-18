@@ -15,6 +15,7 @@ use std::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub use check::CheckArgs;
+pub use top::TopArgs;
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_import::nginx::{NginxBearerTokenOverlay, NginxUpstreamTlsOverlay};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
@@ -103,6 +104,12 @@ pub enum Command {
     /// This is the one command that does not use the exit categories 2 to 9 of the other
     /// commands: a monitoring system reads 2 as CRITICAL and 3 as UNKNOWN.
     Check(CheckArgs),
+    /// Live read-only dashboard of listeners, pools, servers and in-flight requests.
+    ///
+    /// Reads the management API with the management token. Without a terminal, or with `--once`
+    /// or `--json`, it prints one snapshot and exits. Keys: Tab or 1-4 switch view, `<` `>` pick the
+    /// sort column, r reverses it, / filters by name, p pauses, j k select, q quits.
+    Top(TopArgs),
     /// Inspect the requests currently inside the router.
     Requests {
         #[command(subcommand)]
@@ -797,6 +804,7 @@ mod offline;
 mod output;
 mod registry;
 mod token;
+mod top;
 
 #[allow(clippy::wildcard_imports)]
 use client::*;

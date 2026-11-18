@@ -57,6 +57,7 @@ oxiroute-tls-rustls = { path = "../oxiroute-tls-rustls" }
 parking_lot.workspace = true
 pingora.workspace = true
 quinn.workspace = true
+ratatui.workspace = true
 rustix.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
@@ -216,6 +217,10 @@ path = "tests/process/registry/main.rs"
 [[test]]
 name = "process_rtmp_runtime"
 path = "tests/process/rtmp_runtime/main.rs"
+
+[[test]]
+name = "process_top"
+path = "tests/process/top.rs"
 
 [[test]]
 name = "process_udp_drain"
