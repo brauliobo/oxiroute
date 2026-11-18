@@ -1,7 +1,6 @@
 use std::{
     fs,
-    net::SocketAddr,
-    os::unix::fs::PermissionsExt as _,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
@@ -10,7 +9,7 @@ use std::{
 use oxiroute_config::{ConfigDraft, ListenerBind, Management, Registry};
 use serde_json::Value;
 use tempfile::TempDir;
-use tokio::time::sleep;
+use tokio::{net::TcpStream, time::sleep};
 
 use crate::http_support::{HttpResponse, http_request};
 use crate::process_support::{ServerProcess, reserve_tcp_address, write_config};
@@ -21,7 +20,8 @@ pub(super) const WAIT: Duration = Duration::from_secs(20);
 pub(super) struct Daemon {
     pub(super) server: ServerProcess,
     pub(super) management: SocketAddr,
-    pub(super) socket: PathBuf,
+    pub(super) listener: SocketAddr,
+    pub(super) path: PathBuf,
     pub(super) active: ConfigDraft,
     _directory: TempDir,
 }
@@ -37,11 +37,13 @@ impl Daemon {
         environment: &[(&str, &str)],
     ) -> Self {
         let directory = TempDir::new().expect("restart case directory");
-        let socket = directory.path().join("listener.sock");
+        let path = directory.path().to_path_buf();
         let management = reserve_tcp_address();
-        let mut active = rtmp_listener_config(ListenerBind::Unix {
-            path: socket.clone(),
-            mode: Some(0o600),
+        let port = reserve_tcp_address().port();
+        let listener = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let mut active = rtmp_listener_config(ListenerBind::Socket {
+            address: SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+            ipv6_only: false,
         });
         active.management = Some(Management {
             bind: management,
@@ -64,21 +66,22 @@ impl Daemon {
             ServerProcess::start_with_env(&validated, Some(TOKEN), environment)
         };
         server.wait_for_tcp(management).await;
-        server.wait_for_unix(&socket).await;
+        server.wait_for_tcp(listener).await;
         Self {
             server,
             management,
-            socket,
+            listener,
+            path,
             active,
             _directory: directory,
         }
     }
 
-    pub(super) fn candidate(&self, mode: u16, max_connections: u64) -> ConfigDraft {
+    pub(super) fn candidate(&self, ipv6_only: bool, max_connections: u64) -> ConfigDraft {
         let mut candidate = self.active.clone();
-        candidate.listeners[0].bind = ListenerBind::Unix {
-            path: self.socket.clone(),
-            mode: Some(mode),
+        candidate.listeners[0].bind = ListenerBind::Socket {
+            address: SocketAddr::from((Ipv6Addr::UNSPECIFIED, self.listener.port())),
+            ipv6_only,
         };
         candidate.listeners[0].max_connections = Some(max_connections);
         candidate
@@ -182,11 +185,7 @@ impl Daemon {
             .expect("listener connection limit")
     }
 
-    pub(super) fn socket_mode(&self) -> u32 {
-        fs::metadata(&self.socket)
-            .expect("unix socket")
-            .permissions()
-            .mode()
-            & 0o777
+    pub(super) async fn accepts_ipv4(&self) -> bool {
+        TcpStream::connect(self.listener).await.is_ok()
     }
 }

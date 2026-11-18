@@ -221,7 +221,7 @@ three exact outcomes:
   `restartRequired` is `false`.
 - `saved_restart_required`: a valid durable candidate contains settings that only a process restart
   applies (`ipv6_only` of a kept address, the direct runtime's
-  `registry` block, a configuration only the direct runtime can run). `activationState` is
+  `registry` block). `activationState` is
   `restart_required`, and `restartRequired` is `true`. The running process keeps the old value of
   those settings only and applies the rest of the candidate; `restartReasons` lists them.
 

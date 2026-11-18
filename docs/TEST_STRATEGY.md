@@ -103,7 +103,7 @@ parser round trips, and long-running media/supervision properties remain planned
   remains a gate.
 - Atomic config writes, exact revision preconditions, stale conflicts, complete preflight before
   disk mutation, redaction, authentication, explicit pending-activation outcomes, and truthful
-  restart-required Unix mode changes, including candidates with other edits, that leave the active
+  restart-required `ipv6_only` changes, including candidates with other edits, that leave the active
   generation and socket untouched; reservation tests cover namespace leases, connect-refused stale
   sockets, fail-closed restrictive sockets, concurrent ownership, and unsafe writable parents.
 - Management API route authentication, monitoring/topology/RTMP/config response shapes, bounded

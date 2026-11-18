@@ -35,21 +35,6 @@ pub struct RestartRequired {
     pub reasons: Vec<StartupOnlyChange>,
 }
 
-impl StartupOnlyChange {
-    /// The candidate needs the direct runtime, which a supervising master cannot run.
-    #[must_use]
-    pub fn execution_mode(reason: &str) -> Self {
-        Self {
-            code: "execution_mode".into(),
-            path: "/config".into(),
-            summary: format!(
-                "the configuration cannot run under the supervising master ({reason}) and is not \
-                 applied: it runs after a restart in the direct runtime"
-            ),
-        }
-    }
-}
-
 impl RestartRequired {
     /// Says in the log, once per change of the report, what waits for a restart.
     pub fn log(&self) {

@@ -394,17 +394,13 @@ impl ConfigApiState {
         })?;
         let inspect = |generation: &crate::RuntimeGeneration| {
             (
-                startup_only_reasons(&startup_only_changes(
-                    self.mode,
-                    generation.config(),
-                    candidate.validated_config(),
-                )),
+                startup_only_changes(self.mode, generation.config(), candidate.validated_config()),
                 generation
                     .listener_changes(candidate.validated_config())
                     .filter(ListenerChangeSummary::changes_listeners),
             )
         };
-        let (startup_only, listener_changes) = mutation.map_or_else(
+        let (kept, listener_changes) = mutation.map_or_else(
             || {
                 self.generations
                     .as_ref()
@@ -424,30 +420,32 @@ impl ConfigApiState {
                     ));
                 }
             };
-            generations
-                .validate_candidate(crate::config::coordinator::ResolvedConfigDocument {
-                    authored_revision: disk_revision,
-                    effective_revision: candidate.effective_revision().clone(),
-                    validated_config: candidate.validated_config().clone(),
-                    format: candidate.format(),
-                    compositional: candidate.compositional(),
-                    dependencies: candidate.dependencies().to_vec(),
-                    config_preview: candidate.config_preview().to_owned(),
-                    diagnostics: candidate.diagnostics().to_vec(),
-                })
-                .map_err(|_| {
-                    ApiResponse::json(
-                        422,
-                        &json!({
-                            "diagnostics": [preparation_diagnostic(ConfigPreparationError::Runtime)]
-                        }),
-                    )
-                })?;
+            let document = crate::config::coordinator::ResolvedConfigDocument {
+                authored_revision: disk_revision,
+                effective_revision: candidate.effective_revision().clone(),
+                validated_config: candidate.validated_config().clone(),
+                format: candidate.format(),
+                compositional: candidate.compositional(),
+                dependencies: candidate.dependencies().to_vec(),
+                config_preview: candidate.config_preview().to_owned(),
+                diagnostics: candidate.diagnostics().to_vec(),
+            };
+            let document = document.keeping(&kept).map_err(|rejection| {
+                ApiResponse::json(422, &json!({ "diagnostics": rejection.diagnostics }))
+            })?;
+            generations.validate_candidate(document).map_err(|_| {
+                ApiResponse::json(
+                    422,
+                    &json!({
+                        "diagnostics": [preparation_diagnostic(ConfigPreparationError::Runtime)]
+                    }),
+                )
+            })?;
         }
         Ok(PreparedCandidate {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
-            startup_only,
+            startup_only: startup_only_reasons(&kept),
             listener_changes,
         })
     }

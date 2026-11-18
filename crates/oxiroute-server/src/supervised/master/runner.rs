@@ -311,7 +311,7 @@ impl MasterRunner {
         let file = document.authored_revision.clone();
         let file_revision = document.effective_revision.clone();
         let kept = startup_only(catalog, &document);
-        let mut reasons = startup_only_reasons(&kept);
+        let reasons = startup_only_reasons(&kept);
         let applicable = if kept.is_empty() {
             Ok(Arc::clone(&document))
         } else {
@@ -331,17 +331,11 @@ impl MasterRunner {
         if let Err(error) =
             supervised_eligibility(&document.validated_config, probe_cgroup_v2().status)
         {
-            if config_plan(&document.validated_config, true, probe_cgroup_v2().status).is_ok() {
-                reasons.push(StartupOnlyChange::execution_mode(&error.to_string()));
-                reports.restart_required(master, &file_revision, reasons);
-                reports.accept(master);
-            } else {
-                let message = "the configuration cannot run under the supervising master";
-                reports.reject(
-                    master,
-                    refusal(&file, "E_UNSUPPORTED_CONFIG", message, error.to_string()),
-                );
-            }
+            let message = "the configuration cannot run under the supervising master";
+            reports.reject(
+                master,
+                refusal(&file, "E_UNSUPPORTED_CONFIG", message, error.to_string()),
+            );
             return Ok(());
         }
         reports.restart_required(master, &file_revision, reasons);

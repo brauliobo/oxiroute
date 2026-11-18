@@ -18,10 +18,10 @@ async fn the_master_applies_a_log_filter_only_after_the_replacement_commits() {
     let daemon = Daemon::start(true).await;
     let first = daemon.generation().await["activeRevision"].clone();
 
-    let mut refused = daemon.candidate(0o600, 7);
+    let mut refused = daemon.candidate(false, 7);
     refused.log_filter = Some("off".into());
     refused.management.as_mut().expect("management").token_file =
-        Some(daemon.socket.with_file_name("missing.token"));
+        Some(daemon.path.join("missing.token"));
     daemon.write(&refused);
     daemon.hang_up();
     daemon
@@ -31,7 +31,7 @@ async fn the_master_applies_a_log_filter_only_after_the_replacement_commits() {
         .await;
     assert_eq!(daemon.generation().await["activeRevision"], first);
 
-    daemon.write(&daemon.candidate(0o660, 5));
+    daemon.write(&daemon.candidate(true, 5));
     daemon.hang_up();
     let applied = daemon
         .wait_generation("the rest of the file to apply", |generation| {
@@ -44,7 +44,7 @@ async fn the_master_applies_a_log_filter_only_after_the_replacement_commits() {
         "a refused replacement changed the master's log filter: {log}"
     );
 
-    let mut quiet = daemon.candidate(0o660, 6);
+    let mut quiet = daemon.candidate(true, 6);
     quiet.log_filter = Some("off".into());
     daemon.write(&quiet);
     daemon.hang_up();
@@ -54,7 +54,7 @@ async fn the_master_applies_a_log_filter_only_after_the_replacement_commits() {
         })
         .await;
 
-    let mut silenced = daemon.candidate(0o640, 9);
+    let mut silenced = daemon.candidate(true, 9);
     silenced.log_filter = Some("off".into());
     daemon.write(&silenced);
     daemon.hang_up();

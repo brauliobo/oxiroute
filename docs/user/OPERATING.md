@@ -142,8 +142,7 @@ configuration passes (default: the larger of three hours and the longest HTTP
 `upstream_io_timeout_ms`; `OXIROUTE_RELOAD_DRAIN_SECONDS` is deprecated). In supervised mode a
 further reload waits while a long request keeps the old worker alive.
 
-A few settings cannot change in a running process: `ipv6_only` of a listener that keeps its address, the `registry` block in the direct runtime, and a
-configuration that only the direct runtime can run (more than 64 listeners). A reload does not refuse
+A few settings cannot change in a running process: `ipv6_only` of a listener that keeps its address, and the `registry` block in the direct runtime. A reload does not refuse
 the file for them. It keeps the running value of that setting, applies everything else, and reports
 the setting as `restartRequired` in `generation status`, `status` and `/api/v1/generations`. Validation
 exposes the backend `I_RESTART_REQUIRED` diagnostic before the write, and a successful save returns

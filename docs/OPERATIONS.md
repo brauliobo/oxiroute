@@ -633,7 +633,6 @@ of the setting and a one-line `summary`:
 | --- | --- | --- | --- |
 | `listener_ipv6_only` | `/config/listeners/<name>/bind/ipv6_only` | both | `IPV6_V6ONLY` is fixed once the socket is bound |
 | `registry_settings` | `/config/registry` | direct | the direct runtime opens the registry once |
-| `execution_mode` | `/config` | supervised | the configuration needs the direct runtime (more than 64 listener descriptors) and is not applied at all |
 
 The applied generation's revision is the revision of the file with those settings left as they run, so
 `activeRevision` differs from the file's `candidateRevision` while a restart is required; editing the
