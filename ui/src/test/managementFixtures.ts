@@ -97,6 +97,7 @@ export function managementStatus(): RuntimeStatus {
     listeners: monitoring.listeners,
     tlsProfiles: [],
     restartRequired: { required: false, candidateRevision: null, since: null, reasons: [] },
+    configWritable: true,
   }
 }
 

@@ -6,8 +6,11 @@ mod fixture_support;
 mod http_support;
 #[path = "../../support/process.rs"]
 mod process_support;
+#[path = "../../support/revision.rs"]
+mod revision_support;
 
 mod administrative_state;
+mod config_source;
 mod console;
 mod daemon;
 mod external;

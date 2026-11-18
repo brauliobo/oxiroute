@@ -7,9 +7,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use serde::Serialize;
+
 use rustix::{
     fd::OwnedFd,
-    fs::{self, AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags},
+    fs::{self, Access, AtFlags, FileType, FlockOperation, Gid, Mode, OFlags, RenameFlags, Uid},
     io::Errno,
 };
 
@@ -22,6 +24,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_TEMP_ATTEMPTS: usize = 128;
 const SECURE_FILE_MODE: Mode = Mode::from_raw_mode(0o600);
 const SECURE_FILE_MODE_BITS: u32 = 0o600;
+const PERMISSION_BITS: u32 = 0o777;
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC)
@@ -62,6 +65,21 @@ struct PreparedExchange {
     _candidate_file: File,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigWriteBlock {
+    ReadOnlyFilesystem,
+    PermissionDenied,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileOwnership {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StorageFailure {
     DirectoryOpen,
@@ -73,6 +91,8 @@ pub(super) enum StorageFailure {
     Read,
     Unstable,
     TempCreate,
+    ReadOnlyDirectory,
+    DirectoryNotWritable,
     TempWrite,
     FileSync,
     Rename,
@@ -107,6 +127,19 @@ impl StorageFailure {
                 "E_CONFIG_UNSTABLE",
                 ConfigDiagnosticStage::Read,
                 "canonical configuration changed during a stable read",
+            ),
+            Self::ReadOnlyDirectory => diagnostic(
+                "E_CONFIG_READ_ONLY",
+                ConfigDiagnosticStage::Write,
+                "the configuration directory is on a read-only mount for this process; under the \
+                 packaged systemd unit add it to ReadWritePaths with a drop-in, or edit the file \
+                 on the host",
+            ),
+            Self::DirectoryNotWritable => diagnostic(
+                "E_CONFIG_NOT_WRITABLE",
+                ConfigDiagnosticStage::Write,
+                "the process may not create files in the configuration directory; grant the \
+                 service user write access to it, or edit the file on the host",
             ),
             Self::TempCreate | Self::TempWrite => diagnostic(
                 "E_CONFIG_WRITE",
@@ -193,7 +226,7 @@ impl CanonicalStorage {
                 .map_err(|_| StorageFailure::Lock)?,
                 false,
             ),
-            Err(_) => return Err(StorageFailure::Lock),
+            Err(error) => return Err(directory_failure(error).unwrap_or(StorageFailure::Lock)),
         };
         if created {
             fs::fchmod(&descriptor, SECURE_FILE_MODE).map_err(|_| StorageFailure::Lock)?;
@@ -397,11 +430,12 @@ impl CanonicalStorage {
         candidate: &[u8],
         control: ReplaceControl,
     ) -> Result<(TempEntry, File), StorageFailure> {
+        let ownership = self.current_ownership()?;
         let (mut temp, mut candidate_file) = self.create_temp()?;
         if candidate_file.write_all(candidate).is_err() {
             return self.finish_candidate(&mut temp, None, control, Err(StorageFailure::TempWrite));
         }
-        if fs::fchmod(&candidate_file, SECURE_FILE_MODE).is_err() {
+        if apply_ownership(&candidate_file, ownership).is_err() {
             return self.finish_candidate(
                 &mut temp,
                 Some(candidate),
@@ -441,10 +475,32 @@ impl CanonicalStorage {
                     return Ok((TempEntry::new(name, identity), File::from(descriptor)));
                 }
                 Err(Errno::EXIST) => {}
-                Err(_) => return Err(StorageFailure::TempCreate),
+                Err(error) => {
+                    return Err(directory_failure(error).unwrap_or(StorageFailure::TempCreate));
+                }
             }
         }
         Err(StorageFailure::TempCreate)
+    }
+
+    fn current_ownership(&self) -> Result<FileOwnership, StorageFailure> {
+        let metadata = fs::statat(self.directory(), &self.file_name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| StorageFailure::FileOpen)?;
+        Ok(FileOwnership {
+            mode: metadata.st_mode & PERMISSION_BITS,
+            uid: metadata.st_uid,
+            gid: metadata.st_gid,
+        })
+    }
+
+    pub(super) fn write_block(&self) -> Option<ConfigWriteBlock> {
+        let access = Access::WRITE_OK | Access::EXEC_OK;
+        match fs::accessat(self.directory(), ".", access, AtFlags::EACCESS) {
+            Ok(()) => None,
+            Err(Errno::ROFS) => Some(ConfigWriteBlock::ReadOnlyFilesystem),
+            Err(Errno::ACCESS | Errno::PERM) => Some(ConfigWriteBlock::PermissionDenied),
+            Err(_) => Some(ConfigWriteBlock::Unavailable),
+        }
     }
 
     fn read_stable_name(&self, name: &OsStr) -> Result<FileSnapshot, StorageFailure> {
@@ -688,6 +744,30 @@ impl CanonicalStorage {
     {
         self.read_stable_name_with(&self.file_name, after_first)
             .map(|snapshot| snapshot.bytes)
+    }
+}
+
+fn directory_failure(error: Errno) -> Option<StorageFailure> {
+    match error {
+        Errno::ROFS => Some(StorageFailure::ReadOnlyDirectory),
+        Errno::ACCESS | Errno::PERM => Some(StorageFailure::DirectoryNotWritable),
+        _ => None,
+    }
+}
+
+fn apply_ownership(file: &File, ownership: FileOwnership) -> Result<(), Errno> {
+    fs::fchmod(file, Mode::from_raw_mode(ownership.mode))?;
+    let metadata = fs::fstat(file)?;
+    if metadata.st_uid == ownership.uid && metadata.st_gid == ownership.gid {
+        return Ok(());
+    }
+    match fs::fchown(
+        file,
+        Some(Uid::from_raw(ownership.uid)),
+        Some(Gid::from_raw(ownership.gid)),
+    ) {
+        Err(Errno::PERM) => Ok(()),
+        result => result,
     }
 }
 

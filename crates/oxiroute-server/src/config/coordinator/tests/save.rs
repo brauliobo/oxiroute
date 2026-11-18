@@ -21,7 +21,57 @@ fn typed_save_rejects_a_compositional_root_without_flattening_it() {
 }
 
 #[test]
-fn save_escapes_values_and_installs_a_secure_regular_file() {
+fn an_authored_save_keeps_the_text_of_a_compositional_root_and_its_mode() {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("oxiroute.hocon");
+    let source = b"templates = { empty = { listeners = [] } }\nuse = \"empty\"\nversion = 1\n";
+    fs::write(&path, source).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    let coordinator = CanonicalConfigCoordinator::new(&path).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let hocon = format!("# kept\n{}", String::from_utf8_lossy(source));
+
+    let ConfigValidationOutcome::Valid(candidate) =
+        coordinator.prepare_source(&hocon, ConfigFormat::Hocon)
+    else {
+        panic!("authored text was rejected")
+    };
+    let ConfigSaveOutcome::Saved(saved) = coordinator.save(&expected, *candidate) else {
+        panic!("authored text was not saved")
+    };
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), hocon);
+    assert_eq!(
+        saved.authored_revision,
+        AuthoredRevision::from_bytes(hocon.as_bytes())
+    );
+    assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o640);
+    assert_eq!(coordinator.read_source().unwrap().text, hocon);
+}
+
+#[test]
+fn an_authored_text_in_another_format_is_not_saved() {
+    let (_temp, path, coordinator) = fixture(&minimal_config());
+    let before = fs::read(&path).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let validated = minimal_config().validate().unwrap();
+    let hocon = render_config(ConfigFormat::Hocon, &validated).unwrap();
+
+    let ConfigValidationOutcome::Valid(candidate) =
+        coordinator.prepare_source(&hocon, ConfigFormat::Hocon)
+    else {
+        panic!("authored text was rejected")
+    };
+    let ConfigSaveOutcome::InvalidDraft(rejection) = coordinator.save(&expected, *candidate) else {
+        panic!("a text in another format was saved")
+    };
+
+    assert_eq!(rejection.diagnostics[0].code, "E_FORMAT_MISMATCH");
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn save_escapes_values_and_installs_a_regular_file_with_the_replaced_mode() {
     let (_temp, path, coordinator) = fixture(&minimal_config());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     let expected = loaded(coordinator.load()).authored_revision;
@@ -38,7 +88,7 @@ fn save_escapes_values_and_installs_a_secure_regular_file() {
             .config_preview
             .contains(r#"name = "edge \"quoted\" \\ slash café","#)
     );
-    assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o600);
+    assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o644);
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
     assert_eq!(
         loaded(coordinator.load()).validated_config.as_draft(),

@@ -2,7 +2,7 @@ use oxiroute_config::{ConfigDraft, RtmpCallbackConfig};
 
 use super::REDACTED_PLACEHOLDER;
 
-pub(super) fn redact_callback_url(url: &str) -> String {
+pub(crate) fn redact_callback_url(url: &str) -> String {
     let (scheme, remainder) = url.split_once("://").unwrap_or(("", url));
     let split = remainder.find(['/', '?']).unwrap_or(remainder.len());
     let (authority, tail) = remainder.split_at(split);
@@ -93,6 +93,15 @@ pub(super) fn has_secret_callback_url(config: &ConfigDraft) -> bool {
         .flat_map(urls)
         .flatten()
         .any(|url| redact_callback_url(url) != *url)
+}
+
+pub(crate) fn secret_callback_urls(config: &ConfigDraft) -> Vec<String> {
+    callbacks(config)
+        .flat_map(urls)
+        .flatten()
+        .filter(|url| redact_callback_url(url) != **url)
+        .cloned()
+        .collect()
 }
 
 pub(super) fn redact_callback_urls(config: &mut ConfigDraft) {

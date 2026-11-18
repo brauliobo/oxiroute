@@ -9,6 +9,7 @@ use super::dto::{
 };
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
+    config::coordinator::CanonicalConfigCoordinator,
     observability::prometheus::render_prometheus_control,
 };
 
@@ -44,6 +45,7 @@ pub(super) fn handle(
     control: &RtmpControlHandle,
     topology: &TopologySnapshot,
     generations: Option<&GenerationManager>,
+    coordinator: Option<&CanonicalConfigCoordinator>,
 ) -> ApiResponse {
     if method != "GET" {
         return ApiResponse::method_not_allowed("GET");
@@ -54,7 +56,7 @@ pub(super) fn handle(
         Route::Stats => stats_response(generations),
         Route::Metrics => metrics_response(metrics, control, generations),
         Route::Readiness => readiness_response(metrics, generations),
-        Route::Status => status_response(metrics, generations, topology),
+        Route::Status => status_response(metrics, generations, topology, coordinator),
         Route::StatusJson => {
             crate::observability::status::summary::status_json_response(metrics, generations)
         }
@@ -81,6 +83,7 @@ fn status_response(
     metrics: &RuntimeMetrics,
     generations: Option<&GenerationManager>,
     topology: &TopologySnapshot,
+    coordinator: Option<&CanonicalConfigCoordinator>,
 ) -> ApiResponse {
     let Ok(runtime) = metrics.snapshot() else {
         return ApiResponse::error(
@@ -97,6 +100,7 @@ fn status_response(
         audit,
         topology,
         metrics.supervision_mode(),
+        coordinator.is_some_and(|coordinator| coordinator.write_block().is_none()),
     ) {
         Ok(response) => response,
         Err(error) => {

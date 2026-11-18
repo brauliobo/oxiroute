@@ -30,6 +30,8 @@ pub struct PersistableConfigCandidate {
     dependencies: Vec<PathBuf>,
     config_preview: String,
     diagnostics: Vec<ConfigDiagnostic>,
+    #[serde(skip)]
+    authored: bool,
 }
 
 impl PersistableConfigCandidate {
@@ -50,7 +52,17 @@ impl PersistableConfigCandidate {
             dependencies,
             config_preview,
             diagnostics,
+            authored: false,
         }
+    }
+
+    pub(super) fn into_authored(mut self) -> Self {
+        self.authored = true;
+        self
+    }
+
+    pub(super) const fn authored(&self) -> bool {
+        self.authored
     }
 
     pub(super) fn into_parts(

@@ -242,6 +242,7 @@ impl RtmpManagementApi {
                 &self.control,
                 self.topology.as_ref(),
                 self.generations.as_ref(),
+                self.coordinator.as_ref(),
             ),
             ApiRoute::Recordings(route) => {
                 recordings::handle(route, method, &self.control.recording_catalog(), None)
@@ -545,6 +546,7 @@ impl RtmpManagementApi {
                 &self.control,
                 self.topology.as_ref(),
                 self.generations.as_ref(),
+                self.coordinator.as_ref(),
             ),
             EndpointId::Listeners => {
                 let Some(management) = &self.management else {

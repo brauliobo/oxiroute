@@ -1735,6 +1735,9 @@
           "components": {
             "$ref": "#/components/schemas/StatusComponentsDto"
           },
+          "configWritable": {
+            "type": "boolean"
+          },
           "degraded": {
             "type": "boolean"
           },
@@ -1781,6 +1784,7 @@
           "previousRevision",
           "degraded",
           "restartRequired",
+          "configWritable",
           "activeGenerationAgeMs",
           "components",
           "certificates",

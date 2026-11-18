@@ -12,6 +12,7 @@ pub(crate) struct StatusResponse {
     previous_revision: Option<String>,
     degraded: bool,
     restart_required: RestartRequired,
+    config_writable: bool,
     active_generation_age_ms: u64,
     components: StatusComponentsDto,
     certificates: StatusCertificatesDto,
@@ -28,6 +29,7 @@ impl StatusResponse {
         audit: AuditStatus,
         topology: &TopologySnapshot,
         mode: RuntimeMode,
+        config_writable: bool,
     ) -> Result<Self, String> {
         let capabilities = CapabilitiesResponse::project(&runtime.listeners, mode)
             .map_err(|error| error.to_string())?;
@@ -57,6 +59,7 @@ impl StatusResponse {
             restart_required: generation
                 .map(|status| status.restart_required.clone())
                 .unwrap_or_default(),
+            config_writable,
             active_generation_age_ms: runtime.generation_age_ms,
             components,
             certificates: StatusCertificatesDto {

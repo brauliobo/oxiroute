@@ -21,11 +21,14 @@ mod cache;
 mod candidate;
 mod external;
 mod keeping;
+mod source;
 mod storage;
 
 use crate::encoding::lower_hex;
 use cache::LoadCache;
 pub use candidate::PersistableConfigCandidate;
+pub use source::AuthoredSource;
+pub use storage::ConfigWriteBlock;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
 /// The canonical file is bounded to the same four-MiB limit as every config source and rendering. A router-sized
@@ -604,6 +607,11 @@ impl CanonicalConfigCoordinator {
         F: FnOnce() -> Result<(), ()>,
         G: FnOnce(),
     {
+        if candidate.format() != self.format {
+            return ConfigSaveOutcome::InvalidDraft(ConfigDraftRejection {
+                diagnostics: vec![format_mismatch_diagnostic()],
+            });
+        }
         let _operation = self.lock();
         let storage = match CanonicalStorage::open(&self.canonical_path) {
             Ok(storage) => storage,
@@ -621,20 +629,19 @@ impl CanonicalConfigCoordinator {
         if initial_revision != *expected_revision {
             return conflict(expected_revision, initial_revision, candidate);
         }
-        match resolve_source(&self.canonical_path, &initial_disk) {
-            Ok(resolved) if resolved.compositional => {
-                return ConfigSaveOutcome::InvalidDraft(ConfigDraftRejection {
-                    diagnostics: vec![compositional_root_diagnostic()],
-                });
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return failed_save(
-                    Some(initial_revision),
-                    candidate,
-                    source_error_diagnostic(&error),
-                );
-            }
+        if !candidate.authored()
+            && let Err(diagnostic) = self.typed_save_allowed(&initial_disk)
+        {
+            return match diagnostic {
+                TypedSaveRefusal::Compositional => {
+                    ConfigSaveOutcome::InvalidDraft(ConfigDraftRejection {
+                        diagnostics: vec![compositional_root_diagnostic()],
+                    })
+                }
+                TypedSaveRefusal::Unreadable(diagnostic) => {
+                    failed_save(Some(initial_revision), candidate, diagnostic)
+                }
+            };
         }
 
         match storage.replace(
@@ -679,6 +686,23 @@ impl CanonicalConfigCoordinator {
                     .map(|disk| AuthoredRevision::from_bytes(&disk));
                 failed_save(disk_revision, candidate, error.diagnostic())
             }
+        }
+    }
+}
+
+enum TypedSaveRefusal {
+    Compositional,
+    Unreadable(ConfigDiagnostic),
+}
+
+impl CanonicalConfigCoordinator {
+    fn typed_save_allowed(&self, disk: &[u8]) -> Result<(), TypedSaveRefusal> {
+        match resolve_source(&self.canonical_path, disk) {
+            Ok(resolved) if resolved.compositional => Err(TypedSaveRefusal::Compositional),
+            Ok(_) => Ok(()),
+            Err(error) => Err(TypedSaveRefusal::Unreadable(source_error_diagnostic(
+                &error,
+            ))),
         }
     }
 }
@@ -840,6 +864,14 @@ const fn compositional_root_diagnostic() -> ConfigDiagnostic {
         "E_COMPOSITIONAL_ROOT",
         ConfigDiagnosticStage::Validation,
         "typed saves cannot replace a compositional configuration root",
+    )
+}
+
+const fn format_mismatch_diagnostic() -> ConfigDiagnostic {
+    diagnostic(
+        "E_FORMAT_MISMATCH",
+        ConfigDiagnosticStage::Validation,
+        "the configuration is not in the format of the file the daemon runs",
     )
 }
 

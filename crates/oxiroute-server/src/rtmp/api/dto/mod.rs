@@ -17,7 +17,8 @@ pub(crate) use common::{DecimalCounter, ErrorResponse};
 pub(crate) use config::{
     ConfigConflictResponse, ConfigRequest, ConfigSnapshotResponse, ConfigValidationResponse,
     RedactedConfigView, contains_redacted_callback_url, contains_redacted_rtmp_token_secret,
-    restore_redacted_callback_urls, restore_redacted_rtmp_token_secrets,
+    redact_callback_url, restore_redacted_callback_urls, restore_redacted_rtmp_token_secrets,
+    rtmp_token_secrets, secret_callback_urls,
 };
 pub(crate) use event::{
     EventPageV1Response, EventPageV2Response, OperationalEventDto, SseReadyDto, SseResyncDto,

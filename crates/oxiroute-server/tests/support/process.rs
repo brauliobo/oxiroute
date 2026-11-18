@@ -94,15 +94,32 @@ impl ServerProcess {
         Self::launch(config, Some(token), false, environment)
     }
 
+    /// Starts the direct runtime on authored text, kept byte for byte in a file named `file_name`.
+    #[allow(dead_code)]
+    pub fn start_authored(file_name: &str, authored: &str, token: &str) -> Self {
+        Self::launch_text(file_name, authored, Some(token), true, &[])
+    }
+
     fn launch(
         config: &ValidatedConfig,
         token: Option<&str>,
         direct: bool,
         environment: &[(&str, &str)],
     ) -> Self {
+        let authored = render_lua(&on_suite_data_plane(config)).expect("render process config");
+        Self::launch_text("oxiroute.lua", &authored, token, direct, environment)
+    }
+
+    fn launch_text(
+        file_name: &str,
+        authored: &str,
+        token: Option<&str>,
+        direct: bool,
+        environment: &[(&str, &str)],
+    ) -> Self {
         let directory = TempDir::new().expect("server process directory");
-        let config_path = directory.path().join("oxiroute.lua");
-        write_config(&config_path, config);
+        let config_path = directory.path().join(file_name);
+        fs::write(&config_path, authored).expect("write process config");
         let token_path = token.map(|token| write_token(directory.path(), token, 0o600));
         let stderr_path = directory.path().join("oxiroute.stderr");
         let stderr = File::create(&stderr_path).expect("server standard error file");

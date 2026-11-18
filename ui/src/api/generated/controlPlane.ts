@@ -390,6 +390,7 @@ export interface StatusResponse {
   capabilities: CapabilitiesResponse
   certificates: StatusCertificatesDto
   components: StatusComponentsDto
+  configWritable: boolean
   degraded: boolean
   diskRevision: string | null
   listeners: Array<ListenerDto>

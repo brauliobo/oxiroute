@@ -10,7 +10,10 @@ use crate::generation::restart::StartupOnlyChange;
 
 mod callback_urls;
 
-pub(crate) use callback_urls::{contains_redacted_callback_url, restore_redacted_callback_urls};
+pub(crate) use callback_urls::{
+    contains_redacted_callback_url, redact_callback_url, restore_redacted_callback_urls,
+    secret_callback_urls,
+};
 
 const REDACTED_PLACEHOLDER: &str = "<redacted>";
 
@@ -211,6 +214,29 @@ impl ConfigConflictResponse {
             diagnostics,
         }
     }
+}
+
+pub(crate) fn rtmp_token_secrets(config: &ConfigDraft) -> Vec<(String, String)> {
+    let mut secrets = Vec::new();
+    for service in &config.rtmp_services {
+        for application in &service.applications {
+            for (operation, policy) in [
+                ("publish", &application.publish),
+                ("play", &application.play),
+            ] {
+                if let Some(token) = &policy.token {
+                    secrets.push((
+                        format!(
+                            "/rtmp_services/{}/applications/{}/{operation}/token/secret",
+                            service.name, application.name
+                        ),
+                        token.secret.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    secrets
 }
 
 fn has_rtmp_secret(config: &ConfigDraft) -> bool {

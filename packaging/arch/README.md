@@ -187,6 +187,13 @@ configuration at `0640 root:oxiroute` and the management token at `0600 oxiroute
 `OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token` in the environment file only after
 creating that token with restrictive permissions.
 
+Without that drop-in the packaged unit cannot write the configuration: `GET /api/v1/status` reports
+`configWritable: false`, and `oxiroute config apply` and `config edit` fail with `E_CONFIG_READ_ONLY` (a read-only
+mount) or `E_CONFIG_NOT_WRITABLE` (a directory the service user may not write). The file can still be edited on
+the host, and the daemon reloads it. A save keeps the permission bits of the file it replaces; it keeps the owner
+and group only when the service user may set them, so after a save by the unprivileged service the file is owned by
+that user.
+
 After changing a drop-in, run `systemctl daemon-reload` and restart the service. Do not add writable
 access for Certbot or static-content trees unless the configured application explicitly needs to
 modify them.

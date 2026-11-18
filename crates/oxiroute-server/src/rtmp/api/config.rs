@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod snapshot;
+mod source;
 
 use snapshot::SnapshotCache;
 
@@ -44,6 +45,8 @@ const MAX_IMPORT_REPORT_RESPONSE_BYTES: usize = MAX_CONFIG_REQUEST_BYTES * 2;
 pub(super) enum Route {
     Config,
     Validate,
+    Source,
+    SourceValidate,
     ImportReports(Option<usize>),
 }
 
@@ -83,12 +86,11 @@ impl ConfigApiState {
 
     pub(super) fn unauthenticated_response(route: Route, method: &str) -> ApiResponse {
         match (route, method) {
-            (Route::Config, "GET" | "PUT") | (Route::Validate, "POST") => {
-                ApiResponse::unauthorized()
-            }
-            (Route::ImportReports(_), "GET") => ApiResponse::unauthorized(),
-            (Route::Config, _) => ApiResponse::method_not_allowed("GET, PUT"),
-            (Route::Validate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::Config | Route::Source, "GET" | "PUT")
+            | (Route::Validate | Route::SourceValidate, "POST")
+            | (Route::ImportReports(_), "GET") => ApiResponse::unauthorized(),
+            (Route::Config | Route::Source, _) => ApiResponse::method_not_allowed("GET, PUT"),
+            (Route::Validate | Route::SourceValidate, _) => ApiResponse::method_not_allowed("POST"),
             (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
         }
     }
@@ -146,6 +148,9 @@ impl ConfigApiState {
                 }
             }
             (Route::Validate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::Source | Route::SourceValidate, _) => {
+                self.handle_source(route, method, session).await
+            }
             (Route::ImportReports(index), "GET") => self.import_reports_response(index),
             (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
         }
@@ -327,6 +332,18 @@ impl ConfigApiState {
         if let Err(response) = self.merge_redacted_rtmp_secrets(&mut draft) {
             return response;
         }
+        self.persist(expected, |mutation| {
+            self.prepare_candidate(draft, now_unix_ms, mutation)
+        })
+    }
+
+    fn persist(
+        &self,
+        expected: &AuthoredRevision,
+        prepare: impl FnOnce(
+            Option<&crate::GenerationMutation>,
+        ) -> Result<PreparedCandidate, ApiResponse>,
+    ) -> ApiResponse {
         let mutation = if let Some(generations) = &self.generations {
             match generations.begin_config_mutation() {
                 Ok(mutation) => Some(mutation),
@@ -341,7 +358,7 @@ impl ConfigApiState {
         } else {
             None
         };
-        let candidate = match self.prepare_candidate(draft, now_unix_ms, mutation.as_ref()) {
+        let candidate = match prepare(mutation.as_ref()) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
@@ -355,6 +372,15 @@ impl ConfigApiState {
             startup_only,
             listener_changes,
         };
+        if self.already_stored(expected, &candidate) {
+            return self.saved_response(
+                expected,
+                candidate.effective_revision(),
+                Vec::new(),
+                &activation,
+                false,
+            );
+        }
 
         match self.coordinator.save(expected, *candidate) {
             ConfigSaveOutcome::Saved(document) => self.saved_response(
@@ -362,6 +388,7 @@ impl ConfigApiState {
                 &document.effective_revision,
                 diagnostics_json(&document.diagnostics, false),
                 &activation,
+                true,
             ),
             ConfigSaveOutcome::Conflict(conflict) => self.conflict_response(&conflict),
             ConfigSaveOutcome::InvalidDraft(rejection) => {
@@ -371,13 +398,34 @@ impl ConfigApiState {
         }
     }
 
+    fn already_stored(
+        &self,
+        expected: &AuthoredRevision,
+        candidate: &PersistableConfigCandidate,
+    ) -> bool {
+        AuthoredRevision::from_bytes(candidate.config_preview().as_bytes()) == *expected
+            && self
+                .coordinator
+                .disk_revision()
+                .is_ok_and(|disk| disk == *expected)
+    }
+
     fn prepare_candidate(
         &self,
         draft: ConfigDraft,
         now_unix_ms: u64,
         mutation: Option<&crate::GenerationMutation>,
     ) -> Result<PreparedCandidate, ApiResponse> {
-        let candidate = match self.coordinator.prepare(draft) {
+        self.preflight(self.coordinator.prepare(draft), now_unix_ms, mutation)
+    }
+
+    fn preflight(
+        &self,
+        outcome: ConfigValidationOutcome,
+        now_unix_ms: u64,
+        mutation: Option<&crate::GenerationMutation>,
+    ) -> Result<PreparedCandidate, ApiResponse> {
+        let candidate = match outcome {
             ConfigValidationOutcome::Valid(candidate) => candidate,
             ConfigValidationOutcome::Invalid(rejection) => {
                 return Err(ApiResponse::json(
@@ -456,6 +504,7 @@ impl ConfigApiState {
         candidate_revision: &EffectiveRevision,
         mut diagnostics: Vec<Value>,
         activation: &Activation,
+        written: bool,
     ) -> ApiResponse {
         let active_revision = self.active_revision();
         let unchanged_active = *candidate_revision == active_revision;
@@ -482,6 +531,7 @@ impl ConfigApiState {
                 "diskRevision": disk_revision,
                 "candidateRevision": candidate_revision,
                 "activeRevision": active_revision,
+                "written": written,
                 "outcome": if unchanged_active {
                     "unchanged_active"
                 } else if restart_required {
@@ -515,6 +565,7 @@ impl ConfigApiState {
                 &failure.candidate_revision,
                 diagnostics_json(&failure.diagnostics, true),
                 activation,
+                true,
             );
         }
         ApiResponse::json(
@@ -566,6 +617,8 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     match path {
         "/api/v1/config" => Some(Route::Config),
         "/api/v1/config/validate" => Some(Route::Validate),
+        "/api/v1/config/source" => Some(Route::Source),
+        "/api/v1/config/source/validate" => Some(Route::SourceValidate),
         IMPORT_REPORTS_PATH => Some(Route::ImportReports(None)),
         path if path.starts_with("/api/v1/import-reports/") => Some(Route::ImportReports(
             path.strip_prefix("/api/v1/import-reports/")

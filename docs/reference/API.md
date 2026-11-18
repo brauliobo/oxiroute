@@ -15,6 +15,7 @@ are migrated.
 | Group | Routes | Auth/current role |
 | --- | --- | --- |
 | Configuration | `GET /api/v1/config`, `POST /api/v1/config/validate`, `PUT /api/v1/config` | Management bearer token; typed drafts, preflight, revision-safe write |
+| Configuration source | `GET /api/v1/config/source`, `POST /api/v1/config/source/validate`, `PUT /api/v1/config/source` | Management bearer token; the authored text in KDL, Lua, HOCON, UCI or JSON, preflight, revision-safe write that keeps comments and Lua logic (see "Configuration Source") |
 | Native import reports | `GET /api/v1/import-reports`, `GET /api/v1/import-reports/{index}` | Management bearer token; bounded redacted evidence and read-only finalized KDL preview |
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status`, `/stats` | Management bearer token; redacted active state; `/stats` is the stats page snapshot (see "Stats page API" in OPERATIONS.md) |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
@@ -77,6 +78,77 @@ preserved and never echoed. A placeholder with no matching stored value, or a ca
 non-redacted parts changed, returns `422` `redacted_rtmp_token_unresolved` or
 `redacted_rtmp_callback_unresolved` and writes nothing. To change a secret, send the new literal
 value; `<redacted>` itself cannot be stored as a secret.
+
+## Configuration Source
+
+The typed routes above read and write the configuration as a normalized JSON document, and a typed
+`PUT` renders it again in the format of the file, so comments, formatting and Lua logic are lost. The
+source routes read and write the authored text itself.
+
+`GET /api/v1/config/source[?view=disk|active]` returns:
+
+| Field | Meaning |
+| --- | --- |
+| `text` | `view=disk` (the default): the exact authored text of the configuration file the daemon runs, with inline secrets redacted. `view=active`: the active configuration rendered in the same format; it is not authored text (comments and Lua logic do not exist there) |
+| `authored` | `true` for `view=disk`, `false` for `view=active` |
+| `format` | `kdl`, `lua`, `hocon` or `uci`, from the extension of the file |
+| `diskRevision` | SHA-256 of the exact bytes on disk: the `If-Config-Revision` of a `PUT` |
+| `candidateRevision`, `activeRevision` | Effective revisions of the file as it would load, and of the running configuration; `candidateRevision` is `null` when the file no longer validates |
+| `valid`, `diagnostics` | Whether the file on disk resolves, and why not. The text is returned even when it is invalid, so it can be repaired |
+| `redaction` | `{ policy, redacted, withheld }`: the policy name, how many secrets were replaced, and whether the text was withheld |
+| `configWritable`, `writeBlock` | Whether the process can replace the file, and when it cannot, `read_only_filesystem`, `permission_denied` or `unavailable` |
+
+`POST /api/v1/config/source/validate` takes `{ "text": "...", "format": "kdl" }` and resolves the text
+exactly as the file is resolved at startup and on reload (`config check`: parse, template and native
+expansion, typed validation, runtime preparation), without touching disk. `format` defaults to the
+format of the file; `kdl`, `lua`, `hocon`, `uci` and `json` are accepted, `json` is HOCON, which is a
+superset of it. Native references inside the text resolve against the directory of the configuration
+file. A valid text answers `200` with `valid`, `format`, `matchesDiskFormat`, `candidateRevision`,
+`compositional`, `dependencyCount`, `diagnostics`, `restartRequired`, `restartReasons`, `topology`,
+`configWritable` and `writeBlock`. An invalid text answers `422` with `diagnostics`: each has `code`,
+`severity`, `stage`, `message` and, when the parser reports one, `path`, `detail` and `line` (KDL, HOCON
+and UCI syntax errors carry a one-based line; there is no column).
+
+`PUT /api/v1/config/source` takes the same body and requires one `If-Config-Revision` header (`428`
+without it, `409` for a stale revision, `400` for a malformed one). It validates exactly like the validate
+route, requires the text to be in the format of the file (`422` `E_FORMAT_MISMATCH` otherwise: convert it
+first, for example with `oxiroute config compose --format kdl FILE`), and stores the authored bytes
+unchanged through the same write path as the typed `PUT` (a `0600` temporary file in the same directory,
+`fsync`, an exclusive `flock`, `RENAME_EXCHANGE` against the expected revision, directory `fsync`). A
+configuration with templates or native references can be saved this way, which the typed `PUT`
+refuses. The replaced file's permission bits are kept, and so is its owner and group where the process
+may set them; a process that cannot change ownership keeps its own. The response has the typed `PUT` body
+with `written`: `false` when the text equals the stored bytes, in which case nothing is replaced.
+
+Inline secrets are redacted in `GET /config/source` and restored on `PUT` and validate, with the same
+semantics as the typed routes:
+
+- An RTMP token secret is replaced, wherever its exact text occurs, by `<redacted:POINTER>` where
+  `POINTER` names the setting that holds it (`/rtmp_services/live/applications/app/publish/token/secret`).
+- A callback URL that carries userinfo or query values is replaced by its typed redacted form
+  (`https://<redacted>@host/path?key=<redacted>`).
+- A placeholder in a submitted text is replaced by the stored value of that setting before validation and
+  before the text is stored. A placeholder that matches no stored secret answers `422`
+  `redacted_secret_unresolved`; a secret changes by sending its new literal value.
+- Secrets are known from the file on disk and from the active configuration, so a file that no longer
+  validates is still redacted. Redaction is by exact match of the value in the text: a secret the text
+  computes (Lua) or reads from another file never appears in it, and a secret shorter than 8 bytes or
+  containing `"` or `\` cannot be matched reliably, so the whole text is withheld
+  (`redaction.withheld: true`, `text: null`) instead of being returned partly redacted.
+
+A save is an audited `configuration_reload` operation like the typed one. The daemon then activates the
+saved file through its reconcile path, so the `outcome` is `saved_pending_activation` until the active
+revision equals `candidateRevision`.
+
+### Writability
+
+`GET /api/v1/status` carries `configWritable`. It is `false` when the process cannot create files in the
+directory of the configuration file: a read-only mount, as under the packaged systemd unit
+(`ProtectSystem=strict` with `ReadWritePaths=/var/lib/oxiroute` only), or a directory its user may not
+write. A save in that state fails with `500` `write_failed` and a diagnostic `E_CONFIG_READ_ONLY` or
+`E_CONFIG_NOT_WRITABLE` that names the cause. The fix is a systemd drop-in with `ReadWritePaths=/etc/oxiroute`
+plus a directory the service group may write (see the packaging README), or editing the file on the
+host: the daemon reloads it either way.
 
 ## Response Rules
 
