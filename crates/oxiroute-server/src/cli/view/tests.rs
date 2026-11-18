@@ -178,6 +178,31 @@ fn status_leads_with_build_state_and_revision_then_lists_listeners() {
 }
 
 #[test]
+fn a_required_restart_is_the_first_row_of_status_and_generation_status() {
+    let restart = json!({ "required": true, "candidateRevision": "b".repeat(64), "since": 1,
+        "reasons": [
+            { "code": "unix_listener_mode", "path": "/config/listeners/live/bind/mode", "summary": "kept 0600" },
+            { "code": "registry_settings", "path": "/config/registry", "summary": "kept" },
+        ] });
+    let banner = "RESTART REQUIRED: unix_listener_mode: kept 0600 (+1 more)";
+    let generation =
+        json!({ "generation": { "buildVersion": "7.1.0", "restartRequired": restart } });
+    let status = json!({ "buildVersion": "7.1.0", "restartRequired": restart, "listeners": [] });
+
+    for (view, value) in [(View::Generation, &generation), (View::Status, &status)] {
+        assert!(
+            table(view, value).starts_with(&format!("restart required  {banner}\nbuild")),
+            "{}",
+            table(view, value)
+        );
+        assert!(plain(view, value).contains(&format!("restart_required=\"{banner}\"")));
+    }
+    let quiet =
+        json!({ "generation": { "restartRequired": { "required": false, "reasons": [] } } });
+    assert!(!table(View::Generation, &quiet).contains("restart"));
+}
+
+#[test]
 fn events_print_utc_times_and_point_at_the_next_page() {
     let value = json!({ "cursor": 7, "hasMore": true, "events": [{
         "cursor": 6, "timestampUnixMs": 1_795_018_962_349_u64, "event": "generation_activate", "outcome": "activated",

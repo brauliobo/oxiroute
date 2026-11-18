@@ -238,6 +238,10 @@ overlap. Process drain state and process uptime are also process-owned and do no
 supervisor's generation id), `activeRevision`, and `previousRevision` (the last good revision that
 the live one replaced; informational in supervised mode, where `generation rollback` is unavailable).
 
+`generation status` and `status` report `restartRequired` (`required`, `candidateRevision`, `since`,
+`reasons`) and print a first `RESTART REQUIRED: <code>: <summary>` row (`restart_required` in plain
+output, with `(+N more)` for further reasons) while a setting waits for a restart.
+
 `generation status` reports `lastRejection` (`atUnixMs`, `revision`, `diagnostics`) and
 `configRejections` when the configuration file on disk was refused while the previous generation
 kept serving. `lastRejection` is cleared by the next file that is accepted, `degraded` is true while

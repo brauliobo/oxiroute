@@ -788,6 +788,11 @@ fn render_prometheus_snapshot(
             1,
         )?;
     }
+    sample(
+        &mut output,
+        "oxiroute_restart_required",
+        u8::from(generation.restart_required.required),
+    )?;
     let active = generations.active();
     render_connection_scheduling(
         &mut output,

@@ -470,6 +470,7 @@ of the events API reports it with the event name `unknown`; read it from `/api/v
 | `oxiroute_server_bytes_sent_total`, `oxiroute_server_bytes_received_total` | `pool`, `server` | bytes towards and from the backend |
 | `oxiroute_server_max_connections` | `pool`, `server` | effective connection limit |
 | `oxiroute_generation_info` | `generation`, `revision` | value 1 for the serving generation |
+| `oxiroute_restart_required` | none | 1 while the file holds a setting that only a restart applies, 0 otherwise; the reasons are in `restartRequired` of `generation status` |
 | `oxiroute_connection_scheduling_info` | `mode`, `age_ms` (only with `aged_per_worker`) | value 1: how the listener workers order ready connections (`connection_scheduling`; `mode` is the one in force, so `auto` reports `aged_per_worker` or `work_stealing`) |
 | `oxiroute_aged_queue_tasks`, `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_age_seconds`, `oxiroute_aged_queue_polls_total`, `oxiroute_aged_queue_aged_polls_total` | none | only with `aged_per_worker`: connections owned by the worker queues, connections ready now, how long the oldest has waited, the age in force (the largest over the workers), polls served, and polls that served the oldest because it had waited that age; `age_ms` is `adaptive` unless `connection_age_ms` is set |
 | `oxiroute_worker_scaling_info` | `mode` (`static` or `dynamic`) | value 1: `worker_scaling` of the serving generation |
@@ -633,7 +634,9 @@ apply` list the same reasons as `restartReasons` and as `I_RESTART_REQUIRED` dia
 `path` and `summary`. The file watcher, `SIGHUP` and `generation reload` all log it once, at warning
 level on target `oxiroute::config`. A waiting setting is not a failure: nothing is quarantined, the
 generation is not `degraded`, `/ready` is unaffected, and `oxiroute check` reports a warning until the
-restart.
+restart. The table output of `oxiroute status` and `oxiroute generation status` starts with a
+`RESTART REQUIRED: <code>: <summary>` row (`restart_required` in plain output), and the gauge
+`oxiroute_restart_required` is 1 while the report is required.
 
 ### Server registration
 

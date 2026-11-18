@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use super::{
+    generation::with_restart_banner,
     listeners,
     read::{flag, items, number, text},
 };
@@ -18,7 +19,7 @@ pub(super) fn show(value: &Value) -> Document {
     let supervision = value
         .pointer("/capabilities/supervision/mode")
         .and_then(Value::as_str);
-    let fields = vec![
+    let mut fields = vec![
         Field::text("build", text(value, "buildVersion")),
         Field::text("state", overall),
         Field::revision("active", text(value, "activeRevision")),
@@ -32,6 +33,7 @@ pub(super) fn show(value: &Value) -> Document {
         Field::text("generation", component("generation")),
         Field::text("audit", component("audit")),
     ];
+    with_restart_banner(&mut fields, value);
     Document::new(vec![
         Block::Record {
             name: "status".into(),

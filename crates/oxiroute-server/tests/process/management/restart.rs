@@ -159,6 +159,16 @@ impl Daemon {
         }
     }
 
+    async fn restart_gauge(&self) -> String {
+        let metrics = http_request(self.management, "GET", "/metrics", &[], &[]).await;
+        metrics
+            .text()
+            .lines()
+            .find(|line| line.starts_with("oxiroute_restart_required "))
+            .expect("restart gauge")
+            .to_owned()
+    }
+
     async fn max_connections(&self) -> u64 {
         let listeners = self.get("/api/v1/listeners").await;
         listeners["listeners"][0]["maxConnections"]
@@ -227,6 +237,7 @@ async fn one_reason_on_every_surface(supervised: bool) {
         restart
     );
     assert_eq!(daemon.socket_mode(), 0o600);
+    assert_eq!(daemon.restart_gauge().await, "oxiroute_restart_required 1");
 
     let reload = daemon
         .request(
@@ -276,6 +287,7 @@ async fn one_reason_on_every_surface(supervised: bool) {
     assert_eq!(cleared["restartRequired"]["reasons"], json!([]));
     assert_eq!(cleared["restartRequired"]["candidateRevision"], Value::Null);
     assert_eq!(cleared["activeRevision"], applied);
+    assert_eq!(daemon.restart_gauge().await, "oxiroute_restart_required 0");
 
     let log = daemon.server.shutdown_output();
     assert!(log.contains("only a restart applies"), "{log}");

@@ -11,7 +11,7 @@ pub(super) fn status(value: &Value) -> Document {
 }
 
 pub(super) fn fields(generation: &Value) -> Record {
-    vec![
+    let mut fields = vec![
         Field::text("build", text(generation, "buildVersion")),
         Field::count("generation", number(generation, "generation")),
         Field::revision("active", text(generation, "activeRevision")),
@@ -33,7 +33,33 @@ pub(super) fn fields(generation: &Value) -> Record {
             "retired",
             u64::try_from(items(generation, "retiredGenerations").len()).ok(),
         ),
-    ]
+    ];
+    with_restart_banner(&mut fields, generation);
+    fields
+}
+
+/// Puts the banner of a daemon that holds settings back until a restart first: the first reason and
+/// how many more.
+pub(super) fn with_restart_banner(fields: &mut Record, generation: &Value) {
+    let Some(restart) = generation
+        .get("restartRequired")
+        .filter(|restart| restart.get("required").and_then(Value::as_bool) == Some(true))
+    else {
+        return;
+    };
+    let reasons = items(restart, "reasons");
+    let Some(first) = reasons.first() else {
+        return;
+    };
+    let mut banner = format!(
+        "RESTART REQUIRED: {}: {}",
+        text(first, "code").unwrap_or("restart"),
+        text(first, "summary").unwrap_or_default(),
+    );
+    if reasons.len() > 1 {
+        let _ = write!(banner, " (+{} more)", reasons.len() - 1);
+    }
+    fields.insert(0, Field::text("restart_required", Some(&banner)));
 }
 
 pub(super) fn rejection(generation: &Value) -> Option<String> {
