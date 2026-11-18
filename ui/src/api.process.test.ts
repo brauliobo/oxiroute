@@ -314,6 +314,7 @@ describe('production API client against the built management process', () => {
     const validation = await validateConfig(snapshot.config, token)
     expect(validation.normalizedConfig).toEqual(snapshot.config)
     expect(validation.restartRequired).toBe(false)
+    expect(validation.restartReasons).toEqual([])
     expect(validation.configFormat).toBe('lua')
     expect(validation.compositional).toBe(false)
     expect(validation.dependencyCount).toBe(0)
@@ -342,6 +343,7 @@ describe('production API client against the built management process', () => {
       outcome: 'unchanged_active',
       activationState: 'active',
       restartRequired: false,
+      restartReasons: [],
       diagnostics: [],
     })
     expect(saved.diskRevision).not.toBe(snapshot.diskRevision)

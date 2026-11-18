@@ -65,6 +65,7 @@ describe('ConfigurationWorkspace', () => {
         outcome: 'saved_pending_activation',
         activationState: 'pending',
         restartRequired: false,
+        restartReasons: [],
         diagnostics: [],
       })
     }, 200, snapshot)
@@ -134,6 +135,7 @@ describe('ConfigurationWorkspace', () => {
         outcome: 'saved_pending_activation',
         activationState: 'pending',
         restartRequired: false,
+        restartReasons: [],
         diagnostics: [],
       })
     }, 200, imported)

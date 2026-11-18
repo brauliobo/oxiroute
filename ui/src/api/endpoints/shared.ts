@@ -1,5 +1,5 @@
-import type { ConfigDiagnostic } from '../../config'
-import { isConfigDiagnostic } from '../../config'
+import type { ConfigDiagnostic, StartupOnlyChange } from '../../config'
+import { isConfigDiagnostic, isStartupOnlyChange } from '../../config'
 import { isRecord, safeInteger } from '../../valueGuards'
 
 export function isCountMap(value: unknown): value is Record<string, number> {
@@ -16,6 +16,10 @@ export function authorizationHeader(token: string): Record<string, string> {
 
 export function diagnostics(value: unknown): value is ConfigDiagnostic[] {
   return Array.isArray(value) && value.every(isConfigDiagnostic)
+}
+
+export function restartReasons(value: unknown): value is StartupOnlyChange[] {
+  return Array.isArray(value) && value.every(isStartupOnlyChange)
 }
 
 export function invalidPayload(source: string): never {

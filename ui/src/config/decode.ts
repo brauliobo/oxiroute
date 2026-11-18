@@ -145,6 +145,7 @@ import type {
   ConfigFormat,
   ConfigSnapshot,
   ConfigSaveOutcome,
+  StartupOnlyChange,
   ConfigActivationState,
   ConfigSaveResponse,
   ConfigRequest,
@@ -166,6 +167,11 @@ export function isCanonicalConfig(value: unknown): value is CanonicalConfig {
     !arrayOf(value.l4_services, isL4Service)
   ) return false
   return true
+}
+
+export function isStartupOnlyChange(value: unknown): value is StartupOnlyChange {
+  return isRecord(value) && typeof value.code === 'string' && typeof value.path === 'string' &&
+    typeof value.summary === 'string'
 }
 
 export function isConfigDiagnostic(value: unknown): value is ConfigDiagnostic {

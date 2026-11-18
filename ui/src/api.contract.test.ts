@@ -95,6 +95,7 @@ describe('API contracts over HTTP', () => {
         sourcePath: '/native/private/config-root',
         diagnostics: [],
         restartRequired: false,
+        restartReasons: [],
         topology: {
           schemaVersion: 1,
           state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },
@@ -501,6 +502,7 @@ function route(request: IncomingMessage, response: ServerResponse): void {
       configPreview: snapshot.configPreview,
       diagnostics: [],
       restartRequired: false,
+      restartReasons: [],
       topology: {
         schemaVersion: 1,
         state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },

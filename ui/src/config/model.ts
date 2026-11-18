@@ -885,6 +885,12 @@ export interface ConfigSnapshot {
 export type ConfigSaveOutcome = 'saved_pending_activation' | 'saved_restart_required' | 'unchanged_active'
 export type ConfigActivationState = 'pending' | 'restart_required' | 'active'
 
+export interface StartupOnlyChange {
+  code: string
+  path: string
+  summary: string
+}
+
 export interface ConfigSaveResponse {
   diskRevision: string
   candidateRevision: string
@@ -892,6 +898,7 @@ export interface ConfigSaveResponse {
   outcome: ConfigSaveOutcome
   activationState: ConfigActivationState
   restartRequired: boolean
+  restartReasons: StartupOnlyChange[]
   diagnostics: ConfigDiagnostic[]
 }
 

@@ -3,13 +3,18 @@ import { afterEach, vi } from 'vitest'
 
 import ConfigurationWorkspace from '../ConfigurationWorkspace.vue'
 import type { ConfigValidationResponse } from '../api'
-import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot } from '../config'
+import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot, StartupOnlyChange } from '../config'
 import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from '../configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './contractFixtures'
 
 export const diskRevision = 'disk-111111111111111111111111111111111111111111111111111111111111'
 export const activeRevision = 'active-000000000000000000000000000000000000000000000000000000000'
 export const bearerToken = 'test-only-config-token'
+export const restartReason: StartupOnlyChange = {
+  code: 'listener_ipv6_only',
+  path: '/config/listeners/public',
+  summary: 'the listener ipv6_only setting changes only on restart',
+}
 
 export function canonicalConfig(): CanonicalConfig {
   const expanded = contractConfigSnapshot().config
@@ -303,6 +308,7 @@ export function validationResponse(config: CanonicalConfig, diagnostics: ConfigD
     configPreview: `version ${config.version}\n`,
     diagnostics,
     restartRequired: false,
+    restartReasons: [],
     topology: {
       schemaVersion: 1,
       state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1_750_000_000_000 },
@@ -368,6 +374,7 @@ export function installConfigFetch(
         : jsonResponse({
             ...validationResponse(body.config),
             restartRequired: validationRestartRequired,
+            restartReasons: validationRestartRequired ? [restartReason] : [],
             diagnostics: validationDiagnostics,
           })
     }
@@ -381,6 +388,7 @@ export function installConfigFetch(
         outcome: 'saved_pending_activation',
         activationState: 'pending',
         restartRequired: false,
+        restartReasons: [],
         diagnostics: [{
           code: 'I_ACTIVATION_PENDING',
           severity: 'warning',

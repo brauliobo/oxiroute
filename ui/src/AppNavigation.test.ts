@@ -79,6 +79,7 @@ describe('application navigation', () => {
           configPreview: "config 'json' 'root'\n",
           diagnostics: [diagnostic],
           restartRequired: false,
+          restartReasons: [],
           topology: {
             schemaVersion: 1,
             state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },

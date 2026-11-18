@@ -5,11 +5,12 @@ import type {
   ConfigRequest,
   ConfigSaveResponse,
   ConfigSnapshot,
+  StartupOnlyChange,
 } from '../../config'
 import { isCanonicalConfig } from '../../config'
 import { isRecord, safeInteger } from '../../valueGuards'
 import { request } from '../transport'
-import { authorizationHeader, diagnostics, invalidPayload } from './shared'
+import { authorizationHeader, diagnostics, invalidPayload, restartReasons } from './shared'
 import { candidateTopology } from './topology/decode'
 import type { CandidateTopologySnapshot } from './topology/types'
 
@@ -23,6 +24,7 @@ export interface ConfigValidationResponse {
   luaPreview?: string
   diagnostics: ConfigDiagnostic[]
   restartRequired: boolean
+  restartReasons: StartupOnlyChange[]
   topology: CandidateTopologySnapshot
 }
 
@@ -93,7 +95,7 @@ function parseValidation(value: unknown): ConfigValidationResponse {
   if (!isRecord(value) || typeof value.candidateRevision !== 'string' ||
     !isCanonicalConfig(value.normalizedConfig) || !configurationSource(value) ||
     !diagnostics(value.diagnostics) || typeof value.restartRequired !== 'boolean' ||
-    !candidateTopology(value.topology)
+    !restartReasons(value.restartReasons) || !candidateTopology(value.topology)
   ) return invalidPayload('configuration validation')
   return {
     candidateRevision: value.candidateRevision,
@@ -105,6 +107,7 @@ function parseValidation(value: unknown): ConfigValidationResponse {
     ...(value.luaPreview === undefined ? {} : { luaPreview: value.luaPreview }),
     diagnostics: value.diagnostics,
     restartRequired: value.restartRequired,
+    restartReasons: value.restartReasons,
     topology: value.topology,
   }
 }
@@ -113,14 +116,16 @@ function parseSave(value: unknown): ConfigSaveResponse {
   if (!isRecord(value) || typeof value.diskRevision !== 'string' ||
     typeof value.candidateRevision !== 'string' ||
     !(value.activeRevision === null || typeof value.activeRevision === 'string') ||
-    !diagnostics(value.diagnostics)
+    !diagnostics(value.diagnostics) || !restartReasons(value.restartReasons)
   ) return invalidPayload('configuration save')
+  const settled = value.restartRequired === false && value.restartReasons.length === 0
   const pending = value.outcome === 'saved_pending_activation' &&
-    value.activationState === 'pending' && value.restartRequired === false
+    value.activationState === 'pending' && settled
   const unchanged = value.outcome === 'unchanged_active' &&
-    value.activationState === 'active' && value.restartRequired === false
+    value.activationState === 'active' && settled
   const restart = value.outcome === 'saved_restart_required' &&
-    value.activationState === 'restart_required' && value.restartRequired === true
+    value.activationState === 'restart_required' && value.restartRequired === true &&
+    value.restartReasons.length > 0
   if (!pending && !unchanged && !restart) return invalidPayload('configuration save')
   return value as unknown as ConfigSaveResponse
 }

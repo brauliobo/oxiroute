@@ -15,6 +15,7 @@ import {
   installConfigFetch,
   invalidDiagnostic,
   mountUnlocked,
+  restartReason,
   validationResponse,
 } from './test/configurationWorkspace'
 
@@ -87,6 +88,7 @@ describe('ConfigurationWorkspace', () => {
       outcome: 'unchanged_active',
       activationState: 'active',
       restartRequired: false,
+      restartReasons: [],
       diagnostics: [],
     }))
     const wrapper = await mountUnlocked()
@@ -111,6 +113,7 @@ describe('ConfigurationWorkspace', () => {
       outcome: 'saved_restart_required',
       activationState: 'restart_required',
       restartRequired: true,
+      restartReasons: [restartReason],
       diagnostics: [{
         code: 'I_RESTART_REQUIRED',
         severity: 'warning',
@@ -153,6 +156,7 @@ describe('ConfigurationWorkspace', () => {
       outcome: 'saved_pending_activation',
       activationState: 'pending',
       restartRequired: false,
+      restartReasons: [],
       diagnostics: [listenerChanges, {
         code: 'I_ACTIVATION_PENDING',
         severity: 'warning',
@@ -184,6 +188,7 @@ describe('ConfigurationWorkspace', () => {
       outcome: 'saved_restart_required',
       activationState: 'restart_required',
       restartRequired: true,
+      restartReasons: [restartReason],
       diagnostics: [{
         code: 'I_RESTART_REQUIRED',
         severity: 'warning',
