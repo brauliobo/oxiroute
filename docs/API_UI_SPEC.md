@@ -186,11 +186,11 @@ daemon preparation reacquires and retains each resource and can still fail if it
 
 `PUT /api/v1/config` requires the same body plus `If-Config-Revision`. It performs the same complete
 preflight before opening the write transaction. Restart classification is the same in both runtime
-modes: only an active same-path Unix-listener mode change is restart-required, and it is classified
-without attempting to rebind the active path. Added, removed and moved listeners (including
+modes: only settings no reload applies (`ipv6_only` of a kept address, the direct runtime's `registry` block) are restart-required, and they are classified
+without attempting to rebind the active socket. Added, removed and moved listeners (including
 control listeners) are reloadable in direct and supervised mode alike. Validation and save add an
 `I_LISTENER_CHANGES` diagnostic when a candidate adds or removes a bound address, and the complete
-runtime plan is validated either way; a candidate that also changes a Unix listener mode remains
+runtime plan is validated either way; a candidate that also changes `ipv6_only` of a kept address remains
 restart-required. A `422`
 preflight failure cannot mutate the canonical file. The
 save then re-reads and compares the authoritative disk bytes, writes mode
@@ -219,14 +219,16 @@ three exact outcomes:
   `restartRequired` is `false` while the watcher starts the prepared generation.
 - `unchanged_active`: the candidate revision equals the active generation, `activationState` is `active`, and
   `restartRequired` is `false`.
-- `saved_restart_required`: a valid durable candidate requires a process restart because it changed
-  the mode of an active Unix listener. `activationState` is `restart_required`, and
-  `restartRequired` is `true`. The active generation remains unchanged until a process restart
-  applies the complete saved candidate.
+- `saved_restart_required`: a valid durable candidate contains settings that only a process restart
+  applies (`ipv6_only` of a kept address, the direct runtime's
+  `registry` block, a configuration only the direct runtime can run). `activationState` is
+  `restart_required`, and `restartRequired` is `true`. The running process keeps the old value of
+  those settings only and applies the rest of the candidate; `restartReasons` lists them.
 
-The warning remains schema-v1 `I_RESTART_REQUIRED` with path `/config/listeners` and the shipped
-Unix-specific message; the supervised topology message of earlier releases is no longer produced.
-UI lifecycle messaging displays this backend diagnostic rather than inferring a Unix cause.
+Each waiting setting is one schema-v1 `I_RESTART_REQUIRED` warning whose `path` and `message` are the
+`path` and `summary` of the matching `restartReasons` entry (`code`, `path`, `summary`), which
+`generation status`, `status`, `/api/v1/generations` and the `generation reload` response report
+unchanged as `restartRequired.reasons`. UI lifecycle messaging displays the backend diagnostic.
 
 A candidate that adds or removes listeners also carries an `I_LISTENER_CHANGES` diagnostic (schema
 v1, severity `warning`, stage `activation`, path `/config/listeners`). Its `message` describes the
@@ -239,7 +241,8 @@ There is no `202` API response. For a changed save, the canonical configuration 
 replacement, prepares a candidate, and the generation supervisor publishes it only after the new
 runtime reports ready. The `200 saved_pending_activation` response does not claim that publication
 has already completed; clients observe `activeRevision` or generation status for completion.
-`saved_restart_required` is deliberately not queued for live publication.
+A `saved_restart_required` candidate is applied minus its waiting settings, so `activeRevision` then
+differs from the file's `candidateRevision` until the restart.
 
 Configuration request failures use these statuses:
 

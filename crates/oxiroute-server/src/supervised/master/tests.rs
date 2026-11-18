@@ -299,6 +299,7 @@ fn launch_catalog() -> (MasterRunner, GenerationCatalog) {
             revision,
             instance_id,
             identity,
+            &[],
         )
         .expect("active launch document");
     (runner, SupervisedGenerationCatalog::new(active))
@@ -323,6 +324,7 @@ fn add_candidate(
             revision,
             instance_id.clone(),
             identity,
+            &[],
         )
         .expect("candidate launch document");
     catalog
@@ -362,6 +364,7 @@ fn exec_profile_launch_document_requires_cgroup_containment() {
             revision,
             instance_id,
             identity,
+            &[],
         )
         .expect("exec launch document");
 
@@ -624,7 +627,12 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
     let revision = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
     let (_, identity) = worker_identity(InstanceToken([0xcd; 16])).expect("identity");
     let command = runner
-        .build_worker_command(Path::new("/etc/oxiroute/oxiroute.kdl"), &revision, identity)
+        .build_worker_command(
+            Path::new("/etc/oxiroute/oxiroute.kdl"),
+            &revision,
+            identity,
+            &[],
+        )
         .expect("worker command");
     let debug = format!("{command:?}");
 
@@ -641,6 +649,7 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
             Path::new("/etc/oxiroute/oxiroute.kdl"),
             &revision,
             identity,
+            &[],
             |key| match key {
                 "OXIROUTE_MANAGEMENT_TOKEN_FILE" => {
                     Some(OsString::from("/etc/oxiroute/management.token"))

@@ -392,17 +392,6 @@ impl GenerationActionResponse {
         }
     }
 
-    pub(crate) fn restart_required(
-        candidate_revision: &EffectiveRevision,
-        restart_required: RestartRequired,
-    ) -> Self {
-        Self {
-            outcome: "restart_required",
-            candidate_revision: candidate_revision.as_str().to_owned(),
-            restart_required,
-        }
-    }
-
     pub(crate) fn rollback(
         candidate_revision: &EffectiveRevision,
         restart_required: RestartRequired,

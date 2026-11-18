@@ -16,9 +16,11 @@ use std::{
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, AdmissionClose, Doorbell, ExclusiveStores, GenerationManager,
-    GenerationStatus, ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot,
-    WorkerEventSnapshot, WorkerNotice,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
+    GenerationStatus, ListenerRuntimeState, RuntimeGeneration, ServerAdminState, StartupOnly,
+    TrafficSnapshot, WorkerEventSnapshot, WorkerNotice,
+    config_coordinator::{
+        CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
+    },
     worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
@@ -81,13 +83,22 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
 
     let coordinator = CanonicalConfigCoordinator::new(&metadata.config_path)?;
     let document = match coordinator.load() {
-        ConfigLoadOutcome::Loaded(document) => document,
-        ConfigLoadOutcome::Rejected(rejection) => {
+        ConfigLoadOutcome::Loaded(document) => {
+            document.keeping(&metadata.kept).map_err(|rejection| {
+                ConfigRejection::new(rejection.disk_revision.as_ref(), &rejection.diagnostics)
+                    .message()
+            })
+        }
+        ConfigLoadOutcome::Rejected(rejection) => Err(rejection.message()),
+    };
+    let document = match document {
+        Ok(document) => Box::new(document),
+        Err(message) => {
             return Err(reject(
                 &mut control,
                 &adoption,
                 REJECT_CONFIG,
-                rejection.message().into(),
+                message.into(),
             ));
         }
     };
@@ -474,6 +485,7 @@ fn parse_identity(
 struct RuntimeMetadata {
     config_path: PathBuf,
     revision: EffectiveRevision,
+    kept: Vec<StartupOnly>,
 }
 
 impl RuntimeMetadata {
@@ -485,12 +497,18 @@ impl RuntimeMetadata {
         }
         let revision =
             parse_ascii(arguments.next(), "revision", 64)?.parse::<EffectiveRevision>()?;
+        let kept = arguments
+            .next()
+            .map(|kept| serde_json::from_slice(kept.as_bytes()))
+            .transpose()?
+            .unwrap_or_default();
         if arguments.next().is_some() {
             return Err("trailing worker metadata".into());
         }
         Ok(Self {
             config_path: PathBuf::from(config_path),
             revision,
+            kept,
         })
     }
 }

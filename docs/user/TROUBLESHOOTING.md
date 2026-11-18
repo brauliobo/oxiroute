@@ -29,7 +29,7 @@ oxiroute --output json topology
 | A drained server takes traffic again | `server list`, `generation status` (`generation`, `activeRevision`) | Administrative state follows pool and server name; a server renamed in the file is a new server and starts ready, and a restart resets it |
 | Configuration save returns `409` | Disk and active revisions | Another writer changed the authoritative file; reconcile instead of overwriting |
 | Configuration save returns `422` | `path` and `detail` of each diagnostic (the failing setting and rule), compositional flag | Draft or runtime preflight failed, or a compositional root cannot be flattened |
-| Configuration save says restart required | Runtime mode and `/config/listeners` diagnostic | A Unix listener kept its path but changed its filesystem mode; the new socket would need the path the running one owns, so only a process restart applies it. Other listener changes reload live |
+| Configuration save says restart required | Runtime mode and `/config/listeners` diagnostic | A kept TCP address changed `ipv6_only`, or the direct runtime's `registry` block changed; only a process restart applies it. Other listener changes, a Unix socket mode included, reload live |
 | The daemon exited and `status` is refused after a worker was killed | `journalctl -u oxiroute` for `supervised active worker lost` and `exited:` | The supervising master fails closed when its serving worker dies and exits non-zero; the service manager restarts it (`Restart=on-failure` in the packaged unit). See the [runbook](RUNBOOK.md#outage-playbook) |
 | Manual recorder button is disabled | Publisher, recorder phase, capability, observed codec | The requested operation is not safe or supported for this stream |
 | Import produces a report but no preview | Blocking diagnostic or deployment requirement | The source contains behavior that cannot be represented safely |
@@ -74,14 +74,16 @@ outside OxiRoute before cutover.
 ## Restart-Required Configuration
 
 A restart-required validation or save is not a failed write. Read the `I_RESTART_REQUIRED` diagnostic
-for the specific cause. Changing the filesystem mode of an active Unix listener at the same path
-requires a process restart in either runtime. Adding, removing or moving listeners, and changing the
+for the specific cause: the diagnostic names the setting and says which value the running process
+keeps. `ipv6_only` of a
+kept address and the direct runtime's `registry` block wait for a process restart while the rest of
+the file is applied. Adding, removing or moving listeners, and changing the
 protocol, service or TLS profile of a listener, reload live (see "Listener changes on reload" in the
 operations guide).
 
 Validation reports the candidate as restart-required before writing. A successful save reports
-`saved_restart_required`; the canonical file is durable, but the active generation remains unchanged
-until the process restarts.
+`saved_restart_required`; the canonical file is durable and the rest of it is applied, but the
+named setting keeps its running value until the process restarts.
 
 ## A Listener Change Was Not Applied
 

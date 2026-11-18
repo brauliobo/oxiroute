@@ -20,7 +20,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     ConfigEventFilter, ListenerReservations, RemoteRetired, RestartRequired, RuntimeMode,
-    StartupOnlyChange, WorkerNotice,
+    StartupOnly, StartupOnlyChange, WorkerNotice,
     config_coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,

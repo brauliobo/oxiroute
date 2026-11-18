@@ -65,6 +65,7 @@ impl MasterRunner {
             document.effective_revision.clone(),
             instance_id,
             identity,
+            &[],
         )?;
         let catalog = SupervisedGenerationCatalog::new(active);
         let master_config = master_config()?;
@@ -104,10 +105,15 @@ impl MasterRunner {
         config_path: &Path,
         revision: &EffectiveRevision,
         identity: WorkerIdentity,
+        kept: &[StartupOnly],
     ) -> Result<WorkerCommand, Box<dyn Error>> {
-        self.build_worker_command_with_environment(config_path, revision, identity, |key: &str| {
-            std::env::var_os(key)
-        })
+        self.build_worker_command_with_environment(
+            config_path,
+            revision,
+            identity,
+            kept,
+            |key: &str| std::env::var_os(key),
+        )
     }
 
     pub(super) fn build_launch_document(
@@ -117,8 +123,9 @@ impl MasterRunner {
         revision: EffectiveRevision,
         instance_id: InstanceId,
         identity: WorkerIdentity,
+        kept: &[StartupOnly],
     ) -> Result<LaunchDocument, Box<dyn Error>> {
-        let mut command = self.build_worker_command(config_path, &revision, identity)?;
+        let mut command = self.build_worker_command(config_path, &revision, identity, kept)?;
         if contains_rtmp_exec_profiles(&config) {
             command = command.require_cgroup_containment();
         }
@@ -139,6 +146,7 @@ impl MasterRunner {
         config_path: &Path,
         revision: &EffectiveRevision,
         identity: WorkerIdentity,
+        kept: &[StartupOnly],
         environment: impl Fn(&str) -> Option<OsString>,
     ) -> Result<WorkerCommand, Box<dyn Error>> {
         let mut command = WorkerCommand::new(&self.executable_path)?
@@ -147,6 +155,9 @@ impl MasterRunner {
             .arg(encode_token(identity.instance))
             .arg(config_path)
             .arg(revision.to_string());
+        if !kept.is_empty() {
+            command = command.arg(serde_json::to_string(kept)?);
+        }
         for key in [
             "OXIROUTE_MANAGEMENT_TOKEN_FILE",
             "OXIROUTE_AUDIT_DIR",
@@ -288,29 +299,48 @@ impl MasterRunner {
         if let Err(error) = reload.watch_dependencies(&document.dependencies) {
             warn!("supervised master could not watch a configuration dependency: {error}");
         }
-        let revision = document.effective_revision.clone();
-        let file = &document.authored_revision;
-        let startup_only = startup_only_changes(
+        let file = document.authored_revision.clone();
+        let file_revision = document.effective_revision.clone();
+        let kept = startup_only_changes(
             RuntimeMode::Supervised,
             &catalog.active().payload().config,
             &document.validated_config,
         );
-        reports.restart_required(master, &revision, startup_only_reasons(&startup_only));
-        if &revision == catalog.active().revision() {
-            reports.accept(master);
-            return Ok(());
-        }
+        let mut reasons = startup_only_reasons(&kept);
+        let applicable = if kept.is_empty() {
+            Ok(Arc::clone(&document))
+        } else {
+            document.keeping(&kept).map(Arc::new)
+        };
+        let document = match applicable {
+            Ok(applicable) => applicable,
+            Err(rejection) => {
+                reports.reject(
+                    master,
+                    ConfigRejection::new(rejection.disk_revision.as_ref(), &rejection.diagnostics),
+                );
+                return Ok(());
+            }
+        };
+        let revision = document.effective_revision.clone();
         if let Err(error) =
             supervised_eligibility(&document.validated_config, probe_cgroup_v2().status)
         {
-            let message = "the configuration cannot run under the supervising master";
-            reports.reject(
-                master,
-                refusal(file, "E_UNSUPPORTED_CONFIG", message, error.to_string()),
-            );
+            if config_plan(&document.validated_config, true, probe_cgroup_v2().status).is_ok() {
+                reasons.push(StartupOnlyChange::execution_mode(&error.to_string()));
+                reports.restart_required(master, &file_revision, reasons);
+                reports.accept(master);
+            } else {
+                let message = "the configuration cannot run under the supervising master";
+                reports.reject(
+                    master,
+                    refusal(&file, "E_UNSUPPORTED_CONFIG", message, error.to_string()),
+                );
+            }
             return Ok(());
         }
-        if !startup_only.is_empty() {
+        reports.restart_required(master, &file_revision, reasons);
+        if &revision == catalog.active().revision() {
             reports.accept(master);
             return Ok(());
         }
@@ -324,7 +354,7 @@ impl MasterRunner {
                 let message = "the configuration's listeners cannot be bound";
                 reports.reject(
                     master,
-                    refusal(file, "E_LISTENER_BIND", message, error.to_string()),
+                    refusal(&file, "E_LISTENER_BIND", message, error.to_string()),
                 );
                 return Ok(());
             }
@@ -335,7 +365,7 @@ impl MasterRunner {
                 let message = "the configuration's listeners cannot be handed to a worker";
                 reports.reject(
                     master,
-                    refusal(file, "E_LISTENER_EXPORT", message, error.to_string()),
+                    refusal(&file, "E_LISTENER_EXPORT", message, error.to_string()),
                 );
                 return Ok(());
             }
@@ -343,9 +373,10 @@ impl MasterRunner {
         let changes = book.active_manifest.changes(listeners.manifest());
         let manifest = listeners.manifest().clone();
 
-        let candidate = self.begin_candidate(catalog, coordinator, new_config, &revision)?;
+        let candidate =
+            self.begin_candidate(catalog, coordinator, (new_config, &kept), &revision)?;
         book.begin(reservations, manifest, &changes, &revision);
-        reports.candidate_file = Some(file.clone());
+        reports.candidate_file = Some(file);
         reports.accept(master);
         oxiroute_server::apply_log_filter(new_config.as_draft().log_filter.as_deref());
         begin_retirement(master, catalog, reports);
@@ -366,13 +397,13 @@ impl MasterRunner {
         &self,
         catalog: &mut GenerationCatalog,
         coordinator: &CanonicalConfigCoordinator,
-        config: &ValidatedConfig,
+        (config, kept): (&ValidatedConfig, &[StartupOnly]),
         revision: &EffectiveRevision,
     ) -> Result<WorkerInput<WorkerCommand>, Box<dyn Error>> {
         let document = self.next_launch_document(
             catalog,
             coordinator.canonical_path(),
-            config.clone(),
+            (config.clone(), kept),
             revision.clone(),
         )?;
         catalog.begin_candidate(document)?;
@@ -385,13 +416,13 @@ impl MasterRunner {
         &self,
         catalog: &mut GenerationCatalog,
         config_path: &Path,
-        config: ValidatedConfig,
+        (config, kept): (ValidatedConfig, &[StartupOnly]),
         revision: EffectiveRevision,
     ) -> Result<LaunchDocument, Box<dyn Error>> {
         let generation = catalog.allocate_generation()?;
         let token = generate_instance_token()?;
         let (instance_id, identity) = replacement_worker_identity(token, generation)?;
-        self.build_launch_document(config_path, config, revision, instance_id, identity)
+        self.build_launch_document(config_path, config, revision, instance_id, identity, kept)
     }
 }
 

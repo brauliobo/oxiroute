@@ -20,7 +20,6 @@ use crate::{
     },
     config::events::ConfigEventFilter,
     generation::GENERATION_PREPARATION_TIMEOUT,
-    generation::restart::startup_only_reasons,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -285,16 +284,27 @@ fn reconcile_with_preparation_timeout(
             let status = generations.status();
             let disk_revision = document.authored_revision.clone();
             generations.observe_disk_revision(disk_revision.clone());
+            let document = match generations.applicable(&document) {
+                Ok(document) => document,
+                Err(rejection) => {
+                    counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    reject(
+                        generations,
+                        &ConfigRejection::new(
+                            rejection.disk_revision.as_ref(),
+                            &rejection.diagnostics,
+                        ),
+                    );
+                    return Some(dependencies);
+                }
+            };
             let revision = &document.effective_revision;
-            let startup_only = generations.startup_only_changes(&document.validated_config);
-            generations.report_restart_required(revision, startup_only_reasons(&startup_only));
             // A supervised process only adopts sockets: the master applies a listener-set change,
             // so this watcher leaves such a candidate alone there.
-            let restart_required = !startup_only.is_empty()
-                || (mode == RuntimeMode::Supervised
-                    && generations.active().is_some_and(|active| {
-                        active.listener_set_changed(&document.validated_config)
-                    }));
+            let restart_required = mode == RuntimeMode::Supervised
+                && generations
+                    .active()
+                    .is_some_and(|active| active.listener_set_changed(&document.validated_config));
             let quarantined = status.quarantined_revision.as_ref() == Some(revision);
             let preparation = if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)
@@ -303,7 +313,7 @@ fn reconcile_with_preparation_timeout(
             {
                 Some(
                     generations
-                        .prepare_with_deadline(*document, Instant::now() + preparation_timeout),
+                        .prepare_with_deadline(document, Instant::now() + preparation_timeout),
                 )
             } else {
                 None

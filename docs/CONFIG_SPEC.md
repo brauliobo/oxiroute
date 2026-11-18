@@ -497,9 +497,10 @@ Current constraints:
   clients alone, so it can share its port with a separate IPv4 listener (for example `0.0.0.0:80` next to
   `[::]:80` with `ipv6_only = true`, each serving its own service). An `ipv6_only` wildcard does not overlap IPv4
   binds on its port; it still overlaps any other IPv6 bind on that port. Other IPv6 addresses are unchanged.
-  Changing `ipv6_only` on a socket that keeps its address needs a process restart: the flag cannot change on a bound
-  socket, and a second `[::]` socket cannot join the running one because listener sockets are bound exclusively
-  (see [operations](OPERATIONS.md#listener-changes-on-reload)).
+  Changing `ipv6_only` on a socket that keeps its address cannot be applied to the bound socket: the flag cannot
+  change on a bound socket, and a second `[::]` socket cannot join the running one because listener sockets are bound
+  exclusively (see [operations](OPERATIONS.md#listener-changes-on-reload)). The reload keeps the running value,
+  applies the rest of the configuration and reports the setting as waiting for a restart.
 - HTTP, HTTP/3, forward-HTTP/1, forward-HTTP/2, forward-HTTP/3, RTMP, and TCP listeners MUST
   reference an existing same-kind service. An RTMP service MUST contain between 1 and 256 unique
   applications, and one configuration accepts at most 64 RTMP services.
@@ -1386,8 +1387,10 @@ upstream_pools = {
 `registry` is a top-level, process-wide object. Its endpoints serve only the registry routes
 (`/api/v1/registrations`, `/api/v1/pools/{pool}/servers[/{name}[/heartbeat|/state]]`), plus `/ready`
 and [`/status.json`](#status-page) on `read` sockets; every other path is `404`. The management API serves the same routes to the root
-management token. A change to `registry.endpoints` takes effect when the process restarts; a
-supervised worker handover replaces the unix socket atomically and keeps the lease table.
+management token. A change to `registry` (`state_dir`, `tokens_file`, `endpoints`) is applied by a
+supervised reload, which replaces the unix socket atomically and keeps the lease table. The direct
+runtime opens the registry once, so a reload keeps the running `registry` block, applies the rest of
+the configuration and reports `registry_settings` as waiting for a restart.
 
 | `registry` field | Required | Default | Constraint |
 | --- | --- | --- | --- |
@@ -1837,20 +1840,22 @@ restricted Lua, UCI, or HOCON.
   Unix listener mode included. Every listener change (added, removed or moved bind addresses, and
   changed protocol, service, TLS profile or Unix mode) is validated by binding the addresses the
   active generation does not already own and then releasing them, and is reported in an
-  `I_LISTENER_CHANGES` diagnostic. A TCP socket that keeps its address and changes `ipv6_only`
-  returns `restartRequired = true`.
+  `I_LISTENER_CHANGES` diagnostic. A changed `ipv6_only` on a kept address is validated without
+  rebinding the active socket and reported as restart-required, while the rest of the candidate is
+  applied.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
 - A changed save normally returns `saved_pending_activation`; an idempotent save of the active
   generation returns `unchanged_active`. The parent-directory watcher and generation supervisor
   prepare, start, and atomically publish reloadable changed generations in-process, binding added
   listeners before publication and closing removed listeners after their accepted connections drain.
-  A candidate that changes `ipv6_only` of a kept TCP address instead returns
-  `saved_restart_required`, `activationState = "restart_required"`, and `restartRequired = true`;
-  candidate preparation does not mutate or silently reuse the active socket, and the complete
-  candidate is applied on process restart. A candidate that changes the mode of a kept Unix socket
-  applies it in place (`chmod` on the unchanged socket) when the candidate is prepared, and gives
-  the socket its previous mode back when the candidate is turned down.
+  A candidate that contains a setting no reload applies (see "Settings that wait for a restart" in the operations guide)
+  returns `saved_restart_required`, `activationState = "restart_required"`, and
+  `restartRequired = true`, with the settings in `restartReasons`. The running process keeps the old
+  value of those settings only; the rest of the candidate is applied as for any other save. A candidate
+  that changes the mode of a kept Unix socket applies it in place (`chmod` on the unchanged socket)
+  when the candidate is prepared, and gives the socket its previous mode back when the candidate is
+  turned down.
 - The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
   files plus include/glob parent directories, rebuilds that set after each successful resolution, and
   periodically re-resolves the root and native references. Invalid edits are rejected while the last

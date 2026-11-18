@@ -608,6 +608,33 @@ and re-protocoling traffic, management, statistics, statistics-page, UDP, and HT
 changing a listener's TLS profile. Since 0.5.3 a supervised reload no longer retains the old
 revision for a listener change.
 
+### Settings that wait for a restart
+
+A reload applies the whole file except for the settings no reload of the running runtime can change.
+Those settings keep the value the process runs with, the rest of the file is applied as a new
+generation, and the process reports each waiting setting as one entry with a stable `code`, the `path`
+of the setting and a one-line `summary`:
+
+| `code` | `path` | Runtime | Why it waits |
+| --- | --- | --- | --- |
+| `listener_ipv6_only` | `/config/listeners/<name>/bind/ipv6_only` | both | `IPV6_V6ONLY` is fixed once the socket is bound |
+| `registry_settings` | `/config/registry` | direct | the direct runtime opens the registry once |
+| `execution_mode` | `/config` | supervised | the configuration needs the direct runtime (more than 64 listener descriptors) and is not applied at all |
+
+The applied generation's revision is the revision of the file with those settings left as they run, so
+`activeRevision` differs from the file's `candidateRevision` while a restart is required; editing the
+setting back to its running value makes them equal again and clears the report. A restart applies the
+file completely.
+
+The report has the same shape everywhere (`restartRequired`: `required`, `candidateRevision` of the
+file, `since` in Unix milliseconds, and `reasons`). `generation status`, `GET /api/v1/status`,
+`GET /api/v1/generations` and the `generation reload` response carry it; `config validate` and `config
+apply` list the same reasons as `restartReasons` and as `I_RESTART_REQUIRED` diagnostics with the same
+`path` and `summary`. The file watcher, `SIGHUP` and `generation reload` all log it once, at warning
+level on target `oxiroute::config`. A waiting setting is not a failure: nothing is quarantined, the
+generation is not `degraded`, `/ready` is unaffected, and `oxiroute check` reports a warning until the
+restart.
+
 ### Server registration
 
 Pools with `registration` take servers at runtime. The registry keeps them in
@@ -691,9 +718,10 @@ socket beside the running one. Linux refuses that unless every socket on the por
 address fails loudly. Even when both sockets share the port, the kernel keeps handing every new
 connection to the older socket until it is shut down, and shutting a listening socket down resets
 the connections still waiting in its accept queue; the direct runtime has no point at which it
-could close the old socket while its generation drains. The change therefore stays startup-only:
-the configuration API reports it as `restartRequired`, and nothing else in that candidate is
-applied until the service restarts. To change the family of a port without a restart, add a new
+could close the old socket while its generation drains. The change therefore stays startup-only,
+but it does not hold the rest of the candidate back: the reload keeps the running `ipv6_only`,
+applies every other change, and `restartRequired` lists the setting (`listener_ipv6_only`, see
+"Settings that wait for a restart"). To change the family of a port without a restart, add a new
 listener on another address first. `ListenerReservations::pending_startup_listener_changes` lists
 these changes (listener name, bind, code `listener_ipv6_only`) for the reload reason model.
 

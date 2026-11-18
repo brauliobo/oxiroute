@@ -326,13 +326,6 @@ impl ManagementState {
                     self.lifecycle.status().restart_required,
                 ),
             ),
-            Ok(LifecycleOutcome::RestartRequired(candidate_revision)) => dto_response(
-                200,
-                &GenerationActionResponse::restart_required(
-                    &candidate_revision,
-                    self.lifecycle.status().restart_required,
-                ),
-            ),
             Err(LifecycleError::ConfigRejected {
                 rejection,
                 active_revision,

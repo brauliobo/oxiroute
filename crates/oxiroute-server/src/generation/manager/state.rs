@@ -66,6 +66,23 @@ impl GenerationManager {
         changed
     }
 
+    /// The document this process applies for the file `document`: the file with the settings of the
+    /// active generation that no reload changes left as they are.
+    ///
+    /// Reports what stays unapplied, or that nothing does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejection when the configuration with those settings kept is not valid.
+    pub fn applicable(
+        &self,
+        document: &ResolvedConfigDocument,
+    ) -> Result<ResolvedConfigDocument, ConfigLoadRejection> {
+        let kept = self.startup_only_changes(&document.validated_config);
+        self.report_restart_required(&document.effective_revision, startup_only_reasons(&kept));
+        document.keeping(&kept)
+    }
+
     /// Replaces the report a supervising master computed.
     pub fn set_restart_required(&self, report: RestartRequired) {
         self.state

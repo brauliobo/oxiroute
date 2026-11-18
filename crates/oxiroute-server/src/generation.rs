@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::Doorbell;
 use crate::generation::resources::GenerationResources;
 use crate::generation::restart::{
-    RestartRequired, StartupOnly, StartupOnlyChange, startup_only_changes,
+    RestartRequired, StartupOnly, StartupOnlyChange, startup_only_changes, startup_only_reasons,
 };
 use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
@@ -35,8 +35,8 @@ use crate::{
     ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
     RuntimeMode, RuntimePlan, ServiceKind,
     config::coordinator::{
-        AuthoredRevision, ConfigRejection, EffectiveRevision, ResolvedConfigDocument,
-        RevisionParseError,
+        AuthoredRevision, ConfigLoadRejection, ConfigRejection, EffectiveRevision,
+        ResolvedConfigDocument, RevisionParseError,
     },
     runtime_plan,
     service_plan::validation_plan,

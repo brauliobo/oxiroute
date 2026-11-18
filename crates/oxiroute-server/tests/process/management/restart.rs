@@ -7,7 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{ConfigDraft, ListenerBind, Management};
+use oxiroute_config::{
+    ConfigDraft, ListenerBind, Management, Registry, RegistryEndpoint, RegistryRole,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -28,6 +30,10 @@ struct Daemon {
 
 impl Daemon {
     async fn start(supervised: bool) -> Self {
+        Self::launch(supervised, false).await
+    }
+
+    async fn launch(supervised: bool, registry: bool) -> Self {
         let directory = TempDir::new().expect("restart case directory");
         let socket = directory.path().join("listener.sock");
         let management = reserve_tcp_address();
@@ -40,6 +46,15 @@ impl Daemon {
             ui_dir: None,
             token_file: None,
         });
+        if registry {
+            let state_dir = directory.path().join("state");
+            fs::create_dir(&state_dir).expect("registry state directory");
+            active.registry = Some(Registry {
+                state_dir,
+                tokens_file: None,
+                endpoints: Vec::new(),
+            });
+        }
         let validated = active.clone().validate().expect("valid active config");
         let mut server = if supervised {
             ServerProcess::start_supervised(&validated, TOKEN)
@@ -144,6 +159,13 @@ impl Daemon {
         }
     }
 
+    async fn max_connections(&self) -> u64 {
+        let listeners = self.get("/api/v1/listeners").await;
+        listeners["listeners"][0]["maxConnections"]
+            .as_u64()
+            .expect("listener connection limit")
+    }
+
     fn socket_mode(&self) -> u32 {
         fs::metadata(&self.socket)
             .expect("unix socket")
@@ -171,8 +193,12 @@ async fn one_reason_on_every_surface(supervised: bool) {
     daemon.write(&candidate);
     daemon.hang_up();
     let generation = daemon
-        .wait_generation("the restart to be required", required)
+        .wait_generation("the rest of the candidate to apply", |generation| {
+            required(generation) && generation["activeRevision"] != active
+        })
         .await;
+    let applied = generation["activeRevision"].clone();
+    assert_eq!(daemon.max_connections().await, 7);
     let restart = generation["restartRequired"].clone();
     let reason = restart["reasons"][0].clone();
     assert_eq!(
@@ -190,7 +216,7 @@ async fn one_reason_on_every_surface(supervised: bool) {
     assert!(restart["since"].as_u64().is_some_and(|since| since > 0));
     let config = daemon.get("/api/v1/config").await;
     assert_eq!(restart["candidateRevision"], config["candidateRevision"]);
-    assert_eq!(generation["activeRevision"], active);
+    assert_ne!(restart["candidateRevision"], applied);
 
     assert_eq!(generation["degraded"], false, "{generation}");
     assert_eq!(generation["quarantinedRevision"], Value::Null);
@@ -206,12 +232,13 @@ async fn one_reason_on_every_surface(supervised: bool) {
         .request(
             "POST",
             "/api/v1/generations/reload",
-            &json!({"expectedActiveRevision": active}),
+            &json!({"expectedActiveRevision": applied}),
         )
         .await;
-    assert_eq!(reload.status, 200, "{}", reload.text());
+    assert_eq!(reload.status, 202, "{}", reload.text());
     let reload = reload.json();
-    assert_eq!(reload["outcome"], "restart_required");
+    assert_eq!(reload["outcome"], "startup_requested");
+    assert_eq!(reload["candidateRevision"], applied);
     assert_eq!(reload["restartRequired"]["reasons"], restart["reasons"]);
 
     let body = json!({ "config": candidate });
@@ -241,25 +268,88 @@ async fn one_reason_on_every_surface(supervised: bool) {
     let ready = http_request(daemon.management, "GET", "/ready", &[], &[]).await;
     assert_eq!(ready.status, 200, "{}", ready.text());
 
-    daemon.write(&daemon.active);
+    daemon.write(&daemon.candidate(0o600, 7));
     daemon.hang_up();
     let cleared = daemon
         .wait_generation("the restart no longer required", |g| !required(g))
         .await;
     assert_eq!(cleared["restartRequired"]["reasons"], json!([]));
     assert_eq!(cleared["restartRequired"]["candidateRevision"], Value::Null);
-    assert_eq!(cleared["activeRevision"], active);
+    assert_eq!(cleared["activeRevision"], applied);
 
     let log = daemon.server.shutdown_output();
-    assert!(log.contains("waits for a restart"), "{log}");
+    assert!(log.contains("only a restart applies"), "{log}");
 }
 
 #[tokio::test]
-async fn direct_restart_reasons_are_the_same_on_every_surface() {
+async fn direct_restart_reasons_are_the_same_and_the_rest_applies() {
     one_reason_on_every_surface(false).await;
 }
 
 #[tokio::test]
-async fn supervised_restart_reasons_are_the_same_on_every_surface() {
+async fn supervised_restart_reasons_are_the_same_and_the_rest_applies() {
     one_reason_on_every_surface(true).await;
+}
+
+#[tokio::test]
+async fn a_configuration_only_the_direct_runtime_runs_waits_for_a_restart() {
+    let daemon = Daemon::start(true).await;
+    let active = daemon.generation().await["activeRevision"].clone();
+    let mut candidate = daemon.active.clone();
+    let template = candidate.listeners[0].clone();
+    for index in 0..70 {
+        let mut listener = template.clone();
+        listener.name = format!("extra-{index}");
+        listener.bind = ListenerBind::Socket {
+            address: reserve_tcp_address(),
+            ipv6_only: false,
+        };
+        candidate.listeners.push(listener);
+    }
+    daemon.write(&candidate);
+    daemon.hang_up();
+
+    let generation = daemon
+        .wait_generation("the restart to be required", required)
+        .await;
+
+    let reason = &generation["restartRequired"]["reasons"][0];
+    assert_eq!(reason["code"], "execution_mode");
+    assert_eq!(reason["path"], "/config");
+    assert_eq!(generation["activeRevision"], active);
+    assert_eq!(generation["degraded"], false, "{generation}");
+    assert_eq!(generation["lastRejection"], Value::Null);
+    assert_eq!(generation["quarantinedRevision"], Value::Null);
+    let ready = http_request(daemon.management, "GET", "/ready", &[], &[]).await;
+    assert_eq!(ready.status, 200, "{}", ready.text());
+}
+
+#[tokio::test]
+async fn the_direct_runtime_keeps_its_registry_settings_and_applies_the_rest() {
+    let daemon = Daemon::launch(false, true).await;
+    let socket = daemon.socket.with_file_name("registry.sock");
+    let mut candidate = daemon.candidate(0o600, 7);
+    candidate.registry.as_mut().expect("registry").endpoints = vec![RegistryEndpoint::Unix {
+        path: socket.clone(),
+        mode: 0o660,
+        role: RegistryRole::Read,
+        pools: Vec::new(),
+    }];
+    let active = daemon.generation().await["activeRevision"].clone();
+    daemon.write(&candidate);
+
+    let generation = daemon
+        .wait_generation("the rest of the candidate to apply", |generation| {
+            required(generation) && generation["activeRevision"] != active
+        })
+        .await;
+
+    let reason = &generation["restartRequired"]["reasons"][0];
+    assert_eq!(reason["code"], "registry_settings");
+    assert_eq!(reason["path"], "/config/registry");
+    assert_eq!(daemon.max_connections().await, 7);
+    assert!(
+        !socket.exists(),
+        "the registry endpoint waits for a restart"
+    );
 }

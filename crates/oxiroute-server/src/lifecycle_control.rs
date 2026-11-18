@@ -14,7 +14,7 @@ use crate::{
     config::coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigLoadRejection, EffectiveRevision,
     },
-    generation::{GENERATION_PREPARATION_TIMEOUT, restart::startup_only_reasons},
+    generation::GENERATION_PREPARATION_TIMEOUT,
 };
 
 pub(crate) type LifecyclePort = dyn LifecycleControl<
@@ -28,8 +28,6 @@ pub(crate) type LifecyclePort = dyn LifecycleControl<
 #[derive(Debug)]
 pub(crate) enum LifecycleOutcome {
     Prepared(EffectiveRevision),
-    /// The file on disk changes settings that only a restart applies, so nothing was prepared.
-    RestartRequired(EffectiveRevision),
     Drained {
         drained: bool,
         active_references: u64,
@@ -92,20 +90,15 @@ impl DirectLifecycleControl {
                 });
             }
         };
-        let startup_only = self
+        let document = self
             .generations
-            .startup_only_changes(&document.validated_config);
-        self.generations.report_restart_required(
-            &document.effective_revision,
-            startup_only_reasons(&startup_only),
-        );
-        if !startup_only.is_empty() {
-            return Ok(LifecycleOutcome::RestartRequired(
-                document.effective_revision.clone(),
-            ));
-        }
+            .applicable(&document)
+            .map_err(|rejection| LifecycleError::ConfigRejected {
+                rejection,
+                active_revision: self.generations.status().active_revision,
+            })?;
         self.generations
-            .prepare_with_deadline(*document, Instant::now() + GENERATION_PREPARATION_TIMEOUT)
+            .prepare_with_deadline(document, Instant::now() + GENERATION_PREPARATION_TIMEOUT)
             .map(|candidate| LifecycleOutcome::Prepared(candidate.revision().candidate.clone()))
             .map_err(LifecycleError::Preparation)
     }

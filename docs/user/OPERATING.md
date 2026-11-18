@@ -142,12 +142,13 @@ configuration passes (default: the larger of three hours and the longest HTTP
 `upstream_io_timeout_ms`; `OXIROUTE_RELOAD_DRAIN_SECONDS` is deprecated). In supervised mode a
 further reload waits while a long request keeps the old worker alive.
 
-Only one change still needs a restart, in either runtime: a Unix listener that keeps its path and
-changes its filesystem mode is valid but `restartRequired`, because the new socket would need the
-path the running one owns. Validation exposes the backend `I_RESTART_REQUIRED` diagnostic before the
-write. A successful save returns `saved_restart_required`: the canonical file is durable, the active
-generation remains unchanged, and the saved configuration takes effect after the next process
-restart.
+A few settings cannot change in a running process: `ipv6_only` of a listener that keeps its address, the `registry` block in the direct runtime, and a
+configuration that only the direct runtime can run (more than 64 listeners). A reload does not refuse
+the file for them. It keeps the running value of that setting, applies everything else, and reports
+the setting as `restartRequired` in `generation status`, `status` and `/api/v1/generations`. Validation
+exposes the backend `I_RESTART_REQUIRED` diagnostic before the write, and a successful save returns
+`saved_restart_required`. Restarting the service applies the waiting setting; editing the file back
+clears the report.
 
 ## Manage Pool State
 

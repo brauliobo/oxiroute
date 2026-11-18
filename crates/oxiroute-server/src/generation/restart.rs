@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use oxiroute_config::{ListenerBind, Registry, ValidatedConfig};
+use oxiroute_config::{ConfigDraft, ListenerBind, Registry, ValidatedConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,21 @@ pub struct RestartRequired {
     pub reasons: Vec<StartupOnlyChange>,
 }
 
+impl StartupOnlyChange {
+    /// The candidate needs the direct runtime, which a supervising master cannot run.
+    #[must_use]
+    pub fn execution_mode(reason: &str) -> Self {
+        Self {
+            code: "execution_mode".into(),
+            path: "/config".into(),
+            summary: format!(
+                "the configuration cannot run under the supervising master ({reason}) and is not \
+                 applied: it runs after a restart in the direct runtime"
+            ),
+        }
+    }
+}
+
 impl RestartRequired {
     /// Says in the log, once per change of the report, what waits for a restart.
     pub fn log(&self) {
@@ -45,7 +60,8 @@ impl RestartRequired {
         for reason in &self.reasons {
             log::warn!(
                 target: "oxiroute::config",
-                "configuration revision {revision} waits for a restart: {}: {}",
+                "configuration revision {revision} is applied except for a setting that only a \
+                 restart applies: {}: {}",
                 reason.path,
                 reason.summary
             );
@@ -102,6 +118,23 @@ impl StartupOnly {
         }
     }
 
+    /// Puts the value the process keeps back into `draft`, so that the rest of the candidate can
+    /// be applied.
+    pub fn keep_running(&self, draft: &mut ConfigDraft) {
+        match self {
+            Self::ListenerIpv6Only {
+                listener, running, ..
+            } => {
+                for bind in listener_binds(draft, listener) {
+                    if let ListenerBind::Socket { ipv6_only, .. } = bind {
+                        *ipv6_only = *running;
+                    }
+                }
+            }
+            Self::RegistrySettings { running } => draft.registry = Some(running.clone()),
+        }
+    }
+
     #[must_use]
     pub fn change(&self) -> StartupOnlyChange {
         match self {
@@ -128,6 +161,17 @@ impl StartupOnly {
             },
         }
     }
+}
+
+fn listener_binds<'a>(
+    draft: &'a mut ConfigDraft,
+    name: &'a str,
+) -> impl Iterator<Item = &'a mut ListenerBind> {
+    draft
+        .listeners
+        .iter_mut()
+        .filter(move |listener| listener.name == name)
+        .map(|listener| &mut listener.bind)
 }
 
 fn unix_millis() -> u64 {
@@ -259,5 +303,21 @@ mod tests {
         assert_eq!(second.since, first.since);
         assert_eq!(second.candidate_revision.as_deref(), Some("b"));
         assert_eq!(second.update("b", Vec::new()), RestartRequired::default());
+    }
+
+    #[test]
+    fn keeping_the_running_settings_leaves_nothing_to_keep() {
+        let running = config(&tcp(false), "");
+        let wanted = config(&tcp(true), "");
+        let kept = startup_only_changes(RuntimeMode::Direct, &running, &wanted);
+        let mut draft = wanted.to_draft();
+
+        for setting in &kept {
+            setting.keep_running(&mut draft);
+        }
+
+        let applied = draft.validate().expect("valid with the kept settings");
+        assert_eq!(applied, running);
+        assert!(startup_only_changes(RuntimeMode::Direct, &running, &applied).is_empty());
     }
 }
