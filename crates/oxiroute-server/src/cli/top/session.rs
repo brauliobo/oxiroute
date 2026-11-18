@@ -12,7 +12,7 @@ use super::{
     keys::Key,
     source::{self, Sample},
 };
-use crate::cli::{CliError, Client};
+use crate::cli::{error::CliError, net::Client};
 
 enum Message {
     Key(Key),

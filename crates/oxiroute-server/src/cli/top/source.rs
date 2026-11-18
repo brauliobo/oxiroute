@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 
 use super::rows::Requests;
 use crate::{
-    cli::{CliError, Client},
+    cli::{error::CliError, net::Client},
     observability::stats_page::model::{SCHEMA_VERSION, StatsSnapshot},
 };
 

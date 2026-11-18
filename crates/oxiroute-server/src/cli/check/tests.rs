@@ -1,4 +1,16 @@
-use super::*;
+use std::ffi::OsString;
+
+use clap::Parser as _;
+use serde_json::{Value, json};
+
+use super::{
+    CheckArgs, is_invocation,
+    run::{Report, assess},
+};
+use crate::{
+    cli::{Cli, Command},
+    observability::status::{check::Finding, summary::Severity},
+};
 
 fn args(extra: &[&str]) -> CheckArgs {
     let mut words = vec!["oxiroute", "check"];

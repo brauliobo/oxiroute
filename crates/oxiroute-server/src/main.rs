@@ -39,8 +39,9 @@ use oxiroute_server::{
     HaproxyStatsApi, HaproxyStatsPage, Http3Runtime, HttpDownstreamPolicyApp, HttpListenerApp,
     HttpReverseProxy, ListenerMetrics, ListenerReservation, ListenerRuntime, MAX_HTTP_ATTEMPTS,
     MonitoredHttpApp, RtmpEventDetail, RtmpManagementApi, RtmpServicePlan, RuntimeGeneration,
-    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
-    cli::{Cli, Command, ConfigCommand, execute_offline},
+    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
+    TopologySnapshot, UdpRuntime,
+    cli::Cli,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     emit_certificate, emit_rtmp_access, with_h2_windows,
 };
@@ -131,38 +132,19 @@ fn main() -> ExitCode {
 
     oxiroute_server::init_logging();
 
-    let cli = Cli::parse_process();
-    let result = match cli.command() {
-        Command::Serve { config } => {
-            #[cfg(target_os = "linux")]
-            {
-                oxiroute_allocator::start_background_thread()
-                    .map_err(Into::into)
-                    .and_then(|()| supervised::master::run_if_supported(config))
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                run(config)
-            }
-        }
-        Command::Import { .. }
-        | Command::Registry { .. }
-        | Command::Version
-        | Command::Config {
-            command: ConfigCommand::Check { .. } | ConfigCommand::Compose { .. },
-        } => execute_offline(cli.command()).map(|output| {
-            if let Some(output) = output {
-                print!("{output}");
-            }
-        }),
-        _ => return cli.execute_management(),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("OxiRoute startup failed: {error}");
-            ExitCode::FAILURE
-        }
+    Cli::parse_process().execute(serve)
+}
+
+fn serve(config: &Path) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        oxiroute_allocator::start_background_thread()
+            .map_err(Into::into)
+            .and_then(|()| supervised::master::run_if_supported(config))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        run(config)
     }
 }
 

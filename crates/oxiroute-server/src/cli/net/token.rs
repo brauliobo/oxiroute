@@ -1,23 +1,19 @@
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-pub(super) fn command_requires_token(command: &Command) -> bool {
-    !matches!(
-        command,
-        Command::Ready
-            | Command::Metrics
-            | Command::Check(_)
-            | Command::Rtmp {
-                command: RtmpCommand::Stream {
-                    command: StreamCommand::Disconnect { .. },
-                } | RtmpCommand::Relay {
-                    command: RelayCommand::Reconnect { .. },
-                },
-            }
-    )
-}
+use zeroize::Zeroizing;
 
-pub(super) fn resolve_token_path(
+use crate::cli::{error::CliError, fs::read_regular_file};
+
+pub(in crate::cli) const DEFAULT_PACKAGE_ENV_FILE: &str = "/etc/oxiroute/oxiroute.env";
+pub(in crate::cli) const DEFAULT_MANAGEMENT_TOKEN_FILE: &str = "/etc/oxiroute/management.token";
+pub(in crate::cli) const MANAGEMENT_TOKEN_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
+const MAX_PACKAGE_ENV_BYTES: usize = 8 * 1024;
+const MAX_TOKEN_BYTES: usize = 512;
+
+pub(in crate::cli) fn resolve_token_path(
     explicit_path: Option<&Path>,
     configured_path: Option<&Path>,
     package_env_file: &Path,
@@ -75,7 +71,7 @@ fn package_env_token_path(path: &Path) -> Result<Option<PathBuf>, CliError> {
     Ok(token_path)
 }
 
-pub(super) fn read_token(path: &Path) -> Result<Zeroizing<String>, CliError> {
+pub(in crate::cli) fn read_token(path: &Path) -> Result<Zeroizing<String>, CliError> {
     let bytes = Zeroizing::new(
         read_regular_file(path, MAX_TOKEN_BYTES + 2, true).map_err(|_| {
             CliError::Local("management token file could not be read securely".into())
@@ -98,56 +94,4 @@ pub(super) fn read_token(path: &Path) -> Result<Zeroizing<String>, CliError> {
         return Err(CliError::Local("management token file is invalid".into()));
     }
     Ok(token)
-}
-
-pub(super) fn read_regular_file(
-    path: &Path,
-    max_bytes: usize,
-    secure_mode: bool,
-) -> io::Result<Vec<u8>> {
-    let descriptor = rustix_fs::open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )?;
-    let before = rustix_fs::fstat(&descriptor)?;
-    if !FileType::from_raw_mode(before.st_mode).is_file()
-        || (secure_mode && !matches!(before.st_mode & 0o7777, 0o400 | 0o600))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "file does not meet the required policy",
-        ));
-    }
-    let size = usize::try_from(before.st_size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "file is too large"))?;
-    if size > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file is too large",
-        ));
-    }
-    let mut file = File::from(descriptor);
-    let mut bytes = Vec::with_capacity(size);
-    io::Read::by_ref(&mut file)
-        .take(u64::try_from(max_bytes + 1).expect("file bound fits u64"))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file is too large",
-        ));
-    }
-    let after = rustix_fs::fstat(&file)?;
-    if before.st_dev != after.st_dev
-        || before.st_ino != after.st_ino
-        || before.st_size != after.st_size
-        || before.st_mode != after.st_mode
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file changed while it was read",
-        ));
-    }
-    Ok(bytes)
 }

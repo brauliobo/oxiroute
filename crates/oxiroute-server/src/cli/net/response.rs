@@ -1,243 +1,12 @@
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use std::io::{BufRead, Read as _};
 
-pub(super) enum Endpoint {
-    Tcp { authority: String, address: String },
-    Unix(PathBuf),
-}
+use serde_json::{Value, json};
 
-impl Endpoint {
-    pub(super) fn parse(value: &str) -> Result<Self, CliError> {
-        if let Some(path) = value.strip_prefix("unix:") {
-            return Self::unix(path);
-        }
-        let authority = value
-            .strip_prefix("http://")
-            .ok_or_else(|| CliError::Local("endpoint must use http:// or unix:".into()))?;
-        if authority.is_empty() || authority.contains('/') || authority.contains('@') {
-            return Err(CliError::Local(
-                "endpoint must contain only an HTTP authority".into(),
-            ));
-        }
-        let address = if authority.starts_with('[') {
-            let end = authority
-                .find(']')
-                .ok_or_else(|| CliError::Local("endpoint IPv6 authority is invalid".into()))?;
-            let host = &authority[1..end];
-            let port = authority
-                .get(end + 1..)
-                .and_then(|rest| rest.strip_prefix(':'))
-                .unwrap_or("80");
-            format!("[{host}]:{port}")
-        } else if authority.rsplit_once(':').is_some() {
-            authority.to_owned()
-        } else {
-            format!("{authority}:80")
-        };
-        Ok(Self::Tcp {
-            authority: authority.to_owned(),
-            address,
-        })
-    }
+use super::endpoint::connect_io;
+use crate::{cli::error::CliError, config::coordinator::RejectionDiagnostic};
 
-    pub(super) fn unix(path: &str) -> Result<Self, CliError> {
-        if Path::new(path).is_absolute() {
-            Ok(Self::Unix(PathBuf::from(path)))
-        } else {
-            Err(CliError::Local(
-                "unix endpoint needs an absolute path".into(),
-            ))
-        }
-    }
-
-    /// One GET whose answer is returned whatever its status, to an authority the caller names.
-    pub(super) fn get_unchecked(&self, path: &str, host: &str) -> Result<Response, CliError> {
-        if path.contains(['\r', '\n', ' ']) || host.contains(['\r', '\n']) {
-            return Err(CliError::Local("request target is invalid".into()));
-        }
-        let mut stream = self.connect()?;
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-        )
-        .map_err(connect_io)?;
-        Response::read(BufReader::new(stream))
-    }
-
-    /// Registry sockets authorize by file permission, so no token is read or sent.
-    pub(super) const fn is_unix(&self) -> bool {
-        matches!(self, Self::Unix(_))
-    }
-
-    fn connect(&self) -> Result<Stream, CliError> {
-        let timeout = Some(Duration::from_secs(10));
-        let connect = |error: io::Error| CliError::Connect(error.to_string());
-        match self {
-            Self::Tcp { address, .. } => {
-                let address = address
-                    .to_socket_addrs()
-                    .map_err(|_| CliError::Connect("endpoint could not be resolved".into()))?
-                    .next()
-                    .ok_or_else(|| {
-                        CliError::Connect("endpoint did not resolve to an address".into())
-                    })?;
-                let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
-                stream.set_read_timeout(timeout).map_err(connect)?;
-                stream.set_write_timeout(timeout).map_err(connect)?;
-                Ok(Stream::Tcp(stream))
-            }
-            Self::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
-                stream.set_read_timeout(timeout).map_err(connect)?;
-                stream.set_write_timeout(timeout).map_err(connect)?;
-                Ok(Stream::Unix(stream))
-            }
-        }
-    }
-
-    fn host(&self) -> &str {
-        match self {
-            Self::Tcp { authority, .. } => authority,
-            Self::Unix(_) => "localhost",
-        }
-    }
-}
-
-enum Stream {
-    Tcp(TcpStream),
-    Unix(UnixStream),
-}
-
-impl io::Read for Stream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Tcp(stream) => stream.read(buffer),
-            Self::Unix(stream) => stream.read(buffer),
-        }
-    }
-}
-
-impl io::Write for Stream {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Tcp(stream) => stream.write(bytes),
-            Self::Unix(stream) => stream.write(bytes),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Tcp(stream) => stream.flush(),
-            Self::Unix(stream) => stream.flush(),
-        }
-    }
-}
-
-pub(super) struct Client {
-    pub(super) endpoint: Endpoint,
-    pub(super) token: Option<Zeroizing<String>>,
-}
-
-impl Client {
-    pub(super) fn get(&self, path: &str, authenticated: bool) -> Result<Response, CliError> {
-        self.request("GET", path, &[], &[], authenticated)
-    }
-
-    pub(super) fn json(
-        &self,
-        method: &str,
-        path: &str,
-        value: &Value,
-        headers: &[(&str, &str)],
-    ) -> Result<Response, CliError> {
-        let body = serde_json::to_vec(value).map_err(|error| CliError::Local(error.to_string()))?;
-        self.request(method, path, &body, headers, true)
-    }
-
-    pub(super) fn mutation_json(
-        &self,
-        method: &str,
-        path: &str,
-        value: &Value,
-    ) -> Result<Response, CliError> {
-        let revision = self.active_revision()?;
-        let mut value = value.clone();
-        value
-            .as_object_mut()
-            .ok_or_else(|| CliError::Local("mutation body must be an object".into()))?
-            .insert("expectedActiveRevision".into(), json!(revision));
-        self.json(method, path, &value, &[])
-    }
-
-    pub(super) fn generation_json(
-        &self,
-        method: &str,
-        path: &str,
-        value: &Value,
-    ) -> Result<Response, CliError> {
-        let revision = self.active_revision()?;
-        self.json(
-            method,
-            path,
-            value,
-            &[("If-Generation-Revision", &revision)],
-        )
-    }
-
-    fn active_revision(&self) -> Result<String, CliError> {
-        self.get("/api/v1/generations", true)?
-            .json()?
-            .pointer("/generation/activeRevision")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| CliError::Local("generation response has no active revision".into()))
-    }
-
-    pub(super) fn request(
-        &self,
-        method: &str,
-        path: &str,
-        body: &[u8],
-        headers: &[(&str, &str)],
-        authenticated: bool,
-    ) -> Result<Response, CliError> {
-        if !path.starts_with('/') || path.contains(['\r', '\n']) {
-            return Err(CliError::Local("request path is invalid".into()));
-        }
-        let token = if authenticated && !self.endpoint.is_unix() {
-            Some(self.token.as_deref().ok_or_else(|| {
-                CliError::Local("management token file is missing or unreadable".into())
-            })?)
-        } else {
-            None
-        };
-        let mut stream = self.endpoint.connect()?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n", self.endpoint.host(), body.len()).map_err(connect_io)?;
-        if !body.is_empty() {
-            stream
-                .write_all(b"Content-Type: application/json\r\n")
-                .map_err(connect_io)?;
-        }
-        if let Some(token) = token {
-            write!(stream, "Authorization: Bearer {token}\r\n").map_err(connect_io)?;
-        }
-        for (name, value) in headers {
-            if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
-                return Err(CliError::Local("request header is invalid".into()));
-            }
-            write!(stream, "{name}: {value}\r\n").map_err(connect_io)?;
-        }
-        stream.write_all(b"\r\n").map_err(connect_io)?;
-        stream.write_all(body).map_err(connect_io)?;
-        Response::read(BufReader::new(stream))?.into_result()
-    }
-}
-
-fn connect_io(_: io::Error) -> CliError {
-    CliError::Connect("endpoint I/O failed".into())
-}
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 enum BodyFraming {
@@ -254,7 +23,7 @@ struct ParsedHead {
 }
 
 impl ParsedHead {
-    pub(super) fn parse(bytes: &[u8]) -> Result<Self, CliError> {
+    fn parse(bytes: &[u8]) -> Result<Self, CliError> {
         let headers = std::str::from_utf8(bytes)
             .map_err(|_| CliError::Remote("invalid HTTP response headers".into()))?;
         let mut lines = headers.split("\r\n");
@@ -445,19 +214,19 @@ fn read_http_line(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
 }
 
 #[derive(Debug)]
-pub(super) struct Response {
-    pub(super) status: u16,
-    pub(super) content_type: String,
-    pub(super) body: Vec<u8>,
+pub(crate) struct Response {
+    pub(crate) status: u16,
+    pub(crate) content_type: String,
+    pub(crate) body: Vec<u8>,
 }
 
 impl Response {
     #[cfg(test)]
-    pub(super) fn parse(bytes: &[u8]) -> Result<Self, CliError> {
-        Self::read(BufReader::new(Cursor::new(bytes)))
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, CliError> {
+        Self::read(std::io::BufReader::new(std::io::Cursor::new(bytes)))
     }
 
-    pub(super) fn read(mut reader: impl BufRead) -> Result<Self, CliError> {
+    pub(crate) fn read(mut reader: impl BufRead) -> Result<Self, CliError> {
         for _ in 0..=8 {
             let head = read_http_head(&mut reader)?;
             let parsed = ParsedHead::parse(&head)?;
@@ -476,7 +245,7 @@ impl Response {
         ))
     }
 
-    pub(super) fn into_result(self) -> Result<Self, CliError> {
+    pub(crate) fn into_result(self) -> Result<Self, CliError> {
         if (200..300).contains(&self.status) {
             Ok(self)
         } else {
@@ -499,23 +268,23 @@ impl Response {
         }
     }
 
-    pub(super) fn json(&self) -> Result<Value, CliError> {
+    pub(crate) fn json(&self) -> Result<Value, CliError> {
         serde_json::from_slice(&self.body)
             .map_err(|_| CliError::Remote("endpoint returned invalid JSON".into()))
     }
 
-    pub(super) fn is_json(&self) -> bool {
+    pub(crate) fn is_json(&self) -> bool {
         self.content_type.starts_with("application/json")
     }
 
     /// The body as the server wrote it when it is one JSON document; the check builds nothing.
-    pub(super) fn checked_json_body(&self) -> Result<&[u8], CliError> {
+    pub(crate) fn checked_json_body(&self) -> Result<&[u8], CliError> {
         serde_json::from_slice::<serde::de::IgnoredAny>(&self.body)
             .map_err(|_| CliError::Remote("endpoint returned invalid JSON".into()))?;
         Ok(self.body.trim_ascii_end())
     }
 
-    pub(super) fn output_value(&self) -> Result<Value, CliError> {
+    pub(crate) fn output_value(&self) -> Result<Value, CliError> {
         if self.is_json() {
             self.json()
         } else {

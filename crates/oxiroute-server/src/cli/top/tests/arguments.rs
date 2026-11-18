@@ -1,12 +1,16 @@
 use std::time::Duration;
 
-use crate::cli::{Cli, Command, commands, top::rows::View};
+use crate::cli::{
+    Cli, Command,
+    context::Context,
+    top::{TopArgs, rows::View},
+};
 
 fn parse(arguments: &[&str]) -> Result<Cli, clap::Error> {
     Cli::try_parse_process_from(["oxiroute"].into_iter().chain(arguments.iter().copied()))
 }
 
-fn top(arguments: &[&str]) -> crate::cli::TopArgs {
+fn top(arguments: &[&str]) -> TopArgs {
     match parse(&[&["top"], arguments].concat())
         .expect("valid arguments")
         .command
@@ -71,7 +75,11 @@ fn without_a_view_a_snapshot_prints_listeners_pools_and_servers() {
 fn a_registry_socket_is_refused_because_it_serves_no_statistics() {
     let cli =
         parse(&["--socket", "/run/oxiroute/status.sock", "top", "--once"]).expect("arguments");
-    let error = commands::run(&cli).expect_err("sockets serve no statistics");
+    let context = Context::new(&cli.global, |_| Ok(()));
+    let error = cli
+        .command()
+        .run(&context)
+        .expect_err("sockets serve no statistics");
     assert!(
         error
             .to_string()
