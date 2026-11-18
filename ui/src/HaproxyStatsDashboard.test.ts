@@ -5,30 +5,44 @@ import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
 import { contractMonitoring } from './test/contractFixtures'
 
 describe('HaproxyStatsDashboard', () => {
-  it('renders process, listener, backend, and server counters from one snapshot', () => {
-    const wrapper = mount(HaproxyStatsDashboard, {
-      props: { monitoring: contractMonitoring() },
-    })
+  it('renders process, listener, pool and server counters from one snapshot with the shared status words', () => {
+    const wrapper = mount(HaproxyStatsDashboard, { props: { monitoring: contractMonitoring() } })
 
-    expect(wrapper.get('#stats-heading').text()).toBe('Statistics')
-    expect(wrapper.findAll('.stats-kpi')).toHaveLength(4)
-    expect(wrapper.get('.stats-panel').text()).toContain('10,000')
-    expect(wrapper.get('.stats-panel').text()).toContain('Retry attempts')
-    expect(wrapper.get('.stats-panel').text()).toContain('1d 1h')
-    expect(wrapper.get('.stats-section').text()).toContain('HTTP ingress')
-    expect(wrapper.get('.stats-section').text()).toContain('Forward H3')
-    expect(wrapper.get('.stats-section').text()).toContain(
-      `14 / 1,000`,
-    )
+    expect(wrapper.get('h2').text()).toBe('Statistics')
+    expect(wrapper.text()).not.toContain('HAProxy')
+    expect(wrapper.get('[data-section="statistics"] .ox-metrics-large').findAll('dt')).toHaveLength(4)
+    const statistics = wrapper.get('[data-section="statistics"]').text()
+    expect(statistics).toContain('10,000')
+    expect(statistics).toContain('Retry attempts')
+    expect(statistics).toContain('1d 1h')
+    expect(statistics).toContain('256 MiB')
+    expect(statistics).toMatch(/Snapshot \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC/)
 
-    const poolSection = wrapper.findAll('.stats-section')[1]
-    expect(poolSection?.text()).toContain('web-backends')
-    expect(poolSection?.text()).toContain('Queued total')
-    expect(poolSection?.text()).toContain('7')
-    expect(poolSection?.text()).toContain('primary')
-    expect(poolSection?.text()).toContain('127.0.0.1:3000')
-    expect(poolSection?.text()).toContain('100')
-    expect(poolSection?.text()).toContain('Last failure: Connect Failed')
+    const listeners = wrapper.get('[data-section="listeners"]')
+    expect(listeners.text()).toContain('HTTP ingress')
+    expect(listeners.text()).toContain('Forward H3')
+    expect(listeners.text()).toContain('14 / 1,000')
+    expect(listeners.findAll('.ox-badge').map((badge) => badge.text())).toEqual(['LISTENING', 'FAILED', 'STOPPED'])
+    expect(listeners.find('table').exists()).toBe(true)
+
+    const pools = wrapper.get('[data-section="pools"]')
+    expect(pools.text()).toContain('web-backends')
+    expect(pools.text()).toContain('Queued total')
+    expect(pools.text()).toContain('primary')
+    expect(pools.text()).toContain('127.0.0.1:3000')
+    expect(pools.text()).toContain('Last failure: Connection failed')
+    expect(pools.findAll('.ox-badge').map((badge) => badge.text())).toEqual(['DEGRADED', 'UP', 'DRAIN'])
+    expect(pools.text()).toContain('Administration')
+  })
+
+  it('pluralizes counts', () => {
+    const monitoring = contractMonitoring()
+    monitoring.listeners = monitoring.listeners.slice(0, 1)
+    const wrapper = mount(HaproxyStatsDashboard, { props: { monitoring } })
+
+    expect(wrapper.get('[data-section="listeners"]').text()).toContain('1 listener')
+    expect(wrapper.get('[data-section="listeners"]').text()).not.toContain('1 listeners')
+    expect(wrapper.get('[data-section="pools"]').text()).toContain('1 pool')
   })
 
   it('renders explicit empty states for absent listeners and upstream pools', () => {
@@ -40,7 +54,8 @@ describe('HaproxyStatsDashboard', () => {
 
     expect(wrapper.text()).toContain('No listeners are currently bound.')
     expect(wrapper.text()).toContain('No upstream pools are configured.')
-    expect(wrapper.findAll('.empty-state')).toHaveLength(2)
+    expect(wrapper.findAll('.ox-empty')).toHaveLength(2)
+    expect(wrapper.find('table').exists()).toBe(false)
   })
 
   it('renders unavailable telemetry distinctly from numeric zero', () => {
@@ -57,8 +72,9 @@ describe('HaproxyStatsDashboard', () => {
     unavailable.host.availableMemoryBytes = null
 
     const wrapper = mount(HaproxyStatsDashboard, { props: { monitoring: unavailable } })
-    expect(wrapper.get('.stats-panel').text()).toContain('Unavailable')
-    expect(wrapper.findAll('.stats-panel')[2]!.text()).toContain('Unavailable')
+    const cards = wrapper.findAll('.ox-card')
+    expect(cards[0]!.text()).toContain('Unavailable')
+    expect(cards[2]!.text()).toContain('Unavailable')
 
     const zero = contractMonitoring()
     zero.process.cpuPercent = 0
@@ -72,9 +88,9 @@ describe('HaproxyStatsDashboard', () => {
     zero.host.totalMemoryBytes = 0
     zero.host.availableMemoryBytes = 0
 
-    const zeroWrapper = mount(HaproxyStatsDashboard, { props: { monitoring: zero } })
-    expect(zeroWrapper.get('.stats-panel').text()).toContain('0%')
-    expect(zeroWrapper.findAll('.stats-panel')[2]!.text()).toContain('0.00')
-    expect(zeroWrapper.findAll('.stats-panel')[2]!.text()).not.toContain('Unavailable')
+    const zeroCards = mount(HaproxyStatsDashboard, { props: { monitoring: zero } }).findAll('.ox-card')
+    expect(zeroCards[0]!.text()).toContain('0%')
+    expect(zeroCards[2]!.text()).toContain('0.00')
+    expect(zeroCards[2]!.text()).not.toContain('Unavailable')
   })
 })

@@ -28,12 +28,12 @@ describe('application navigation', () => {
     await flushPromises()
 
     expect(wrapper.get('a[href="#/stats"]').attributes('aria-current')).toBe('page')
-    expect(wrapper.get('.haproxy-stats').text()).toContain('Statistics')
+    expect(wrapper.get('[data-section="statistics"]').text()).toContain('Statistics')
     const apiPaths = fetch.mock.calls.map((call) => String((call as unknown as [RequestInfo | URL])[0])).filter((url) => url.startsWith('/api/v1/'))
     expect(apiPaths).toEqual(['/api/v1/monitoring'])
     expect(fetch).toHaveBeenCalledWith('/api/v1/monitoring', expect.objectContaining({ cache: 'no-store' }))
-    expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
-    expect(wrapper.find('.topology-section').exists()).toBe(false)
+    expect(wrapper.find('[data-section="monitoring"]').exists()).toBe(false)
+    expect(wrapper.find('[data-section="topology"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -55,7 +55,7 @@ describe('application navigation', () => {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${bearerToken}` },
     }))
-    expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
+    expect(wrapper.find('[data-section="monitoring"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -115,7 +115,7 @@ describe('application navigation', () => {
     await wrapper.get('a[href="#/overview"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('.config-workspace').exists()).toBe(false)
-    expect(wrapper.get('.topology-section').text()).toContain('Network topology')
+    expect(wrapper.get('[data-section="topology"]').text()).toContain('Network topology')
     const unload = new Event('beforeunload', { cancelable: true })
     expect(window.dispatchEvent(unload)).toBe(false)
     await wrapper.get('a[href="#/configuration"]').trigger('click')
