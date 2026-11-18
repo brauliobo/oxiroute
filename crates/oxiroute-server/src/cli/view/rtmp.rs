@@ -40,6 +40,31 @@ pub(super) fn detail(value: &Value) -> Document {
     Document::new(blocks)
 }
 
+pub(super) fn clients(value: &Value) -> Document {
+    let as_of = number(value, "asOfUnixMs");
+    Document::rows(
+        "sessions",
+        items(value, "clients")
+            .iter()
+            .map(|client| {
+                let age = number(client, "connectedAtUnixMs")
+                    .zip(as_of)
+                    .and_then(|(connected, now)| now.checked_sub(connected));
+                vec![
+                    Field::text("id", text(client, "id")),
+                    Field::text("service", text(client, "service")),
+                    Field::text("application", text(client, "application")),
+                    Field::text("stream", text(client, "stream")),
+                    Field::text("role", text(client, "role")),
+                    Field::text("peer", text(client, "peerIp")),
+                    Field::duration("age", age),
+                    Field::text("revision", text(client, "revision")),
+                ]
+            })
+            .collect(),
+    )
+}
+
 fn row(stream: &Value, as_of: Option<u64>) -> Record {
     let media = stream.get("media").unwrap_or(&Value::Null);
     let track = |name| {

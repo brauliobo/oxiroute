@@ -157,7 +157,7 @@ body through, where `changed` counts the targets of the request.
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
 | TLS | `tls list|show|inspect|check|reconcile|renew|revoke|delete|acme` | Certificate inventory with UTC expiry and time left, live handshake inspection, an expiry check with monitoring exit codes, renewal and ACME control |
-| RTMP | `rtmp stream`, `rtmp recorder`, `rtmp relay` | Inspect live sessions and supported recorder actions |
+| RTMP | `rtmp stream`, `rtmp publisher`, `rtmp viewer`, `rtmp recorder`, `rtmp relay`, `rtmp recording` | Inspect live streams, publishers and viewers, disconnect sessions, control recorders, and list, download and delete recordings with their quota |
 | Migration | `import nginx|haproxy|squid|apache|varnish` | Emit offline reports or finalized previews |
 | Build | `version` | Print the build version |
 

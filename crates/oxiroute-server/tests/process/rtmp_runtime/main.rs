@@ -12,6 +12,7 @@ mod revision_support;
 #[path = "../../support/rtmp.rs"]
 mod rtmp_support;
 
+mod cli;
 mod ended;
 mod events;
 mod hevc;

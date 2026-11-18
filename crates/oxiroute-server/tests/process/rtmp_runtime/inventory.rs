@@ -15,7 +15,7 @@ async fn management(
     http_request(address, method, path, &headers, &[]).await
 }
 
-fn inventory_config(
+pub(super) fn inventory_config(
     management_address: SocketAddr,
     rtmp_address: SocketAddr,
     root: &Path,
@@ -26,7 +26,7 @@ fn inventory_config(
     config
 }
 
-async fn publish_and_close(rtmp_address: SocketAddr, stream: &str, frames: u32) {
+pub(super) async fn publish_and_close(rtmp_address: SocketAddr, stream: &str, frames: u32) {
     let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
     publisher.publish(stream).await;
     publisher.publish_audio(0, &[0xaf, 0x00, 0x12]).await;
@@ -38,7 +38,7 @@ async fn publish_and_close(rtmp_address: SocketAddr, stream: &str, frames: u32) 
     publisher.close().await;
 }
 
-async fn wait_for_recordings(
+pub(super) async fn wait_for_recordings(
     address: SocketAddr,
     query: &str,
     predicate: impl Fn(&[Value]) -> bool,

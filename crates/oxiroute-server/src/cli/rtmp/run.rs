@@ -1,6 +1,9 @@
 use serde_json::json;
 
-use super::args::{RecorderCommand, RelayCommand, RtmpCommand, StreamCommand};
+use super::{
+    args::{RecorderCommand, RelayCommand, RtmpCommand, StreamCommand},
+    session::{Role, kick},
+};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
@@ -14,8 +17,11 @@ impl Execute for RtmpCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
             Self::Stream { command } => command.run(context),
+            Self::Publisher { command } => command.run(context, Role::Publisher),
+            Self::Viewer { command } => command.run(context, Role::Subscriber),
             Self::Recorder { command } => command.run(context),
             Self::Relay { command } => command.run(context),
+            Self::Recording { command } => command.run(context),
         }
     }
 }
@@ -27,9 +33,23 @@ impl Execute for StreamCommand {
             Self::Show { stream } => {
                 context.show(&format!("/api/v1/rtmp/streams/{stream}"), View::RtmpStream)
             }
-            Self::Disconnect { .. } => Err(CliError::Unsupported(NO_CANCELLATION_HANDLE)),
+            Self::Disconnect { stream } => disconnect(context, stream),
         }
     }
+}
+
+fn disconnect(context: &Context<'_>, stream: &str) -> Result<(), CliError> {
+    let value = context
+        .client()?
+        .get(&format!("/api/v1/rtmp/streams/{stream}"), true)?
+        .json()?;
+    let publisher = value["publisher"]["session_id"].as_str().ok_or_else(|| {
+        CliError::Status(
+            409,
+            "no_publisher: the stream has no publisher to disconnect".into(),
+        )
+    })?;
+    kick(context, Role::Publisher, publisher)
 }
 
 impl Execute for RecorderCommand {

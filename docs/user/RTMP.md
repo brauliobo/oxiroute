@@ -221,7 +221,25 @@ oxiroute rtmp stream list
 oxiroute rtmp stream show STREAM_ID
 oxiroute rtmp recorder start STREAM_ID RECORDER_ID
 oxiroute rtmp recorder stop STREAM_ID RECORDER_ID
+oxiroute rtmp publisher list
+oxiroute rtmp viewer list
+oxiroute rtmp viewer kick SESSION_ID
+oxiroute rtmp stream disconnect STREAM_ID
 ```
+
+`kick` and `stream disconnect` drop one connected session (the publisher of the stream for `disconnect`); the
+client may reconnect. Stored recordings have their own commands:
+
+```sh
+oxiroute rtmp recording list --stream camera --status complete
+oxiroute rtmp recording show RECORDING_ID
+oxiroute rtmp recording download RECORDING_ID --to camera.flv
+oxiroute rtmp recording delete RECORDING_ID --yes
+oxiroute rtmp recording quota
+```
+
+`recording quota` shows each recording root with the bytes and files used against its limits, its retention
+mode and what retention has already evicted.
 
 Start and stop transitions may return before the worker reaches its settled phase. Read the returned
 snapshot or refresh the stream before issuing a conflicting action.

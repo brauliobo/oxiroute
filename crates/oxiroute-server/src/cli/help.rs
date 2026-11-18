@@ -199,7 +199,13 @@ pub(crate) const REQUESTS_EXAMPLES: &str = "Examples:
 
 pub(crate) const RTMP_EXAMPLES: &str = "Examples:
   oxiroute rtmp stream list
-  oxiroute rtmp recorder start STREAM_ID RECORDER";
+  oxiroute rtmp stream disconnect STREAM_ID
+  oxiroute rtmp publisher list
+  oxiroute rtmp viewer kick SESSION_ID
+  oxiroute rtmp recorder start STREAM_ID RECORDER
+  oxiroute rtmp recording list --stream camera --status complete
+  oxiroute rtmp recording download RECORDING_ID --to camera.flv
+  oxiroute rtmp recording quota";
 
 pub(crate) const REGISTRY_EXAMPLES: &str = "Examples:
   oxiroute registry token create --tokens-file tokens.json --id deploy --pool web";

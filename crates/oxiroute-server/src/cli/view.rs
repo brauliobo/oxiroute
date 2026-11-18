@@ -10,6 +10,7 @@ mod outcome;
 mod overlay;
 mod pools;
 mod read;
+mod recordings;
 mod requests;
 mod rtmp;
 mod servers;
@@ -55,6 +56,11 @@ pub(crate) enum View {
     Request,
     RtmpStreams,
     RtmpStream,
+    RtmpClients,
+    RtmpRecordings,
+    RtmpRecording,
+    RtmpQuota,
+    Download,
     Evacuation,
     DnsRefresh,
 }
@@ -86,6 +92,11 @@ impl View {
             Self::Request => requests::detail(value),
             Self::RtmpStreams => rtmp::list(value),
             Self::RtmpStream => rtmp::detail(value),
+            Self::RtmpClients => rtmp::clients(value),
+            Self::RtmpRecordings => recordings::list(value),
+            Self::RtmpRecording => recordings::detail(value),
+            Self::RtmpQuota => recordings::quota(value),
+            Self::Download => recordings::download(value),
             Self::Evacuation => outcome::evacuation(value),
             Self::DnsRefresh => outcome::dns_refresh(value),
         }

@@ -116,7 +116,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: TlsCommand,
     },
-    /// Inspect RTMP streams and control their recorders and relays.
+    /// Inspect RTMP streams, publishers, viewers and recordings, and control sessions, recorders and relays.
     #[command(after_help = help::RTMP_EXAMPLES)]
     Rtmp {
         #[command(subcommand)]

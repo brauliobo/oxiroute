@@ -1,13 +1,24 @@
 use clap::Subcommand;
 
+use super::recording::RecordingCommand;
 use crate::cli::parse::nonempty_target;
 
 #[derive(Subcommand)]
 pub(crate) enum RtmpCommand {
-    /// List and inspect the live RTMP streams.
+    /// List and inspect the live RTMP streams, or disconnect the publisher of one.
     Stream {
         #[command(subcommand)]
         command: StreamCommand,
+    },
+    /// List the connected publishers and disconnect one.
+    Publisher {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    /// List the connected viewers and disconnect one.
+    Viewer {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Start and stop the recorders of a stream.
     Recorder {
@@ -18,6 +29,11 @@ pub(crate) enum RtmpCommand {
     Relay {
         #[command(subcommand)]
         command: RelayCommand,
+    },
+    /// List, inspect, download and delete the stored recordings, and show their quota.
+    Recording {
+        #[command(subcommand)]
+        command: RecordingCommand,
     },
 }
 
@@ -31,11 +47,23 @@ pub(crate) enum StreamCommand {
         #[arg(value_parser = nonempty_target)]
         stream: String,
     },
-    /// Disconnect a stream; not available, the daemon has no safe cancellation handle yet.
+    /// Disconnect the publisher of a stream; the stream and its viewers stay.
     Disconnect {
         /// Id of the stream.
         #[arg(value_parser = nonempty_target)]
         stream: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SessionCommand {
+    /// List the connected sessions with their stream, peer and connection age.
+    List,
+    /// Disconnect one session; it may reconnect.
+    Kick {
+        /// Id of the session, as printed by `list`.
+        #[arg(value_parser = nonempty_target)]
+        session: String,
     },
 }
 
