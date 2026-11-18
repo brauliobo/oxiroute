@@ -301,13 +301,13 @@ describe('ConfigurationWorkspace', () => {
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('2')
   })
 
-  it('exposes disk/active distinction, both certificate sources, and plural SNI profiles', async () => {
+  it('exposes disk/active revisions without a false alarm, both certificate sources, and plural SNI profiles', async () => {
     installConfigFetch()
     const wrapper = await mountUnlocked()
 
     expect(wrapper.get('.revision-board').text()).toContain('Disk revision')
     expect(wrapper.get('.revision-board').text()).toContain('Active revision')
-    expect(wrapper.get('.revision-banner.diverged').text()).toContain('serving traffic')
+    expect(wrapper.find('.revision-banner').exists()).toBe(false)
     expect(wrapper.text()).toContain('SNI profiles')
     expect(wrapper.text()).toContain('public-sni')
     expect(wrapper.text()).toContain('internal-sni')

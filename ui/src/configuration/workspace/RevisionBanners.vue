@@ -1,7 +1,8 @@
 <template lang="pug">
-.revision-banner.diverged(v-if="diskRevision !== activeRevision" role="status" aria-live="polite")
-  strong Disk and active revisions differ.
-  |  The saved file is not the generation currently serving traffic.
+.revision-banner.candidate-waiting(v-if="candidateWaiting" role="status" aria-live="polite")
+  div
+    strong A saved configuration is waiting to be activated.
+    p The file on disk renders as generation {{ shortRevision(snapshot.candidateRevision) }}; generation {{ shortRevision(activeRevision ?? '') }} is serving traffic. The watcher activates the file without a restart unless the change needs one.
 
 .revision-banner.compositional(v-if="snapshot.compositional" role="status")
   div
@@ -60,6 +61,9 @@ const props = defineProps<{
   tlsAlpnMessage: TlsAlpnMessage | null
 }>()
 const emit = defineEmits<{ discard: []; reapply: [] }>()
+const candidateWaiting = computed(() =>
+  props.activeRevision !== null && props.staleRevision === null && props.saveMessage === null &&
+    props.snapshot.candidateRevision !== props.activeRevision)
 const currentRevision = computed(() =>
   props.staleRevision === 'unknown' || props.staleRevision === 'newer revision'
     ? 'a revision that could not be read'

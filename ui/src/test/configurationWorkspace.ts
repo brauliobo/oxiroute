@@ -288,7 +288,7 @@ export function configSnapshot(): ConfigSnapshot {
   return {
     schemaVersion: 1,
     diskRevision,
-    candidateRevision: 'candidate-1111111111111111111111111111111111111111111111111111111',
+    candidateRevision: activeRevision,
     activeRevision,
     config: canonicalConfig(),
     configFormat: 'kdl',

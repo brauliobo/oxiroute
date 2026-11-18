@@ -34,7 +34,7 @@ describe('stale disk revision', () => {
   it('explains the conflict in one banner and offers reapply and discard', async () => {
     const wrapper = await staleWorkspace(changedOnDisk((config) => { config.management = { bind: '127.0.0.1:9181', ui_dir: null } }))
 
-    expect(wrapper.findAll('.revision-banner.stale, .revision-banner.error, .revision-banner.save-state')).toHaveLength(1)
+    expect(wrapper.findAll('.revision-banner')).toHaveLength(1)
     const banner = wrapper.get('.revision-banner.stale')
     expect(banner.text()).toContain('The file on disk changed while you were editing')
     expect(banner.findAll('button').map((button) => button.text()))

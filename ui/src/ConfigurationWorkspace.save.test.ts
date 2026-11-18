@@ -241,7 +241,7 @@ describe('ConfigurationWorkspace', () => {
 
     expect(wrapper.get('.revision-banner.stale').text()).toContain('The file on disk changed while you were editing')
     expect(wrapper.get('.revision-banner.stale').text()).toContain('Your draft is kept and nothing was written')
-    expect(wrapper.findAll('.revision-banner.error, .revision-banner.save-state')).toHaveLength(0)
+    expect(wrapper.findAll('.revision-banner')).toHaveLength(1)
     expect((wrapper.get('[data-field="listeners[].name"] input').element as HTMLInputElement).value).toBe('preserved-listener')
     expect(wrapper.find('dialog[open]').exists()).toBe(false)
 
@@ -414,7 +414,7 @@ describe('ConfigurationWorkspace', () => {
     await flushPromises()
 
     expect(wrapper.get('.revision-banner.stale').text()).toContain('a revision that could not be read')
-    expect(wrapper.findAll('.revision-banner.error, .revision-banner.save-state')).toHaveLength(0)
+    expect(wrapper.findAll('.revision-banner')).toHaveLength(1)
     expect(wrapper.get('.diagnostic-list').text()).toContain('E_CONFIG_READ')
     expect(wrapper.find('dialog[open]').exists()).toBe(false)
   })
