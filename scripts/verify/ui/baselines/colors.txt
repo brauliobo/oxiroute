@@ -1,6 +1,5 @@
 2 ui/src/ConfigurationWorkspace.vue
 31 ui/src/HaproxyStatsDashboard.vue
-46 ui/src/OperationsWorkspace.vue
 21 ui/src/RtmpClientPanel.vue
 22 ui/src/RtmpRecorderPanel.vue
 11 ui/src/StringListField.vue

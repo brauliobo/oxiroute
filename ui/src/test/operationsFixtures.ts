@@ -1,4 +1,32 @@
-import type { InflightRequestList, RegistrationList } from '../api'
+import type { InflightRequestList, MonitoringPool, PoolInventoryResponse, RegistrationList, ServerInventoryResponse } from '../api'
+import { managementPools } from './managementFixtures'
+
+export function operationsInventory(): { pools: PoolInventoryResponse; servers: ServerInventoryResponse } {
+  const pools = managementPools()
+  const web = pools.pools[0]!
+  const base = web.endpoints[0]!
+  const staticPool: MonitoringPool = {
+    ...web,
+    name: 'static',
+    algorithm: 'round_robin',
+    availableEndpoints: 1,
+    totalEndpoints: 1,
+    queued: 0,
+    endpoints: [{
+      ...base,
+      name: 'static-1',
+      address: 'origin.example.com:8080',
+      state: 'unchecked',
+      checksRunning: false,
+      activeConnections: '0',
+      weight: 5,
+      maxConnections: null,
+    }],
+  }
+  pools.pools.push(staticPool)
+  const servers = pools.pools.flatMap((pool) => pool.endpoints.map((server) => ({ pool: pool.name, server })))
+  return { pools, servers: { servers } }
+}
 
 export function inflightList(): InflightRequestList {
   return {

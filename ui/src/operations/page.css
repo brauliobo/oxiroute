@@ -1,0 +1,187 @@
+@layer ox.page {
+  .ox-ops {
+    display: grid;
+    gap: var(--ox-gap);
+    margin-top: var(--ox-gap);
+  }
+
+  .ox-ops-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-ops-heading p {
+    max-width: 44rem;
+  }
+
+  .ox-ops-stack > .ox-panel {
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-ops-feedback {
+    position: sticky;
+    top: var(--ox-space-4);
+    z-index: var(--ox-z-sticky);
+    display: grid;
+    gap: var(--ox-space-3);
+  }
+
+  .ox-ops-feedback:has(.ox-banner) {
+    margin-bottom: var(--ox-gap);
+  }
+
+  .ox-ops-feedback:focus {
+    outline: none;
+  }
+
+  .ox-ops-detail {
+    margin: var(--ox-space-3) 0 0;
+    padding: var(--ox-space-4) var(--ox-space-6) var(--ox-space-4) var(--ox-space-8);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    color: var(--ox-muted);
+  }
+
+  .ox-ops-pending {
+    margin: var(--ox-space-5) 0 0;
+  }
+
+  .ox-ops-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-4);
+    margin-top: var(--ox-space-5);
+  }
+
+  .ox-ops-buttons .ox-ops-buttons,
+  .ox-ops-controls .ox-ops-buttons,
+  td .ox-ops-buttons {
+    margin-top: 0;
+  }
+
+  .ox-ops-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-3);
+  }
+
+  .ox-ops-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: var(--ox-space-5) var(--ox-gap);
+    margin: var(--ox-space-5) 0 0;
+  }
+
+  .ox-ops-facts dt {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+    letter-spacing: var(--ox-tracking-label);
+    text-transform: uppercase;
+  }
+
+  .ox-ops-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ox-ops-sub {
+    display: block;
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+    font-weight: var(--ox-weight-normal);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-ops-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-5) var(--ox-gap);
+    margin-bottom: var(--ox-space-5);
+  }
+
+  .ox-ops-server-list {
+    display: grid;
+    gap: var(--ox-gap);
+  }
+
+  .ox-ops-server {
+    display: grid;
+    gap: var(--ox-space-5);
+  }
+
+  .ox-ops-server-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-4) var(--ox-gap);
+  }
+
+  .ox-ops-server-head h3 {
+    font-size: var(--ox-text-lg);
+  }
+
+  .ox-ops-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-ops-forms {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--ox-space-5) var(--ox-space-8);
+  }
+
+  .ox-ops-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-ops-form .ox-input {
+    width: 9rem;
+  }
+
+  .ox-ops-hint {
+    flex-basis: 100%;
+    margin: 0;
+  }
+
+  .ox-ops-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    align-items: end;
+    gap: var(--ox-space-5) var(--ox-gap);
+    margin-bottom: var(--ox-space-5);
+  }
+
+  .ox-ops-filters .ox-ops-buttons {
+    margin-top: 0;
+  }
+
+  .ox-ops .ox-btn.ox-small {
+    min-height: var(--ox-control-h);
+  }
+
+  @media (max-width: 45rem) {
+    .ox-ops-buttons,
+    .ox-ops-controls,
+    .ox-ops-form {
+      align-items: stretch;
+    }
+
+    .ox-ops-form .ox-input {
+      width: 100%;
+    }
+  }
+}

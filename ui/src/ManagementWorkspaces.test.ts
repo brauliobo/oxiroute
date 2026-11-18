@@ -5,17 +5,9 @@ import App from './App.vue'
 import { signIn } from './test/session'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
-import OperationsWorkspace from './OperationsWorkspace.vue'
 import { fetchTlsInventory } from './api'
 import { jsonResponse } from './test/contractFixtures'
-import {
-  managementGeneration,
-  managementListeners,
-  managementPools,
-  managementServers,
-  managementStatus,
-  managementTlsInventory,
-} from './test/managementFixtures'
+import { managementGeneration, managementStatus, managementTlsInventory } from './test/managementFixtures'
 import { importReportResponse } from './test/importFixtures'
 import { pendingConfirm, settleConfirm } from './shell/confirm'
 
@@ -59,40 +51,6 @@ describe('local management workspaces', () => {
     expect(wrapper.get('a[href="#/provenance"]').attributes('aria-current')).toBe('page')
     expect(wrapper.get('main').text()).toContain('apache import')
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/v1/import-reports'))).toBe(true)
-    wrapper.unmount()
-  })
-
-  it('shows an authentication error without creating operational placeholder state', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({
-      error: { code: 'unauthorized', message: 'invalid bearer token' },
-    }, 401))))
-
-    const wrapper = mount(OperationsWorkspace, { props: { token } })
-    await flushPromises()
-
-    expect(wrapper.get('.operation-error').text()).toContain('invalid bearer token')
-    expect(wrapper.find('.status-section').exists()).toBe(false)
-    expect(wrapper.find('.inventory-grid').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('requires confirmation and an active revision before destructive generation actions', async () => {
-    const fetch = operationsFetch()
-    const confirm = vi.fn(() => false)
-    vi.stubGlobal('fetch', fetch)
-    vi.stubGlobal('confirm', confirm)
-    const wrapper = mount(OperationsWorkspace, { props: { token } })
-    await flushPromises()
-
-    await wrapper.get('[data-generation-action="rollback"]').trigger('click')
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('active revision'))
-    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
-
-    confirm.mockReturnValue(true)
-    await wrapper.get('[data-generation-action="reload"]').trigger('click')
-    await flushPromises()
-    const reloadCall = fetch.mock.calls.find(([url, init]) => String(url) === '/api/v1/generations/reload' && init?.method === 'POST')
-    expect(reloadCall?.[1]?.body).toBe(JSON.stringify({ expectedActiveRevision: 'active-revision' }))
     wrapper.unmount()
   })
 
@@ -204,18 +162,6 @@ describe('local management workspaces', () => {
     wrapper.unmount()
   })
 
-  it('keeps operational controls in a mobile-ready responsive grid', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-    const fetch = operationsFetch()
-    vi.stubGlobal('fetch', fetch)
-    const wrapper = mount(OperationsWorkspace, { props: { token } })
-    await flushPromises()
-
-    expect(wrapper.find('.inventory-grid').exists()).toBe(true)
-    expect(wrapper.find('.server-controls').exists()).toBe(true)
-    wrapper.unmount()
-  })
-
   it('redacts unsupported TLS inventory fields at the API boundary', async () => {
     const fetch = vi.fn(() => Promise.resolve(jsonResponse({
       certificates: [{
@@ -308,16 +254,3 @@ describe('local management workspaces', () => {
     wrapper.unmount()
   })
 })
-
-function operationsFetch() {
-  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input)
-    if (url === '/api/v1/status') return Promise.resolve(jsonResponse(managementStatus()))
-    if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
-    if (url === '/api/v1/listeners') return Promise.resolve(jsonResponse(managementListeners()))
-    if (url === '/api/v1/pools') return Promise.resolve(jsonResponse(managementPools()))
-    if (url === '/api/v1/servers') return Promise.resolve(jsonResponse(managementServers()))
-    if (init?.method === 'POST' || init?.method === 'PUT') return Promise.resolve(jsonResponse({ outcome: 'applied', changed: 1 }))
-    throw new Error(`Unexpected request: ${url}`)
-  })
-}

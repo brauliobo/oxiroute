@@ -6,6 +6,11 @@
     gap: var(--ox-space-3);
   }
 
+  .ox-field[data-stacked] {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .ox-field > label {
     color: var(--ox-muted);
   }

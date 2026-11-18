@@ -31,7 +31,7 @@ Panel.ox-login(title="Management token")
       strong No management token.
       |  Enter the management bearer token to open the console.
   form.ox-login-form(@submit.prevent="submit")
-    Field(label="Bearer token" label-for="management-access-token")
+    Field(stacked label="Bearer token" label-for="management-access-token")
       Input#management-access-token(
         v-model="input"
         type="password"

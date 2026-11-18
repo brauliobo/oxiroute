@@ -66,11 +66,6 @@
     gap: var(--ox-space-4);
   }
 
-  .ox-login-form .ox-field {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   @media (max-width: 45rem) {
     .ox-header-end {
       margin-inline-start: 0;
