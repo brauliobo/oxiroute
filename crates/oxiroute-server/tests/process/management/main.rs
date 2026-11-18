@@ -15,6 +15,7 @@ mod console;
 mod daemon;
 mod external;
 mod generation;
+mod history;
 mod log_filter;
 mod management;
 mod restart;

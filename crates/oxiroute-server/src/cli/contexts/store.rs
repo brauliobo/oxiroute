@@ -3,11 +3,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::source::TokenSource;
-use crate::cli::{
-    error::CliError,
-    fs::{read_regular_file, write_private},
-    net::Endpoint,
-    parse::parse_timeout,
+use crate::{
+    atomic_file::{ensure_private_directory, write_atomic},
+    cli::{error::CliError, fs::read_regular_file, net::Endpoint, parse::parse_timeout},
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -154,9 +152,13 @@ impl Store {
         self.check(file)?;
         let mut text = serde_json::to_string_pretty(file).map_err(CliError::local)?;
         text.push('\n');
-        write_private(&self.path, text.as_bytes()).map_err(|error| {
+        let unwritable = |error: std::io::Error| {
             CliError::Local(format!("cannot write {}: {error}", self.path.display()))
-        })
+        };
+        if let Some(directory) = self.path.parent() {
+            ensure_private_directory(directory).map_err(unwritable)?;
+        }
+        write_atomic(&self.path, text.as_bytes(), 0o600).map_err(unwritable)
     }
 }
 

@@ -24,6 +24,7 @@ mod keeping;
 mod source;
 mod storage;
 
+use super::history::{ConfigHistory, HistoryLimits, now_unix_ms};
 use crate::encoding::lower_hex;
 use cache::LoadCache;
 pub use candidate::PersistableConfigCandidate;
@@ -440,6 +441,7 @@ pub enum ConfigCoordinatorPathError {
 pub struct CanonicalConfigCoordinator {
     canonical_path: PathBuf,
     format: ConfigFormat,
+    history: ConfigHistory,
     operation_lock: Arc<Mutex<LoadCache>>,
 }
 
@@ -455,6 +457,7 @@ impl CanonicalConfigCoordinator {
         let format = ConfigFormat::infer(&canonical_path)
             .map_err(|_| ConfigCoordinatorPathError::UnsupportedFormat)?;
         Ok(Self {
+            history: ConfigHistory::beside(&canonical_path),
             canonical_path,
             format,
             operation_lock: Arc::new(Mutex::new(LoadCache::default())),
@@ -469,6 +472,10 @@ impl CanonicalConfigCoordinator {
     #[must_use]
     pub const fn format(&self) -> ConfigFormat {
         self.format
+    }
+
+    pub(crate) const fn history(&self) -> &ConfigHistory {
+        &self.history
     }
 
     /// Reads one stable no-follow snapshot and returns its normalized typed representation.
@@ -644,11 +651,18 @@ impl CanonicalConfigCoordinator {
             };
         }
 
+        let limits = HistoryLimits::of(candidate.validated_config());
+        let keep_previous = || {
+            self.history
+                .record(&initial_disk, now_unix_ms(), limits)
+                .map_err(drop)?;
+            before_exchange()
+        };
         match storage.replace(
             &transaction,
             expected_revision,
             candidate.config_preview().as_bytes(),
-            before_exchange,
+            keep_previous,
             after_exchange,
             control,
         ) {

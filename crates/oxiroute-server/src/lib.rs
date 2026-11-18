@@ -1,3 +1,4 @@
+mod atomic_file;
 mod capsule;
 pub mod cli;
 mod clock;

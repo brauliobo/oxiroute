@@ -23,7 +23,10 @@ use comparison::comparison;
 use redaction::SourceSecrets;
 
 mod comparison;
+mod history;
 mod redaction;
+
+pub(super) use history::{HistoryRoute, history_route};
 
 const REDACTION_POLICY: &str = "rtmp_inline_secrets";
 
@@ -90,6 +93,12 @@ impl Authority {
     fn secrets_with(&self, candidate: &ConfigDraft) -> SourceSecrets {
         let mut drafts = self.drafts();
         drafts.push(candidate);
+        SourceSecrets::of(&drafts)
+    }
+
+    fn secrets_with_all(&self, candidates: &[&ConfigDraft]) -> SourceSecrets {
+        let mut drafts = self.drafts();
+        drafts.extend_from_slice(candidates);
         SourceSecrets::of(&drafts)
     }
 

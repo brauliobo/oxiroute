@@ -17,22 +17,22 @@ use crate::shared::{TOKEN, management_config, public_pool, recording_candidate};
 
 const BANNER: &str = "// Edited by hand: this comment must survive every save.\n";
 
-struct Daemon {
-    server: ServerProcess,
-    address: SocketAddr,
-    authorization: String,
-    text: String,
+pub(super) struct Daemon {
+    pub(super) server: ServerProcess,
+    pub(super) address: SocketAddr,
+    pub(super) authorization: String,
+    pub(super) text: String,
 }
 
 impl Daemon {
-    async fn start(file_name: &str, format: ConfigFormat, banner: &str) -> Self {
+    pub(super) async fn start(file_name: &str, format: ConfigFormat, banner: &str) -> Self {
         let address = reserve_tcp_address();
         let mut config = management_config(address, None);
         config.upstream_pools = vec![public_pool()];
         Self::start_with(file_name, format, banner, config, address).await
     }
 
-    async fn start_with(
+    pub(super) async fn start_with(
         file_name: &str,
         format: ConfigFormat,
         banner: &str,
@@ -54,7 +54,7 @@ impl Daemon {
         }
     }
 
-    async fn get(&self, path: &str) -> HttpResponse {
+    pub(super) async fn get(&self, path: &str) -> HttpResponse {
         http_request(
             self.address,
             "GET",
@@ -65,7 +65,7 @@ impl Daemon {
         .await
     }
 
-    async fn send(
+    pub(super) async fn send(
         &self,
         method: &str,
         path: &str,
@@ -89,7 +89,7 @@ impl Daemon {
         .await
     }
 
-    async fn put(&self, revision: Option<&str>, text: &str) -> HttpResponse {
+    pub(super) async fn put(&self, revision: Option<&str>, text: &str) -> HttpResponse {
         self.send(
             "PUT",
             "/api/v1/config/source",
@@ -99,12 +99,12 @@ impl Daemon {
         .await
     }
 
-    async fn validate(&self, body: &Value) -> HttpResponse {
+    pub(super) async fn validate(&self, body: &Value) -> HttpResponse {
         self.send("POST", "/api/v1/config/source/validate", None, body)
             .await
     }
 
-    async fn disk_revision(&self) -> String {
+    pub(super) async fn disk_revision(&self) -> String {
         let source = self.get("/api/v1/config/source").await;
         assert_eq!(source.status, 200, "{}", source.text());
         source.json()["diskRevision"]
@@ -113,7 +113,7 @@ impl Daemon {
             .to_owned()
     }
 
-    fn file(&self) -> String {
+    pub(super) fn file(&self) -> String {
         fs::read_to_string(&self.server.config_path).expect("configuration file")
     }
 }
@@ -543,7 +543,11 @@ async fn a_changed_secret_shows_as_changed_without_either_value() {
     ] {
         let text = checked.text();
         let at = text.find(secret);
-        assert!(at.is_none(), "{secret} leaked near {:?}", at.map(|at| &text[at.saturating_sub(200)..(at + 100).min(text.len())]));
+        assert!(
+            at.is_none(),
+            "{secret} leaked near {:?}",
+            at.map(|at| &text[at.saturating_sub(200)..(at + 100).min(text.len())])
+        );
     }
     let body = checked.json();
     let secret = change(

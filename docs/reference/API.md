@@ -16,6 +16,7 @@ are migrated.
 | --- | --- | --- |
 | Configuration | `GET /api/v1/config`, `POST /api/v1/config/validate`, `PUT /api/v1/config` | Management bearer token; typed drafts, preflight, revision-safe write |
 | Configuration source | `GET /api/v1/config/source`, `POST /api/v1/config/source/validate`, `PUT /api/v1/config/source` | Management bearer token; the authored text in KDL, Lua, HOCON, UCI or JSON, preflight, revision-safe write that keeps comments and Lua logic (see "Configuration Source") |
+| Configuration history | `GET /api/v1/config/history`, `GET /api/v1/config/history/{id}`, `GET /api/v1/config/history/diff?from={id}&to={id}`, `POST /api/v1/config/history/{id}/rollback` | Management bearer token; the earlier versions of the file, kept by every save, and a revision-safe rollback to one (see "Configuration History") |
 | Native import reports | `GET /api/v1/import-reports`, `GET /api/v1/import-reports/{index}` | Management bearer token; bounded redacted evidence and read-only finalized KDL preview |
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status`, `/stats` | Management bearer token; redacted active state; `/stats` is the stats page snapshot (see "Stats page API" in OPERATIONS.md) |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
@@ -164,6 +165,41 @@ write. A save in that state fails with `500` `write_failed` and a diagnostic `E_
 `E_CONFIG_NOT_WRITABLE` that names the cause. The fix is a systemd drop-in with `ReadWritePaths=/etc/oxiroute`
 plus a directory the service group may write (see the packaging README), or editing the file on the
 host: the daemon reloads it either way.
+
+## Configuration History
+
+Every successful `PUT /api/v1/config` and `PUT /api/v1/config/source` keeps the text it replaces as a
+history entry before it replaces it, so a save that cannot keep its predecessor does not happen. Entries live
+in `<configuration file>.history/` (`/etc/oxiroute/oxiroute.kdl.history/`), a `0700` directory of `0600`
+files named `<unix ms>-<id>.<extension>`, written through a temporary file, `fsync` and a rename. An entry
+is the exact authored text, so it holds whatever inline secrets the file held and is protected only by its
+file mode; the API redacts them like `GET /config/source` does. The id is the first 12 hexadecimal digits of
+the SHA-256 of the text, so the same text is kept once, with the time of its latest replacement. Edits made
+directly on disk, outside the API, are not kept.
+
+The count and total size are bounded by `config_history` (`max_entries`, default 20, 1 to 1000;
+`max_total_bytes`, default 16 MiB, 4 MiB to 1 GiB): after each save the oldest entries are removed until both
+bounds hold, so an entry larger than `max_total_bytes` is not kept.
+
+- `GET /api/v1/config/history` returns `schemaVersion`, `diskRevision`, `activeRevision`, `format`,
+  `current` (`id`, `bytes` of the stored file), `limits` and `entries`, newest first: `id`, `at` (Unix
+  milliseconds the version was replaced), `bytes` and `current` (the entry has the text now stored).
+- `GET /api/v1/config/history/{id}` returns `id`, `at`, `bytes`, `revision` (the SHA-256 of the text, an
+  `If-Config-Revision` value), `format`, `current`, `text` and `redaction` as the source route does. `{id}` is
+  any prefix of at least 6 digits (`400` `history_id_ambiguous` when it matches several, `404`
+  `history_entry_not_found` when none), or `current` for the stored file. A version that no longer validates
+  is withheld (`redaction.withheld: true`, `text: null`) because its secrets cannot be located.
+- `GET /api/v1/config/history/diff?from={id}&to={id}` compares two versions, `current` naming the stored
+  file: `identical`, `diff` (the by-name changes of `POST /config/source/validate`) and `textDiff` (the
+  unified diff of the redacted texts, `--- {from}` `+++ {to}`). Both are `null` and `unresolved` is `true`
+  when either version no longer validates.
+- `POST /api/v1/config/history/{id}/rollback` stores the version as the new configuration file. It is a
+  normal validated apply: it needs one `If-Config-Revision` header (`428`, `409`, `400` as for `PUT`),
+  resolves the text like the validate route (`422` with the diagnostics when it no longer validates, and
+  nothing is written), writes it through the same revision-checked write and answers with the `PUT` body. The
+  replaced text becomes the newest history entry, so a rollback is itself a revision that can be rolled back.
+
+All four routes need the management token, like the other configuration routes.
 
 ## Response Rules
 
