@@ -213,7 +213,10 @@ impl ConfigApiState {
         )
     }
 
-    fn source_unavailable(&self, rejection: &ConfigLoadRejection) -> ApiResponse {
+    pub(in crate::rtmp::api::config) fn source_unavailable(
+        &self,
+        rejection: &ConfigLoadRejection,
+    ) -> ApiResponse {
         ApiResponse::json(
             503,
             &json!({

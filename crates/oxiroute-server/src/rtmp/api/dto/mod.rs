@@ -6,6 +6,7 @@ mod import;
 mod management;
 mod mutation;
 mod observability;
+mod overlay;
 mod persistence;
 mod recordings;
 mod rtmp;
@@ -42,6 +43,7 @@ pub(crate) use observability::{
     CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,
     StatusResponse,
 };
+pub(crate) use overlay::{OverlayResponse, OverlaySetting, OverlayStatus};
 pub(crate) use persistence::Persistence;
 pub(crate) use recordings::{RecordingDeleteResponse, RecordingDto, RecordingListResponse};
 pub(crate) use rtmp::{

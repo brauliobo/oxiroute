@@ -58,6 +58,8 @@ pub struct ServerProcess {
     stderr_path: PathBuf,
     pub config_path: PathBuf,
     pub token_path: Option<PathBuf>,
+    direct: bool,
+    environment: Vec<(String, String)>,
     _directory: TempDir,
 }
 
@@ -134,8 +136,34 @@ impl ServerProcess {
             stderr_path,
             config_path,
             token_path,
+            direct,
+            environment: environment
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
             _directory: directory,
         }
+    }
+
+    /// Stops the server and starts it again on the same files and with the same environment.
+    #[allow(dead_code)]
+    pub fn restart(&mut self) {
+        self.stop();
+        let stderr = fs::OpenOptions::new()
+            .append(true)
+            .open(&self.stderr_path)
+            .expect("server standard error file");
+        let environment = self
+            .environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        self.child = spawn_server(
+            (&self.config_path, self.token_path.as_deref()),
+            (Stdio::null(), stderr.into()),
+            self.direct,
+            &environment,
+        );
     }
 
     #[allow(dead_code)]

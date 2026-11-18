@@ -11,13 +11,13 @@ use super::{
         AuditPageResponse, AuditStatusResponse, ConfigRejectedResponse, DnsRefreshResponse,
         DnsRefreshServer, DrainRequest, DrainResponse, EvacuationResponse, EventPageV1Response,
         EventPageV2Response, GenerationActionResponse, GenerationResponse,
-        ListenerInventoryResponse, ListenerStateRequest, MutationResponse, Persistence,
-        PoolEvacuateRequest, PoolStateRequest, ProcessMutationResponse, RevisionRequest,
-        ServerCapacityRequest, ServerChange, ServerChecksRequest, ServerEvacuateRequest,
-        ServerHealthRequest, ServerStateRequest, ServerWeightRequest, TlsActionResponse,
-        TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse, TlsReconcileOutcome,
-        TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest, pools_body,
-        servers_body,
+        ListenerInventoryResponse, ListenerStateRequest, MutationResponse, OverlayResponse,
+        OverlaySetting, OverlayStatus, Persistence, PoolEvacuateRequest, PoolStateRequest,
+        ProcessMutationResponse, RevisionRequest, ServerCapacityRequest, ServerChange,
+        ServerChecksRequest, ServerEvacuateRequest, ServerHealthRequest, ServerStateRequest,
+        ServerWeightRequest, TlsActionResponse, TlsCertificateDto, TlsInventoryResponse,
+        TlsJobControlResponse, TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse,
+        TlsRequest, TlsRevokeRequest, pools_body, servers_body,
     },
 };
 use crate::{
@@ -26,6 +26,7 @@ use crate::{
     observability::operational_event::{
         AuditCategory, AuditContext, AuditResult, AuditStore, emit_server_evacuation,
     },
+    overlay::{OverlayEdit, Setting},
 };
 
 const MAX_BATCH_TARGETS: usize = 256;
@@ -68,6 +69,8 @@ impl ManagementState {
         match (route, method) {
             (Route::Listeners, "GET") => self.listeners(),
             (Route::ListenerState, "POST") => self.listener_state(session).await,
+            (Route::Overlay, "GET") => self.overlay_show(),
+            (Route::OverlayClear, "POST") => self.overlay_clear(),
             (Route::Pools, "GET") => self.pools(),
             (Route::PoolState, "POST") => self.pool_state(session).await,
             (Route::PoolEvacuate, "POST") => self.pool_evacuate(session, context).await,
@@ -112,6 +115,7 @@ impl ManagementState {
             (Route::ProcessShutdown, "POST") => self.process_shutdown(session).await,
             (
                 Route::Listeners
+                | Route::Overlay
                 | Route::Pools
                 | Route::Servers
                 | Route::Generations
@@ -226,6 +230,7 @@ async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Resu
 }
 
 mod mutations;
+mod overlay;
 mod read;
 mod routes;
 mod tls;

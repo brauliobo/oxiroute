@@ -31,6 +31,7 @@ use crate::{
     service_plan::validation_plan,
 };
 
+mod promote;
 mod snapshot;
 mod source;
 
@@ -48,6 +49,7 @@ pub(super) enum Route {
     Source,
     SourceValidate,
     History(source::HistoryRoute),
+    OverlayPromote,
     ImportReports(Option<usize>),
 }
 
@@ -88,14 +90,16 @@ impl ConfigApiState {
     pub(super) fn unauthenticated_response(route: Route, method: &str) -> ApiResponse {
         match (route, method) {
             (Route::Config | Route::Source, "GET" | "PUT")
-            | (Route::Validate | Route::SourceValidate, "POST")
+            | (Route::Validate | Route::SourceValidate | Route::OverlayPromote, "POST")
             | (Route::ImportReports(_), "GET") => ApiResponse::unauthorized(),
             (Route::History(history), method) if method == history.method() => {
                 ApiResponse::unauthorized()
             }
             (Route::History(history), _) => ApiResponse::method_not_allowed(history.method()),
             (Route::Config | Route::Source, _) => ApiResponse::method_not_allowed("GET, PUT"),
-            (Route::Validate | Route::SourceValidate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::Validate | Route::SourceValidate | Route::OverlayPromote, _) => {
+                ApiResponse::method_not_allowed("POST")
+            }
             (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
         }
     }
@@ -139,6 +143,16 @@ impl ConfigApiState {
                 }
             }
             (Route::Config, _) => ApiResponse::method_not_allowed("GET, PUT"),
+            (Route::OverlayPromote, "POST") => {
+                let revision = match config_revision_header(session) {
+                    Ok(revision) => revision,
+                    Err(response) => return response,
+                };
+                match system_time_ms() {
+                    Ok(now_unix_ms) => self.promote_overlay_response(&revision, now_unix_ms),
+                    Err(response) => response,
+                }
+            }
             (Route::Validate, "POST") => {
                 if let Err(response) = require_json_content_type(session) {
                     return response;
@@ -152,7 +166,7 @@ impl ConfigApiState {
                     Err(response) => response,
                 }
             }
-            (Route::Validate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::Validate | Route::OverlayPromote, _) => ApiResponse::method_not_allowed("POST"),
             (Route::Source | Route::SourceValidate, _) => {
                 self.handle_source(route, method, session).await
             }
@@ -625,6 +639,7 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
         "/api/v1/config/validate" => Some(Route::Validate),
         "/api/v1/config/source" => Some(Route::Source),
         "/api/v1/config/source/validate" => Some(Route::SourceValidate),
+        "/api/v1/overlay/promote" => Some(Route::OverlayPromote),
         path if path.starts_with("/api/v1/config/history") => {
             source::history_route(path).map(Route::History)
         }

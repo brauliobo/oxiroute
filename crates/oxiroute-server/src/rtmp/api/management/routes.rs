@@ -2,6 +2,8 @@
 pub(in super::super) enum Route<'a> {
     Listeners,
     ListenerState,
+    Overlay,
+    OverlayClear,
     Pools,
     PoolState,
     PoolEvacuate,
@@ -46,6 +48,8 @@ pub(in super::super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         .map_or((path_and_query, None), |(path, query)| (path, Some(query)));
     match path {
         "/api/v1/listeners/administrative-state" => Some(Route::ListenerState),
+        "/api/v1/overlay" => Some(Route::Overlay),
+        "/api/v1/overlay/clear" => Some(Route::OverlayClear),
         "/api/v1/pools/administrative-state" => Some(Route::PoolState),
         "/api/v1/pools/evacuate" => Some(Route::PoolEvacuate),
         "/api/v1/servers/administrative-state" => Some(Route::ServerState),

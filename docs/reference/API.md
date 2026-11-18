@@ -21,6 +21,7 @@ are migrated.
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status`, `/stats` | Management bearer token; redacted active state; `/stats` is the stats page snapshot (see "Stats page API" in OPERATIONS.md) |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
 | Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections`, `PUT /api/v1/servers/weight` | Management bearer token and active-generation revision |
+| Overlay | `GET /api/v1/overlay`, `POST /api/v1/overlay/clear`, `POST /api/v1/overlay/promote` | Management bearer token; the runtime changes kept with `persist` (see "Persistence Scope"); promote also needs `If-Config-Revision` |
 | Evacuate | `POST /api/v1/servers/evacuate`, `POST /api/v1/pools/evacuate` | Management bearer token; drain plus a one-shot cancel and re-dispatch of in-flight HTTP requests (see below) |
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
@@ -382,7 +383,8 @@ Every runtime mutation response names where its change lives in `persistence`:
 | --- | --- |
 | `runtime` | Held by this process. It follows its listener, pool or server by name through reloads, `config apply` and rollbacks and is lost when the process restarts. Nothing is written to the configuration file |
 | `registry` | Stored with the registration of a dynamic server in the registry store (operator drain or maintenance), so it also survives a restart |
-| `mixed` | A batch whose targets differ: static servers (`runtime`) and registered servers (`registry`) |
+| `overlay` | Requested with `"persist": true`: written to the overlay file next to the configuration file before it is applied, and applied again at every start and reload |
+| `mixed` | A batch whose targets differ, for example static servers (`runtime`) and registered servers (`registry`) |
 
 Listener, pool and server administrative state, health override, check switch, max-connections, weight,
 `refresh-dns`, evacuate, `generations/drain`, `generations/rollback` and `process/drain` answer `runtime`,
@@ -390,8 +392,48 @@ except that the administrative state and the evacuation of a registered server a
 state or pool evacuation is applied server by server, so a pool made of registered servers answers
 `registry`, a pool of configured servers `runtime`, and a pool of both `mixed`; the registered servers keep
 the drain across a restart exactly as when drained one by one. `generations/reload` and `config` saves are
-changes to the file and carry no `persistence`; `process/shutdown` neither. A change that must outlive a
-restart of a configured server is made in the configuration file.
+changes to the file and carry no `persistence`; `process/shutdown` neither.
+
+### Overlay
+
+The listener, pool and server administrative-state, `servers/health-override`, `servers/checks`,
+`servers/max-connections`, `servers/weight`, `servers/evacuate` and `pools/evacuate` requests accept
+`"persist": true` (default `false`). The change is first written to `<configuration file>.overlay.json`
+(mode `0600`, replaced atomically; the configuration file is not touched) and only then applied; when the
+write fails (`500 overlay_unavailable`) nothing is applied. A change that already lives in the registry (the
+administrative state of a registered server) stays `registry` and writes no overlay entry. Setting a value
+back to its default (`ready`, `auto`, checks enabled, no limit, no weight) with `persist` removes the entry.
+
+The overlay is JSON because the daemon already reads and writes JSON state beside its files and the same file
+then serves a configuration in any authored format. It is versioned and deterministic (sorted, no timestamps):
+
+```json
+{
+  "schemaVersion": 1,
+  "servers": [{ "pool": "web", "server": "app-1", "state": "drain", "maxConnections": 8 }],
+  "listeners": [{ "listener": "edge", "state": "maintenance" }]
+}
+```
+
+At every activation (start and reload) the overlay fills a setting of a server only where the running
+state still holds the default, so a runtime change made since wins until the next restart. A setting whose
+server or listener does not exist is ignored and reported. An unreadable overlay is logged and not applied;
+the daemon runs from the configuration alone and refuses `persist` writes until the file is fixed or cleared.
+The overlay does not take part in the configuration revisions: persisting a drain does not replace the
+active generation.
+
+`GET /api/v1/overlay` returns `path`, `revision` (SHA-256 of the file), `state` (`empty`, `applied`,
+`diverged`, `unreadable`) and one row per setting with `target` (`pool/server` or the listener name),
+`setting` (`state`, `health`, `checks`, `max_connections`, `weight`, `listener_state`), `value` and `status`:
+`applied` (the running daemon holds it), `diverged` (a later runtime change replaced it) or `orphan` (the
+target no longer exists).
+
+`POST /api/v1/overlay/clear` deletes the file; the running state is left as it is. `POST
+/api/v1/overlay/promote` needs `If-Config-Revision` like `PUT /config/source`, writes the `max_connections` of
+configured servers into the configuration file through the typed save (in the authored format; its comments and
+logic are not kept and a composed file is refused with `422`), then removes those entries from the overlay.
+It answers like a save, or `{"outcome":"nothing_to_promote","promoted":0}`. State, health, checks, weight and
+listener entries have no configuration setting and stay in the overlay.
 
 ## Evacuate
 

@@ -4,16 +4,22 @@ use serde::Serialize;
 /// Where a mutation lives: only in this process (`runtime`: it follows its target across generation
 /// changes and is lost at a restart), in the dynamic-server registry (`registry`: it is stored with
 /// the registration and survives a restart), or both for a batch that touches static and registered
-/// servers (`mixed`).
+/// servers (`mixed`). A change made with `persist` on a configured server lives in the overlay file
+/// next to the configuration (`overlay`) and is applied again at every start and reload.
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Persistence {
     Runtime,
     Registry,
+    Overlay,
     Mixed,
 }
 
 impl Persistence {
+    pub(crate) const fn overlaid(self, persisted: bool) -> Self {
+        if persisted { Self::Overlay } else { self }
+    }
+
     pub(crate) fn all(scopes: impl IntoIterator<Item = Self>) -> Self {
         scopes
             .into_iter()
@@ -24,7 +30,7 @@ impl Persistence {
 
 #[cfg(test)]
 mod tests {
-    use super::Persistence::{self, Mixed, Registry, Runtime};
+    use super::Persistence::{self, Mixed, Overlay, Registry, Runtime};
 
     #[test]
     fn a_batch_is_mixed_only_when_its_targets_differ() {
@@ -33,5 +39,7 @@ mod tests {
         assert_eq!(Persistence::all([Registry, Registry]), Registry);
         assert_eq!(Persistence::all([Registry, Runtime, Registry]), Mixed);
         assert_eq!(Persistence::all([Mixed, Registry]), Mixed);
+        assert_eq!(Persistence::all([Overlay, Overlay]), Overlay);
+        assert_eq!(Persistence::all([Overlay, Registry]), Mixed);
     }
 }

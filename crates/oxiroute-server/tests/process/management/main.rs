@@ -18,6 +18,7 @@ mod generation;
 mod history;
 mod log_filter;
 mod management;
+mod overlay;
 mod restart;
 mod shared;
 mod shutdown;

@@ -19,6 +19,8 @@ pub(crate) struct ListenerStateRequest {
     pub(crate) listeners: Vec<String>,
     #[schemars(with = "AdministrativeStateSchema")]
     pub(crate) state: AdministrativeState,
+    #[serde(default)]
+    pub(crate) persist: bool,
     pub(crate) expected_active_revision: String,
 }
 
@@ -28,6 +30,8 @@ pub(crate) struct PoolStateRequest {
     pub(crate) pools: Vec<String>,
     #[schemars(with = "AdministrativeStateSchema")]
     pub(crate) state: AdministrativeState,
+    #[serde(default)]
+    pub(crate) persist: bool,
     pub(crate) expected_active_revision: String,
 }
 
@@ -42,6 +46,8 @@ pub(crate) struct ServerTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ServerChange {
     pub(crate) targets: Vec<ServerTarget>,
+    #[serde(default)]
+    pub(crate) persist: bool,
     pub(crate) expected_active_revision: String,
 }
 
@@ -69,6 +75,8 @@ pub(crate) struct PoolEvacuateRequest {
     pub(crate) pools: Vec<String>,
     #[serde(default)]
     pub(crate) force: bool,
+    #[serde(default)]
+    pub(crate) persist: bool,
     pub(crate) expected_active_revision: String,
 }
 
