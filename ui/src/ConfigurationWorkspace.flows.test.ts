@@ -2,6 +2,7 @@ import { flushPromises } from './test/mount'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CanonicalConfig } from './config'
+import { pendingConfirm, settleConfirm } from './shell/confirm'
 import { jsonResponse } from './test/contractFixtures'
 import {
   configSnapshot,
@@ -172,8 +173,6 @@ describe('ConfigurationWorkspace', () => {
 
   it('guards browser unload and explicit draft reset', async () => {
     installConfigFetch()
-    const confirm = vi.fn(() => false)
-    vi.stubGlobal('confirm', confirm)
     const wrapper = await mountUnlocked()
 
     const version = wrapper.get('[data-field="version"] input')
@@ -183,11 +182,15 @@ describe('ConfigurationWorkspace', () => {
     expect(unload.defaultPrevented).toBe(true)
 
     await findButton(wrapper, 'Reset draft').trigger('click')
-    expect(confirm).toHaveBeenCalledOnce()
+    expect(pendingConfirm.value?.title).toBe('Reset the draft to the disk file?')
+    expect(pendingConfirm.value?.details).toEqual(['/version'])
+    settleConfirm(false)
+    await flushPromises()
     expect((version.element as HTMLInputElement).value).toBe('2')
 
-    confirm.mockReturnValue(true)
     await findButton(wrapper, 'Reset draft').trigger('click')
+    settleConfirm(true)
+    await flushPromises()
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('1')
   })
 

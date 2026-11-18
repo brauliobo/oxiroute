@@ -10,9 +10,11 @@
 
 .revision-banner.stale(v-if="staleRevision" tabindex="-1" role="alert")
   div
-    strong Draft preserved: the disk revision changed.
-    p Expected {{ shortRevision(diskRevision) }}, current {{ shortRevision(staleRevision) }}. Reconcile explicitly; this editor will not overwrite the newer file.
-  button.secondary-button(type="button" @click="emit('discard')") Discard draft and load disk
+    strong The file on disk changed while you were editing.
+    p Your draft is kept and nothing was written. It started from {{ shortRevision(diskRevision) }}; the disk now has {{ currentRevision }}. Reload and reapply carries over your edits to settings the new file left alone and lists any that collide; discarding drops all of them.
+  .revision-actions
+    Button(variant="primary" @click="emit('reapply')") Reload and reapply my edits
+    Button(@click="emit('discard')") Discard my edits and load disk
 
 .revision-banner.error(v-if="refreshError" role="alert")
   strong Configuration refresh failed.
@@ -36,14 +38,18 @@
 </template>
 
 <script setup lang="ts" vapor>
+import { computed } from 'vue'
+
+import Button from '#design/button/Button.vue'
 import type { ConfigSnapshot } from '../../config'
 import { shortRevision } from '../../formatters'
 import type { SaveMessage } from '../useConfigurationLifecycle'
 import { formatLabel } from './configFormat'
 import type { CanonicalUnavailableState } from './loadErrors'
 import type { TlsAlpnMessage } from './useTlsAlpnPreparation'
+import './reapply.css'
 
-defineProps<{
+const props = defineProps<{
   snapshot: ConfigSnapshot
   diskRevision: string
   activeRevision: string | null
@@ -53,7 +59,11 @@ defineProps<{
   saveMessage: SaveMessage | null
   tlsAlpnMessage: TlsAlpnMessage | null
 }>()
-const emit = defineEmits<{ discard: [] }>()
+const emit = defineEmits<{ discard: []; reapply: [] }>()
+const currentRevision = computed(() =>
+  props.staleRevision === 'unknown' || props.staleRevision === 'newer revision'
+    ? 'a revision that could not be read'
+    : shortRevision(props.staleRevision ?? ''))
 </script>
 
 <style scoped src="./base.css"></style>

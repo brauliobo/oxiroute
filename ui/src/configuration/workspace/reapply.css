@@ -1,0 +1,43 @@
+@layer ox.page {
+  .revision-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-4);
+  }
+
+  .reapply-report {
+    margin-top: var(--ox-space-5);
+    padding: var(--ox-space-5) var(--ox-space-6);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-left: var(--ox-space-3) solid var(--ox-info);
+    background: var(--ox-surface);
+    color: var(--ox-fg);
+  }
+
+  .reapply-report header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-5);
+  }
+
+  .reapply-report h3,
+  .reapply-report h4 {
+    margin: 0;
+  }
+
+  .reapply-report h4 {
+    margin-top: var(--ox-space-5);
+    font-size: var(--ox-text-md);
+  }
+
+  .reapply-report ul {
+    margin: var(--ox-space-3) 0 0;
+    padding-left: var(--ox-space-7);
+  }
+
+  .reapply-report code {
+    font-family: var(--ox-mono);
+    overflow-wrap: anywhere;
+  }
+}

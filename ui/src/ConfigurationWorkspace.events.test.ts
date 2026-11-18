@@ -47,7 +47,7 @@ describe('configuration event-driven revision checks', () => {
     await flushPromises()
 
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('3')
-    expect(wrapper.get('.revision-banner.stale').text()).toContain('Draft preserved')
+    expect(wrapper.get('.revision-banner.stale').text()).toContain('The file on disk changed while you were editing')
     expect(wrapper.get('.revision-banner.stale').text()).toContain('disk-new')
   })
 })

@@ -50,7 +50,10 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       :save-message="saveMessage"
       :tls-alpn-message="tlsAlpnMessage"
       @discard="discardAndReload"
+      @reapply="reloadAndReapply"
     )
+
+    ReapplyReport(v-if="reapplyReport" :report="reapplyReport" @dismiss="reapplyReport = null")
 
     .config-layout
       ObjectRail(
@@ -170,6 +173,9 @@ import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
 import CertificateEditor from './configuration/CertificateEditor.vue'
 import { clone } from './configuration/clone'
 import { diffLines } from './configuration/diff/lines'
+import { changesBetween } from './configuration/merge/tree'
+import { pathSummary } from './configuration/merge/summary'
+import { mergeConfig, type MergeResult } from './configuration/merge/threeWay'
 import { issueId, provideFieldDiagnostics } from './configuration/fields/context'
 import ForwardProxyServiceEditor from './configuration/ForwardProxyServiceEditor.vue'
 import HttpServiceEditor from './configuration/HttpServiceEditor.vue'
@@ -188,6 +194,7 @@ import GeneralSection from './configuration/workspace/GeneralSection.vue'
 import LoadingPanel from './configuration/workspace/LoadingPanel.vue'
 import ManagementSection from './configuration/workspace/ManagementSection.vue'
 import ObjectRail from './configuration/workspace/ObjectRail.vue'
+import ReapplyReport from './configuration/workspace/ReapplyReport.vue'
 import RevisionBanners from './configuration/workspace/RevisionBanners.vue'
 import RevisionBoard from './configuration/workspace/RevisionBoard.vue'
 import SaveReviewDialog from './configuration/workspace/SaveReviewDialog.vue'
@@ -195,6 +202,7 @@ import StatsSection from './configuration/workspace/StatsSection.vue'
 import { hasErrors, summarizeDiagnostics } from './configuration/workspace/diagnosticSummary'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
 import { useLiveRegion } from '#design/composables/useLiveRegion'
+import { confirmAction } from './shell/confirm'
 import { useSnapshotLoader } from './configuration/workspace/useSnapshotLoader'
 import { useTlsAlpnPreparation } from './configuration/workspace/useTlsAlpnPreparation'
 import ValidationOutput from './configuration/workspace/ValidationOutput.vue'
@@ -213,6 +221,7 @@ const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
 const accessToken = computed(() => props.token || null)
 const selectedKey = ref('general')
+const reapplyReport = ref<Pick<MergeResult<unknown>, 'applied' | 'collisions'> | null>(null)
 
 const reviewOpen = ref(false)
 
@@ -244,6 +253,7 @@ const {
   accessToken,
   onUnauthorized: relockConfiguration,
   onExitReview: exitReview,
+  onSaved: () => { reapplyReport.value = null },
 })
 
 const {
@@ -331,9 +341,34 @@ function checkDiskRevision(): void {
   void loadSnapshot(true)
 }
 
-function discardAndReload(): void {
-  if (isDirty.value && !window.confirm('Discard this draft and load the configuration from disk?')) return
-  void loadSnapshot(false)
+async function confirmDiscard(title: string): Promise<boolean> {
+  const changes = snapshot.value && draft.value ? changesBetween(snapshot.value.config, draft.value) : []
+  if (changes.length === 0) return true
+  return confirmAction({
+    title,
+    message: `${changes.length} unsaved ${changes.length === 1 ? 'change is' : 'changes are'} thrown away:`,
+    details: pathSummary(changes),
+    confirmLabel: 'Discard changes',
+    danger: true,
+  })
+}
+
+async function discardAndReload(): Promise<void> {
+  if (!await confirmDiscard('Discard your draft and load the disk file?')) return
+  reapplyReport.value = null
+  await loadSnapshot(false)
+}
+
+async function reloadAndReapply(): Promise<void> {
+  const previous = snapshot.value
+  const mine = draft.value && clone(draft.value)
+  if (!previous || !mine) return
+  await loadSnapshot(false)
+  if (!snapshot.value || snapshot.value === previous) return
+  const { merged, applied, collisions } = mergeConfig(previous.config, mine, snapshot.value.config)
+  draft.value = merged
+  reapplyReport.value = { applied, collisions }
+  ensureSelection()
 }
 
 function markDraftChanged(): void {
@@ -341,14 +376,12 @@ function markDraftChanged(): void {
   tlsAlpnMessage.value = null
 }
 
-function resetDraft(): void {
+async function resetDraft(): Promise<void> {
   if (!snapshot.value) return
-  if (staleRevision.value) {
-    if (!window.confirm('The disk revision changed. Discard this draft and reload the authoritative configuration?')) return
-    void loadSnapshot(false)
-    return
-  }
-  if (isDirty.value && !window.confirm('Discard all unsaved configuration changes?')) return
+  if (staleRevision.value) return discardAndReload()
+  if (!await confirmDiscard('Reset the draft to the disk file?')) return
+  if (!snapshot.value) return
+  reapplyReport.value = null
   draft.value = clone(snapshot.value.config)
   resetForSnapshot()
   ensureSelection()

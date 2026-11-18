@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { CanonicalConfig, ConfigDiagnostic } from './config'
 import { defaultHttpCachePolicy } from './configuration/canonicalDefaults'
+import { pendingConfirm, settleConfirm } from './shell/confirm'
 import { jsonResponse } from './test/contractFixtures'
 import { deferred } from './test/deferred'
 import {
@@ -238,16 +239,18 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.revision-banner.stale').text()).toContain('Draft preserved')
-    expect(wrapper.get('.revision-banner.error').text()).toContain('Save conflict')
+    expect(wrapper.get('.revision-banner.stale').text()).toContain('The file on disk changed while you were editing')
+    expect(wrapper.get('.revision-banner.stale').text()).toContain('Your draft is kept and nothing was written')
+    expect(wrapper.findAll('.revision-banner.error, .revision-banner.save-state')).toHaveLength(0)
     expect((wrapper.get('[data-field="listeners[].name"] input').element as HTMLInputElement).value).toBe('preserved-listener')
     expect(wrapper.find('dialog[open]').exists()).toBe(false)
 
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await findButton(wrapper, 'Reset draft').trigger('click')
+    expect(pendingConfirm.value?.details).toEqual(['/listeners/https', '/listeners/preserved-listener'])
+    settleConfirm(false)
+    await flushPromises()
     expect(wrapper.get('.revision-banner.stale').element).toBeInstanceOf(HTMLElement)
     expect((wrapper.get('[data-field="listeners[].name"] input').element as HTMLInputElement).value).toBe('preserved-listener')
-    confirm.mockRestore()
   })
 
   it('renders 422 validation diagnostics and keeps review blocked', async () => {
@@ -410,8 +413,8 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.revision-banner.stale').text()).toContain('Draft preserved')
-    expect(wrapper.get('.revision-banner.error').text()).toContain('Authoritative configuration unavailable')
+    expect(wrapper.get('.revision-banner.stale').text()).toContain('a revision that could not be read')
+    expect(wrapper.findAll('.revision-banner.error, .revision-banner.save-state')).toHaveLength(0)
     expect(wrapper.get('.diagnostic-list').text()).toContain('E_CONFIG_READ')
     expect(wrapper.find('dialog[open]').exists()).toBe(false)
   })

@@ -35,6 +35,7 @@ interface ConfigurationLifecycleOptions {
   accessToken: Ref<string | null>
   onUnauthorized: () => void
   onExitReview: (fallbackSelector?: string) => void
+  onSaved: () => void
 }
 
 export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions) {
@@ -187,6 +188,7 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
       )
       if (controller.signal.aborted) return
       applySaveResult(result, normalized, validation)
+      options.onSaved()
       options.onExitReview('.revision-banner.save-state')
     } catch (error) {
       if (controller.signal.aborted) return
@@ -200,11 +202,6 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
         options.staleRevision.value = payload?.diskRevision ?? 'newer revision'
         if (payload?.activeRevision !== undefined) options.activeRevision.value = payload.activeRevision
         attemptDiagnostics.value = errorDiagnosticsFrom(error.payload)
-        saveMessage.value = {
-          kind: 'error',
-          title: 'Save conflict; draft preserved.',
-          detail: 'The If-Config-Revision value is stale. No write occurred.',
-        }
         options.onExitReview('.revision-banner.stale')
       } else if (error instanceof ApiError && error.status === 422) {
         validatedFingerprint.value = null
@@ -221,11 +218,6 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
       ) {
         options.staleRevision.value = 'unknown'
         attemptDiagnostics.value = errorDiagnosticsFrom(error.payload)
-        saveMessage.value = {
-          kind: 'error',
-          title: 'Authoritative configuration unavailable; draft preserved.',
-          detail: 'The server could not reload the latest disk state after a conflict. Reload before retrying.',
-        }
         options.onExitReview('.revision-banner.stale')
       } else if (error instanceof ApiError && error.status === 500) {
         applyWriteFailure(error.payload)

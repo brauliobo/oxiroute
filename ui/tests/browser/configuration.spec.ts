@@ -249,9 +249,9 @@ test.describe('configuration workspace browser gates', () => {
     await page.getByRole('button', { name: 'Review save' }).click()
     await page.getByRole('button', { name: 'Save canonical configuration' }).click()
 
-    await expect(page.locator('.revision-banner.stale')).toContainText('Draft preserved: the disk revision changed.')
+    await expect(page.locator('.revision-banner.stale')).toContainText('The file on disk changed while you were editing')
     await expect(page.locator('.revision-banner.stale')).toContainText('newer-disk')
-    await expect(page.locator('.revision-banner.save-state')).toContainText('Save conflict; draft preserved.')
+    await expect(page.locator('.revision-banner.save-state')).toHaveCount(0)
     await expect(page.locator('[data-field="version"] input')).toHaveValue('2')
   })
 
@@ -300,7 +300,7 @@ test.describe('configuration workspace browser gates', () => {
 
     await page.locator('[data-field="version"] input').fill('3')
     releaseExternalEvent()
-    await expect(page.locator('.revision-banner.stale')).toContainText('Draft preserved: the disk revision changed.')
+    await expect(page.locator('.revision-banner.stale')).toContainText('The file on disk changed while you were editing')
     await expect(page.locator('.revision-banner.stale')).toContainText('external-dis')
     await expect.poll(() => streamRequests).toBe(2)
     expect(streamHeaders[1]?.['last-event-id']).toBe('1')

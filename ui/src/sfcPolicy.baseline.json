@@ -31,7 +31,6 @@
   "configuration/workspace/GeneralSection.vue": 1,
   "configuration/workspace/ManagementSection.vue": 4,
   "configuration/workspace/ObjectRail.vue": 5,
-  "configuration/workspace/RevisionBanners.vue": 1,
   "configuration/workspace/StatsSection.vue": 13,
   "configuration/workspace/WorkspaceHeading.vue": 1
 }
