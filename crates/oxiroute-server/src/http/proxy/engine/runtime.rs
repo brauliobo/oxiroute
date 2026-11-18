@@ -190,10 +190,8 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
         let Ok(engine) = Arc::try_unwrap(engine) else {
             return error!("the epoll data plane is still referenced at shutdown");
         };
-        match spawn_blocking(move || engine.join()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => error!("the epoll data plane ended with an error: {error}"),
-            Err(error) => error!("joining the epoll data plane failed: {error}"),
+        if let Err(error) = engine.join() {
+            error!("the epoll data plane ended with an error: {error}");
         }
     }
 }
