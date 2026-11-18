@@ -55,6 +55,15 @@ binary, run it with `OXIROUTE_TEST_HTTP_DATA_PLANE=epoll`; when a suite starts t
 
 CI (`.github/workflows/ci.yml`) builds every test binary once (`cargo nextest archive`), shares the archive, and runs
 `core`, the three `planes` legs and the two `tls` legs from it in parallel; `.github/workflows/nightly.yml` runs `slow`.
+The documentation tests (`doc`) and the UI, browser and lint jobs run beside the archive job and need nothing from it;
+only `ui-api` takes a product of it (the debug `oxiroute` binary, shared as the small `oxiroute-debug` artifact, not the
+1.3 GB archive). The io_uring leg raises `RLIMIT_MEMLOCK` to unlimited (`OXIROUTE_RAISE_MEMLOCK`, checked by
+`planes.sh`) and runs as many tests at once as the other legs; only the locked-memory accounting test runs alone.
+
+The CI Rust caches count against the 10 GB repository cap and are saved from `main` only. The `archive` job saves the
+`tests` cache (restored read-only by `doc`), `lint` saves its own `lint` cache (a `cargo clippy` build is a check build
+that shares no dependency artifacts with the test build, so it cannot restore `tests`), and `cpu-targets` saves one cache
+per runner CPU (release objects built with `-C target-cpu`). No other job of `ci.yml` saves Rust build output.
 A test whose wait is the behavior under test (a default read limit, a drain deadline) moves to the `slow` tier instead
 of being deleted; every other wait is a short configurable one or an event.
 
