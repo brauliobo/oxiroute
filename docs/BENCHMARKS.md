@@ -29,9 +29,10 @@ The 7.0 re-measurement and the historical 6.5 summary record:
   separate CPUs; loopback traffic; 32 connections; interleaved turns for each proxy.
 - 6.5 rows: three accepted 8-second measured runs per cell after a 3-second warm-up. Disturbed runs were
   discarded and repeated. The summary's rejection rule and all rejected samples are not available here.
-- 7.0 rows: two 4-second runs after a 2-second warm-up, at most two attempts per row; an attempt is discarded when
-  the scheduler records more than 1.5 CPUs of foreign work on the pinned CPUs. A row with one clean run is marked
-  indicative and shows that single sample. CPU pressure (`/proc/pressure/cpu`, `some` avg10) stayed at or below
+- 7.0 rows: at least two clean 4-second runs after a 2-second warm-up for every cell; an attempt is discarded
+  when the scheduler records more than 1.5 CPUs of foreign work on the pinned CPUs, more than 8 CPUs on the sibling
+  hardware threads, request errors, or an invalid scheduler trace, and the cell is repeated until it has two clean
+  runs. CPU pressure (`/proc/pressure/cpu`, `some` avg10) stayed at or below
   7.9% in these rows and was never used to discard a run.
 - 6.5 rows: release builds with fat LTO and one codegen unit, without profile-guided optimization. 7.0 rows: the
   published profile-guided binary (build record: tree `c01445fe`, `pgo: true`, `bolt: false`). 7.0 TLS rows use
@@ -50,8 +51,7 @@ nor a universal hardware-independent cost. Keep these metrics separate when comp
 ## Throughput, latency and CPU
 
 Each row comes from one invocation of that workload; no best-run selection or pooling
-across different builds is applied (the 7.0 keep-alive row is the second invocation of its lane after a first with
-one clean run for two proxies). Bodies are 1 KiB. H1 means HTTP/1.1; TLS keep-alive reuses an
+across different builds is applied. Bodies are 1 KiB. H1 means HTTP/1.1; TLS keep-alive reuses an
 established TLS 1.3 connection. The handshake row opens a new TLS 1.3 ECDSA connection per request. Rows labelled 6.5 are from the 6.5 summary; the other rows are 7.0 measurements.
 
 | Workload | Proxy | Requests/s, median (min–max) | p50, µs | p99, µs | CPU µs/request |
@@ -60,16 +60,16 @@ established TLS 1.3 connection. The handshake row opens a new TLS 1.3 ECDSA conn
 | H1 proxy, keep-alive | nginx | 134,061 (131,708–136,414) | 232 | 350 | 7.4 |
 | H1 proxy, keep-alive | HAProxy | 114,860 (114,644–115,076) | 267 | 390 | 8.7 |
 | H1 proxy, new connection | OxiRoute 7.0 | 91,432 (88,800–94,065) | 322 | 752 | 10.5 |
-| H1 proxy, new connection | nginx (earlier non-PGO pass) | 74,708 (74,429–74,987) | 406 | 702 | 13.2 |
-| H1 proxy, new connection | HAProxy (one clean run, indicative) | 62,840 | 481 | 741 | 15.7 |
-| H1 POST, 1 KiB body | OxiRoute 7.0 (one clean run, indicative) | 180,102 | 171 | 314 | 5.5 |
-| H1 POST, 1 KiB body | nginx (6.5) | 126,375 (125,847–139,378) | 238 | 714 | 5.3 |
+| H1 proxy, new connection | nginx | 69,558 (68,322–70,793) | 440 | 694 | 14.2 |
+| H1 proxy, new connection | HAProxy | 60,109 (58,243–61,975) | 507 | 748 | 16.2 |
+| H1 POST, 1 KiB body | OxiRoute 7.0 | 171,858 (169,863–173,853) | 180 | 228 | 5.7 |
+| H1 POST, 1 KiB body | nginx | 112,460 (111,835–113,084) | 268 | 370 | 8.5 |
 | H1 POST, 1 KiB body | HAProxy | 114,382 (113,089–115,676) | 266 | 398 | 8.6 |
 | TLS keep-alive | OxiRoute 7.0 | 128,113 (126,656–129,570) | 247 | 416 | 7.7 |
 | TLS keep-alive | nginx | 96,906 (95,519–98,293) | 324 | 442 | 10.2 |
 | TLS keep-alive | HAProxy | 84,794 (81,487–88,101) | 360 | 636 | 11.6 |
 | H2 over TLS | OxiRoute 7.0 | 132,781 (131,965–133,597) | 240 | 374 | 7.5 |
-| H2 over TLS | nginx (one clean run, indicative) | 105,442 | 301 | 350 | 9.5 |
+| H2 over TLS | nginx | 94,742 (94,438–95,046) | 322 | 406 | 10.2 |
 | H2 over TLS | HAProxy | 85,054 (85,030–85,079) | 369 | 546 | 11.6 |
 | TLS full handshake | OxiRoute 7.0 | 16,092 (16,043–16,141) | 1,970 | 2,248 | 86.8 |
 | TLS full handshake | nginx | 5,131 (5,102–5,160) | 6,208 | 6,797 | 194.5 |
@@ -77,8 +77,7 @@ established TLS 1.3 connection. The handshake row opens a new TLS 1.3 ECDSA conn
 
 Where all three proxies were measured in the 7.0 pass (plain keep-alive, established TLS, HTTP/2, TLS handshake)
 OxiRoute is ahead of nginx and HAProxy in throughput and CPU cost, by 33% over nginx on plain keep-alive, 32% on
-established TLS and 26% on HTTP/2 (one clean nginx run). The nginx new-connection row has no clean run in the
-shipped-binary pass and the 6.5 nginx POST row was not re-measured. A
+established TLS and 40% on HTTP/2. On new connections it is 31% ahead of nginx and on 1 KiB POST 53% ahead. A
 full TLS handshake costs substantially more CPU than an established connection; the 7.0 default rustls
 backend completes about three times as many per second as nginx here, where the optional OpenSSL backend was lower in the earlier 7.0 pass (see the report). The H2
 rows use 8 connections of 4 streams. These observations do not support a claim that OxiRoute is generally faster or
@@ -113,9 +112,11 @@ and total process memory require separate measurements.
 
 ## What these results do not cover
 
-No conclusion follows here about WAN traffic, open-loop tail latency, UDP, RTMP, H3, forward proxying,
-cache hit rates, upstream TLS, many-core scaling, failure recovery, long-lived mixed traffic, or
-production sizing. Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not in a
+No conclusion follows here about WAN traffic, open-loop tail latency, UDP, RTMP, arm64, forward proxying
+against nginx or HAProxy, cache hit rates, many-core scaling beyond four workers, failure recovery,
+long-lived mixed traffic, or production sizing. HTTP/3, HTTP/2 upstreams, the tokio and `io_uring` data planes,
+two and four workers, 512 to 2,048 connections, compression and reload memory are measured in the
+[7.0 report](../benchmarks/reports/7.0/README.md). Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not in a
 performance table. Results from different hosts, builds or load models must remain separate.
 
 ## Reproduce and publish a new baseline
