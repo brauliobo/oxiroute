@@ -1,7 +1,8 @@
 use std::{
     fmt,
-    fs::File,
-    io::{self, Read as _},
+    fs::{self, File, OpenOptions},
+    io::{self, Read as _, Write as _},
+    os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _},
     path::Path,
 };
 
@@ -115,4 +116,24 @@ pub(super) fn read_regular_file(
         return Err(FileError::Changed);
     }
     Ok(bytes)
+}
+
+pub(super) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    written
+        .and_then(|()| fs::rename(&temporary, path))
+        .and_then(|()| File::open(directory)?.sync_all())
+        .inspect_err(|_| drop(fs::remove_file(&temporary)))
 }

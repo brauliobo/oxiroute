@@ -1,9 +1,10 @@
-use std::{error::Error, path::Path};
+use std::{cell::OnceCell, error::Error, path::Path};
 
 use serde_json::Value;
 
 use super::{
     change::Plan,
+    contexts::Selected,
     error::CliError,
     global::{Global, Output},
     net::{Client, Package, Response, Timeouts},
@@ -20,6 +21,7 @@ pub(crate) trait Execute {
 pub(crate) struct Context<'a> {
     global: &'a Global,
     package: Package,
+    selected: OnceCell<Option<Selected>>,
     serve: ServeFn,
 }
 
@@ -28,6 +30,7 @@ impl<'a> Context<'a> {
         Self {
             global,
             package: Package::installed(),
+            selected: OnceCell::new(),
             serve,
         }
     }
@@ -40,8 +43,20 @@ impl<'a> Context<'a> {
         self.global.output
     }
 
-    pub(crate) fn timeouts(&self) -> Timeouts {
-        self.global.timeouts()
+    pub(crate) fn requested_context(&self) -> Option<&str> {
+        self.global.requested_context()
+    }
+
+    fn selection(&self) -> Result<Option<&Selected>, CliError> {
+        if self.selected.get().is_none() {
+            let selected = Selected::resolve(self.global.requested_context())?;
+            drop(self.selected.set(selected));
+        }
+        Ok(self.selected.get().and_then(Option::as_ref))
+    }
+
+    pub(crate) fn timeouts(&self) -> Result<Timeouts, CliError> {
+        Ok(self.global.timeouts(self.selection()?))
     }
 
     pub(crate) const fn quiet(&self) -> bool {
@@ -50,21 +65,23 @@ impl<'a> Context<'a> {
 
     /// A client that sends the management token wherever the endpoint needs one.
     pub(crate) fn client(&self) -> Result<Client, CliError> {
-        let endpoint = self.global.endpoint(&self.package)?;
+        let selected = self.selection()?;
+        let endpoint = self.global.endpoint(&self.package, selected)?;
         let token = if endpoint.is_unix() {
             None
         } else {
-            self.global.token(&self.package)?
+            self.global.token(&self.package, selected)?
         };
-        Ok(Client::new(endpoint, token, self.global.timeouts()))
+        Ok(Client::new(endpoint, token, self.global.timeouts(selected)))
     }
 
     /// A client for the public probes, which never read the token file.
     pub(crate) fn public_client(&self) -> Result<Client, CliError> {
+        let selected = self.selection()?;
         Ok(Client::new(
-            self.global.endpoint(&self.package)?,
+            self.global.endpoint(&self.package, selected)?,
             None,
-            self.global.timeouts(),
+            self.global.timeouts(selected),
         ))
     }
 

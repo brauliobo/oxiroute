@@ -103,7 +103,7 @@ pub(super) fn finish(
     }
     match settle(
         client,
-        context.timeouts(),
+        context.timeouts()?,
         "the configuration",
         saved.get("candidateRevision"),
         baseline,

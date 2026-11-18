@@ -4,10 +4,11 @@ use clap::{Args, ValueEnum};
 use zeroize::Zeroizing;
 
 use crate::cli::{
+    contexts::Selected,
     error::CliError,
     net::{
-        DEFAULT_ENDPOINT, ENDPOINT_ENV, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Timeouts,
-        read_token,
+        CONTEXT_ENV, DEFAULT_ENDPOINT, ENDPOINT_ENV, Endpoint, MANAGEMENT_TOKEN_ENV, Package,
+        Timeouts, read_token,
     },
     parse::parse_timeout,
 };
@@ -33,6 +34,20 @@ pub(crate) struct Global {
             then the management bind of /etc/oxiroute/oxiroute.kdl or .lua, then uses http://127.0.0.1:9900."
     )]
     pub(super) endpoint: Option<String>,
+    /// Named context whose address, token source and timeout apply; flags and variables take precedence.
+    #[arg(
+        long,
+        global = true,
+        env = CONTEXT_ENV,
+        value_name = "NAME",
+        help_heading = "Connection",
+        long_help = "Named context from the contexts file ($XDG_CONFIG_HOME/oxiroute/contexts, mode 0600), managed with \
+            `oxiroute context`.\n\nIts address, token source and timeout apply where --endpoint, OXIROUTE_ENDPOINT, \
+            --token-file, OXIROUTE_MANAGEMENT_TOKEN_FILE and --timeout do not, and before the packaged setup is \
+            discovered. Without it the current context of the file applies. A context token is never sent to an endpoint \
+            given by flag or variable."
+    )]
+    pub(super) context: Option<String>,
     /// Talk to a registry unix socket instead of the management API; no token is used.
     #[arg(long, global = true, value_name = "PATH", help_heading = "Connection")]
     pub(super) socket: Option<PathBuf>,
@@ -70,23 +85,44 @@ pub(crate) struct Global {
 }
 
 impl Global {
-    pub(super) fn timeouts(&self) -> Timeouts {
-        self.timeout.map_or(Timeouts::DEFAULT, Timeouts::limited)
+    pub(super) fn requested_context(&self) -> Option<&str> {
+        self.context.as_deref()
     }
 
-    pub(super) fn endpoint(&self, package: &Package) -> Result<Endpoint, CliError> {
+    pub(super) fn timeouts(&self, selected: Option<&Selected>) -> Timeouts {
+        self.timeout
+            .or_else(|| selected.and_then(Selected::timeout))
+            .map_or(Timeouts::DEFAULT, Timeouts::limited)
+    }
+
+    pub(super) fn endpoint(
+        &self,
+        package: &Package,
+        selected: Option<&Selected>,
+    ) -> Result<Endpoint, CliError> {
         if let Some(path) = &self.socket {
             return Endpoint::unix(&path.to_string_lossy());
         }
         let endpoint = self
             .endpoint
             .clone()
+            .or_else(|| selected.map(|selected| selected.entry.endpoint.clone()))
             .or_else(|| package.discovered_endpoint())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
         Endpoint::parse(&endpoint)
     }
 
-    pub(super) fn token(&self, package: &Package) -> Result<Option<Zeroizing<String>>, CliError> {
+    pub(super) fn token(
+        &self,
+        package: &Package,
+        selected: Option<&Selected>,
+    ) -> Result<Option<Zeroizing<String>>, CliError> {
+        let source = selected
+            .and_then(|selected| selected.entry.token.as_ref())
+            .filter(|_| self.token_file.is_none() && self.endpoint.is_none());
+        if let Some(source) = source {
+            return source.read().map(Some);
+        }
         package
             .token_path(self.token_file.as_deref())?
             .map(|path| read_token(&path))

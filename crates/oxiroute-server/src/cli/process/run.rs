@@ -12,7 +12,7 @@ use crate::cli::{
 fn ready(context: &Context<'_>, wait: bool) -> Result<(), CliError> {
     let client = context.public_client()?;
     let response = if wait {
-        wait::until("readiness", context.timeouts(), || probe(&client))?
+        wait::until("readiness", context.timeouts()?, || probe(&client))?
     } else {
         client.get_unchecked("/ready")?
     };

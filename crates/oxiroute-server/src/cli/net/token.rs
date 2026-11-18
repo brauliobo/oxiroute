@@ -18,9 +18,16 @@ pub(in crate::cli) fn read_token(path: &Path) -> Result<Zeroizing<String>, CliEr
     let bytes = Zeroizing::new(
         read_regular_file(path, MAX_TOKEN_BYTES + 2, true).map_err(|error| refused(&error))?,
     );
-    let mut token = Zeroizing::new(
+    let token = Zeroizing::new(
         String::from_utf8(bytes.to_vec()).map_err(|_| refused(&"is not valid UTF-8"))?,
     );
+    valid_token(token, &refused)
+}
+
+pub(in crate::cli) fn valid_token(
+    mut token: Zeroizing<String>,
+    refused: &dyn Fn(&dyn Display) -> CliError,
+) -> Result<Zeroizing<String>, CliError> {
     if token.ends_with("\r\n") {
         let length = token.len();
         token.truncate(length - 2);

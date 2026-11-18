@@ -1,4 +1,5 @@
 mod config;
+mod contexts;
 mod events;
 mod generation;
 mod generic;
@@ -33,6 +34,7 @@ pub(crate) enum View {
     Monitoring,
     Topology,
     Config,
+    Contexts,
     Pools,
     Pool,
     Servers,
@@ -58,6 +60,7 @@ impl View {
             Self::Monitoring => monitoring::show(value),
             Self::Topology => topology::show(value),
             Self::Config => config::show(value),
+            Self::Contexts => contexts::list(value),
             Self::Pools => pools::list(value),
             Self::Pool => pools::detail(value),
             Self::Servers => servers::list(value),

@@ -91,7 +91,10 @@ fn collect(context: &Context<'_>, args: &CheckArgs) -> Result<Report, String> {
         .map_err(|error| format!("status page unavailable: {error}"))?;
     let canary = args
         .canary
-        .then(|| canary(args, context.timeouts()))
+        .then(|| {
+            let timeouts = context.timeouts().map_err(|error| error.to_string())?;
+            canary(args, timeouts)
+        })
         .transpose()?;
     assess(document, args, canary)
 }

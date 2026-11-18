@@ -15,6 +15,7 @@ mod command;
 mod completions;
 mod config;
 mod context;
+mod contexts;
 mod error;
 mod events;
 mod fs;

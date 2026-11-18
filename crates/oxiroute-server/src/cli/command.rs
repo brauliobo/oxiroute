@@ -7,6 +7,7 @@ use super::{
     completions::CompletionsArgs,
     config::ConfigCommand,
     context::{Context, Execute},
+    contexts::ContextCommand,
     error::CliError,
     events::EventsCommand,
     generation::GenerationCommand,
@@ -83,6 +84,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: GenerationCommand,
     },
+    /// Name daemons and their token sources, and pick the one commands talk to.
+    #[command(after_help = help::CONTEXT_EXAMPLES)]
+    Context {
+        #[command(subcommand)]
+        command: ContextCommand,
+    },
     /// Check, compare and apply configurations.
     #[command(after_help = help::CONFIG_EXAMPLES)]
     Config {
@@ -134,6 +141,7 @@ impl Command {
             Self::Pool { command } => command.run(context),
             Self::Listener { command } => command.run(context),
             Self::Generation { command } => command.run(context),
+            Self::Context { command } => command.run(context),
             Self::Config { command } => command.run(context),
             Self::Tls { command } => command.run(context),
             Self::Rtmp { command } => command.run(context),

@@ -64,6 +64,7 @@ fn every_command_family_ends_its_help_with_examples() {
         "listener",
         "generation",
         "config",
+        "context",
         "tls",
         "rtmp",
         "registry",

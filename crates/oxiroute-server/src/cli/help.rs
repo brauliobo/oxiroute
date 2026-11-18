@@ -29,10 +29,14 @@ pub(crate) const EXIT_CATEGORIES: [(u8, &str); 10] = [
     (9, "unsupported: the operation is not available"),
 ];
 
-pub(crate) const ENVIRONMENT: [(&str, &str); 2] = [
+pub(crate) const ENVIRONMENT: [(&str, &str); 3] = [
     (
         "OXIROUTE_ENDPOINT",
         "management API URL, default http://127.0.0.1:9900 (the packaged setup is read when it is unset)",
+    ),
+    (
+        "OXIROUTE_CONTEXT",
+        "name of the context from the contexts file whose address, token source and timeout apply; the flags and the two variables above take precedence",
     ),
     (
         "OXIROUTE_MANAGEMENT_TOKEN_FILE",
@@ -40,7 +44,7 @@ pub(crate) const ENVIRONMENT: [(&str, &str); 2] = [
     ),
 ];
 
-pub(crate) const FILES: [(&str, &str); 3] = [
+pub(crate) const FILES: [(&str, &str); 4] = [
     (
         "/etc/oxiroute/oxiroute.kdl",
         "packaged configuration; its management bind is the default endpoint",
@@ -52,6 +56,10 @@ pub(crate) const FILES: [(&str, &str); 3] = [
     (
         "/etc/oxiroute/management.token",
         "default management token file",
+    ),
+    (
+        "$XDG_CONFIG_HOME/oxiroute/contexts",
+        "named contexts (mode 0600), managed with `oxiroute context`; ~/.config is used when XDG_CONFIG_HOME is unset",
     ),
 ];
 
@@ -131,6 +139,16 @@ document), chosen by its extension or `--format`, and ask the daemon, so they ch
 plus the running state. `config apply` stores the file's own text, with its comments and Lua logic, when it is in the \
 format of the daemon's file. Exit codes: 3 for an invalid file, 7 when the file changed on disk meanwhile, and 1 for \
 differences with `config diff --exit-code` or `config fmt --check`.";
+
+pub(crate) const CONTEXT_EXAMPLES: &str = "Examples:
+  oxiroute context add prod --address http://192.0.2.10:9900 --token-from-file /etc/oxiroute/prod.token --use
+  oxiroute context add staging --address http://192.0.2.20:9900 --token-from-env STAGING_TOKEN
+  oxiroute context list
+  oxiroute --context staging status
+
+Precedence, highest first: flags (--endpoint, --token-file, --timeout), the variables (OXIROUTE_ENDPOINT, \
+OXIROUTE_MANAGEMENT_TOKEN_FILE), the context (--context, OXIROUTE_CONTEXT, then the current one), the packaged \
+setup. The contexts file holds addresses and where a token comes from, never a token, and must have mode 0600.";
 
 pub(crate) const TLS_EXAMPLES: &str = "Examples:
   oxiroute tls list

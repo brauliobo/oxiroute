@@ -1,7 +1,8 @@
 # OxiRoute management CLI
 
 `oxiroute` is the installed daemon, offline configuration/import tool, and operator client. `oxr`
-is its short alias. Management commands default to `OXIROUTE_ENDPOINT`, or
+is its short alias. Management commands default to `OXIROUTE_ENDPOINT`, then the named context (`--context`,
+`OXIROUTE_CONTEXT` or the current one of `~/.config/oxiroute/contexts`, see [CLI.md](reference/CLI.md#contexts)), or
 `http://127.0.0.1:9900` when the variable is unset. Every management API operation except the
 explicitly public `/ready` and `/metrics` probes uses the Bearer token loaded from `--token-file` or
 `OXIROUTE_MANAGEMENT_TOKEN_FILE`; when neither is supplied, the client reads the plain

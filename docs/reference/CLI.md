@@ -9,7 +9,7 @@ Without arguments the help is printed.
 ## Global Options
 
 ```sh
-oxiroute [--endpoint URL | --socket PATH] [--token-file FILE] [--timeout DURATION] [--output table|json|plain] [--quiet] COMMAND
+oxiroute [--context NAME] [--endpoint URL | --socket PATH] [--token-file FILE] [--timeout DURATION] [--output table|json|plain] [--quiet] COMMAND
 ```
 
 The global options work before and after the command name (`oxiroute status --output json`).
@@ -26,6 +26,11 @@ The global options work before and after the command name (`oxiroute status --ou
   is reported as `did not answer within <limit>` and a connection attempt that hangs as `cannot connect to
   <endpoint> within <limit>`; both exit 4, with different text from `cannot connect ...; is the daemon
   running?` (nothing listens) and `stopped answering the request` (the daemon closed the connection).
+- `--context NAME` (or `OXIROUTE_CONTEXT`) selects a named context (see "Contexts") whose address, token
+  source and timeout apply where the flags and variables above are not given. Precedence, highest first:
+  flags, variables, the context (`--context`, `OXIROUTE_CONTEXT`, then the current one of the contexts file),
+  discovery of the packaged setup. A context's token is never sent to an endpoint given by `--endpoint` or
+  `OXIROUTE_ENDPOINT`.
 - `--output json` writes one JSON value to stdout; diagnostics use stderr. Read commands print the
   management API body unchanged, so its field names stay the stable contract for scripts.
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
@@ -35,6 +40,46 @@ Squid report output includes `capabilities`, a versioned target-checkout registr
 `partial` and `completeParity` is false while any family or directive is partial, unsupported,
 obsolete, or not planned. Only forms with both runtime integration and failure coverage are marked
 `compatible`.
+
+## Contexts
+
+A context names a daemon: its management address, where its token comes from and a default timeout. They live
+in `$XDG_CONFIG_HOME/oxiroute/contexts` (`~/.config/oxiroute/contexts` when `XDG_CONFIG_HOME` is unset), a JSON
+file the CLI creates with mode `0600` in a `0700` directory and refuses to read when it has another mode. The
+file never holds a token: a `token` key must be an object naming a source, and a file with a token written into
+it is refused with a message that does not repeat it.
+
+```json
+{
+  "schemaVersion": 1,
+  "current": "prod",
+  "contexts": {
+    "prod": {
+      "endpoint": "http://192.0.2.10:9900",
+      "token": { "file": "/etc/oxiroute/prod.token" },
+      "timeout": "15s"
+    },
+    "staging": { "endpoint": "http://192.0.2.20:9900", "token": { "env": "STAGING_TOKEN" } },
+    "lab": { "endpoint": "unix:/run/oxiroute/lab.sock" }
+  }
+}
+```
+
+A token source is `{"file": PATH}` (absolute; a regular file with mode `0400` or `0600`, as for
+`--token-file`), `{"env": VARIABLE}` (the variable holds the token itself, read at each use) or
+`{"command": [PROGRAM, ARG...]}` (run without a shell, standard input closed, standard output is the token, for
+a secret manager). A token has the same bounds everywhere: 32 to 512 visible ASCII characters.
+
+| Command | What it does |
+| --- | --- |
+| `context list` | One row per context: `*` for the current one, name, address, token source as `file:PATH`, `env:VARIABLE` or `command:PROGRAM`, and timeout. The token itself is never printed; `--output json` carries `tokenSource` and `tokenRef` |
+| `context add NAME --address URL [--token-from-file FILE \| --token-from-env VARIABLE \| --token-from-command PROGRAM ARG...] [--default-timeout 15s] [--use] [--replace]` | Adds a context, or replaces one of the same name with `--replace`; `--use` makes it current. `--token-from-command` takes every word after it, so give it last |
+| `context use NAME` | Makes a context the current one |
+| `context remove NAME` | Removes a context, and the current mark when it was the current one; the token file or variable it named is left alone |
+| `context current` | Prints the name of the context the next command uses (`--context` and `OXIROUTE_CONTEXT` win over the current one); exits `3` when there is none |
+
+An unknown context, a context file that is not valid or has another mode than `0600`, and a token source that
+cannot be read or does not hold a valid token exit `3`.
 
 ## Waiting
 
@@ -97,6 +142,7 @@ body through, where `changed` counts the targets of the request.
 | Process | `serve`, `status`, `ready`, `metrics`, `monitoring`, `topology`, `drain`, `shutdown` | Start and inspect the daemon |
 | Monitoring | `check` | One line and a Nagios exit code for cron and monitoring systems |
 | Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
+| Contexts | `context list|add|use|remove|current` | Name daemons and their token sources and pick the one commands talk to (see "Contexts") |
 | Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |

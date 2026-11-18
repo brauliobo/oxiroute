@@ -180,6 +180,7 @@ oxiroute::bin/oxiroute                                core
 oxiroute::cache_revalidation_tls_wire                 tls
 oxiroute::cli                                         core
 oxiroute::cli_config                                  core
+oxiroute::cli_contexts                                core
 oxiroute::cli_evacuate                                core
 oxiroute::cli_import                                  core
 oxiroute::cli_usage                                   core

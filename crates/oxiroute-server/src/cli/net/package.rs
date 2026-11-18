@@ -11,6 +11,7 @@ use crate::{
     config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
 };
 
+pub(in crate::cli) const CONTEXT_ENV: &str = "OXIROUTE_CONTEXT";
 pub(in crate::cli) const ENDPOINT_ENV: &str = "OXIROUTE_ENDPOINT";
 pub(in crate::cli) const MANAGEMENT_TOKEN_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
 pub(in crate::cli) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9900";

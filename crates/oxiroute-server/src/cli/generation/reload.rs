@@ -20,7 +20,7 @@ pub(super) fn reload(context: &Context<'_>, wait: bool) -> Result<(), CliError> 
     }
     match settle(
         &client,
-        context.timeouts(),
+        context.timeouts()?,
         "the reload",
         candidate.as_ref(),
         &baseline,
