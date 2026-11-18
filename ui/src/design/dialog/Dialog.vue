@@ -1,8 +1,7 @@
 <script setup vapor lang="ts">
 import { onMounted, useId, useTemplateRef, watch } from 'vue'
+import './styles.css'
 
-// A native modal <dialog>: the browser traps focus, makes the page inert, closes on Escape and returns focus to the
-// element that opened it. An element with `data-close`, or a click on the backdrop, closes it.
 const props = defineProps<{ open: boolean; title: string }>()
 const emit = defineEmits<{ close: [] }>()
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')

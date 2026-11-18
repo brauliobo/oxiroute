@@ -1,5 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import Button from '#design/button/Button.vue'
 import { formatTimestamp } from '#design/format'
 
 const props = defineProps<{ version?: string; generation?: number; sampledAtUnixMs?: number }>()
@@ -15,5 +16,5 @@ const summary = computed(() => [
 <template lang="pug">
 footer.ox-footer
   p {{ summary }}
-  button.ox-link(type="button" @click="emit('help')") Keyboard shortcuts (?)
+  Button(variant="link" @click="emit('help')") Keyboard shortcuts (?)
 </template>

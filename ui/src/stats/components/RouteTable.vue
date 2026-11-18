@@ -1,4 +1,6 @@
 <script setup vapor lang="ts">
+import EmptyState from '#design/empty/EmptyState.vue'
+import Table from '#design/table/Table.vue'
 import { useStatsStore } from '../useStatsStore'
 import { rowKey } from '../model'
 import * as cell from './present'
@@ -13,12 +15,12 @@ const poolLink = (pool: string) => `#${cell.anchorId(rowKey('pool', pool))}`
 <template lang="pug">
 section.ox-section#routes(aria-labelledby="ox-routes-title")
   h2#ox-routes-title Routes
-  p.ox-muted(v-if="model && model.routes.length === 0") No routes are configured.
-  table.ox-table.ox-routes-table(v-else-if="model")
-    caption.ox-sr-only Routes: listeners, host and path selectors, methods, action, target pool and counters
-    thead
-      tr
-        th(v-for="label in COLUMNS" :key="label" scope="col") {{ label }}
+  EmptyState(v-if="model && model.routes.length === 0") No routes are configured.
+  Table.ox-routes-table(
+    v-else-if="model"
+    caption="Routes: listeners, host and path selectors, methods, action, target pool and counters"
+    :columns="COLUMNS"
+  )
     tbody.ox-row(v-for="route in model.routes" :key="route.key" :data-row="route.key")
       tr
         th.ox-name(scope="row" data-label="Route") {{ route.name }}

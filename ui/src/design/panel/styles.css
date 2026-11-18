@@ -1,0 +1,26 @@
+@layer ox.primitives {
+  .ox-card {
+    padding: var(--ox-pad);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+  }
+
+  .ox-panel {
+    padding: var(--ox-space-5) var(--ox-space-6);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius);
+  }
+
+  .ox-panel > h2 {
+    margin-bottom: var(--ox-space-4);
+    font-size: var(--ox-text-lg);
+  }
+
+  @media (forced-colors: active) {
+    .ox-card,
+    .ox-panel {
+      border-color: CanvasText;
+    }
+  }
+}

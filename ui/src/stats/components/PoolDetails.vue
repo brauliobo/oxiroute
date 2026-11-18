@@ -7,7 +7,7 @@ import Histogram from './Histogram.vue'
 import Latency from './Latency.vue'
 import type { Detail } from './present'
 import * as cell from './present'
-import Sparkline from './Sparkline.vue'
+import Sparkline from '#design/sparkline/Sparkline.vue'
 import './table.css'
 
 // Pool selection, queue, in-flight work and canary of one pool, plus its latency histograms.

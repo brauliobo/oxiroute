@@ -1,5 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import Toggle from '#design/button/Toggle.vue'
 import type { MeasuredRow } from '../derive'
 import type { ServerRow } from '../model'
 import { useStatsStore } from '../useStatsStore'
@@ -8,7 +9,7 @@ import Latency from './Latency.vue'
 import * as cell from './present'
 import ResponseBar from './ResponseBar.vue'
 import ServerDetails from './ServerDetails.vue'
-import Sparkline from './Sparkline.vue'
+import Sparkline from '#design/sparkline/Sparkline.vue'
 import StatusBadge from './StatusBadge.vue'
 import './table.css'
 
@@ -36,9 +37,7 @@ const toggle = () => toggleExpanded(props.server.key)
 tbody.ox-row(:class="{ 'ox-changed': flagged, 'ox-open': open }" :data-row="server.key")
   tr
     th.ox-name(scope="row" data-label="Server")
-      button.ox-toggle(type="button" :aria-expanded="open" :aria-controls="detailsId" @click="toggle")
-        span.ox-chevron(aria-hidden="true")
-        span.ox-label {{ server.name }}
+      Toggle(:expanded="open" :aria-controls="detailsId" @click="toggle") {{ server.name }}
       span.ox-sub {{ wire.origin }}
       span.ox-changed-tag(v-if="flagged") status changed
     td(data-label="Status")

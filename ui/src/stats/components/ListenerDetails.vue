@@ -9,7 +9,7 @@ import Histogram from './Histogram.vue'
 import Latency from './Latency.vue'
 import type { Detail } from './present'
 import * as cell from './present'
-import Sparkline from './Sparkline.vue'
+import Sparkline from '#design/sparkline/Sparkline.vue'
 import './table.css'
 
 // The rest of a listener's snapshot (bind, TLS, outcomes, proxy protocol, cache) and the routes that name it.

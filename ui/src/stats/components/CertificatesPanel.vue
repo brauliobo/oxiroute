@@ -1,29 +1,25 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import Panel from '#design/panel/Panel.vue'
+import Table from '#design/table/Table.vue'
+import EmptyState from '#design/empty/EmptyState.vue'
 import { useStatsStore } from '../useStatsStore'
 import * as cell from './present'
 import StatusBadge from './StatusBadge.vue'
-import './panels.css'
+import './dashboard.css'
 
 // Certificates by expiry, and the watchers that renew them.
+const CERTIFICATE_COLUMNS = ['Name', 'Expiry', 'Expires', 'Source', 'Last outcome']
+const WATCHER_COLUMNS = ['Source', 'Health', 'Backend errors', 'Reconciliation failures']
 const { model } = useStatsStore()
 const sorted = computed(() => [...(model.value?.certificates ?? [])].sort((left, right) =>
   (left.remainingMs ?? Infinity) - (right.remainingMs ?? Infinity)))
 </script>
 
 <template lang="pug">
-section.ox-panel#certificates(v-if="model" aria-labelledby="ox-certificates-title")
-  h2#ox-certificates-title Certificates
-  p.ox-muted(v-if="sorted.length === 0") No certificates are loaded.
-  table.ox-table.ox-plain(v-else)
-    caption.ox-sr-only Certificates, soonest expiry first
-    thead
-      tr
-        th(scope="col") Name
-        th(scope="col") Expiry
-        th(scope="col") Expires
-        th(scope="col") Source
-        th(scope="col") Last outcome
+Panel#certificates(v-if="model" title="Certificates")
+  EmptyState(v-if="sorted.length === 0") No certificates are loaded.
+  Table.ox-plain(v-else caption="Certificates, soonest expiry first" :columns="CERTIFICATE_COLUMNS")
     tbody.ox-row(v-for="item in sorted" :key="item.key")
       tr
         th.ox-name(scope="row" data-label="Name") {{ item.name }}
@@ -38,14 +34,7 @@ section.ox-panel#certificates(v-if="model" aria-labelledby="ox-certificates-titl
           span.ox-sub(v-if="item.wire.lastErrorCode") {{ item.wire.lastErrorCode }}
   template(v-if="model.certificateWatchers.length")
     h3 Renewal watchers
-    table.ox-table.ox-plain
-      caption.ox-sr-only Certificate renewal watchers
-      thead
-        tr
-          th(scope="col") Source
-          th(scope="col") Health
-          th(scope="col") Backend errors
-          th(scope="col") Reconciliation failures
+    Table.ox-plain(caption="Certificate renewal watchers" :columns="WATCHER_COLUMNS")
       tbody.ox-row(v-for="item in model.certificateWatchers" :key="item.key")
         tr
           th.ox-name(scope="row" data-label="Source") {{ cell.words(item.wire.source) }}

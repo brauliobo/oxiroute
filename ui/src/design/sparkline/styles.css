@@ -1,0 +1,16 @@
+@layer ox.primitives {
+  .ox-spark {
+    display: block;
+    width: 60px;
+    height: 16px;
+    fill: none;
+    stroke: var(--ox-info);
+    stroke-width: 1.25;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  @media (forced-colors: active) {
+    .ox-spark { stroke: CanvasText; }
+  }
+}

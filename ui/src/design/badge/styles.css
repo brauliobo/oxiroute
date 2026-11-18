@@ -1,0 +1,54 @@
+@layer ox.primitives {
+  .ox-tone-ok { color: var(--ox-ok); }
+  .ox-tone-warn { color: var(--ox-warn); }
+  .ox-tone-bad { color: var(--ox-bad); }
+  .ox-tone-info { color: var(--ox-info); }
+  .ox-tone-neutral { color: var(--ox-muted); }
+
+  .ox-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ox-space-3);
+    padding: 0 var(--ox-space-4) 0 var(--ox-space-3);
+    border: var(--ox-border-width) solid currentcolor;
+    border-radius: var(--ox-radius-sm);
+    background: color-mix(in srgb, currentcolor 10%, transparent);
+    font-size: var(--ox-text-xs);
+    font-weight: var(--ox-weight-bold);
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  .ox-icon {
+    width: 0.95em;
+    height: 0.95em;
+    flex: none;
+    fill: currentcolor;
+  }
+
+  .ox-icon path {
+    fill-rule: evenodd;
+  }
+
+  .ox-dot {
+    display: inline-block;
+    width: 0.65em;
+    height: 0.65em;
+    flex: none;
+    border-radius: 50%;
+    background: currentcolor;
+  }
+
+  .ox-dot.ox-tone-info { border-radius: 1px; }
+
+  .ox-dot.ox-tone-warn {
+    border-radius: 0;
+    transform: rotate(45deg);
+  }
+
+  .ox-dot.ox-tone-bad { border-radius: 0; }
+
+  @media (forced-colors: active) {
+    .ox-dot { background: CanvasText; }
+  }
+}

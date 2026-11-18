@@ -1,4 +1,5 @@
 <script setup vapor lang="ts">
+import Chip from '#design/button/Chip.vue'
 import { STATUS_LABELS } from '../model'
 import { SERVER_STATUSES } from '../urlState'
 import type { StatusFilter } from '../urlState'
@@ -13,16 +14,6 @@ const toggle = (status: StatusFilter) =>
 <template lang="pug">
 .ox-chips(role="group" aria-labelledby="ox-chips-label")
   span#ox-chips-label.ox-chips-label Server state
-  button.ox-chip(
-    v-for="status in SERVER_STATUSES"
-    :key="status"
-    type="button"
-    :aria-pressed="props.states.includes(status) ? 'true' : 'false'"
-    @click="toggle(status)"
-  ) {{ STATUS_LABELS[status] }}
-button.ox-chip.ox-chip-problems(
-  type="button"
-  :aria-pressed="problemsOnly ? 'true' : 'false'"
-  @click="emit('update:problemsOnly', !problemsOnly)"
-) Problems only
+  Chip(v-for="status in SERVER_STATUSES" :key="status" :pressed="props.states.includes(status)" @click="toggle(status)") {{ STATUS_LABELS[status] }}
+Chip.ox-chip-problems(:pressed="problemsOnly" @click="emit('update:problemsOnly', !problemsOnly)") Problems only
 </template>

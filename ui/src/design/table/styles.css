@@ -1,0 +1,107 @@
+@layer ox.primitives {
+  .ox-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--ox-text-md);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ox-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: var(--ox-z-sticky);
+    padding: var(--ox-cell-py) var(--ox-cell-px);
+    border-bottom: 2px solid var(--ox-border);
+    background: var(--ox-bg);
+    color: var(--ox-muted);
+    font-size: var(--ox-text-2xs);
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: var(--ox-tracking-label);
+    white-space: nowrap;
+  }
+
+  .ox-table thead th[aria-sort='ascending'],
+  .ox-table thead th[aria-sort='descending'] {
+    color: var(--ox-fg);
+  }
+
+  .ox-table td,
+  .ox-table tbody th {
+    padding: var(--ox-cell-py) var(--ox-cell-px);
+    border-bottom: var(--ox-border-width) solid var(--ox-border);
+    font-weight: var(--ox-weight-normal);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .ox-table .ox-name {
+    min-width: 8rem;
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-sort {
+    display: inline-flex;
+    gap: var(--ox-space-2);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    cursor: pointer;
+  }
+
+  .ox-sort:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 64rem) {
+    .ox-table,
+    .ox-table tbody,
+    .ox-table tr,
+    .ox-table td,
+    .ox-table th {
+      display: block;
+    }
+
+    .ox-table thead {
+      display: none;
+    }
+
+    .ox-table tbody {
+      margin-bottom: var(--ox-space-5);
+      border: var(--ox-border-width) solid var(--ox-border);
+      border-radius: var(--ox-radius);
+    }
+
+    .ox-table tr {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+      gap: var(--ox-space-2) var(--ox-space-5);
+      padding: var(--ox-space-4);
+    }
+
+    .ox-table tr > .ox-name {
+      grid-column: 1 / -1;
+      min-width: 0;
+    }
+
+    .ox-table tr > td,
+    .ox-table tr > th {
+      padding: 0;
+      border: 0;
+    }
+
+    .ox-table td[data-label]::before {
+      content: attr(data-label);
+      display: block;
+      color: var(--ox-muted);
+      font-size: var(--ox-text-2xs);
+      text-transform: uppercase;
+      letter-spacing: var(--ox-tracking-label);
+    }
+  }
+}

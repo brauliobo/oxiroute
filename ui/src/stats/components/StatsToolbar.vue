@@ -1,4 +1,6 @@
 <script setup vapor lang="ts">
+import Card from '#design/panel/Card.vue'
+import ThemeToggle from '#design/layout/ThemeToggle.vue'
 import { DEFAULT_INTERVAL_MS } from '../poll'
 import { useStatsStore } from '../useStatsStore'
 import FilterChips from './FilterChips.vue'
@@ -6,13 +8,12 @@ import IntervalSelect from './IntervalSelect.vue'
 import PauseControl from './PauseControl.vue'
 import SearchBox from './SearchBox.vue'
 import SortMenu from './SortMenu.vue'
-import ThemeToggle from './ThemeToggle.vue'
 
 const { view, snapshot, setView, togglePause, setIntervalMs, refresh } = useStatsStore()
 </script>
 
 <template lang="pug">
-section.ox-toolbar(role="search" aria-label="Filter and view")
+Card.ox-toolbar(role="search" aria-label="Filter and view")
   SearchBox(:model-value="view.search" @update:modelValue="(search) => setView({ search })")
   FilterChips(
     :states="view.states"

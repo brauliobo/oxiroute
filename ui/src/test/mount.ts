@@ -7,13 +7,17 @@ import type { Component } from 'vue'
 // management UI does not ship, so components are mounted with `createVaporApp` and wrapped in the VTU `DOMWrapper`
 // (find/get/setValue/trigger/text/attributes...). Only what the tests use is supported:
 //   props / setProps  reactive root props (createVaporApp itself only takes static ones)
+//   slots             text, a node or a function returning either, per slot name
 //   emitted()         events declared with defineEmits, recorded like VTU does
 //   vm                state a component publishes with defineExpose
 //   attachTo, provide, unmount (also automatic after each test)
 export { flushPromises }
 
+type SlotContent = string | Node | (() => Node | string)
+
 interface MountOptions {
   props?: Record<string, unknown>
+  slots?: Record<string, SlotContent>
   attachTo?: Element
   provide?: Record<string, unknown>
 }
@@ -50,6 +54,11 @@ export class VaporWrapper extends DOMWrapper<HTMLElement> {
   unmount(): void { if (mounted.delete(this)) { this.app.unmount(); this.host.remove() } }
 }
 
+const slotFunction = (content: SlotContent) => () => {
+  const resolved = typeof content === 'function' ? content() : content
+  return typeof resolved === 'string' ? document.createTextNode(resolved) : resolved
+}
+
 export function mount(component: Component, options: MountOptions = {}): VaporWrapper {
   const host = document.createElement('div')
   options.attachTo?.append(host)
@@ -62,7 +71,8 @@ export function mount(component: Component, options: MountOptions = {}): VaporWr
   }
   let instance: ExposingInstance = null
   const Root = defineVaporComponent(() => {
-    const created = createComponent(component as never, { $: [() => props] })
+    const slots = Object.fromEntries(Object.entries(options.slots ?? {}).map(([name, content]) => [name, slotFunction(content)]))
+    const created = createComponent(component as never, { $: [() => props] }, slots)
     instance = created as unknown as ExposingInstance
     return created
   })

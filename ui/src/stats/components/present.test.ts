@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { UNKNOWN } from '#design/format'
-import { ICON_PATHS, toneOf } from './status'
-import { SPARK_SAMPLES, sparkShape } from './spark'
+import { toneOf } from './status'
 import { histogramBars } from './histogram'
 import {
   anchorId, byteRate, bytes, count, duration, exact, percent, quantileText, quantileTitle, rate, responseShares, sessions,
@@ -55,37 +54,12 @@ describe('present', () => {
 })
 
 describe('status', () => {
-  it('gives every status a tone and every tone its own shape', () => {
+  it('gives every status a tone', () => {
     expect(['up', 'healthy', 'listening'].map(toneOf)).toEqual(['ok', 'ok', 'ok'])
     expect(['degraded', 'drain'].map(toneOf)).toEqual(['warn', 'warn'])
     expect(['down', 'ejected', 'failed', 'expired'].map(toneOf)).toEqual(['bad', 'bad', 'bad', 'bad'])
     expect(toneOf('maint')).toBe('info')
     expect(['unchecked', 'unknown', 'empty', 'anything'].map(toneOf)).toEqual(['neutral', 'neutral', 'neutral', 'neutral'])
-    expect(new Set(Object.values(ICON_PATHS)).size).toBe(5)
-  })
-})
-
-describe('sparkShape', () => {
-  it('has no shape below two known samples', () => {
-    expect(sparkShape([])).toBeUndefined()
-    expect(sparkShape([undefined, 4, undefined])).toBeUndefined()
-  })
-
-  it('draws known samples on a zero baseline, right-aligned, with gaps for unknown ones', () => {
-    const shape = sparkShape([0, 10, undefined, 5])!
-    expect(shape.known).toEqual([0, 10, 5])
-    expect(shape.max).toBe(10)
-    expect(shape.last).toBe(5)
-    expect(shape.d.match(/M/g)).toHaveLength(2)
-    const ys = [...shape.d.matchAll(/[ML][\d.]+ ([\d.]+)/g)].map((match) => Number(match[1]))
-    expect(ys[0]).toBeGreaterThan(ys[1]!)
-    expect(shape.d.startsWith('M')).toBe(true)
-  })
-
-  it('draws a flat series on the baseline and keeps only the last samples', () => {
-    expect(sparkShape([0, 0, 0])!.d).toMatch(/^M[\d.]+ 14\.5L/)
-    const long = Array.from({ length: SPARK_SAMPLES + 40 }, (_, index) => index)
-    expect(sparkShape(long)!.known).toHaveLength(SPARK_SAMPLES)
   })
 })
 

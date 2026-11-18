@@ -1,0 +1,39 @@
+@layer ox.primitives {
+  .ox-tablist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-2);
+    border-bottom: var(--ox-border-width) solid var(--ox-border);
+  }
+
+  .ox-tab {
+    min-height: var(--ox-control-h);
+    padding: 0 var(--ox-control-px);
+    border: 0;
+    border-bottom: 3px solid transparent;
+    background: none;
+    color: var(--ox-muted);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .ox-tab:hover {
+    color: var(--ox-fg);
+  }
+
+  .ox-tab[aria-selected='true'] {
+    border-bottom-color: var(--ox-brand);
+    color: var(--ox-fg);
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-tabpanel {
+    padding-top: var(--ox-gap);
+  }
+
+  @media (forced-colors: active) {
+    .ox-tab[aria-selected='true'] {
+      border-bottom-color: Highlight;
+    }
+  }
+}

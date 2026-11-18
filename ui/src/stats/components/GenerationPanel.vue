@@ -1,15 +1,18 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
 import { formatDuration } from '#design/format'
+import Panel from '#design/panel/Panel.vue'
+import Table from '#design/table/Table.vue'
 import { useStatsStore } from '../useStatsStore'
 import DetailList from './DetailList.vue'
 import type { Detail } from './present'
 import * as cell from './present'
 import StatusBadge from './StatusBadge.vue'
-import './panels.css'
+import './dashboard.css'
 
 // The running configuration generation: revisions, counters, the last failure and rejection, and the generations still
 // draining. Revisions are only sent to clients allowed to see them.
+const RETIRED_COLUMNS = ['Revision', 'State', 'Age', 'Deadline', 'In flight']
 const { model } = useStatsStore()
 const wire = computed(() => model.value!.generation.wire)
 const entry = (label: string, value: bigint | number | undefined): Detail => ({ label, value: cell.exact(value) })
@@ -30,8 +33,7 @@ const kinds = (retired: { inFlightByKind: Record<string, number> }) =>
 </script>
 
 <template lang="pug">
-section.ox-panel#generation(v-if="model" aria-labelledby="ox-generation-title")
-  h2#ox-generation-title Generation {{ wire.number }}
+Panel#generation(v-if="model" :title="`Generation ${wire.number}`")
   p.ox-badges
     StatusBadge(:status="wire.accepting ? 'ok' : 'down'" :label="wire.accepting ? 'ACCEPTING' : 'NOT ACCEPTING'")
     StatusBadge(:status="wire.degraded ? 'degraded' : 'healthy'" :label="wire.degraded ? 'DEGRADED' : 'HEALTHY'")
@@ -48,15 +50,7 @@ section.ox-panel#generation(v-if="model" aria-labelledby="ox-generation-title")
         |  ({{ item.stage }}) {{ item.message }}
   template(v-if="wire.retired.length")
     h3 Draining generations
-    table.ox-table.ox-plain
-      caption.ox-sr-only Retired generations that still hold connections
-      thead
-        tr
-          th(scope="col") Revision
-          th(scope="col") State
-          th(scope="col") Age
-          th(scope="col") Deadline
-          th(scope="col") In flight
+    Table.ox-plain(caption="Retired generations that still hold connections" :columns="RETIRED_COLUMNS")
       tbody.ox-row(v-for="item in wire.retired" :key="item.revision")
         tr
           th.ox-name(scope="row" data-label="Revision") {{ item.revision }}

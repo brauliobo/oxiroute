@@ -1,0 +1,20 @@
+@layer ox.primitives {
+  .ox-meter {
+    height: 0.5rem;
+    overflow: hidden;
+    border-radius: var(--ox-radius-xs);
+    background: var(--ox-border);
+  }
+
+  .ox-meter-fill {
+    display: block;
+    width: calc(var(--ox-w, 0) * 1%);
+    height: 100%;
+    background: currentcolor;
+  }
+
+  @media (forced-colors: active) {
+    .ox-meter { border: var(--ox-border-width) solid CanvasText; }
+    .ox-meter-fill { background: Highlight; }
+  }
+}

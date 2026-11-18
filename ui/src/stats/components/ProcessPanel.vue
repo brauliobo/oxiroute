@@ -1,11 +1,12 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import Panel from '#design/panel/Panel.vue'
 import { useStatsStore } from '../useStatsStore'
 import DetailList from './DetailList.vue'
 import type { Detail } from './present'
 import * as cell from './present'
 import StatusBadge from './StatusBadge.vue'
-import './panels.css'
+import './dashboard.css'
 
 // The proxy process and its host: resources, connections and work in flight.
 const { model } = useStatsStore()
@@ -38,8 +39,7 @@ const host = computed<Detail[]>(() => [
 </script>
 
 <template lang="pug">
-section.ox-panel#process(v-if="model" aria-labelledby="ox-process-title")
-  h2#ox-process-title Process
+Panel#process(v-if="model" title="Process")
   p.ox-badges
     StatusBadge(:status="wire.state")
     span.ox-sub(v-if="wire.stateReason") {{ wire.stateReason }}

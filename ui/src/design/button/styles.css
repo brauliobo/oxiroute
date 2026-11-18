@@ -1,0 +1,124 @@
+@layer ox.primitives {
+  .ox-btn,
+  .ox-chip {
+    min-height: var(--ox-control-h);
+    padding: var(--ox-space-2) var(--ox-control-px);
+    border: var(--ox-border-width) solid var(--ox-control);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    color: var(--ox-fg);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .ox-btn:hover,
+  .ox-chip:hover {
+    border-color: var(--ox-fg);
+  }
+
+  .ox-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .ox-btn[aria-pressed='true'],
+  .ox-chip[aria-pressed='true'] {
+    border-color: var(--ox-brand);
+    box-shadow: inset 0 0 0 1px var(--ox-brand);
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-btn.ox-primary {
+    border-color: var(--ox-brand);
+    background: var(--ox-brand);
+    color: var(--ox-on-brand);
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-btn.ox-danger {
+    border-color: var(--ox-bad);
+    color: var(--ox-bad);
+  }
+
+  .ox-btn.ox-link {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--ox-info);
+    text-decoration: underline;
+  }
+
+  .ox-btn.ox-small {
+    min-height: 0;
+    padding: var(--ox-space-1) var(--ox-space-4);
+    border-radius: var(--ox-radius-sm);
+    font-size: var(--ox-text-xs);
+  }
+
+  .ox-chip {
+    padding-inline: var(--ox-space-5);
+    border-radius: var(--ox-radius-pill);
+    font-size: var(--ox-text-md);
+    letter-spacing: 0.02em;
+  }
+
+  .ox-chip[aria-pressed='true']::before {
+    content: '\2713\00a0' / '';
+  }
+
+  .ox-toggle {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--ox-space-4);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: var(--ox-weight-strong);
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  .ox-chevron {
+    width: 0.45rem;
+    height: 0.45rem;
+    flex: none;
+    border-right: 2px solid currentcolor;
+    border-bottom: 2px solid currentcolor;
+    transform: translateY(-0.1rem) rotate(-45deg);
+    transition: transform var(--ox-duration-fast);
+  }
+
+  .ox-toggle[aria-expanded='true'] > .ox-chevron {
+    transform: translateY(-0.2rem) rotate(45deg);
+  }
+
+  @media (prefers-contrast: more) {
+    .ox-btn,
+    .ox-chip {
+      border-width: 2px;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .ox-btn,
+    .ox-chip {
+      border-color: CanvasText;
+    }
+
+    .ox-btn[aria-pressed='true'],
+    .ox-chip[aria-pressed='true'],
+    .ox-btn.ox-primary {
+      background: Highlight;
+      color: HighlightText;
+      box-shadow: none;
+    }
+
+    .ox-btn.ox-link {
+      color: LinkText;
+    }
+  }
+}

@@ -4,7 +4,6 @@ import DetailList from './DetailList.vue'
 import Histogram from './Histogram.vue'
 import Latency from './Latency.vue'
 import ResponseBar from './ResponseBar.vue'
-import Sparkline from './Sparkline.vue'
 import StatusBadge from './StatusBadge.vue'
 
 describe('StatusBadge', () => {
@@ -26,22 +25,6 @@ describe('StatusBadge', () => {
     const wrapper = mount(StatusBadge, { props: { status: 'soon', label: '<b>EXPIRES SOON</b>' } })
     expect(wrapper.text()).toBe('<b>EXPIRES SOON</b>')
     expect(wrapper.find('b').exists()).toBe(false)
-  })
-})
-
-describe('Sparkline', () => {
-  it('draws a path with a text summary for assistive technology', () => {
-    const wrapper = mount(Sparkline, { props: { series: [1, 4, undefined, 2], label: 'Requests per second' } })
-    const svg = wrapper.get('svg')
-    expect(svg.attributes('role')).toBe('img')
-    expect(svg.attributes('aria-label')).toBe('Requests per second: now 2, peak 4, last 3 samples')
-    expect(svg.get('path').attributes('d')).toMatch(/^M/)
-  })
-
-  it('draws nothing before two samples are known, and says "unknown" for an unknown latest sample', () => {
-    expect(mount(Sparkline, { props: { series: [undefined, 3], label: 'x' } }).find('svg').exists()).toBe(false)
-    const wrapper = mount(Sparkline, { props: { series: [1, 2, undefined], label: 'x' } })
-    expect(wrapper.get('svg').attributes('aria-label')).toContain('now unknown')
   })
 })
 

@@ -8,7 +8,7 @@ import * as cell from './present'
 import DetailList from './DetailList.vue'
 import Histogram from './Histogram.vue'
 import Latency from './Latency.vue'
-import Sparkline from './Sparkline.vue'
+import Sparkline from '#design/sparkline/Sparkline.vue'
 import './table.css'
 
 // Everything the snapshot says about one server that the row does not show.

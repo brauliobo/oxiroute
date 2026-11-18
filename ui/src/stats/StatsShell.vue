@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { nextTheme, useTheme } from '#design/composables/useTheme'
 import { useShortcuts } from '#design/composables/useShortcuts'
+import Shell from '#design/layout/Shell.vue'
 import AdminActions from './components/AdminActions.vue'
 import Footer from './components/Footer.vue'
 import ShortcutsDialog from './components/ShortcutsDialog.vue'
@@ -41,24 +42,23 @@ useShortcuts(KEYMAP, SHORTCUT_HANDLERS)
 </script>
 
 <template lang="pug">
-.ox-app
-  a.ox-skip(href="#ox-main") Skip to statistics
-  header.ox-header
-    h1 OxiRoute statistics
+Shell(title="OxiRoute statistics" skip-label="Skip to statistics")
+  template(v-slot:header)
     StatsStatus
     nav.ox-exports(aria-label="Export")
       a(:href="csvHref" download="stats.csv") CSV
       a(:href="jsonHref") JSON
-  StatsToolbar
-  StatusBanner(:banner="banner" @action="onBannerAction")
-  AdminActions(v-if="model?.admin && revision" :pools="model.pools" :revision="revision" @changed="refresh")
-  main#ox-main(tabindex="-1")
-    StatsDashboard
-  Footer(
-    :version="snapshot?.process.version"
-    :generation="snapshot?.generation.number"
-    :sampled-at-unix-ms="snapshot?.sampledAtUnixMs"
-    @help="helpOpen = true"
-  )
-  ShortcutsDialog(:open="helpOpen" @close="helpOpen = false")
+  template(v-slot:above)
+    StatsToolbar
+    StatusBanner(:banner="banner" @action="onBannerAction")
+    AdminActions(v-if="model?.admin && revision" :pools="model.pools" :revision="revision" @changed="refresh")
+  StatsDashboard
+  template(v-slot:footer)
+    Footer(
+      :version="snapshot?.process.version"
+      :generation="snapshot?.generation.number"
+      :sampled-at-unix-ms="snapshot?.sampledAtUnixMs"
+      @help="helpOpen = true"
+    )
+    ShortcutsDialog(:open="helpOpen" @close="helpOpen = false")
 </template>

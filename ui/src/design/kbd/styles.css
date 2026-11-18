@@ -1,0 +1,10 @@
+@layer ox.primitives {
+  .ox-kbd {
+    padding: var(--ox-space-1) var(--ox-space-4);
+    border: var(--ox-border-width) solid var(--ox-control);
+    border-bottom-width: 2px;
+    border-radius: var(--ox-radius-sm);
+    background: var(--ox-surface);
+    font: 0.9em var(--ox-mono);
+  }
+}

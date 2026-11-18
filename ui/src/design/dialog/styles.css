@@ -1,0 +1,42 @@
+@layer ox.primitives {
+  .ox-dialog {
+    width: min(34rem, calc(100vw - 2rem));
+    padding: var(--ox-space-7);
+    border: var(--ox-border-width) solid var(--ox-control);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    color: var(--ox-fg);
+  }
+
+  .ox-dialog::backdrop {
+    background: var(--ox-scrim);
+  }
+
+  .ox-dialog > h2 {
+    margin-bottom: var(--ox-space-5);
+  }
+
+  .ox-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--ox-space-4);
+    margin-top: var(--ox-space-6);
+  }
+
+  .ox-dialog .ox-btn {
+    flex: none;
+  }
+
+  @media (forced-colors: active) {
+    .ox-dialog {
+      border-color: CanvasText;
+    }
+  }
+
+  @media print {
+    .ox-dialog {
+      display: none;
+    }
+  }
+}

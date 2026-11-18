@@ -1,0 +1,45 @@
+@layer ox.primitives {
+  .ox-toasts {
+    position: fixed;
+    right: var(--ox-gap);
+    bottom: var(--ox-gap);
+    z-index: var(--ox-z-toast);
+    display: grid;
+    gap: var(--ox-space-4);
+    width: min(24rem, calc(100vw - 2 * var(--ox-gap)));
+  }
+
+  .ox-toasts:empty {
+    display: none;
+  }
+
+  .ox-toast {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-4) var(--ox-space-5);
+    padding: var(--ox-space-4) var(--ox-space-5);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-left: 6px solid var(--ox-info);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    box-shadow: var(--ox-shadow);
+  }
+
+  .ox-toast[data-tone='ok'] { border-left-color: var(--ox-ok); }
+  .ox-toast[data-tone='warn'] { border-left-color: var(--ox-warn); }
+  .ox-toast[data-tone='bad'] { border-left-color: var(--ox-bad); }
+
+  @media (forced-colors: active) {
+    .ox-toast {
+      border-color: CanvasText;
+    }
+  }
+
+  @media print {
+    .ox-toasts {
+      display: none;
+    }
+  }
+}

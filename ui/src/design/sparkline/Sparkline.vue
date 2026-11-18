@@ -1,10 +1,9 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatCount } from '#design/format'
-import { SPARK_HEIGHT, SPARK_WIDTH, sparkShape } from './spark'
-import './widgets.css'
+import { formatCount } from '../format'
+import { SPARK_HEIGHT, SPARK_WIDTH, sparkShape } from './shape'
+import './styles.css'
 
-// A tiny trend of the last samples of a series; nothing is drawn until two samples are known.
 const props = defineProps<{ series: ReadonlyArray<number | undefined>; label: string; format?: (value: number) => string }>()
 const shape = computed(() => sparkShape(props.series))
 const summary = computed(() => {

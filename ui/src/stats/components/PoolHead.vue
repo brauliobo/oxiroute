@@ -1,5 +1,7 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import Toggle from '#design/button/Toggle.vue'
+import Button from '#design/button/Button.vue'
 import type { MeasuredPool } from '../derive'
 import { useStatsStore } from '../useStatsStore'
 import { useStatusChanges } from './changes'
@@ -7,7 +9,7 @@ import Latency from './Latency.vue'
 import PoolDetails from './PoolDetails.vue'
 import * as cell from './present'
 import ResponseBar from './ResponseBar.vue'
-import Sparkline from './Sparkline.vue'
+import Sparkline from '#design/sparkline/Sparkline.vue'
 import StatusBadge from './StatusBadge.vue'
 import './table.css'
 
@@ -29,16 +31,14 @@ tbody.ox-pool(:id="cell.anchorId(pool.key)" :class="{ 'ox-changed': flagged }" :
   tr.ox-group
     th(scope="rowgroup" colspan="12")
       .ox-group-head
-        button.ox-toggle(type="button" :aria-expanded="!folded" @click="toggleCollapsed(pool.key)")
-          span.ox-chevron(aria-hidden="true")
-          span.ox-label {{ pool.name }}
+        Toggle(:expanded="!folded" @click="toggleCollapsed(pool.key)") {{ pool.name }}
         StatusBadge(:status="wire.status")
         span {{ wire.availableServers }} of {{ wire.totalServers }} servers available
         span.ox-sub {{ wire.algorithm }}
         span.ox-sub(:title="`oldest wait ${cell.duration(wire.queue.oldestWaitMs)}`") queue {{ wire.queue.current }}, timeout {{ cell.duration(wire.queue.timeoutMs) }}
         span.ox-sub(v-if="folded") {{ shown }}
         span.ox-changed-tag(v-if="flagged") status changed
-        button.ox-more(type="button" :aria-expanded="open" :aria-controls="detailsId" @click="toggleExpanded(pool.key)") Pool details
+        Button.ox-more(small :aria-expanded="open" :aria-controls="detailsId" @click="toggleExpanded(pool.key)") Pool details
   tr.ox-total
     th.ox-name(scope="row" data-label="Pool") All servers
     td(data-label="Status")

@@ -1,0 +1,58 @@
+@layer ox.primitives {
+  .ox-field {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-3);
+  }
+
+  .ox-field > label {
+    color: var(--ox-muted);
+  }
+
+  .ox-input {
+    min-height: var(--ox-control-h);
+    padding: var(--ox-space-2) var(--ox-control-px);
+    border: var(--ox-border-width) solid var(--ox-control);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    color: var(--ox-fg);
+    font: inherit;
+  }
+
+  .ox-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .ox-input[aria-invalid='true'] {
+    border-color: var(--ox-bad);
+  }
+
+  .ox-check {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ox-space-4);
+    min-height: var(--ox-control-h);
+    cursor: pointer;
+  }
+
+  .ox-check > input {
+    width: 1.1em;
+    height: 1.1em;
+    margin: 0;
+    accent-color: var(--ox-brand);
+  }
+
+  @media (prefers-contrast: more) {
+    .ox-input {
+      border-width: 2px;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .ox-input {
+      border-color: CanvasText;
+    }
+  }
+}

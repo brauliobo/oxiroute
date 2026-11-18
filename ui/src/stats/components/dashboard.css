@@ -1,35 +1,61 @@
-/* Data views of the stats page. Colours and the focus ring come from the page tokens and rules in ../stats.css. */
-.ox-dashboard {
-  display: grid;
-  gap: 1.5rem;
-}
+@layer ox.page {
+  .ox-dashboard {
+    display: grid;
+    gap: var(--ox-space-7);
+  }
 
-.ox-dashboard h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1.05rem;
-}
+  .ox-dashboard h2 {
+    margin: 0 0 var(--ox-space-4);
+    font-size: var(--ox-text-lg);
+  }
 
-.ox-dashboard h3 {
-  margin: 0.9rem 0 0.35rem;
-  font-size: 0.9rem;
-}
+  .ox-dashboard h3 {
+    margin: var(--ox-space-6) 0 var(--ox-space-3);
+    font-size: var(--ox-text-md);
+  }
 
-.ox-dashboard h4 {
-  margin: 0.6rem 0 0.25rem;
-  font-size: 0.8rem;
-  color: var(--ox-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
+  .ox-dashboard h4 {
+    margin: var(--ox-space-4) 0 var(--ox-space-2);
+    font-size: var(--ox-text-sm);
+    color: var(--ox-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--ox-tracking-label);
+  }
 
-.ox-panels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
-  gap: 1rem;
-  align-items: start;
-}
+  .ox-panels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+    gap: var(--ox-space-6);
+    align-items: start;
+  }
 
-.ox-panels > #certificates,
-.ox-panels > #warnings {
-  grid-column: 1 / -1;
+  .ox-panels > #certificates,
+  .ox-panels > #warnings {
+    grid-column: 1 / -1;
+  }
+
+  .ox-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-4);
+    margin: 0 0 var(--ox-space-4);
+  }
+
+  .ox-warnings,
+  .ox-diagnostics {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--ox-text-md);
+  }
+
+  .ox-warnings li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--ox-space-4);
+    padding: var(--ox-space-2) 0;
+    border-bottom: var(--ox-border-width) dotted var(--ox-border);
+  }
 }

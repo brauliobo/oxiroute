@@ -1,13 +1,14 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import EmptyState from '#design/empty/EmptyState.vue'
+import Table from '#design/table/Table.vue'
 import { useStatsStore } from '../useStatsStore'
+import ColumnHeads from './ColumnHeads.vue'
 import { SERVER_COLUMNS } from './columns'
 import PoolHead from './PoolHead.vue'
 import ServerRows from './ServerRows.vue'
-import SortHeader from './SortHeader.vue'
 import './table.css'
 
-// Pools with their servers, HAProxy style: one table, a head and totals per pool, one body per server.
 const { model, visible, view } = useStatsStore()
 const pools = computed(() => visible.value?.pools ?? [])
 const folded = (key: string) => view.value.collapsed.includes(key)
@@ -17,12 +18,13 @@ const empty = computed(() => (model.value?.pools.length ? 'No pools or servers m
 <template lang="pug">
 section.ox-section#pools(aria-labelledby="ox-pools-title")
   h2#ox-pools-title Pools and servers
-  p.ox-muted(v-if="pools.length === 0") {{ empty }}
-  table.ox-table.ox-servers(v-else)
-    caption.ox-sr-only Pools with their servers: status, sessions, rates, bytes, responses, errors, checks, weight, downtime and latency
-    thead
-      tr
-        SortHeader(v-for="item in SERVER_COLUMNS" :key="item.label" :label="item.label" :column="item.column")
+  EmptyState(v-if="pools.length === 0") {{ empty }}
+  Table.ox-servers(
+    v-else
+    caption="Pools with their servers: status, sessions, rates, bytes, responses, errors, checks, weight, downtime and latency"
+  )
+    template(v-slot:head)
+      ColumnHeads(:columns="SERVER_COLUMNS")
     template(v-for="pool in pools" :key="pool.key")
       PoolHead(:pool="pool")
       template(v-if="!folded(pool.key)")

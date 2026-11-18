@@ -1,0 +1,46 @@
+@layer ox.primitives {
+  .ox-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-4) var(--ox-space-6);
+    padding: var(--ox-space-4) var(--ox-gap);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-left: 6px solid var(--ox-warn);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+  }
+
+  .ox-banner::before {
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-banner[data-tone='warn']::before { content: 'Warning:'; color: var(--ox-warn); }
+  .ox-banner[data-tone='bad']::before { content: 'Problem:'; color: var(--ox-bad); }
+  .ox-banner[data-tone='info']::before { content: 'Note:'; color: var(--ox-info); }
+  .ox-banner[data-tone='ok']::before { content: 'Done:'; color: var(--ox-ok); }
+
+  .ox-banner[data-tone='bad'] { border-left-color: var(--ox-bad); }
+  .ox-banner[data-tone='info'] { border-left-color: var(--ox-info); }
+  .ox-banner[data-tone='ok'] { border-left-color: var(--ox-ok); }
+
+  .ox-banner .ox-btn {
+    flex: none;
+  }
+
+  @media (forced-colors: active) {
+    .ox-banner {
+      border-color: CanvasText;
+    }
+  }
+
+  @media print {
+    .ox-banner {
+      border-color: CanvasText;
+    }
+
+    .ox-banner .ox-btn {
+      display: none;
+    }
+  }
+}
