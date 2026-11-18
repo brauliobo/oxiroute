@@ -224,6 +224,17 @@ it survives restarts; a file deleted and recreated under the same name keeps its
   a recording being written is refused with `409 recording_active`. Every delete is audited as
   `recording_delete`.
 
+### RTMP control audit
+
+Every state-changing RTMP control call is audited with the caller, correlation id and result:
+`POST /api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start|stop` as `rtmp_recorder_start` and
+`rtmp_recorder_stop`; `POST /api/v1/rtmp/clients/{sessionId}/drop`, `.../publisher/drop` and
+`.../subscriber/drop` as `rtmp_client_drop`, `rtmp_publisher_drop` and `rtmp_subscriber_drop`; recording
+delete and media tickets as above. The matching `control_operation` event in `/api/v2/events` carries
+the target in its `rtmp` object (`streamId` and `recorder`, or `sessionId`). There is a single
+management bearer token, so the actor is always `management_bearer`; per-operation token scopes
+do not exist.
+
 ## Example Calls
 
 ```sh

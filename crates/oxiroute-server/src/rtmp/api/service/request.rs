@@ -1,5 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::RtmpEventDetail;
+use oxiroute_rtmp::RtmpSessionControlAction;
 
 pub(super) fn request_parts(session: &ServerSession) -> (String, String, String) {
     let request = session.req_header();
@@ -47,6 +49,11 @@ pub(super) fn audited_api_operation(
     if method == "GET" {
         return None;
     }
+    if method == "POST"
+        && let Some(operation) = rtmp_control_operation(path)
+    {
+        return Some((operation, AuditCategory::Control));
+    }
     if method == "DELETE"
         && path
             .strip_prefix("/api/v1/rtmp/recordings/")
@@ -89,6 +96,48 @@ pub(super) fn audited_api_operation(
         _ => return None,
     };
     Some((operation, category))
+}
+
+fn rtmp_control_operation(path: &str) -> Option<&'static str> {
+    if let Some(recorder) = streams::match_route(path) {
+        return match recorder {
+            streams::Route::Recording {
+                action: "start", ..
+            } => Some("rtmp_recorder_start"),
+            streams::Route::Recording { action: "stop", .. } => Some("rtmp_recorder_stop"),
+            _ => None,
+        };
+    }
+    match rtmp::match_route(path)? {
+        rtmp::Route::Drop { action, .. } => Some(match action {
+            RtmpSessionControlAction::Client => "rtmp_client_drop",
+            RtmpSessionControlAction::Publisher => "rtmp_publisher_drop",
+            RtmpSessionControlAction::Subscriber => "rtmp_subscriber_drop",
+        }),
+        rtmp::Route::Stats(_) => None,
+    }
+}
+
+pub(super) fn rtmp_control_target(path: &str) -> Option<RtmpEventDetail> {
+    if let Some(streams::Route::Recording {
+        stream_id,
+        recorder_id,
+        ..
+    }) = streams::match_route(path)
+    {
+        return Some(RtmpEventDetail {
+            stream_id: Some(stream_id.to_owned()),
+            recorder: Some(recorder_id.to_owned()),
+            ..RtmpEventDetail::default()
+        });
+    }
+    match rtmp::match_route(path)? {
+        rtmp::Route::Drop { session_id, .. } => Some(RtmpEventDetail {
+            session_id: Some(session_id.to_owned()),
+            ..RtmpEventDetail::default()
+        }),
+        rtmp::Route::Stats(_) => None,
+    }
 }
 
 pub(super) const fn audit_result_for_status(status: u16) -> AuditResult {

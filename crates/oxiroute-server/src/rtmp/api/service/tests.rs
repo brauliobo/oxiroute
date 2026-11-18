@@ -176,3 +176,48 @@ fn rtmp_recorder_events_carry_stream_session_and_reason_on_version_two_frames() 
     assert!(frame.contains("\"reason\":\"quota_files\""));
     assert!(String::from_utf8_lossy(&operational_frame(&event)).contains("event: unknown"));
 }
+
+#[test]
+fn recorder_controls_and_client_drops_are_audited_with_their_targets() {
+    let stream = "2a130dea-5db7-43e0-afb8-f07c4bcb1814";
+    let recorder = "9b1c3f6a-0a64-4c0e-9d3e-6f0f6f0b7a11";
+    let session = "5b9c6a52-4f55-4d62-9d4c-3a1f7a4e5c10";
+    for (path, operation) in [
+        (
+            format!("/api/v1/rtmp/streams/{stream}/recorders/{recorder}/start"),
+            "rtmp_recorder_start",
+        ),
+        (
+            format!("/api/v1/rtmp/streams/{stream}/recorders/{recorder}/stop"),
+            "rtmp_recorder_stop",
+        ),
+        (
+            format!("/api/v1/rtmp/clients/{session}/drop"),
+            "rtmp_client_drop",
+        ),
+        (
+            format!("/api/v1/rtmp/clients/{session}/publisher/drop"),
+            "rtmp_publisher_drop",
+        ),
+        (
+            format!("/api/v1/rtmp/clients/{session}/subscriber/drop"),
+            "rtmp_subscriber_drop",
+        ),
+    ] {
+        assert!(matches!(
+            audited_api_operation("POST", &path),
+            Some((name, crate::observability::operational_event::AuditCategory::Control))
+                if name == operation
+        ));
+        assert!(audited_api_operation("GET", &path).is_none());
+        assert!(rtmp_control_target(&path).is_some());
+    }
+    assert!(audited_api_operation("POST", "/api/v1/rtmp/stats").is_none());
+    assert!(audited_api_operation("POST", "/api/v1/rtmp/streams").is_none());
+    let target = rtmp_control_target(&format!(
+        "/api/v1/rtmp/streams/{stream}/recorders/{recorder}/start"
+    ))
+    .expect("recorder target");
+    assert_eq!(target.stream_id.as_deref(), Some(stream));
+    assert_eq!(target.recorder.as_deref(), Some(recorder));
+}

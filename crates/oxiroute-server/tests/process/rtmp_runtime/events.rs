@@ -175,6 +175,15 @@ async fn an_operator_drop_ends_the_publisher_with_reason_dropped() {
     let ended = wait_for_event(management_address, "rtmp_publish_end", Some("dropped")).await;
     assert_eq!(ended["outcome"], "applied");
     assert_eq!(ended["rtmp"]["stream"], "dock");
+    let audited = events(management_address)
+        .await
+        .into_iter()
+        .find(|event| event["operation"] == "rtmp_client_drop")
+        .expect("the drop is audited");
+    assert_eq!(audited["outcome"], "requested");
+    assert_eq!(audited["rtmp"]["sessionId"], client["id"]);
+    assert_eq!(audited["actor"], "management_bearer");
+    assert_eq!(ended["rtmp"]["sessionId"], client["id"]);
     drop(publisher);
     server.shutdown();
 }

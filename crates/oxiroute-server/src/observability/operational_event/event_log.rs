@@ -233,6 +233,7 @@ pub(crate) fn emit_api_operation(
     result: AuditResult,
     revision: Option<&EffectiveRevision>,
     context: &AuditContext,
+    rtmp: Option<RtmpEventDetail>,
 ) {
     let event = match operation {
         "generation_reload" => "generation_prepare",
@@ -263,6 +264,7 @@ pub(crate) fn emit_api_operation(
             revision,
             operation: Some(operation),
             category_result: Some((category, result)),
+            rtmp: rtmp.map(RtmpEventDetail::redacted),
             ..Emission::default()
         },
         context,

@@ -601,6 +601,7 @@ impl RtmpManagementApi {
             audit_result_for_status(response.status),
             None,
             context,
+            rtmp_control_target(path),
         );
     }
 }
@@ -641,7 +642,10 @@ use events::{accepts_event_stream, last_event_id, parse_event_stream_cursor};
 #[cfg(test)]
 use events::{heartbeat_frame, operational_frame, operational_frame_v2, ready_frame, resync_frame};
 use recording_stream::write_recording_stream;
-use request::{audit_result_for_status, audited_api_operation, request_context, request_parts};
+use request::{
+    audit_result_for_status, audited_api_operation, request_context, request_parts,
+    rtmp_control_target,
+};
 
 #[cfg(test)]
 mod tests;
