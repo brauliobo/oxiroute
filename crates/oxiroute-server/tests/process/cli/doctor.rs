@@ -32,8 +32,14 @@ fn write(directory: &Path, name: &str, text: &str, mode: u32) -> PathBuf {
     path
 }
 
+fn contexts_home(unit: &Path) -> PathBuf {
+    unit.parent().expect("unit directory").join("home")
+}
+
 fn doctor(daemon: &Daemon, config: &Path, unit: &Path, extra: &[&str]) -> Output {
     cli_command()
+        .env_remove("OXIROUTE_CONTEXT")
+        .env("XDG_CONFIG_HOME", contexts_home(unit))
         .args(daemon.connection())
         .args(["doctor"])
         .arg(config)
@@ -162,6 +168,136 @@ async fn problems_are_listed_worst_first_each_with_its_fix() {
         "{text}"
     );
     assert!(text.contains("\n    fix: "), "{text}");
+}
+
+fn contexts_file(unit: &Path, text: &str, mode: u32) {
+    let directory = contexts_home(unit).join("oxiroute");
+    fs::create_dir_all(&directory).expect("contexts directory");
+    write(&directory, "contexts", text, mode);
+}
+
+fn contexts_findings(output: &Output) -> Vec<Value> {
+    findings(output)
+        .into_iter()
+        .filter(|finding| finding["check"] == "contexts")
+        .collect()
+}
+
+#[tokio::test]
+async fn the_contexts_file_and_the_token_files_it_names_are_checked() {
+    let daemon = Daemon::start().await;
+    let directory = TempDir::new().expect("directory");
+    let unit = unit(directory.path(), &daemon, OPEN_UNIT);
+    let loose = write(directory.path(), "loose.token", &"a".repeat(64), 0o644);
+    let good = daemon.token_file.display();
+    let text = format!(
+        r#"{{"schemaVersion": 1, "current": "prod", "contexts": {{
+            "prod": {{"endpoint": "http://192.0.2.10:9900", "token": {{"file": "{loose}"}}}},
+            "staging": {{"endpoint": "http://192.0.2.11:9900", "token": {{"file": "{good}"}}}},
+            "lab": {{"endpoint": "http://192.0.2.12:9900", "token": {{"file": "{loose}"}}}}
+        }}}}"#,
+        loose = loose.display()
+    );
+
+    contexts_file(&unit, &text, 0o600);
+    let run = || doctor(&daemon, &daemon.server.config_path, &unit, &["--json"]);
+    let found = contexts_findings(&run());
+    let severity_of = |subject: &str| {
+        found
+            .iter()
+            .find(|finding| finding["subject"] == subject)
+            .map(|finding| finding["severity"].as_str().expect("severity"))
+    };
+    assert_eq!(severity_of("context prod"), Some("critical"), "{found:?}");
+    assert_eq!(severity_of("context lab"), Some("warning"), "{found:?}");
+    assert_eq!(severity_of("context staging"), None, "{found:?}");
+    assert!(
+        found.iter().any(|finding| finding["severity"] == "ok"
+            && finding["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("3 contexts")
+                    && message.contains("prod is selected"))),
+        "{found:?}"
+    );
+
+    contexts_file(&unit, &text, 0o644);
+    let open = contexts_findings(&run());
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0]["severity"], "critical");
+    assert!(
+        open[0]["message"]
+            .as_str()
+            .expect("message")
+            .contains("mode 0644"),
+        "{open:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_requested_context_is_reported_and_the_rest_of_the_report_still_runs() {
+    let daemon = Daemon::start().await;
+    let directory = TempDir::new().expect("directory");
+    let unit = unit(directory.path(), &daemon, OPEN_UNIT);
+    let text =
+        r#"{"schemaVersion": 1, "contexts": {"prod": {"endpoint": "http://192.0.2.10:9900"}}}"#;
+    contexts_file(&unit, text, 0o600);
+
+    let output = doctor(
+        &daemon,
+        &daemon.server.config_path,
+        &unit,
+        &["--json", "--context", "nowhere"],
+    );
+    let found = findings(&output);
+    let contexts = contexts_findings(&output);
+    assert_eq!(contexts.len(), 1, "{contexts:?}");
+    assert!(
+        contexts[0]["message"]
+            .as_str()
+            .expect("message")
+            .contains("no context named nowhere"),
+        "{contexts:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|finding| finding["check"] == "upstreams" && finding["severity"] == "warning"),
+        "{found:?}"
+    );
+    assert!(found.iter().any(|finding| finding["check"] == "config"));
+}
+
+#[tokio::test]
+async fn the_overlay_and_history_beside_the_configuration_are_checked() {
+    let daemon = Daemon::start().await;
+    let directory = TempDir::new().expect("directory");
+    let unit = unit(directory.path(), &daemon, OPEN_UNIT);
+    let name = daemon
+        .server
+        .config_path
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .into_owned();
+    let config = directory.path().join(&name);
+    fs::copy(&daemon.server.config_path, &config).expect("configuration copy");
+    let overlay = write(
+        directory.path(),
+        &format!("{name}.overlay.json"),
+        "{",
+        0o644,
+    );
+    let output = doctor(&daemon, &config, &unit, &["--json"]);
+    let flagged = findings(&output)
+        .into_iter()
+        .filter(|finding| finding["subject"] == overlay.display().to_string().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(flagged.len(), 2, "{flagged:?}");
+    assert!(
+        flagged
+            .iter()
+            .all(|finding| finding["severity"] == "warning" && finding["check"] == "files")
+    );
 }
 
 #[tokio::test]

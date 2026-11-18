@@ -1,10 +1,11 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use super::{
-    DoctorArgs, certificates, config,
+    DoctorArgs, certificates, config, contexts,
     diagnosis::{self, Check, Diagnosis},
     files,
     listeners::{self, Host},
+    sidecars,
     unit::{self, Unit},
     upstreams, writes,
 };
@@ -50,6 +51,7 @@ fn diagnose(context: &Context<'_>, args: &DoctorArgs) -> Vec<Diagnosis> {
             "a daemon answers, so the addresses it holds are not reported as in use",
         ));
     }
+    diagnoses.extend(contexts::check(context));
     diagnoses.push(files::config_file(&path));
     let writes = match config::check(&path) {
         Ok((draft, found)) => {
@@ -60,9 +62,10 @@ fn diagnose(context: &Context<'_>, args: &DoctorArgs) -> Vec<Diagnosis> {
                 grants_privileged_ports: unit.as_ref().map(|unit| unit.grants_privileged_ports),
             };
             diagnoses.extend(listeners::check(&draft, &host));
-            diagnoses.extend(upstreams::check(&draft, context.timeouts().connect()));
+            diagnoses.extend(sidecars::check(&path));
+            diagnoses.extend(upstreams::probe(&draft, context));
             diagnoses.extend(certificates::check(&draft, now_unix_seconds()));
-            writes::of(&draft, &environment)
+            writes::of(&draft, &environment, &path)
         }
         Err(failure) => {
             diagnoses.push(failure);

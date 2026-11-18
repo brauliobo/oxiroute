@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use oxiroute_config::{
     AccessLogPolicy, CacheStore, CertificateSource, ConfigDraft, ListenerBind, RegistryEndpoint,
@@ -9,7 +12,7 @@ use super::{
     unit::{Access, Environment, Unit},
 };
 use crate::{
-    observability::operational_event::audit_directory,
+    observability::{operational_event::audit_directory, status::summary::Severity},
     rtmp::api::{TOKEN_FILE_ENV, token_file_or},
 };
 
@@ -17,6 +20,7 @@ pub(super) struct WritePath {
     what: String,
     path: PathBuf,
     directory: bool,
+    severity: Severity,
 }
 
 impl WritePath {
@@ -25,6 +29,7 @@ impl WritePath {
             what: what.into(),
             path: path.to_owned(),
             directory: true,
+            severity: Severity::Critical,
         }
     }
 
@@ -33,7 +38,13 @@ impl WritePath {
             what: what.into(),
             path: path.to_owned(),
             directory: false,
+            severity: Severity::Critical,
         }
+    }
+
+    fn degrading(mut self) -> Self {
+        self.severity = Severity::Warning;
+        self
     }
 
     fn grant(&self, absolute: &Path) -> PathBuf {
@@ -45,8 +56,8 @@ impl WritePath {
     }
 }
 
-pub(super) fn of(draft: &ConfigDraft, environment: &Environment) -> Vec<WritePath> {
-    let mut paths = Vec::new();
+pub(super) fn of(draft: &ConfigDraft, environment: &Environment, config: &Path) -> Vec<WritePath> {
+    let mut paths = beside_config(draft, config);
     for certificate in &draft.certificates {
         if let CertificateSource::AcmeManaged { state_root, .. } = &certificate.source {
             let what = format!("state of managed certificate {}", certificate.name);
@@ -87,6 +98,16 @@ pub(super) fn of(draft: &ConfigDraft, environment: &Environment) -> Vec<WritePat
     paths.extend(access_logs(draft));
     paths.extend(rtmp(draft));
     paths
+}
+
+fn beside_config(draft: &ConfigDraft, config: &Path) -> Vec<WritePath> {
+    if draft.management.is_none() {
+        return Vec::new();
+    }
+    let canonical = fs::canonicalize(config).unwrap_or_else(|_| config.to_owned());
+    let directory = canonical.parent().unwrap_or(&canonical);
+    let what = "configuration directory (config apply, --persist overlays and history)";
+    vec![WritePath::directory(what, directory).degrading()]
 }
 
 fn audit(draft: &ConfigDraft, environment: &Environment) -> Option<WritePath> {
@@ -184,7 +205,8 @@ pub(super) fn judge(unit: &Unit, writes: &[WritePath]) -> Vec<Diagnosis> {
                 Access::Hidden => "inaccessible",
             };
             Some(
-                Diagnosis::critical(
+                Diagnosis::new(
+                    write.severity,
                     Check::Unit,
                     &subject,
                     format!("{} {} is {state} under the unit's sandbox", write.what, absolute.display()),

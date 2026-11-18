@@ -4,10 +4,12 @@
 mod args;
 mod certificates;
 mod config;
+mod contexts;
 mod diagnosis;
 mod files;
 mod listeners;
 mod run;
+mod sidecars;
 mod unit;
 mod upstreams;
 mod writes;

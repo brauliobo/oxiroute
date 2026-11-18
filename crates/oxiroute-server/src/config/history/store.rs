@@ -62,6 +62,10 @@ impl ConfigHistory {
         }
     }
 
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     pub(crate) fn id_of(text: &[u8]) -> String {
         lower_hex(&sha256(text))[..ID_LENGTH].to_owned()
     }

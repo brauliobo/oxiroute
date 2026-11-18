@@ -286,11 +286,12 @@ before the daemon is installed or started:
 | Check | What it looks at |
 | --- | --- |
 | `config` | the file parses, validates and prepares as a runtime generation (the listen addresses are checked by `listeners`); configuration warnings are reported as warnings |
-| `files` | the configuration is not writable by group or others; the management token file is a regular file with mode `0400` or `0600`; private keys, DNS credentials, access token and htpasswd files and the registry token file are not open to other users |
+| `files` | the configuration is not writable by group or others; the management token file is a regular file with mode `0400` or `0600`; private keys, DNS credentials, access token and htpasswd files and the registry token file are not open to other users; the overlay file (`<file>.overlay.json`) loads and is not open to group or others; the history directory (`<file>.history/`) and its versions are private |
+| `contexts` | the contexts file is valid and private (mode `0600`), the selected context exists, and the token files the contexts name are regular files with mode `0400` or `0600` holding a token: critical for the selected context, a warning for the others; an unresolvable context also stops the upstream probes |
 | `listeners` | each listen address can be bound: in use by another process, not assigned to this host, a socket directory that does not exist, a port below 1024 without root or `CAP_NET_BIND_SERVICE` (the unit's `AmbientCapabilities=` counts). With a daemon answering at `--endpoint`, the addresses it holds are fine; `--offline` does not ask |
 | `upstreams` | each static pool server accepts a connection within the global `--timeout`: a pool with no reachable server is critical, one with some unreachable is a warning per server |
 | `certificates` | the expiry of the certificate files (`files` and Certbot sources): warning within 30d, critical within 7d or expired |
-| `unit` | every `ReadWritePaths=` entry exists unless prefixed `-`; every path the configuration writes is writable under the unit's `ProtectSystem=`, `ReadWritePaths=`, `StateDirectory=` and similar settings |
+| `unit` | every `ReadWritePaths=` entry exists unless prefixed `-`; every path the configuration writes is writable under the unit's `ProtectSystem=`, `ReadWritePaths=`, `StateDirectory=` and similar settings; with a management API the configuration directory must be writable for `config apply`, `--persist` and the history (a warning) |
 
 The unit is `--unit`, else the first `oxiroute.service` in `/etc/systemd/system`, `/run/systemd/system`,
 `/usr/lib/systemd/system` or `/lib/systemd/system`, with its drop-ins. Without `CONFIG` the file named by the

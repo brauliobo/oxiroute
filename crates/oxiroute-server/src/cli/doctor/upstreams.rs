@@ -9,6 +9,7 @@ use std::{
 use oxiroute_config::{ConfigDraft, UpstreamEndpoint, UpstreamPool};
 
 use super::diagnosis::{Check, Diagnosis};
+use crate::cli::context::Context;
 
 fn reach(endpoint: &UpstreamEndpoint, limit: Duration) -> Result<(), String> {
     match endpoint {
@@ -55,6 +56,17 @@ fn judge(pool: &UpstreamPool, failures: &[(String, String)]) -> Vec<Diagnosis> {
         .into_iter()
         .map(|reason| Diagnosis::warning(Check::Upstreams, &subject, reason).fixed_by(fix))
         .collect()
+}
+
+pub(super) fn probe(draft: &ConfigDraft, context: &Context<'_>) -> Vec<Diagnosis> {
+    match context.timeouts() {
+        Ok(timeouts) => check(draft, timeouts.connect()),
+        Err(_) => vec![Diagnosis::warning(
+            Check::Upstreams,
+            "upstreams",
+            "not probed: the selected context cannot be resolved, see the contexts finding",
+        )],
+    }
 }
 
 pub(super) fn check(draft: &ConfigDraft, limit: Duration) -> Vec<Diagnosis> {

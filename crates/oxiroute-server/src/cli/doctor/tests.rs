@@ -14,10 +14,14 @@ use super::{
     diagnosis::{Check, Diagnosis, report},
     files, listeners,
     listeners::Host,
+    sidecars,
     unit::{Access, Environment, Unit},
     upstreams, writes,
 };
-use crate::observability::status::summary::Severity;
+use crate::{
+    config::history::{ConfigHistory, HistoryLimits},
+    observability::status::summary::Severity,
+};
 
 const PACKAGED: &str = "[Unit]
 Description=OxiRoute
@@ -140,7 +144,11 @@ fn the_paths_a_configuration_writes_are_judged_against_the_unit() {
         "cache_stores": [{ "type": "disk", "name": "pages", "root_directory": "/var/cache/oxiroute" }],
         "audit": { "dir": "/etc/oxiroute/audit" },
     }));
-    let writes = writes::of(&draft, &Environment::of_process());
+    let writes = writes::of(
+        &draft,
+        &Environment::of_process(),
+        Path::new("oxiroute.kdl"),
+    );
     let diagnoses = writes::judge(&unit_of(PACKAGED, &[]), &writes);
     let problems = diagnoses
         .iter()
@@ -371,5 +379,95 @@ fn a_configuration_writable_by_others_and_a_key_readable_by_them_are_reported() 
             .fix
             .as_deref()
             .is_some_and(|fix| fix.starts_with("chmod go-rwx "))
+    );
+}
+
+const OVERLAY: &str =
+    r#"{"schemaVersion": 1, "servers": [{"pool": "web", "server": "a", "weight": 3}]}"#;
+
+fn overlay_beside(directory: &TempDir, text: &str, file_mode: u32) -> PathBuf {
+    let path = directory.path().join("oxiroute.kdl.overlay.json");
+    fs::write(&path, text).expect("overlay");
+    fs::set_permissions(&path, fs::Permissions::from_mode(file_mode)).expect("mode");
+    path
+}
+
+#[test]
+fn a_configuration_without_an_overlay_or_history_reports_nothing_about_them() {
+    let directory = TempDir::new().expect("directory");
+    assert!(sidecars::check(&directory.path().join("oxiroute.kdl")).is_empty());
+}
+
+#[test]
+fn a_private_overlay_is_reported_with_its_settings() {
+    let directory = TempDir::new().expect("directory");
+    overlay_beside(&directory, OVERLAY, 0o600);
+    let diagnoses = sidecars::check(&directory.path().join("oxiroute.kdl"));
+    assert_eq!(severities(&diagnoses), [Severity::Ok]);
+    assert!(diagnoses[0].message.contains("1 persisted settings"));
+}
+
+#[test]
+fn an_overlay_open_to_others_or_unreadable_as_an_overlay_is_a_warning_with_a_fix() {
+    let directory = TempDir::new().expect("directory");
+    let path = overlay_beside(&directory, "{", 0o644);
+    let diagnoses = sidecars::check(&directory.path().join("oxiroute.kdl"));
+    assert_eq!(
+        severities(&diagnoses),
+        [Severity::Warning, Severity::Warning]
+    );
+    let fixes = diagnoses
+        .iter()
+        .map(|diagnosis| diagnosis.fix.clone().expect("fix"))
+        .collect::<Vec<_>>();
+    assert_eq!(fixes[0], format!("chmod 600 {}", path.display()));
+    assert!(fixes[1].contains("oxiroute overlay clear"), "{fixes:?}");
+    assert!(diagnoses[1].message.contains("refuses --persist"));
+}
+
+#[test]
+fn a_history_directory_is_private_only_when_it_and_its_versions_are() {
+    let directory = TempDir::new().expect("directory");
+    let config = directory.path().join("oxiroute.kdl");
+    let history = ConfigHistory::beside(&config);
+    history
+        .record(b"listeners {}\n", 1_000, HistoryLimits::default())
+        .expect("record");
+    assert_eq!(severities(&sidecars::check(&config)), [Severity::Ok]);
+
+    let version = fs::read_dir(history.directory())
+        .expect("listing")
+        .next()
+        .expect("version")
+        .expect("entry")
+        .path();
+    fs::set_permissions(&version, fs::Permissions::from_mode(0o644)).expect("mode");
+    let diagnoses = sidecars::check(&config);
+    assert_eq!(severities(&diagnoses), [Severity::Warning]);
+    assert_eq!(diagnoses[0].subject, version.display().to_string());
+}
+
+#[test]
+fn the_directory_the_management_api_writes_beside_the_configuration_degrades_to_a_warning() {
+    let draft = config(&json!({ "management": { "bind": "127.0.0.1:9900" } }));
+    let writes = writes::of(
+        &draft,
+        &Environment::of_process(),
+        Path::new("/etc/oxiroute/oxiroute.kdl"),
+    );
+    let diagnoses = writes::judge(&unit_of(PACKAGED, &[]), &writes);
+    assert_eq!(severities(&diagnoses), [Severity::Warning]);
+    assert!(diagnoses[0].message.contains("configuration directory"));
+    assert_eq!(
+        diagnoses[0].fix.as_deref(),
+        Some(
+            "add ReadWritePaths=/etc/oxiroute to the unit (systemctl edit oxiroute.service) and restart it"
+        )
+    );
+
+    let granted = unit_of(PACKAGED, &["[Service]\nReadWritePaths=/etc/oxiroute\n"]);
+    assert_eq!(
+        severities(&writes::judge(&granted, &writes)),
+        [Severity::Ok]
     );
 }
