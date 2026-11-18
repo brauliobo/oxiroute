@@ -1,9 +1,4 @@
-2 .editor-form
-2 .form-heading
-2 .object-path
 2 .ox-banner
 2 .ox-btn
 2 .ox-input
 2 .ox-mono
-2 .route-card-heading
-2 .route-heading
