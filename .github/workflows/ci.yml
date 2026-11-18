@@ -102,6 +102,14 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      - name: Share the management process with the UI API tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxiroute-debug
+          path: target/debug/oxiroute
+          retention-days: 1
+          compression-level: 1
+
   doc:
     name: Documentation tests
     runs-on: ubuntu-24.04
@@ -267,14 +275,55 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.97.1
-        uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
         with:
-          shared-key: ui
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: ui
+
+      - name: Run UI tests that need no management process
+        run: pnpm exec vitest run --exclude src/api.process.test.ts --maxWorkers=4
+        working-directory: ui
+
+      - name: Build UI
+        run: pnpm build
+        working-directory: ui
+
+      - name: Verify the UI bundle has no VDOM renderer
+        run: pnpm verify:bundle
+        working-directory: ui
+
+      - name: Lint the design system styles and hold the console to its colour and duplicate-class baselines
+        run: pnpm verify:css
+        working-directory: ui
+
+  ui-api:
+    name: UI API tests against the management process
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download the management process the archive job built
+        uses: actions/download-artifact@v4
+        with:
+          name: oxiroute-debug
+          path: target/debug
+
+      - name: Make the management process executable
+        run: chmod +x target/debug/oxiroute
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -292,23 +341,8 @@ jobs:
         run: pnpm install --frozen-lockfile --prefer-offline
         working-directory: ui
 
-      - name: Build management process for API integration tests
-        run: nice cargo +1.97.1 build -p oxiroute --bin oxiroute --locked --jobs 4
-
-      - name: Run UI tests
-        run: pnpm test -- --maxWorkers=4 --minWorkers=1
-        working-directory: ui
-
-      - name: Build UI
-        run: pnpm build
-        working-directory: ui
-
-      - name: Verify the UI bundle has no VDOM renderer
-        run: pnpm verify:bundle
-        working-directory: ui
-
-      - name: Lint the design system styles and hold the console to its colour and duplicate-class baselines
-        run: pnpm verify:css
+      - name: Run the UI API tests against the management process
+        run: pnpm exec vitest run src/api.process.test.ts
         working-directory: ui
 
   stats-ui:
