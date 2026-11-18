@@ -418,10 +418,11 @@ Current constraints:
   neither is set errors and the startup lines (target `oxiroute::startup`: one `listening on <address>
   (<name>, <protocol>)` line per traffic listener, the management and statistics URLs, a `ready` line, and a
   warning for a component that starts degraded, such as an unusable audit directory) are logged, so a filter
-  that sets `off` or `error` silences those lines. The supervised master applies it when it starts and on every accepted
-  reload; each supervised worker applies its own generation's value at start (workers do not inherit
-  `RUST_LOG`), and the direct runtime applies it with each generation, so a draining generation shares the
-  process-wide filter.
+  that sets `off` or `error` silences those lines. The supervised master applies it when it starts and once the
+  replacement worker of an accepted reload has committed, so a refused replacement leaves its filter as it was; each
+  supervised worker applies its own generation's value at start, and the master and every worker fall back to the same
+  `RUST_LOG` (the master forwards it to its workers) and then to the same default. The direct runtime applies it with
+  each generation, so a draining generation shares the process-wide filter.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.

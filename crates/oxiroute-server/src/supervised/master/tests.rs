@@ -651,6 +651,7 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
             identity,
             &[],
             |key| match key {
+                "RUST_LOG" => Some(OsString::from("oxiroute=debug")),
                 "OXIROUTE_MANAGEMENT_TOKEN_FILE" => {
                     Some(OsString::from("/etc/oxiroute/management.token"))
                 }
@@ -666,6 +667,7 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
         .expect("worker environment");
     let debug = format!("{command:?}");
     for expected in [
+        "oxiroute=debug",
         "/etc/oxiroute/management.token",
         "/var/lib/oxiroute/audit",
         "10000",

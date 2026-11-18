@@ -84,6 +84,16 @@ impl ServerProcess {
         Self::launch(config, Some(token), false, &[])
     }
 
+    /// [`Self::start_supervised`] with extra environment variables for the master.
+    #[allow(dead_code)]
+    pub fn start_supervised_with_env(
+        config: &ValidatedConfig,
+        token: &str,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        Self::launch(config, Some(token), false, environment)
+    }
+
     fn launch(
         config: &ValidatedConfig,
         token: Option<&str>,

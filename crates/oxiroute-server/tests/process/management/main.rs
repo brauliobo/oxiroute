@@ -9,8 +9,10 @@ mod process_support;
 
 mod administrative_state;
 mod console;
+mod daemon;
 mod external;
 mod generation;
+mod log_filter;
 mod management;
 mod restart;
 mod shared;

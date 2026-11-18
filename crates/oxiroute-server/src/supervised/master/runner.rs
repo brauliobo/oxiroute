@@ -159,6 +159,7 @@ impl MasterRunner {
             command = command.arg(serde_json::to_string(kept)?);
         }
         for key in [
+            "RUST_LOG",
             "OXIROUTE_MANAGEMENT_TOKEN_FILE",
             "OXIROUTE_AUDIT_DIR",
             "OXIROUTE_AUDIT_MAX_RECORDS",
@@ -380,7 +381,6 @@ impl MasterRunner {
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file);
         reports.accept(master);
-        oxiroute_server::apply_log_filter(new_config.as_draft().log_filter.as_deref());
         begin_retirement(master, catalog, reports);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())

@@ -25,7 +25,7 @@ rule the reload drain has followed since 6.0), then the default. The fallbacks l
 | `OXIROUTE_AUDIT_MAX_TOTAL_BYTES` | same | Bytes retained overall | (a) | New `audit.max_total_bytes`. Fallback kept. |
 | `OXIROUTE_AUDIT_MAX_ROTATED_FILES` | same | Rotated files kept | (a) | New `audit.max_rotated_files`. Fallback kept. |
 | `OXIROUTE_RELOAD_DRAIN_SECONDS` | `supervised/master/setup.rs`, `supervised/worker.rs` | Drain window of a replaced worker | (a) | Already `retirement.drain_deadline_ms` since 6.0; the variable stays as the deprecated fallback. No change. |
-| `RUST_LOG` | `observability/log_filter.rs` (was `env_logger::init` in `main.rs` and `supervised/worker.rs`) | Log verbosity | (a) | New root `log_filter` in `RUST_LOG` syntax without regex filters. The variable stays the fallback. Supervised workers run with a cleared environment and never saw `RUST_LOG`; they now honour `log_filter`. |
+| `RUST_LOG` | `observability/log_filter.rs` (was `env_logger::init` in `main.rs` and `supervised/worker.rs`) | Log verbosity | (a) | New root `log_filter` in `RUST_LOG` syntax without regex filters. The variable stays the fallback. Supervised workers run with a cleared environment; the master forwards `RUST_LOG` to them, so they and the master share the fallback, and they honour `log_filter`. |
 | `OXIROUTE_ENDPOINT` | `cli.rs` (clap `env`) | Management endpoint the CLI client talks to | (b) | Client-side address; the client does not read the daemon configuration. Stays, with `--endpoint`. |
 | `OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME` | `supervised/master.rs` | Forces the direct runtime in process tests | (b) | Test-only hook. Stays. |
 | `OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE` | `supervised/worker.rs` | Injects a worker runtime failure | (b) | Test-only hook. Stays. |
@@ -71,7 +71,7 @@ declare their variables in the configuration already.
 | `audit.max_file_bytes` | 1 MiB | 1 to 16 MiB | same |
 | `audit.max_total_bytes` | 8 MiB | 1 to 128 MiB, at least `max_file_bytes` | same |
 | `audit.max_rotated_files` | 7 | 1 to 7 | same |
-| `log_filter` | none (falls back to `RUST_LOG`, then errors only) | `RUST_LOG` syntax without regex, at most 1024 bytes | master: start and each accepted reload; worker: start; direct runtime: each generation |
+| `log_filter` | none (falls back to `RUST_LOG`, then errors only) | `RUST_LOG` syntax without regex, at most 1024 bytes | master: start and each committed replacement; worker: start; direct runtime: each generation |
 
 Out-of-range values that the `OXIROUTE_AUDIT_*` variables used to clamp are rejected in the
 configuration, naming the setting. An empty `audit` block normalizes away.

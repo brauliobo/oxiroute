@@ -767,6 +767,6 @@ configuration key overrides (`OXIROUTE_MANAGEMENT_TOKEN_FILE` for `management.to
 `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*` for the `audit` block, `RUST_LOG` for `log_filter`,
 and the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` for `retirement.drain_deadline_ms`), client-side
 settings (`OXIROUTE_ENDPOINT` and the CLI token path), and process plumbing. Supervised workers run
-with a cleared environment: the audit and token variables are forwarded to them, `RUST_LOG` is not, so
-use `log_filter` to set a worker's verbosity. `docs/developer/ENV_TO_CONFIG.md` lists every variable
+with a cleared environment: the audit and token variables and `RUST_LOG` are forwarded to them, so the master and
+every worker fall back to the same filter when a configuration sets no `log_filter`. `docs/developer/ENV_TO_CONFIG.md` lists every variable
 with its reason.

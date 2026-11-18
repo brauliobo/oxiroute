@@ -64,7 +64,7 @@ impl ConfigReports {
     }
 
     /// Applies what the master reported to the catalog, tells the worker why a candidate failed, and
-    /// gives a committed replacement the reports it starts without.
+    /// gives a committed replacement the reports it starts without and the log filter of its file.
     pub(super) fn observe(
         &mut self,
         master: &mut Master,
@@ -80,6 +80,8 @@ impl ConfigReports {
             .any(|event| matches!(event, MasterEvent::ReplacementCommitted { .. }))
         {
             self.announce_restart(master);
+            let config = &catalog.active().payload().config;
+            oxiroute_server::apply_log_filter(config.as_draft().log_filter.as_deref());
         }
         Ok(())
     }
