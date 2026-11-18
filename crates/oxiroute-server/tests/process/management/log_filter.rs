@@ -60,10 +60,10 @@ async fn the_master_applies_a_log_filter_only_after_the_replacement_commits() {
     daemon.hang_up();
     let last = daemon
         .wait_generation("the last file to apply", |generation| {
-            generation["activeRevision"] != committed["activeRevision"]
+            waiting_for_a_restart(generation)
+                && generation["activeRevision"] != committed["activeRevision"]
         })
         .await;
-    assert!(waiting_for_a_restart(&last));
     let log = daemon.server.stderr();
     assert!(
         !restart_logged_for(&log, &last["restartRequired"]["candidateRevision"]),
