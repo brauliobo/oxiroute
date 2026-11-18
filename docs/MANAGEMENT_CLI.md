@@ -29,8 +29,8 @@ it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON
 management API body, unchanged); `--output table` and `--output plain` are the curated forms described in
 [reference/CLI.md](reference/CLI.md#output). Diagnostics use stderr. Exit categories are stable: `2` usage, `3` local input/token, `4` transport,
 `5` authentication, `6` missing resource, `7` revision/state conflict, `8` remote/protocol failure,
-and `9` intentionally unsupported. `oxiroute check` is the one exception: it exits with the
-monitoring-plugin codes `0` OK, `1` WARNING, `2` CRITICAL and `3` UNKNOWN (see below).
+and `9` intentionally unsupported. `oxiroute check` and `oxiroute tls check` are the exceptions: they exit
+with the monitoring-plugin codes `0` OK, `1` WARNING, `2` CRITICAL and `3` UNKNOWN (see below).
 
 ## Capability matrix
 
@@ -89,9 +89,13 @@ Status meanings:
 | Server | DNS refresh | Supported | `server refresh-dns`; resolves immediately and replaces startup-pinned addresses when applicable. Runtime-resolved endpoints are resolved and reported. |
 | Server | queue/counter visibility | Supported | Pool/server reads and `monitoring` expose active work, queue depth/totals/timeouts/cancellations, checks, and failures. |
 | Server | address, FQDN, check port, TLS, weight mutation | Config generation | These fields determine immutable endpoint/TLS/selection plans and require full preflight plus generation activation. |
-| TLS | list/status | Supported | `oxiroute tls list` |
-| TLS | reconcile | Supported | `oxiroute tls reconcile [--certificate NAME]` invokes active Certbot reconcilers. |
-| TLS | obtain/renew certificates | External | Certbot or another configured certificate producer owns issuance and renewal. |
+| TLS | list/show | Supported | `oxiroute tls list [--expiring-within 30d]` and `tls show NAME`; the expiry is printed in UTC with the time left (`in 29d04h`, `expired 2h05m ago`). The daemon reports the expiry of every source: files, Certbot lineages, ACME-managed and development certificates. |
+| TLS | inspect a server | Supported | `oxiroute tls inspect HOST:PORT [--servername NAME] [--ca-file FILE]` handshakes with any TLS server and prints the certificate it presents (subject, issuer, names, validity in UTC, fingerprint, protocol, and whether the chain and name are trusted). It needs no token. |
+| TLS | expiry check | Supported | `oxiroute tls check [HOST:PORT] [--certificate NAME]... [--warn 30d] [--crit 7d] [--servername NAME] [--verify [--ca-file FILE]] [--json]`; monitoring-plugin exit codes like `oxiroute check`: `0` OK, `1` WARNING when a certificate expires within `--warn`, `2` CRITICAL when it expires within `--crit`, has expired or (with `--verify`) is not trusted, `3` UNKNOWN. Without `HOST:PORT` it judges the certificates of the daemon (management token); with it, the certificate that server presents (no token). The line carries one `'NAME'=SECONDS;WARN;CRIT;0` performance datum per certificate. |
+| TLS | reconcile | Supported | `oxiroute tls reconcile [--certificate NAME]` invokes active Certbot and ACME reconcilers. |
+| TLS | renew | Supported | `oxiroute tls renew [--certificate NAME]` renews ACME-managed certificates now. Certificates from files or Certbot are renewed by their producer; exit `6` when the daemon has no managed certificate of that name. |
+| TLS | revoke/delete | Supported | `oxiroute tls revoke NAME --yes [--reason 0..10]` and `oxiroute tls delete NAME --yes` for ACME-managed certificates; `--yes` is required. A certificate a TLS profile still references cannot be deleted (exit `7`). |
+| TLS | ACME account and jobs | Supported | `oxiroute tls acme rollover|pause|resume|cancel [--certificate NAME]`. |
 | RTMP | streams list/show | Supported | `oxiroute rtmp stream list|show ID` |
 | RTMP | publisher disconnect | Intentionally unsupported | The catalog records publisher identity but does not own a safe session cancellation handle. The command exits `9`. |
 | RTMP | recorder start/stop | Supported | `oxiroute rtmp recorder start|stop STREAM RECORDER`; only manual recorders are mutable. |

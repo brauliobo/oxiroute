@@ -1,12 +1,7 @@
-use std::ffi::OsString;
-
 use clap::Parser as _;
 use serde_json::{Value, json};
 
-use super::{
-    CheckArgs, is_invocation,
-    run::{Report, assess},
-};
+use super::{CheckArgs, run::assess};
 use crate::{
     cli::{Cli, Command},
     observability::status::{check::Finding, summary::Severity},
@@ -106,27 +101,8 @@ fn a_failed_client_canary_is_critical_and_a_slow_one_warns() {
 }
 
 #[test]
-fn unknown_reports_use_exit_code_three_and_a_plugin_line() {
-    let report = Report::unknown("status page unavailable: endpoint connection failed");
-    assert_eq!(report.code, 3);
-    assert_eq!(
-        report.line,
-        "OXIROUTE UNKNOWN - status page unavailable: endpoint connection failed"
-    );
-    assert_eq!(report.json["status"], "unknown");
-}
-
-#[test]
-fn canary_options_need_each_other_and_usage_errors_are_recognised_as_check() {
+fn canary_options_need_each_other() {
     assert!(Cli::try_parse_from(["oxiroute", "check", "--canary"]).is_err());
     assert!(Cli::try_parse_from(["oxiroute", "check", "--url", "http://h/"]).is_err());
     assert!(Cli::try_parse_from(["oxiroute", "check", "--canary", "--url", "http://h/"]).is_ok());
-    let words = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
-    assert!(is_invocation(&words(&["oxiroute", "check", "--bogus"])));
-    assert!(is_invocation(&words(&[
-        "oxiroute", "--output", "json", "check", "--pool"
-    ])));
-    assert!(!is_invocation(&words(&[
-        "oxiroute", "server", "list", "--bogus"
-    ])));
 }

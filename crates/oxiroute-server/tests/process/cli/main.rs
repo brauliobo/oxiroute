@@ -1,14 +1,16 @@
 //! The `oxiroute` client commands against a real daemon: a listener, a pool of two servers and a management API.
 
-#[path = "../support/config.rs"]
+#[path = "../../support/config.rs"]
 mod config_support;
-#[path = "../support/fixtures.rs"]
+#[path = "../../support/fixtures.rs"]
 mod fixture_support;
-#[path = "../support/http.rs"]
+#[path = "../../support/http.rs"]
 mod http_support;
 #[allow(dead_code)]
-#[path = "../support/process.rs"]
+#[path = "../../support/process.rs"]
 mod process_support;
+
+mod tls;
 
 use std::{
     net::SocketAddr,
@@ -35,6 +37,7 @@ const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af1
 struct Daemon {
     server: ServerProcess,
     management: SocketAddr,
+    traffic: SocketAddr,
     token_file: PathBuf,
     draft: ConfigDraft,
 }
@@ -114,9 +117,17 @@ impl Daemon {
     }
 
     async fn start_on(management: SocketAddr) -> Self {
+        Self::start_configured(management, |_| {}).await
+    }
+
+    async fn start_configured(
+        management: SocketAddr,
+        configure: impl FnOnce(&mut ConfigDraft),
+    ) -> Self {
         let traffic = reserve_tcp_address();
         let backends = [backend().await, backend().await];
-        let draft = config(management, traffic, backends);
+        let mut draft = config(management, traffic, backends);
+        configure(&mut draft);
         let validated = draft.clone().validate().expect("valid CLI test config");
         let mut server = ServerProcess::start(&validated, Some(TOKEN));
         server.wait_for_tcp(management).await;
@@ -125,6 +136,7 @@ impl Daemon {
         Self {
             server,
             management,
+            traffic,
             token_file,
             draft,
         }

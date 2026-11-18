@@ -178,7 +178,7 @@ path = "tests/process/check.rs"
 
 [[test]]
 name = "process_cli"
-path = "tests/process/cli.rs"
+path = "tests/process/cli/main.rs"
 
 [[test]]
 name = "process_connection_limit"

@@ -97,7 +97,7 @@ pub(crate) const OVERVIEW: &str = concat!(
     getting_started!(),
     "
 
-Exit status (except `check`, which exits 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN for monitoring systems):
+Exit status (except `check` and `tls check`, which exit 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN for monitoring systems):
   0  success
   1  `serve` could not start the daemon
   2  usage: an unknown command or a bad option
@@ -169,8 +169,15 @@ OXIROUTE_MANAGEMENT_TOKEN_FILE), the context (--context, OXIROUTE_CONTEXT, then 
 setup. The contexts file holds addresses and where a token comes from, never a token, and must have mode 0600.";
 
 pub(crate) const TLS_EXAMPLES: &str = "Examples:
-  oxiroute tls list
-  oxiroute tls reconcile --certificate www";
+  oxiroute tls list --expiring-within 30d
+  oxiroute tls show www
+  oxiroute tls inspect example.com:443
+  oxiroute tls check --warn 21d --crit 7d
+  oxiroute tls check example.com:443 --warn 21d
+  oxiroute tls renew --certificate www
+  oxiroute tls reconcile --certificate www
+
+`tls check` exits 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN, like `oxiroute check`.";
 
 pub(crate) const EVENTS_EXAMPLES: &str = "Examples:
   oxiroute events list --limit 20

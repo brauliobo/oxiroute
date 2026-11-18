@@ -23,7 +23,7 @@ use super::{
     rtmp::RtmpCommand,
     serve::ServeArgs,
     server::ServerCommand,
-    tls::TlsCommand,
+    tls::{self, TlsCommand},
     top::TopArgs,
     version::VersionArgs,
 };
@@ -103,7 +103,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
-    /// Inspect certificates and reload them from disk.
+    /// Inspect certificates and judge their expiry, reload them from disk and control ACME renewal.
     #[command(after_help = help::TLS_EXAMPLES)]
     Tls {
         #[command(subcommand)]
@@ -139,6 +139,9 @@ impl Command {
     pub(super) fn run(&self, context: &Context<'_>) -> Result<ExitCode, CliError> {
         match self {
             Self::Check(args) => return Ok(check::run(context, args)),
+            Self::Tls {
+                command: TlsCommand::Check(args),
+            } => return Ok(tls::check(context, args)),
             Self::Serve(args) => args.run(context),
             Self::Process(command) => command.run(context),
             Self::Events { command } => command.run(context),
@@ -151,7 +154,9 @@ impl Command {
             Self::Generation { command } => command.run(context),
             Self::Context { command } => command.run(context),
             Self::Config { command } => command.run(context),
-            Self::Tls { command } => command.run(context),
+            Self::Tls {
+                command: TlsCommand::Operation(operation),
+            } => operation.run(context),
             Self::Rtmp { command } => command.run(context),
             Self::Registry { command } => command.run(context),
             Self::Import { command } => command.run(context),

@@ -186,11 +186,7 @@ impl StatusSummary {
         }
         findings.extend(self.generation.judge(limits));
         findings.extend(self.registry.iter().flat_map(RegistrySummary::judge));
-        findings.sort_by_key(|finding| Reverse(finding.severity));
-        Verdict {
-            severity: worst(&findings),
-            findings,
-        }
+        Verdict::from_findings(findings)
     }
 }
 
@@ -256,7 +252,25 @@ impl RegistrySummary {
     }
 }
 
+impl Finding {
+    pub(crate) fn new(severity: Severity, message: impl Into<String>) -> Self {
+        Self {
+            severity,
+            pool: None,
+            message: message.into(),
+        }
+    }
+}
+
 impl Verdict {
+    pub(crate) fn from_findings(mut findings: Vec<Finding>) -> Self {
+        findings.sort_by_key(|finding| Reverse(finding.severity));
+        Self {
+            severity: worst(&findings),
+            findings,
+        }
+    }
+
     /// Nagios exit code of the verdict.
     pub(crate) const fn exit_code(&self) -> u8 {
         match self.severity {

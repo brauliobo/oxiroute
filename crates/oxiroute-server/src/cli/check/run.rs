@@ -1,14 +1,13 @@
 use std::{process::ExitCode, time::Instant};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::{CheckArgs, EXIT_UNKNOWN};
+use super::CheckArgs;
 use crate::{
     cli::{
         context::Context,
-        global::Output,
         net::{Endpoint, Timeouts},
-        render,
+        plugin::{self, Report},
     },
     observability::status::{
         check::{Finding, Verdict, plugin_line},
@@ -16,23 +15,7 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-pub(super) struct Report {
-    pub(super) code: u8,
-    pub(super) line: String,
-    pub(super) json: Value,
-}
-
-impl Report {
-    pub(super) fn unknown(reason: &str) -> Self {
-        let line = format!("OXIROUTE UNKNOWN - {reason}");
-        Self {
-            code: EXIT_UNKNOWN,
-            json: json!({ "status": "unknown", "exitCode": EXIT_UNKNOWN, "summary": line, "findings": [] }),
-            line,
-        }
-    }
-}
+const SUBJECT: &str = "OXIROUTE";
 
 /// Judges one status document against the operator's limits.
 pub(super) fn assess(
@@ -56,31 +39,12 @@ pub(super) fn assess(
     let mut verdict = summary.judge(&limits);
     verdict.extend(canary);
     let line = plugin_line(&summary, &verdict, &limits);
-    let json = json!({
-        "status": verdict.label().to_lowercase(),
-        "exitCode": verdict.exit_code(),
-        "summary": line,
-        "findings": verdict.findings,
-        "details": summary,
-    });
-    Ok(Report {
-        code: verdict.exit_code(),
-        line,
-        json,
-    })
+    Ok(Report::judged(&verdict, line, &summary))
 }
 
 pub(in crate::cli) fn run(context: &Context<'_>, args: &CheckArgs) -> ExitCode {
-    let report = collect(context, args).unwrap_or_else(|reason| Report::unknown(&reason));
-    if !context.quiet() {
-        let text = if args.json || matches!(context.output(), Output::Json) {
-            report.json.to_string()
-        } else {
-            report.line.clone()
-        };
-        drop(render::emit(&format!("{text}\n")));
-    }
-    ExitCode::from(report.code)
+    let report = collect(context, args).unwrap_or_else(|reason| Report::unknown(SUBJECT, &reason));
+    plugin::finish(context, args.json, &report)
 }
 
 fn collect(context: &Context<'_>, args: &CheckArgs) -> Result<Report, String> {

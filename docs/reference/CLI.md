@@ -155,7 +155,7 @@ body through, where `changed` counts the targets of the request.
 | Events | `events list|follow` | Poll the bounded in-memory event ring |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
-| TLS | `tls list|reconcile` | Inspect identities and invoke external-lineage reconciliation |
+| TLS | `tls list|show|inspect|check|reconcile|renew|revoke|delete|acme` | Certificate inventory with UTC expiry and time left, live handshake inspection, an expiry check with monitoring exit codes, renewal and ACME control |
 | RTMP | `rtmp stream`, `rtmp recorder`, `rtmp relay` | Inspect live sessions and supported recorder actions |
 | Migration | `import nginx|haproxy|squid|apache|varnish` | Emit offline reports or finalized previews |
 | Build | `version` | Print the build version |
@@ -221,9 +221,42 @@ any server is missing; `--max-inflight-age` is not judged unless given. `--canar
 through the router's own listener, with the `Host` of `--host`, and requires `--expect-status`; only plain
 `http://` URLs are supported.
 
+## `tls`: certificate expiry
+
+```sh
+oxiroute tls list [--expiring-within 30d]
+oxiroute tls show NAME
+oxiroute tls inspect HOST:PORT [--servername NAME] [--ca-file FILE]
+oxiroute tls check [HOST:PORT] [--certificate NAME]... [--warn 30d] [--crit 7d]
+                   [--servername NAME] [--verify [--ca-file FILE]] [--json]
+```
+
+`list` and `show` print the expiry of every certificate in UTC with the time left (`in 29d04h`, or
+`expired 2h05m ago`) and `--expiring-within` keeps the certificates that expire within that long or already
+have. `inspect` handshakes with any TLS server and prints the certificate it presents; it never trusts the
+chain to read it and reports separately whether the chain and the name would be trusted (extra roots with
+`--ca-file`).
+
+`tls check` is a monitoring plugin like `oxiroute check`, and its exit codes replace the exit categories for
+this command only: `0` OK, `1` WARNING (a certificate expires within `--warn`, 30d by default), `2` CRITICAL
+(within `--crit`, 7d by default, expired, or not trusted with `--verify`), `3` UNKNOWN (the daemon or the
+server cannot be reached, a `--certificate` does not exist, `--crit` is longer than `--warn`, or an option is
+wrong). Without `HOST:PORT` it judges the certificates the daemon reports, with the management token; with it,
+the certificate that server presents, without a token. Durations take `ms`, `s`, `m`, `h` and `d`.
+
+```sh
+oxiroute tls check --warn 21d --crit 7d
+# OXIROUTE TLS WARNING - www expires 2026-12-02T10:00:00Z (in 14d02h) | 'www'=1216800s;1814400;604800;0
+oxiroute tls check example.com:443 --verify
+```
+
+`renew`, `reconcile`, `revoke`, `delete` and `acme rollover|pause|resume|cancel` call the ACME and
+reconciliation endpoints the dashboard uses and follow the usual exit categories; `revoke` and `delete` need
+`--yes`.
+
 ## Output And Exit Categories
 
-Stable exit categories are designed for scripts (every command except `check`, see above):
+Stable exit categories are designed for scripts (every command except `check` and `tls check`, see above):
 
 | Code | Category |
 | --- | --- |

@@ -3,13 +3,9 @@
 
 mod args;
 mod run;
-mod usage;
 
 #[cfg(test)]
 mod tests;
 
 pub(super) use args::CheckArgs;
 pub(super) use run::run;
-pub(super) use usage::{is_invocation, usage_line};
-
-pub(super) const EXIT_UNKNOWN: u8 = 3;

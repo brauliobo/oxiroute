@@ -28,6 +28,7 @@ mod man;
 mod net;
 mod overlay;
 mod parse;
+mod plugin;
 mod pool;
 mod process;
 mod registry;
@@ -72,10 +73,13 @@ impl Cli {
         let arguments = std::env::args_os().collect::<Vec<_>>();
         match Self::try_parse_process_from(&arguments) {
             Ok(cli) => cli,
-            Err(error) if error.use_stderr() && check::is_invocation(&arguments) => {
-                println!("{}", check::usage_line(&error));
-                std::process::exit(i32::from(check::EXIT_UNKNOWN));
-            }
+            Err(error) if error.use_stderr() => match plugin::invoked(&arguments) {
+                Some(command) => {
+                    println!("{}", plugin::usage_line(&command, &error));
+                    std::process::exit(i32::from(plugin::EXIT_UNKNOWN));
+                }
+                None => error.exit(),
+            },
             Err(error) => error.exit(),
         }
     }

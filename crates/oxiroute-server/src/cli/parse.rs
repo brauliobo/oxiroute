@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-const DURATION_SHAPE: &str = "a duration must look like 500ms, 15s or 2m";
+const DURATION_SHAPE: &str = "a duration must look like 500ms, 15s, 2m, 6h or 30d";
 
 pub(super) fn nonempty_target(value: &str) -> Result<String, String> {
     if value.trim().is_empty() {
@@ -11,15 +11,7 @@ pub(super) fn nonempty_target(value: &str) -> Result<String, String> {
 }
 
 pub(super) fn parse_age_ms(value: &str) -> Result<u64, String> {
-    let (digits, unit_ms) = [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)]
-        .into_iter()
-        .find_map(|(suffix, unit)| value.strip_suffix(suffix).map(|digits| (digits, unit)))
-        .ok_or("expected a number with a unit: ms, s, m or h")?;
-    digits
-        .parse::<u64>()
-        .ok()
-        .and_then(|count| count.checked_mul(unit_ms))
-        .ok_or_else(|| "age is not a valid number".to_owned())
+    parse_duration(value).map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
 }
 
 pub(super) fn parse_duration(value: &str) -> Result<Duration, String> {
@@ -31,10 +23,18 @@ pub(super) fn parse_duration(value: &str) -> Result<Duration, String> {
     let amount = digits
         .parse::<u64>()
         .map_err(|_| DURATION_SHAPE.to_owned())?;
+    let seconds = |unit_seconds: u64| {
+        amount
+            .checked_mul(unit_seconds)
+            .map(Duration::from_secs)
+            .ok_or_else(|| DURATION_SHAPE.to_owned())
+    };
     match unit {
         "ms" => Ok(Duration::from_millis(amount)),
-        "s" => Ok(Duration::from_secs(amount)),
-        "m" => Ok(Duration::from_secs(amount.saturating_mul(60))),
+        "s" => seconds(1),
+        "m" => seconds(60),
+        "h" => seconds(3_600),
+        "d" => seconds(86_400),
         _ => Err(DURATION_SHAPE.into()),
     }
 }
@@ -69,10 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn durations_take_milliseconds_seconds_and_minutes() {
+    fn durations_take_milliseconds_through_days() {
         assert_eq!(parse_duration("500ms"), Ok(Duration::from_millis(500)));
         assert_eq!(parse_duration("2m"), Ok(Duration::from_mins(2)));
+        assert_eq!(parse_duration("6h"), Ok(Duration::from_hours(6)));
+        assert_eq!(parse_duration("30d"), Ok(Duration::from_hours(720)));
         assert!(parse_duration("soon").is_err());
+        assert!(parse_duration("18446744073709551615d").is_err());
     }
 
     #[test]
