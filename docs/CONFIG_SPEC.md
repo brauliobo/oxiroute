@@ -423,7 +423,11 @@ Current constraints:
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.
-- `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
+- `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon
+  startup. The management listener serves it with a strict Content-Security-Policy (own origin only,
+  no framing), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`; `assets/*` are
+  `immutable`, `index.html` is `no-cache` with an `ETag` and answers `If-None-Match` with `304`, and
+  text files are precompressed once with Brotli and gzip. A fronting proxy need not add these headers.
 - `management.token_file` optionally names the file that holds the management bearer token (an
   absolute normalized path; the file must be a regular no-follow file of mode `0400` or `0600`, and
   the token itself is never configuration). When it is omitted the daemon reads the path from the

@@ -32,7 +32,7 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{
-    Response,
+    HeaderMap, Response,
     header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
 use oxiroute_config::Audit;
@@ -215,12 +215,7 @@ impl RtmpManagementApi {
     #[must_use]
     pub fn handle(&self, method: &str, path: &str, now_unix_ms: u64) -> ApiResponse {
         let context = AuditContext::generated();
-        if let Some(response) = self.ui.as_ref().and_then(|ui| ui.response(path)) {
-            let response = if method == "GET" {
-                response
-            } else {
-                ApiResponse::method_not_allowed("GET")
-            };
+        if let Some(response) = self.console_response(method, path, &HeaderMap::new()) {
             return response.with_correlation(context.correlation_id);
         }
 
@@ -247,6 +242,20 @@ impl RtmpManagementApi {
             ApiRoute::Vod | ApiRoute::Media => ApiResponse::method_not_allowed("GET"),
         };
         response.with_correlation(context.correlation_id)
+    }
+
+    fn console_response(
+        &self,
+        method: &str,
+        path: &str,
+        request: &HeaderMap,
+    ) -> Option<ApiResponse> {
+        let response = self.ui.as_ref()?.response(path, request)?;
+        Some(if method == "GET" {
+            response
+        } else {
+            ApiResponse::method_not_allowed("GET")
+        })
     }
 
     fn handle_at_system_time(&self, method: &str, path: &str) -> ApiResponse {
@@ -310,6 +319,10 @@ impl RtmpManagementApi {
                 return response.with_correlation(AuditContext::generated().correlation_id);
             }
         };
+        if let Some(response) = self.console_response(&method, &path, &session.req_header().headers)
+        {
+            return response.with_correlation(context.correlation_id);
+        }
         if let Some(route) = crate::registry::http::match_route(&path) {
             let response = self
                 .registry_response(route, &method, &path_and_query, session)

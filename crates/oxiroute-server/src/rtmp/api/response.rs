@@ -23,7 +23,20 @@ pub struct ApiResponse {
     pub accept_ranges: bool,
     pub etag: Option<String>,
     pub cache_control: Option<&'static str>,
+    pub headers: Vec<(&'static str, &'static str)>,
 }
+
+/// Sent with every page and console file: no source but the page's own origin, nothing inline, no framing.
+pub(crate) const HARDENED_HEADERS: [(&str, &str); 4] = [
+    (
+        "content-security-policy",
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
+img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    ),
+    ("referrer-policy", "no-referrer"),
+    ("x-content-type-options", "nosniff"),
+    ("x-frame-options", "DENY"),
+];
 
 impl ApiResponse {
     pub(crate) fn bytes(status: u16, body: Vec<u8>, content_type: &'static str) -> Self {
@@ -38,7 +51,13 @@ impl ApiResponse {
             accept_ranges: false,
             etag: None,
             cache_control: None,
+            headers: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_headers(mut self, headers: &[(&'static str, &'static str)]) -> Self {
+        self.headers.extend_from_slice(headers);
+        self
     }
 
     /// Serializes a response DTO straight to bytes, without an intermediate `serde_json::Value`.
@@ -155,6 +174,12 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
         result
             .headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    }
+    for (name, value) in response.headers {
+        result.headers_mut().insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
     }
     if let Some(allow) = response.allow {
         result

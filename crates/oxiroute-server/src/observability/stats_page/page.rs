@@ -20,7 +20,7 @@ use super::{
 use crate::{
     ApiResponse, GenerationManager,
     observability::stats::{begin_stats_mutation, transport_ip_is_loopback},
-    rtmp::api::response::to_http_response,
+    rtmp::api::response::{HARDENED_HEADERS, to_http_response},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,27 +248,12 @@ impl ServeHttp for HaproxyStatsPage {
     }
 }
 
-/// No script or style source except the page's own origin; nothing is ever inline.
-const PAGE_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; \
-frame-ancestors 'none'";
-
 pub(super) fn secure_page_response(response: ApiResponse) -> Response<Vec<u8>> {
-    let mut response = to_http_response(response);
+    let mut response = to_http_response(response.with_headers(&HARDENED_HEADERS));
     response
         .headers_mut()
         .entry("cache-control")
         .or_insert(HeaderValue::from_static("no-store"));
-    for (name, value) in [
-        ("content-security-policy", PAGE_CONTENT_SECURITY_POLICY),
-        ("referrer-policy", "no-referrer"),
-        ("x-content-type-options", "nosniff"),
-        ("x-frame-options", "DENY"),
-    ] {
-        response
-            .headers_mut()
-            .insert(name, HeaderValue::from_static(value));
-    }
     response
 }
 

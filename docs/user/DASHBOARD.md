@@ -2,8 +2,16 @@
 
 The management UI is a build-time Vue 3 (Vapor mode) application with Pug templates. It is served
 from the configured `management.ui_dir`; it is not a separate remote SaaS console. It needs no inline
-styles or scripts, so it also runs behind a strict `default-src 'none'; script-src 'self';
-style-src 'self'; connect-src 'self'` Content-Security-Policy set by a fronting proxy.
+styles or scripts, and the management listener already sends the strict policy it runs under:
+`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:;
+font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`, with
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. A
+fronting proxy does not need to add them.
+
+Files under `assets/` carry a content hash and are served `immutable` for a year. `index.html` is
+served `no-cache` with an `ETag`, so a browser revalidates it and gets `304 Not Modified` while it is
+unchanged. Text files are compressed with Brotli and gzip once, when the daemon loads `ui_dir`, and
+served to clients that accept them (`Vary: Accept-Encoding`; each encoding has its own `ETag`).
 
 ![Remotion recording of the OxiRoute runtime observatory](../../website/assets/admin-overview.gif)
 
