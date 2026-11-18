@@ -1,0 +1,34 @@
+@layer ox.page {
+  .ox-demo-section {
+    display: grid;
+    gap: var(--ox-gap);
+    margin-bottom: var(--ox-space-7);
+  }
+
+  .ox-demo-section > h2 {
+    padding-bottom: var(--ox-space-3);
+    border-bottom: var(--ox-border-width) solid var(--ox-border);
+  }
+
+  .ox-demo-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-gap);
+  }
+
+  .ox-demo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: var(--ox-gap);
+  }
+
+  .ox-demo-grid > .ox-panel {
+    display: grid;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-demo-controls {
+    margin-left: auto;
+  }
+}

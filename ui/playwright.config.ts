@@ -9,6 +9,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: {
     timeout: 5_000,
+    toHaveScreenshot: { animations: 'disabled', maxDiffPixelRatio: 0.05 },
   },
   reporter: process.env.CI
     ? [['line'], ['html', { outputFolder: 'playwright-report', open: 'never' }]]
@@ -23,7 +24,7 @@ export default defineConfig({
   projects: [
     {
       name: 'desktop-chromium',
-      testIgnore: '**/stats/**',
+      testIgnore: ['**/stats/**', '**/gallery/**'],
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1440, height: 1000 },
@@ -31,7 +32,7 @@ export default defineConfig({
     },
     {
       name: 'mobile-chromium',
-      testIgnore: '**/stats/**',
+      testIgnore: ['**/stats/**', '**/gallery/**'],
       use: {
         ...devices['Pixel 5'],
       },
@@ -53,6 +54,15 @@ export default defineConfig({
         baseURL: 'http://127.0.0.1:4174',
       },
     },
+    {
+      name: 'gallery-chromium',
+      testMatch: '**/gallery/**/*.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://127.0.0.1:4175',
+        viewport: { width: 1100, height: 900 },
+      },
+    },
   ],
   webServer: [
     {
@@ -64,6 +74,12 @@ export default defineConfig({
     {
       command: 'pnpm exec vite preview --config vite.stats.config.ts --base / --host 127.0.0.1 --port 4174',
       url: 'http://127.0.0.1:4174/stats.html',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: 'pnpm exec vite --host 127.0.0.1 --port 4175',
+      url: 'http://127.0.0.1:4175/gallery.html',
       reuseExistingServer: false,
       timeout: 120_000,
     },
