@@ -27,7 +27,7 @@ pub use self::{
     service::{RtmpManagementApi, RtmpManagementHttpApp},
 };
 pub(crate) use self::{
-    auth::preflight_management_token,
+    auth::{TOKEN_FILE_ENV, preflight_management_token, token_file_or},
     ticket::{export_media_ticket_secret, import_media_ticket_secret},
     ui::UiAssets,
 };

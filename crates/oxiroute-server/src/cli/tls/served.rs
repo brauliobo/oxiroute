@@ -5,7 +5,6 @@ use std::{
 };
 
 use openssl::{
-    asn1::{Asn1Time, Asn1TimeRef},
     hash::MessageDigest,
     ssl::{SslConnector, SslMethod, SslVerifyMode},
     stack::StackRef,
@@ -137,8 +136,8 @@ pub(crate) fn fetch(
         subject: name(leaf.subject_name()),
         issuer: name(leaf.issuer_name()),
         dns_names: names(&leaf),
-        not_before: expiry(leaf.not_before()).map_err(|e| local(&e))?,
-        not_after: expiry(leaf.not_after()).map_err(|e| local(&e))?,
+        not_before: Expiry::of_time(leaf.not_before()).map_err(|e| local(&e))?,
+        not_after: Expiry::of_time(leaf.not_after()).map_err(|e| local(&e))?,
         serial: leaf
             .serial_number()
             .to_bn()
@@ -178,13 +177,6 @@ fn names(certificate: &X509) -> Vec<String> {
         .flatten()
         .filter_map(|name| name.dnsname().map(str::to_owned))
         .collect()
-}
-
-fn expiry(time: &Asn1TimeRef) -> Result<Expiry, openssl::error::ErrorStack> {
-    let diff = Asn1Time::from_unix(0)?.diff(time)?;
-    Ok(Expiry::from_unix(
-        i64::from(diff.days) * 86_400 + i64::from(diff.secs),
-    ))
 }
 
 fn hex(bytes: &[u8]) -> String {

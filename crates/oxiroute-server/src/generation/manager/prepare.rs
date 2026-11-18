@@ -248,6 +248,27 @@ impl GenerationManager {
         &self,
         document: ResolvedConfigDocument,
     ) -> Result<(), GenerationError> {
+        self.validate(document, true)
+    }
+
+    /// [`Self::validate_candidate`] without the temporary listener binds, for a host where the
+    /// addresses may be held by the daemon that already serves them.
+    ///
+    /// # Errors
+    ///
+    /// Returns redacted preflight errors; active and pending state are unchanged.
+    pub(crate) fn validate_candidate_without_listener_probes(
+        &self,
+        document: ResolvedConfigDocument,
+    ) -> Result<(), GenerationError> {
+        self.validate(document, false)
+    }
+
+    fn validate(
+        &self,
+        document: ResolvedConfigDocument,
+        probe_listeners: bool,
+    ) -> Result<(), GenerationError> {
         let previous = self
             .state
             .lock()
@@ -259,6 +280,7 @@ impl GenerationManager {
             document,
             ListenerSource::Validate {
                 previous: previous.as_ref(),
+                probe_listeners,
             },
         )? {
             PreparationOutput::Validated => Ok(()),

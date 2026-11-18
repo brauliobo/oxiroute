@@ -10,40 +10,68 @@ use crate::{
     rtmp::api::{management_token_file, preflight_management_token},
 };
 
-pub(super) fn report(path: &Path) -> Result<String, CliError> {
+pub(in crate::cli) fn load(path: &Path) -> Result<Box<ResolvedConfigDocument>, CliError> {
     ensure_readable_config(path)?;
     let coordinator = CanonicalConfigCoordinator::new(path).map_err(CliError::local)?;
-    let mut document = match coordinator.load() {
-        ConfigLoadOutcome::Loaded(document) => document,
+    match coordinator.load() {
+        ConfigLoadOutcome::Loaded(document) => Ok(document),
         ConfigLoadOutcome::Rejected(rejection) => {
             let diagnostics = rejection
                 .diagnostics
                 .iter()
                 .map(RejectionDiagnostic::from)
                 .collect::<Vec<_>>();
-            return Err(CliError::local(report::invalid(
+            Err(CliError::local(report::invalid(
                 &path.display().to_string(),
                 &serde_json::json!({ "diagnostics": diagnostics }),
-            )));
+            )))
         }
-    };
-    let mut notices = document
+    }
+}
+
+pub(in crate::cli) fn warnings(document: &ResolvedConfigDocument) -> Vec<String> {
+    document
         .validated_config
         .warnings()
         .iter()
-        .map(|warning| format!("warning: {warning}"))
-        .collect::<Vec<_>>();
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(in crate::cli) fn prepare(
+    document: ResolvedConfigDocument,
+    probe_listeners: bool,
+) -> Result<(), CliError> {
+    let manager = GenerationManager::new();
+    if probe_listeners {
+        manager.validate_candidate(document)
+    } else {
+        manager.validate_candidate_without_listener_probes(document)
+    }
+    .map_err(|error| {
+        CliError::local(format!(
+            "configuration cannot be prepared as a complete runtime generation: {error}"
+        ))
+    })
+}
+
+pub(in crate::cli) fn without_management(
+    document: &mut ResolvedConfigDocument,
+) -> Result<(), CliError> {
+    let mut draft = document.validated_config.to_draft();
+    draft.management = None;
+    document.validated_config = draft.validate().map_err(CliError::local)?;
+    Ok(())
+}
+
+pub(super) fn report(path: &Path) -> Result<String, CliError> {
+    let mut document = load(path)?;
+    let mut notices = warnings(&document);
     notices.extend(without_unusable_management(&mut document)?);
-    GenerationManager::new()
-        .validate_candidate(*document)
-        .map_err(|error| {
-            CliError::local(format!(
-                "configuration cannot be prepared as a complete runtime generation: {error}"
-            ))
-        })?;
+    prepare(*document, true)?;
     let mut report = String::from("configuration is valid and runtime-preparable\n");
     for notice in notices {
-        writeln!(report, "{notice}").map_err(CliError::local)?;
+        writeln!(report, "warning: {notice}").map_err(CliError::local)?;
     }
     Ok(report)
 }
@@ -63,11 +91,9 @@ fn without_unusable_management(
         })?;
         return Ok(None);
     }
-    let mut draft = document.validated_config.to_draft();
-    draft.management = None;
-    document.validated_config = draft.validate().map_err(CliError::local)?;
+    without_management(document)?;
     Ok(Some(
-        "warning: the management endpoint was not checked: it has no token file, set \
+        "the management endpoint was not checked: it has no token file, set \
          management.token_file or OXIROUTE_MANAGEMENT_TOKEN_FILE before serving"
             .to_owned(),
     ))

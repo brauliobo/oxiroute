@@ -1,7 +1,11 @@
+use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use serde_json::Value;
 use time::{Date, Month, PrimitiveDateTime, Time};
 
-use crate::cli::units;
+use crate::{
+    cli::units,
+    observability::status::{check::Finding, summary::Severity},
+};
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -27,6 +31,28 @@ impl Expiry {
                 .map(Self::from_unix)
                 .or_else(|| Self::parse_openssl(value.as_str()?))
         })
+    }
+
+    pub(crate) fn of_time(time: &Asn1TimeRef) -> Result<Self, openssl::error::ErrorStack> {
+        let diff = Asn1Time::from_unix(0)?.diff(time)?;
+        Ok(Self::from_unix(
+            i64::from(diff.days) * 86_400 + i64::from(diff.secs),
+        ))
+    }
+
+    /// What an expiry within `warn` or `crit` seconds, or already past, reports about the certificate `name`.
+    pub(crate) fn finding(self, name: &str, warn: i64, crit: i64, now: i64) -> Option<Finding> {
+        let remaining = self.remaining(now);
+        let severity = match remaining {
+            remaining if remaining <= 0 || remaining <= crit => Severity::Critical,
+            remaining if remaining <= warn => Severity::Warning,
+            _ => return None,
+        };
+        let state = if remaining <= 0 { "expired" } else { "expires" };
+        Some(Finding::new(
+            severity,
+            format!("{name} {state} {} ({})", self.utc(), self.relative(now)),
+        ))
     }
 
     pub(crate) fn parse_openssl(text: &str) -> Option<Self> {

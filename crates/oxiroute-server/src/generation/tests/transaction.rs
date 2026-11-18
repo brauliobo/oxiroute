@@ -113,10 +113,17 @@ fn listener_sources_share_preparation_tail_without_validation_runtime_ownership(
     drop(normal);
     assert_eq!(process.listener_count(), 0);
 
-    let validation =
-        PreparedGeneration::prepare_from(document(), ListenerSource::Validate { previous: None })
-            .expect("validation preparation");
-    assert!(matches!(validation, PreparationOutput::Validated));
+    for probe_listeners in [true, false] {
+        let validation = PreparedGeneration::prepare_from(
+            document(),
+            ListenerSource::Validate {
+                previous: None,
+                probe_listeners,
+            },
+        )
+        .expect("validation preparation");
+        assert!(matches!(validation, PreparationOutput::Validated));
+    }
 
     let manifest = DescriptorManifest::new(Vec::new()).expect("empty descriptor manifest");
     let descriptors = DescriptorSet::new(&manifest, Vec::new()).expect("empty descriptor set");

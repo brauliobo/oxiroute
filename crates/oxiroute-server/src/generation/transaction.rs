@@ -13,6 +13,7 @@ pub(super) enum ListenerSource<'a> {
     },
     Validate {
         previous: Option<&'a ListenerReservations>,
+        probe_listeners: bool,
     },
 }
 

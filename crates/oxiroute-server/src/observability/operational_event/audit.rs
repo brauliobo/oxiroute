@@ -311,6 +311,15 @@ impl AuditSettings {
     }
 }
 
+/// The directory the audit log is written to, as the settings of the daemon resolve it.
+pub(crate) fn audit_directory(
+    audit: Option<&Audit>,
+    token_file: Option<&Path>,
+    environment: impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    AuditSettings::resolve(audit, token_file, environment).dir
+}
+
 fn to_usize(value: u64) -> usize {
     usize::try_from(value).expect("audit bound fits usize")
 }

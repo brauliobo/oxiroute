@@ -9,6 +9,7 @@ use super::{
     config::ConfigCommand,
     context::{Context, Execute},
     contexts::ContextCommand,
+    doctor::{self, DoctorArgs},
     error::CliError,
     events::EventsCommand,
     generation::GenerationCommand,
@@ -57,6 +58,16 @@ pub(crate) enum Command {
     /// This is the one command that does not use the exit categories 2 to 9 of the other
     /// commands: a monitoring system reads 2 as CRITICAL and 3 as UNKNOWN.
     Check(CheckArgs),
+    /// Diagnose the configuration, listeners, upstreams, certificates, file permissions and unit sandbox.
+    ///
+    /// Reads the configuration file offline and probes this host: it validates and prepares the configuration, binds
+    /// each listen address to see that it is free (unless a daemon at `--endpoint` answers), connects to each upstream
+    /// server, reads the expiry of the certificate files, checks the modes of the configuration, token and key files, and
+    /// checks that the paths the configuration writes are writable under the systemd unit's sandbox
+    /// (`ReadWritePaths=`, `StateDirectory=`, `ProtectSystem=`). Problems print first, each with a fix.
+    ///
+    /// Exit codes like `check`: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN (the options are wrong).
+    Doctor(DoctorArgs),
     /// Live read-only dashboard of listeners, pools, servers and in-flight requests.
     ///
     /// Reads the management API with the management token. Without a terminal, or with `--once`
@@ -156,6 +167,7 @@ impl Command {
             Self::Tls {
                 command: TlsCommand::Check(args),
             } => return Ok(tls::check(context, args)),
+            Self::Doctor(args) => return Ok(doctor::run(context, args)),
             Self::Serve(args) => args.run(context),
             Self::Process(command) => command.run(context),
             Self::Events { command } => command.run(context),

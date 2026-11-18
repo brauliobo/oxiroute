@@ -18,6 +18,7 @@ mod config;
 mod context;
 mod contexts;
 mod cursor;
+mod doctor;
 mod error;
 mod events;
 mod fs;

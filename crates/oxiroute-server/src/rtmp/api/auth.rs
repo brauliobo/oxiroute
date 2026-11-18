@@ -38,7 +38,7 @@ impl ManagementAuth {
     }
 }
 
-const TOKEN_FILE_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
+pub(crate) const TOKEN_FILE_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
 
 /// The management token file: `management.token_file`, then the `OXIROUTE_MANAGEMENT_TOKEN_FILE`
 /// environment variable.
@@ -47,7 +47,10 @@ pub fn management_token_file(management: &Management) -> Option<PathBuf> {
     token_file_or(management, std::env::var_os(TOKEN_FILE_ENV))
 }
 
-fn token_file_or(management: &Management, environment: Option<OsString>) -> Option<PathBuf> {
+pub(crate) fn token_file_or(
+    management: &Management,
+    environment: Option<OsString>,
+) -> Option<PathBuf> {
     management
         .token_file
         .clone()

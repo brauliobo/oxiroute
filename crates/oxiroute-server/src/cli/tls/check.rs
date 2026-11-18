@@ -195,21 +195,6 @@ fn judge(subject: &Subject, warn: i64, crit: i64, now: i64) -> Vec<Finding> {
         ));
         return findings;
     };
-    let remaining = expiry.remaining(now);
-    let severity = match remaining {
-        remaining if remaining <= 0 || remaining <= crit => Severity::Critical,
-        remaining if remaining <= warn => Severity::Warning,
-        _ => return findings,
-    };
-    let state = if remaining <= 0 { "expired" } else { "expires" };
-    findings.push(Finding::new(
-        severity,
-        format!(
-            "{} {state} {} ({})",
-            subject.name,
-            expiry.utc(),
-            expiry.relative(now)
-        ),
-    ));
+    findings.extend(expiry.finding(&subject.name, warn, crit, now));
     findings
 }

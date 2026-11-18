@@ -1,6 +1,6 @@
 mod apply;
 mod args;
-mod check;
+pub(super) mod check;
 mod compare;
 mod compose;
 mod daemon;

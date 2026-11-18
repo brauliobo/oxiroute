@@ -154,6 +154,7 @@ body through, where `changed` counts the targets of the request.
 | Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt|history|rollback` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |
 | Events | `events list|follow` | Page through the bounded in-memory event ring, or follow its server-sent event stream with reconnect |
 | Audit | `audit list|status|tail` | Query and tail the redacted audit log of administrative actions |
+| Diagnosis | `doctor` | Check the configuration, listen addresses, upstreams, certificate files, file modes and the systemd unit's sandbox in one prioritised report with monitoring exit codes |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Routing | `route test` | Ask the daemon which route, action and pool would serve a URL, or a host and path, with the route table of the active generation |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
@@ -258,9 +259,43 @@ oxiroute tls check example.com:443 --verify
 reconciliation endpoints the dashboard uses and follow the usual exit categories; `revoke` and `delete` need
 `--yes`.
 
+## `doctor`
+
+`oxiroute doctor [CONFIG] [--unit FILE] [--offline] [--json]` answers "why will this not start, or not
+serve?" on the host that runs the daemon. It reads the configuration file and the systemd unit, so it works
+before the daemon is installed or started:
+
+| Check | What it looks at |
+| --- | --- |
+| `config` | the file parses, validates and prepares as a runtime generation (the listen addresses are checked by `listeners`); configuration warnings are reported as warnings |
+| `files` | the configuration is not writable by group or others; the management token file is a regular file with mode `0400` or `0600`; private keys, DNS credentials, access token and htpasswd files and the registry token file are not open to other users |
+| `listeners` | each listen address can be bound: in use by another process, not assigned to this host, a socket directory that does not exist, a port below 1024 without root or `CAP_NET_BIND_SERVICE` (the unit's `AmbientCapabilities=` counts). With a daemon answering at `--endpoint`, the addresses it holds are fine; `--offline` does not ask |
+| `upstreams` | each static pool server accepts a connection within the global `--timeout`: a pool with no reachable server is critical, one with some unreachable is a warning per server |
+| `certificates` | the expiry of the certificate files (`files` and Certbot sources): warning within 30d, critical within 7d or expired |
+| `unit` | every `ReadWritePaths=` entry exists unless prefixed `-`; every path the configuration writes is writable under the unit's `ProtectSystem=`, `ReadWritePaths=`, `StateDirectory=` and similar settings |
+
+The unit is `--unit`, else the first `oxiroute.service` in `/etc/systemd/system`, `/run/systemd/system`,
+`/usr/lib/systemd/system` or `/lib/systemd/system`, with its drop-ins. Without `CONFIG` the file named by the
+unit's `ExecStart=... serve FILE` is read, else `oxiroute.kdl`. The unit's `Environment=` and
+`EnvironmentFile=` stand for the daemon's environment (`OXIROUTE_MANAGEMENT_TOKEN_FILE`, `OXIROUTE_AUDIT_DIR`).
+
+Problems print first, worst first, each with the command or setting that fixes it; passing checks follow.
+Like `check`, its exit codes replace the exit categories: `0` OK, `1` WARNING, `2` CRITICAL, `3` UNKNOWN (an
+option is wrong). `--json` prints the report as one object with a `findings` array of `severity`, `check`,
+`subject`, `message` and `fix`.
+
+```sh
+oxiroute doctor /etc/oxiroute/oxiroute.kdl
+# OXIROUTE DOCTOR CRITICAL - 1 critical, 1 warning, 5 ok
+# CRITICAL unit         /usr/lib/systemd/system/oxiroute.service: disk cache pages /var/cache/oxiroute is read-only under the unit's sandbox
+#     fix: add ReadWritePaths=/var/cache/oxiroute to the unit (systemctl edit oxiroute.service) and restart it
+# WARNING  upstreams    pool web: app-2 (192.0.2.12:8080): connection refused
+#     fix: start the server, or fix its address, firewall and DNS; `oxiroute server drain` takes it out of rotation
+```
+
 ## Output And Exit Categories
 
-Stable exit categories are designed for scripts (every command except `check` and `tls check`, see above):
+Stable exit categories are designed for scripts (every command except `check`, `tls check` and `doctor`, see above):
 
 | Code | Category |
 | --- | --- |

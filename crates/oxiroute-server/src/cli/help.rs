@@ -72,6 +72,7 @@ macro_rules! getting_started {
         "Getting started:
   oxiroute serve /etc/oxiroute/oxiroute.kdl   run the daemon with a configuration file
   oxiroute config check oxiroute.kdl          check a configuration file without a daemon
+  oxiroute doctor oxiroute.kdl                diagnose why it will not start or serve
   oxiroute status                             health, active revision and listeners
   oxiroute pool list                          pools and how many servers are available
   oxiroute server drain --pool web app-1      take a server out of rotation
@@ -97,7 +98,7 @@ pub(crate) const OVERVIEW: &str = concat!(
     getting_started!(),
     "
 
-Exit status (except `check` and `tls check`, which exit 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN for monitoring systems):
+Exit status (except `check`, `tls check` and `doctor`, which exit 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN for monitoring systems):
   0  success
   1  `serve` could not start the daemon
   2  usage: an unknown command or a bad option

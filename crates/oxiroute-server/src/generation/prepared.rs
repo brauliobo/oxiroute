@@ -159,7 +159,10 @@ impl PreparedGeneration {
                 Self::prepare_runtime_components(&config, &mut transaction)?;
                 Some(process)
             }
-            ListenerSource::Validate { previous } => {
+            ListenerSource::Validate {
+                previous,
+                probe_listeners,
+            } => {
                 transaction.plan = Some(
                     validation_plan(&config)
                         .map_err(|source| GenerationError::Plan(Box::new(source)))?,
@@ -181,13 +184,15 @@ impl PreparedGeneration {
                 transaction
                     .drop_probes
                     .push(PreparedTransactionDropProbe::new("acquisition"));
-                transaction.reservations = Some(ListenerReservations::prepare_for_validation(
-                    &config, previous,
-                )?);
-                #[cfg(test)]
-                transaction
-                    .drop_probes
-                    .push(PreparedTransactionDropProbe::new("reservations"));
+                if probe_listeners {
+                    transaction.reservations = Some(ListenerReservations::prepare_for_validation(
+                        &config, previous,
+                    )?);
+                    #[cfg(test)]
+                    transaction
+                        .drop_probes
+                        .push(PreparedTransactionDropProbe::new("reservations"));
+                }
                 None
             }
         };
