@@ -20,7 +20,7 @@ env:
 
 jobs:
   lint:
-    name: Format, control-plane contract and clippy
+    name: Format, repository gates and clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -54,24 +54,8 @@ jobs:
           shared-key: lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.3.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
-
-      - name: Install UI dependencies
-        run: pnpm install --frozen-lockfile --prefer-offline
-        working-directory: ui
-
-      - name: Verify control-plane OpenAPI artifact
-        run: ./scripts/verify/control-plane-contract.sh
+      - name: Verify the generated control-plane types match the OpenAPI artifact
+        run: node scripts/generate/control-plane-types.mjs --check
 
       - name: Verify unsafe code and raw io_uring stay in their crate
         run: ./scripts/verify/unsafe_containment.sh
