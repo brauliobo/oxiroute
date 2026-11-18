@@ -184,6 +184,10 @@ impl RtmpAccessPolicy {
         }
     }
 
+    pub(super) fn token_parameter(&self) -> Option<&str> {
+        self.token.as_ref().map(RtmpTokenPolicy::parameter)
+    }
+
     pub(super) fn authorize(
         &self,
         peer: Option<IpAddr>,

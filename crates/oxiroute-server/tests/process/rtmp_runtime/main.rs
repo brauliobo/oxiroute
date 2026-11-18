@@ -18,6 +18,7 @@ mod inventory;
 mod media_ticket;
 mod quota;
 mod recording;
+mod secrets;
 
 use std::{
     fs,

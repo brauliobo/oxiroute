@@ -70,6 +70,14 @@ GET config -> edit typed JSON -> POST validate -> review preview/candidate topol
 pending activation, an unchanged active generation, and a valid save that requires restart. A stale
 revision returns `409` and does not perform a last-writer-wins write.
 
+Config responses redact RTMP token secrets and callback URL userinfo and query values as
+`<redacted>`. The redacted body is a valid `PUT`/validate request: each placeholder is replaced by
+the stored value of the same RTMP service, application and field before preflight, so secrets are
+preserved and never echoed. A placeholder with no matching stored value, or a callback URL whose
+non-redacted parts changed, returns `422` `redacted_rtmp_token_unresolved` or
+`redacted_rtmp_callback_unresolved` and writes nothing. To change a secret, send the new literal
+value; `<redacted>` itself cannot be stored as a secret.
+
 ## Response Rules
 
 - Cumulative `u64` values are decimal strings; gauges and bounded counts are JSON numbers.

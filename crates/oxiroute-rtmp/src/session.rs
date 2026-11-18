@@ -537,7 +537,7 @@ impl RtmpSession {
             service_id: Arc::from(self.runtime.service_id()),
             application: Arc::from(application),
             stream_name: stream_name.map(Arc::from),
-            query: query.map(Arc::from),
+            query: query.map(|query| Arc::from(self.runtime.redact_query(application, query))),
             client_addr: self.peer_addr,
             session_id: Arc::from(self.session_id.to_string()),
         }

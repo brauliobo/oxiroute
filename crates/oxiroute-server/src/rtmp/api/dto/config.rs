@@ -7,7 +7,11 @@ use crate::config::coordinator::{
     AuthoredRevision, ConfigDiagnostic, EffectiveRevision, ResolvedConfigDocument,
 };
 
-const REDACTED_RTMP_TOKEN: &str = "<redacted>";
+mod callback_urls;
+
+pub(crate) use callback_urls::{contains_redacted_callback_url, restore_redacted_callback_urls};
+
+const REDACTED_PLACEHOLDER: &str = "<redacted>";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,10 +34,10 @@ pub(crate) struct RedactedConfigView {
 impl RedactedConfigView {
     /// The view of a configuration whose `preview` is already rendered in `format`.
     ///
-    /// Without RTMP tokens there is nothing to redact, so the config and preview are reused
+    /// Without RTMP secrets there is nothing to redact, so the config and preview are reused
     /// instead of being validated and rendered a second time.
     pub(crate) fn of(config: &ValidatedConfig, format: ConfigFormat, preview: &str) -> Self {
-        if !has_rtmp_token(config.as_draft()) {
+        if !has_rtmp_secret(config.as_draft()) {
             return Self {
                 config: config.clone(),
                 preview: preview.to_owned(),
@@ -49,11 +53,12 @@ impl RedactedConfigView {
             for application in &mut service.applications {
                 for policy in [&mut application.publish, &mut application.play] {
                     if let Some(token) = policy.token.as_mut() {
-                        token.secret = REDACTED_RTMP_TOKEN.into();
+                        token.secret = REDACTED_PLACEHOLDER.into();
                     }
                 }
             }
         }
+        callback_urls::redact_callback_urls(&mut config);
         let config = config
             .validate()
             .expect("normalized configuration remains valid after token redaction");
@@ -205,14 +210,15 @@ impl ConfigConflictResponse {
     }
 }
 
-fn has_rtmp_token(config: &ConfigDraft) -> bool {
-    config.rtmp_services.iter().any(|service| {
-        service.applications.iter().any(|application| {
-            [&application.publish, &application.play]
-                .into_iter()
-                .any(|policy| policy.token.is_some())
+fn has_rtmp_secret(config: &ConfigDraft) -> bool {
+    callback_urls::has_secret_callback_url(config)
+        || config.rtmp_services.iter().any(|service| {
+            service.applications.iter().any(|application| {
+                [&application.publish, &application.play]
+                    .into_iter()
+                    .any(|policy| policy.token.is_some())
+            })
         })
-    })
 }
 
 pub(crate) fn contains_redacted_rtmp_token_secret(config: &ConfigDraft) -> bool {
@@ -224,7 +230,7 @@ pub(crate) fn contains_redacted_rtmp_token_secret(config: &ConfigDraft) -> bool 
                     policy
                         .token
                         .as_ref()
-                        .is_some_and(|token| token.secret == REDACTED_RTMP_TOKEN)
+                        .is_some_and(|token| token.secret == REDACTED_PLACEHOLDER)
                 })
         })
     })
@@ -269,7 +275,7 @@ fn restore_redacted_rtmp_token_secret(
     let Some(token) = draft.token.as_mut() else {
         return;
     };
-    if token.secret != REDACTED_RTMP_TOKEN {
+    if token.secret != REDACTED_PLACEHOLDER {
         return;
     }
     let Some(authoritative_token) = authoritative.token.as_ref() else {

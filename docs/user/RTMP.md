@@ -96,7 +96,22 @@ is checked without becoming part of the stream identity:
 ```
 
 Place these objects inside an application. Use `?token=...` on the stream name for publish or play.
-The management API redacts token secrets from typed configuration and rendered previews.
+The management API redacts token secrets from typed configuration and rendered previews, and
+callback URLs from typed configuration: userinfo and every query value become `<redacted>`, so keep
+credentials in callback query values, not in the path. A configuration read with `GET /api/v1/config`
+can be edited and sent back with `PUT /api/v1/config`: each `<redacted>` token secret or callback URL
+is replaced by the stored value of the same service, application and field, and a callback URL is
+restored only when everything except the redacted parts is unchanged. A placeholder that matches
+nothing stored is refused with `422 redacted_rtmp_token_unresolved` or
+`redacted_rtmp_callback_unresolved` and nothing is written. To rotate a secret, send the new literal
+value; `<redacted>` is reserved and cannot be used as a secret.
+
+Callbacks never receive a stream key. In the `query` parameter of a callback request, the value of
+`token`, `access_token`, `key`, `secret`, `password`, `passwd`, `auth`, `signature`, `sig`, `apikey`,
+`api_key` and of the application's configured token parameter is replaced by `fp-` and the first 8
+hex digits of its SHA-256 (`token=fp-8c6959af`). Compare fingerprints, not keys, in a callback
+receiver. Other query parameters are forwarded unchanged. Events, audit records, logs and the access
+log never contain the stream query.
 
 ## Add Recording
 

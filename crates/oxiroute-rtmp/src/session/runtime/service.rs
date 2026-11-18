@@ -377,6 +377,14 @@ impl RtmpServiceRuntime {
         self.policy.application(name)
     }
 
+    pub(in super::super) fn redact_query(&self, application: &str, query: &str) -> String {
+        let parameters = self
+            .application(application)
+            .map(RtmpApplication::token_parameters)
+            .unwrap_or_default();
+        crate::secret_query::redact_query(query, &parameters)
+    }
+
     pub(in super::super) fn callbacks(&self) -> &RtmpCallbackPolicy {
         &self.callbacks
     }

@@ -95,6 +95,23 @@ impl RtmpWireClient {
         .await;
     }
 
+    pub async fn publish_is_accepted(&mut self, stream_name: &str) -> bool {
+        let request = self
+            .session
+            .request_publishing(stream_name.into(), PublishRequestType::Live)
+            .expect("request RTMP publishing");
+        let answer = self
+            .wait_for_event(vec![request], |event| {
+                matches!(
+                    event,
+                    ClientSessionEvent::PublishRequestAccepted
+                        | ClientSessionEvent::UnknownTransactionResultReceived { .. }
+                )
+            })
+            .await;
+        matches!(answer, ClientSessionEvent::PublishRequestAccepted)
+    }
+
     pub async fn play(&mut self, stream_name: &str) {
         let request = self
             .session

@@ -201,6 +201,13 @@ impl RtmpApplication {
         self.session_limits
     }
 
+    pub(super) fn token_parameters(&self) -> Vec<&str> {
+        [&self.publish_policy, &self.play_policy]
+            .into_iter()
+            .filter_map(RtmpAccessPolicy::token_parameter)
+            .collect()
+    }
+
     pub(super) fn hub(&self) -> Option<LiveHub> {
         self.hub.clone()
     }

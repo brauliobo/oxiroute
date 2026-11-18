@@ -11,7 +11,8 @@ use super::{
     auth::ManagementAuth,
     dto::{
         ConfigConflictResponse, ConfigRequest, ConfigValidationResponse, ImportReportResponse,
-        RedactedConfigView, RedactedImportReport, contains_redacted_rtmp_token_secret,
+        RedactedConfigView, RedactedImportReport, contains_redacted_callback_url,
+        contains_redacted_rtmp_token_secret, restore_redacted_callback_urls,
         restore_redacted_rtmp_token_secrets,
     },
     observability::candidate_topology,
@@ -149,11 +150,8 @@ impl ConfigApiState {
         }
     }
 
-    fn merge_redacted_rtmp_token_secrets(
-        &self,
-        draft: &mut ConfigDraft,
-    ) -> Result<(), ApiResponse> {
-        if !contains_redacted_rtmp_token_secret(draft) {
+    fn merge_redacted_rtmp_secrets(&self, draft: &mut ConfigDraft) -> Result<(), ApiResponse> {
+        if !contains_redacted_rtmp_token_secret(draft) && !contains_redacted_callback_url(draft) {
             return Ok(());
         }
         let authoritative = match self.coordinator.load_shared() {
@@ -175,11 +173,19 @@ impl ConfigApiState {
             }
         };
         restore_redacted_rtmp_token_secrets(draft, &authoritative);
+        restore_redacted_callback_urls(draft, &authoritative);
         if contains_redacted_rtmp_token_secret(draft) {
             return Err(ApiResponse::error(
                 422,
                 "redacted_rtmp_token_unresolved",
                 "redacted RTMP token secrets must match an existing authoritative token",
+            ));
+        }
+        if contains_redacted_callback_url(draft) {
+            return Err(ApiResponse::error(
+                422,
+                "redacted_rtmp_callback_unresolved",
+                "redacted RTMP callback URLs must match an existing authoritative callback URL",
             ));
         }
         Ok(())
@@ -269,7 +275,7 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        if let Err(response) = self.merge_redacted_rtmp_token_secrets(&mut draft) {
+        if let Err(response) = self.merge_redacted_rtmp_secrets(&mut draft) {
             return response;
         }
         let candidate = match self.prepare_candidate(draft, now_unix_ms, None) {
@@ -312,7 +318,7 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        if let Err(response) = self.merge_redacted_rtmp_token_secrets(&mut draft) {
+        if let Err(response) = self.merge_redacted_rtmp_secrets(&mut draft) {
             return response;
         }
         let mutation = if let Some(generations) = &self.generations {

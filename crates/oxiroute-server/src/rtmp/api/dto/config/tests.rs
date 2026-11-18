@@ -159,3 +159,76 @@ fn snapshot_dto_has_the_exact_top_level_json_contract() {
     assert_eq!(value["config"], serde_json::to_value(validated).unwrap());
     assert!(value.get("luaPreview").is_none());
 }
+
+fn config_with_callback(url: &str) -> ConfigDraft {
+    let mut config = config_with_token("private-token");
+    config.rtmp_services[0].applications[0].callbacks.on_publish = Some(url.into());
+    config.rtmp_services[0].callbacks.on_connect = Some(url.into());
+    config
+}
+
+fn application_callback(config: &ConfigDraft) -> &str {
+    config.rtmp_services[0].applications[0]
+        .callbacks
+        .on_publish
+        .as_deref()
+        .unwrap()
+}
+
+#[test]
+fn callback_urls_lose_userinfo_and_query_values_but_keep_their_shape() {
+    for (url, expected) in [
+        (
+            "https://alice:demo-pass@example.com:8443/hook?key=demo-key&mode=a&flag",
+            "https://<redacted>@example.com:8443/hook?key=<redacted>&mode=<redacted>&flag",
+        ),
+        (
+            "http://example.com?key=demo-key",
+            "http://example.com?key=<redacted>",
+        ),
+        ("http://example.com/hook", "http://example.com/hook"),
+    ] {
+        assert_eq!(callback_urls::redact_callback_url(url), expected);
+    }
+}
+
+#[test]
+fn redacted_view_hides_callback_url_secrets_everywhere() {
+    let validated = config_with_callback("http://example.com/hook?key=demo-key")
+        .validate()
+        .unwrap();
+    let (redacted, preview, _) =
+        RedactedConfigView::new(&validated, ConfigFormat::Kdl).into_parts();
+    let redacted = serde_json::to_string(&redacted).unwrap();
+
+    assert!(redacted.contains("http://example.com/hook?key=<redacted>"));
+    assert!(!redacted.contains("demo-key") && !preview.contains("demo-key"));
+}
+
+#[test]
+fn callback_sentinel_merge_restores_only_an_unchanged_authoritative_url() {
+    let authoritative = config_with_callback("http://example.com/hook?key=demo-key");
+    let mut round_trip = config_with_callback("http://example.com/hook?key=<redacted>");
+    assert!(contains_redacted_callback_url(&round_trip));
+    restore_redacted_callback_urls(&mut round_trip, &authoritative);
+    assert_eq!(
+        application_callback(&round_trip),
+        "http://example.com/hook?key=demo-key"
+    );
+    assert!(!contains_redacted_callback_url(&round_trip));
+
+    let mut redirected = config_with_callback("http://192.0.2.1/hook?key=<redacted>");
+    restore_redacted_callback_urls(&mut redirected, &authoritative);
+    assert_eq!(
+        application_callback(&redirected),
+        "http://192.0.2.1/hook?key=<redacted>"
+    );
+    assert!(contains_redacted_callback_url(&redirected));
+
+    let mut replaced = config_with_callback("http://example.com/hook?key=new-key");
+    restore_redacted_callback_urls(&mut replaced, &authoritative);
+    assert_eq!(
+        application_callback(&replaced),
+        "http://example.com/hook?key=new-key"
+    );
+}

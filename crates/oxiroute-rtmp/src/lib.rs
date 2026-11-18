@@ -20,6 +20,7 @@ mod media;
 mod recording;
 mod relay;
 mod runtime_handles;
+mod secret_query;
 mod session;
 mod vod;
 

@@ -42,7 +42,11 @@ The server starts `unknown` and turns `healthy` after its first successful probe
 priority: an appended server only receives overflow. `apply` writes through the daemon, so the service
 account needs write access to the configuration directory (else `write_failed`, nothing changes). A root
 with templates or native references answers `422 E_COMPOSITIONAL_ROOT`: use the file flow below. `config
-get` redacts RTMP token secrets, so never round-trip a configuration with RTMP services through `apply`.
+get` redacts RTMP token secrets and callback URL userinfo and query values as `<redacted>`; the daemon
+restores each placeholder from the stored configuration on `apply`, so a redacted body keeps the stored
+secrets (an unchanged body answers `unchanged_active`). A placeholder that matches nothing stored, for
+example under a renamed application, is refused with `422` and nothing is written; send the literal
+value to set or rotate a secret.
 
 ## Let machines register themselves
 

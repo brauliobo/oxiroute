@@ -52,7 +52,8 @@ Opaque TCP relay is not a firewall, NAT, transparent interceptor, or source-spoo
 ## Redaction
 
 Management responses and topology omit private keys, credentials, token material, recording roots,
-and stream query arguments. Access logs use a fixed redacted JSONL shape. Keep external diagnostics
+and stream query arguments; callback URLs show no userinfo or query values. Callback requests carry
+secret stream-query parameters only as short fingerprints. Access logs use a fixed redacted JSONL shape. Keep external diagnostics
 and imported source reports under the same access controls as the original configuration.
 
 Read [API_UI_SPEC.md](../API_UI_SPEC.md), [CONFIG_FORMATS.md](../CONFIG_FORMATS.md), and the

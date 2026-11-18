@@ -358,6 +358,15 @@ callbacks. Done and disconnect callbacks run during role/connection teardown. `o
 bounded by `notify_update_timeout`; zero disables updates and strict mode closes the session on an
 update failure. Callback URLs, queries, and secrets are redacted from debug/error output.
 
+The `query` form field of a callback request carries the stream query with every secret-bearing
+parameter replaced by a fingerprint: parameters named `token`, `access_token`, `key`, `secret`,
+`password`, `passwd`, `auth`, `signature`, `sig`, `apikey`, `api_key` (ASCII case-insensitive, after
+percent-decoding) and the token parameter of the application's publish or play policy carry
+`fp-` plus the first 8 hex digits of the SHA-256 of the original value. The raw stream key is never
+sent to a callback, so it cannot reach a callback URL (`notify_method get`) or its access log. The
+management API redacts callback URLs in typed configuration, validation, and conflict responses:
+userinfo becomes `<redacted>` and every query value becomes `<redacted>`.
+
 ### Logging, limits, and auto-push: 6
 
 | Directive | Context | Accepted value | Effective default/scope |
