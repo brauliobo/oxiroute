@@ -1,5 +1,6 @@
 use super::{
-    ConfigCommand, apply::apply, check, compare, compose::compose, edit::edit, fmt::fmt, show::show,
+    ConfigCommand, apply::apply, check, compare, compose::compose, edit::edit, fmt::fmt, history,
+    show::show,
 };
 use crate::cli::{
     context::{Context, Execute},
@@ -19,6 +20,8 @@ impl Execute for ConfigCommand {
             Self::Diff(args) => compare::diff(context, args),
             Self::Apply(args) => apply(context, args),
             Self::Edit(args) => edit(context, args),
+            Self::History => history::list(context),
+            Self::Rollback(args) => history::rollback(context, args),
             Self::Fmt(args) => fmt(context, args),
         }
     }

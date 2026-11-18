@@ -133,6 +133,9 @@ pub(crate) const CONFIG_EXAMPLES: &str = "Examples:
   oxiroute config diff --text oxiroute.kdl
   oxiroute config apply --wait oxiroute.kdl
   oxiroute config edit
+  oxiroute config history
+  oxiroute config diff --rev 3f9a1c2b7d40
+  oxiroute config rollback 3f9a1c2b7d40 --wait
 
 `config validate`, `config diff` and `config apply` take a file in any native format (kdl, lua, hocon, uci, or a JSON \
 document), chosen by its extension or `--format`, and ask the daemon, so they check what `config check` checks offline \

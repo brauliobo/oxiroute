@@ -224,6 +224,20 @@ streaming from `node-a`; they finish normally. Check `oxiroute requests list --p
 or run the command with `--force` to cut them, then tell the owner. Later `oxiroute server ready --pool
 gpu-render --pool voice-tts node-a` returns the machine to the pools.
 
+## Undo a configuration change
+
+Every save through the daemon (`config apply`, `config edit`, the management UI) keeps the text it replaced.
+List the kept versions, compare, and restore one; the restore is a validated apply with the revision
+precondition, and the version it replaces is kept in turn:
+
+```sh
+oxiroute config history                         # id, save time and size of each kept version
+oxiroute config diff --text --rev 3f9a1c2b7d40  # what changed from that version to the stored file
+oxiroute config rollback 3f9a1c2b7d40 --wait    # exit 3: the version no longer validates, nothing written
+```
+
+A change made by editing the file directly on the host is not kept in the history.
+
 ## Apply configuration safely
 
 Prefer the daemon flow (`config edit`, or `config show`, `diff`, `validate`, `apply` on a file in the daemon's

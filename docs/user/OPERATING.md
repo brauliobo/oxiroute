@@ -114,7 +114,12 @@ nothing. `config diff FILE` lists what the file changes against the running conf
 and `config apply FILE` stores the file's own text (comments and Lua logic kept) with the revision of the
 stored file as a precondition. `config edit` does the same through `$EDITOR`, and `config show` prints the
 stored text (`--active` for the running configuration). A refused file exits `3` with each diagnostic's code,
-`FILE:LINE`, setting and a hint. When the daemon cannot write its file (`configWritable: false` in `status`,
+`FILE:LINE`, setting and a hint. Every save through the daemon keeps the text it replaces: `config history`
+lists those versions, `config show --rev ID` and `config diff --rev A [--rev B]` read and compare them, and
+`config rollback ID --wait` restores one as a normal validated apply, recorded as a new revision. They are
+`0600` files in `<configuration file>.history/`, bounded by `config_history` (20 versions and 16 MiB by
+default), and hold the file's inline secrets exactly as the file does; edits made directly on disk are not
+kept. When the daemon cannot write its file (`configWritable: false` in `status`,
 as under the packaged read-only sandbox) `apply` and `edit` stop with exit `8` and name the `ReadWritePaths`
 drop-in that allows it. `generation reload --wait` returns when the candidate
 revision is active, or fails with the first diagnostic when the file is refused; `--timeout` bounds the

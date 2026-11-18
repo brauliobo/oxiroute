@@ -634,3 +634,150 @@ fn fmt_refuses_templates_and_json_and_reports_syntax_errors() {
         assert!(err(&output).contains(needle), "{}", err(&output));
     }
 }
+
+fn history_ids(daemon: &Daemon) -> Vec<String> {
+    let output = daemon.run(&["--output", "json", "config", "history"]);
+    assert_eq!(code(&output), 0, "{}", report(&output));
+    let body: Value = serde_json::from_slice(&output.stdout).expect("history JSON");
+    body["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("id").to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_lists_the_versions_an_apply_replaced_and_show_prints_one() {
+    let daemon = Daemon::start().await;
+    let first = format!("{}// first\n", daemon.text);
+    let second = format!("{first}// second\n");
+    for text in [&first, &second] {
+        let file = daemon.file("next.kdl", text);
+        let output = daemon.run(&["config", "apply", path(&file)]);
+        assert_eq!(code(&output), 0, "{}", report(&output));
+    }
+
+    let ids = history_ids(&daemon);
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    let table = daemon.run(&["config", "history"]);
+    assert_eq!(code(&table), 0, "{}", report(&table));
+    assert!(
+        out(&table).contains(&ids[0]) && out(&table).contains(&ids[1]),
+        "{}",
+        out(&table)
+    );
+    let original = daemon.run(&["config", "show", "--rev", &ids[1]]);
+    assert_eq!(out(&original), daemon.text, "{}", report(&original));
+    let prefix = daemon.run(&["config", "show", "--rev", &ids[0][..7]]);
+    assert_eq!(out(&prefix), first, "{}", report(&prefix));
+    let current = daemon.run(&["config", "show", "--rev", "current"]);
+    assert_eq!(out(&current), second);
+    let unknown = daemon.run(&["config", "show", "--rev", "000000000000"]);
+    assert_eq!(code(&unknown), 6, "{}", report(&unknown));
+    let short = daemon.run(&["config", "show", "--rev", "abc"]);
+    assert_eq!(code(&short), 8, "{}", report(&short));
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_rev_compares_two_versions_by_setting_and_by_text() {
+    let daemon = Daemon::start().await;
+    let edited = daemon
+        .text
+        .replacen("max_connections 4", "max_connections 9", 1);
+    let file = daemon.file("changed.kdl", &edited);
+    assert_eq!(code(&daemon.run(&["config", "apply", path(&file)])), 0);
+    let original = history_ids(&daemon).remove(0);
+
+    let settings = daemon.run(&["config", "diff", "--exit-code", "--rev", &original]);
+    let text = daemon.run(&[
+        "config", "diff", "--text", "--rev", &original, "--rev", "current",
+    ]);
+    let same = daemon.run(&[
+        "config",
+        "diff",
+        "--exit-code",
+        "--rev",
+        "current",
+        "--rev",
+        "current",
+    ]);
+    let conflicting = daemon.run(&["config", "diff", "--rev", &original, path(&file)]);
+
+    assert_eq!(code(&settings), 1, "{}", report(&settings));
+    assert_eq!(
+        out(&settings),
+        "~ /upstream_pools/farm/servers/alpha/max_connections: 4 -> 9\n"
+    );
+    assert_eq!(code(&text), 0, "{}", report(&text));
+    assert!(out(&text).contains("+++ current"), "{}", out(&text));
+    assert!(
+        out(&text).contains("-        max_connections 4"),
+        "{}",
+        out(&text)
+    );
+    assert_eq!(code(&same), 0, "{}", report(&same));
+    assert_eq!(code(&conflicting), 2, "{}", report(&conflicting));
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rollback_restores_a_version_as_a_new_revision_and_waits_for_it() {
+    let daemon = Daemon::start().await;
+    let authorization = authorization();
+    let original = active_revision(daemon.address, &authorization).await;
+    let bad = format!(
+        "{}// the bad one\n",
+        daemon
+            .text
+            .replacen("max_connections 4", "max_connections 1", 1)
+    );
+    let file = daemon.file("bad.kdl", &bad);
+    let applied = daemon.run(&["config", "apply", "--wait", path(&file)]);
+    assert_eq!(code(&applied), 0, "{}", report(&applied));
+    let before = history_ids(&daemon).remove(0);
+
+    let restored = daemon.run(&["config", "rollback", &before, "--wait"]);
+
+    assert_eq!(code(&restored), 0, "{}", report(&restored));
+    assert_eq!(daemon.stored(), daemon.text);
+    assert_eq!(
+        active_revision(daemon.address, &authorization).await,
+        original
+    );
+    let kept = daemon.run(&["config", "show", "--rev", &history_ids(&daemon)[0]]);
+    assert_eq!(
+        out(&kept),
+        bad,
+        "the replaced bad version is the newest entry"
+    );
+    let unknown = daemon.run(&["config", "rollback", "000000000000"]);
+    assert_eq!(code(&unknown), 6, "{}", report(&unknown));
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rollback_to_a_version_that_no_longer_validates_changes_nothing() {
+    let daemon = Daemon::start().await;
+    let file = daemon.file("next.kdl", &format!("{}// next\n", daemon.text));
+    assert_eq!(code(&daemon.run(&["config", "apply", path(&file)])), 0);
+    let id = history_ids(&daemon).remove(0);
+    let mut history = daemon.server.config_path.clone().into_os_string();
+    history.push(".history");
+    let entry = fs::read_dir(PathBuf::from(history))
+        .expect("history directory")
+        .next()
+        .expect("entry")
+        .expect("entry")
+        .path();
+    fs::write(entry, "listeners {\n").expect("corrupt the entry");
+    let stored = daemon.stored();
+
+    let refused = daemon.run(&["config", "rollback", &id]);
+
+    assert_eq!(code(&refused), 3, "{}", report(&refused));
+    assert!(err(&refused).contains("E_SYNTAX"), "{}", err(&refused));
+    assert_eq!(daemon.stored(), stored);
+    daemon.server.shutdown();
+}

@@ -6,6 +6,7 @@ mod compose;
 mod daemon;
 mod edit;
 mod fmt;
+mod history;
 mod input;
 mod report;
 mod run;

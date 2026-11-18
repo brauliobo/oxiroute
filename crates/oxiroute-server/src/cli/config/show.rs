@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{args::ShowArgs, daemon::Stored};
+use super::{args::ShowArgs, daemon::Stored, history};
 use crate::cli::{
     context::Context,
     error::CliError,
@@ -18,6 +18,9 @@ pub(super) fn show(context: &Context<'_>, args: &ShowArgs) -> Result<(), CliErro
         } else {
             render::emit_bytes(&bytes)
         };
+    }
+    if let Some(id) = &args.rev {
+        return history::show(context, id);
     }
     let client = context.client()?;
     let view = if args.active { "active" } else { "disk" };

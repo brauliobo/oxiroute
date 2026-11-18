@@ -3,6 +3,7 @@ use serde_json::Value;
 use super::{
     args::{Against, DiffArgs, SourceArgs},
     daemon::{self, Checked},
+    history,
     input::SourceInput,
     report,
 };
@@ -25,14 +26,17 @@ pub(super) fn validate(context: &Context<'_>, args: &SourceArgs) -> Result<(), C
 }
 
 pub(super) fn diff(context: &Context<'_>, args: &DiffArgs) -> Result<(), CliError> {
+    let Some(file) = &args.file else {
+        return history::diff(context, args);
+    };
     let client = context.client()?;
-    let input = SourceInput::read(&args.source.file, args.source.format)?;
+    let input = SourceInput::read(file, args.format)?;
     let (response, body) = match daemon::validate(&client, &input.request(args.text))? {
         Checked::Valid(response, body) => (response, body),
         Checked::Invalid(response, body) => {
             return Err(daemon::refusal(
                 context,
-                &args.source.file.display().to_string(),
+                &file.display().to_string(),
                 &response,
                 &body,
             ));

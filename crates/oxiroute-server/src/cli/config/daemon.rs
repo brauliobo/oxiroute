@@ -10,6 +10,7 @@ use crate::cli::{
 };
 
 const SOURCE: &str = "/api/v1/config/source";
+const HISTORY: &str = "/api/v1/config/history";
 const VALIDATE: &str = "/api/v1/config/source/validate";
 
 /// The configuration file the daemon runs, as `GET /config/source` describes it.
@@ -71,8 +72,40 @@ pub(super) fn validate(client: &Client, request: &Value) -> Result<Checked, CliE
 }
 
 pub(super) fn save(client: &Client, request: &Value, revision: &str) -> Result<Checked, CliError> {
+    write(client, "PUT", SOURCE, request, revision)
+}
+
+pub(super) fn rollback(client: &Client, id: &str, revision: &str) -> Result<Checked, CliError> {
+    write(
+        client,
+        "POST",
+        &format!("{HISTORY}/{id}/rollback"),
+        &Value::Object(serde_json::Map::new()),
+        revision,
+    )
+}
+
+pub(super) fn history(client: &Client) -> Result<Response, CliError> {
+    client.get(HISTORY, true)
+}
+
+pub(super) fn history_entry(client: &Client, id: &str) -> Result<Response, CliError> {
+    client.get(&format!("{HISTORY}/{id}"), true)
+}
+
+pub(super) fn history_diff(client: &Client, from: &str, to: &str) -> Result<Response, CliError> {
+    client.get(&format!("{HISTORY}/diff?from={from}&to={to}"), true)
+}
+
+fn write(
+    client: &Client,
+    method: &str,
+    path: &str,
+    request: &Value,
+    revision: &str,
+) -> Result<Checked, CliError> {
     let response =
-        client.json_unchecked("PUT", SOURCE, request, &[("If-Config-Revision", revision)])?;
+        client.json_unchecked(method, path, request, &[("If-Config-Revision", revision)])?;
     match response.status {
         409 => Err(CliError::Status(
             409,

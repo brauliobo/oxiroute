@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Subcommand, ValueEnum};
 use oxiroute_config_source::ConfigFormat;
 
 use super::input::InputFormat;
@@ -36,6 +36,10 @@ pub(crate) enum ConfigCommand {
     Apply(ApplyArgs),
     /// Edit the daemon's configuration text in $VISUAL or $EDITOR, then validate and apply it.
     Edit(EditArgs),
+    /// List the earlier versions of the daemon's configuration file that it keeps.
+    History,
+    /// Restore an earlier version of the configuration file as a new revision, validated like any apply.
+    Rollback(RollbackArgs),
     /// Rewrite a configuration file in its canonical form.
     Fmt(FmtArgs),
 }
@@ -60,6 +64,9 @@ pub(crate) struct ShowArgs {
     /// Print the authored text stored on disk (the default).
     #[arg(long)]
     pub(super) disk: bool,
+    /// Print this earlier version from `config history`, or `current`.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["active", "disk", "file"])]
+    pub(super) rev: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -70,8 +77,22 @@ pub(crate) enum Against {
 
 #[derive(Args)]
 pub(crate) struct DiffArgs {
-    #[command(flatten)]
-    pub(super) source: SourceArgs,
+    /// Configuration file in KDL, Lua, HOCON, UCI or JSON, chosen by its extension.
+    #[arg(required_unless_present = "rev", conflicts_with = "rev")]
+    pub(super) file: Option<PathBuf>,
+    /// Format of the file when its extension does not say.
+    #[arg(long, value_enum, value_name = "FORMAT", conflicts_with = "rev")]
+    pub(super) format: Option<InputFormat>,
+    /// Compare two earlier versions from `config history` instead of a file: `--rev A --rev B` shows what
+    /// changed from A to B, `--rev A` from A to the stored file; `current` names the stored file.
+    #[arg(
+        long = "rev",
+        value_name = "ID",
+        action = ArgAction::Append,
+        num_args = 1,
+        conflicts_with_all = ["file", "against"]
+    )]
+    pub(super) rev: Vec<String>,
     /// Compare with the running configuration or with the one stored on disk.
     #[arg(long, value_enum, default_value_t = Against::Active)]
     pub(super) against: Against,
@@ -94,6 +115,15 @@ pub(crate) struct ApplyArgs {
     #[arg(long)]
     pub(super) dry_run: bool,
     /// Wait until the new revision is active or rejected, up to --timeout (30s by default).
+    #[arg(long)]
+    pub(super) wait: bool,
+}
+
+#[derive(Args)]
+pub(crate) struct RollbackArgs {
+    /// Version to restore, as listed by `config history` (at least 6 hexadecimal digits).
+    pub(super) id: String,
+    /// Wait until the restored revision is active or rejected, up to --timeout (30s by default).
     #[arg(long)]
     pub(super) wait: bool,
 }
