@@ -397,6 +397,10 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
         let _ = signal_thread.join();
         return Err(io::Error::other("generation supervisor terminated before startup").into());
     }
+    oxiroute_server::announce_ready(
+        candidate.generation().config(),
+        &candidate.revision().candidate,
+    );
     loop {
         let heard = doorbell.rung();
         if stop_supervisor.load(Ordering::Acquire) {

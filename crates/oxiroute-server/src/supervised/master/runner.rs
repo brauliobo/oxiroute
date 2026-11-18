@@ -214,6 +214,10 @@ impl MasterRunner {
             master.poll(Instant::now())?;
             signals.wait(master, None)?;
         }
+        oxiroute_server::announce_ready(
+            &catalog.active().payload().config,
+            catalog.active().revision(),
+        );
 
         loop {
             if signals.stop.load(Ordering::Acquire) {

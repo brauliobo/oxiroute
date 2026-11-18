@@ -4,6 +4,7 @@ pub(crate) mod logging;
 pub(crate) mod monitoring;
 pub(crate) mod operational_event;
 pub(crate) mod prometheus;
+pub(crate) mod startup;
 pub(crate) mod stats;
 pub(crate) mod stats_page;
 pub(crate) mod status;

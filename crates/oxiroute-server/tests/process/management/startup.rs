@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use oxiroute_config::Management;
 use tempfile::TempDir;
 
 use crate::config_support::{empty_config, socket_bind};
@@ -96,6 +97,33 @@ fn built_process_fails_before_runtime_when_a_tcp_listener_cannot_bind() {
         output.contains("could not bind socket"),
         "unexpected listener failure: {output}"
     );
+}
+
+#[tokio::test]
+async fn a_started_server_names_its_listeners_and_its_management_url_on_standard_error() {
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let mut config = rtmp_listener_config(socket_bind(rtmp_address));
+    config.management = Some(Management {
+        bind: management_address,
+        ui_dir: None,
+        token_file: None,
+    });
+    let mut server = ServerProcess::start(&config.validate().expect("valid config"), Some(TOKEN));
+
+    let output = server.wait_for_stderr(" ready, ").await;
+
+    assert!(
+        output.contains(&format!("listening on {rtmp_address} (live, rtmp)")),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("management at http://{management_address}/ (API)")),
+        "{output}"
+    );
+    assert!(output.contains(" ready, listeners: 1, "), "{output}");
+    assert!(!output.contains("ERROR"), "{output}");
+    server.shutdown();
 }
 
 #[test]

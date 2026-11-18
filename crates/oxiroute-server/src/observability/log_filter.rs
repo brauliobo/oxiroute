@@ -2,8 +2,17 @@
 
 use std::sync::{PoisonError, RwLock};
 
-use env_logger::{Builder, Logger};
+use env_logger::{Builder, Env, Logger};
 use log::{Log, Metadata, Record};
+
+/// The target of the lines that say what a process started: they show under the default filter.
+pub const STARTUP_LOG_TARGET: &str = "oxiroute::startup";
+
+const DEFAULT_FILTER: &str = "error,oxiroute::startup=info";
+
+fn environment_logger() -> Logger {
+    Builder::from_env(Env::default().default_filter_or(DEFAULT_FILTER)).build()
+}
 
 struct ProcessLogger(RwLock<Option<Logger>>);
 
@@ -44,7 +53,7 @@ pub fn init_logging() {
 pub fn apply_log_filter(filter: Option<&str>) {
     let logger = match filter {
         Some(filter) => Builder::new().parse_filters(filter).build(),
-        None => Builder::from_default_env().build(),
+        None => environment_logger(),
     };
     log::set_max_level(logger.filter());
     *LOGGER.0.write().unwrap_or_else(PoisonError::into_inner) = Some(logger);
@@ -76,7 +85,7 @@ mod tests {
     #[test]
     fn applying_a_filter_replaces_it_and_none_restores_the_environment_filter() {
         init_logging();
-        let environment = Builder::from_default_env().build().filter();
+        let environment = environment_logger().filter();
 
         apply_log_filter(Some("trace"));
         assert_eq!(log::max_level(), LevelFilter::Trace);

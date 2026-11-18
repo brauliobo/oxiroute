@@ -413,7 +413,10 @@ Current constraints:
 - Root `log_filter` is an optional log verbosity in `RUST_LOG` syntax without regex filters: comma-separated
   directives, each a level (`off`, `error`, `warn`, `info`, `debug`, `trace`) or `module::path=level`, at most
   1024 bytes. When it is set it replaces the `RUST_LOG` environment variable, which stays the fallback; when
-  neither is set only errors are logged. The supervised master applies it when it starts and on every accepted
+  neither is set errors and the startup lines (target `oxiroute::startup`: one `listening on <address>
+  (<name>, <protocol>)` line per traffic listener, the management and statistics URLs, a `ready` line, and a
+  warning for a component that starts degraded, such as an unusable audit directory) are logged, so a filter
+  that sets `off` or `error` silences those lines. The supervised master applies it when it starts and on every accepted
   reload; each supervised worker applies its own generation's value at start (workers do not inherit
   `RUST_LOG`), and the direct runtime applies it with each generation, so a draining generation shares the
   process-wide filter.

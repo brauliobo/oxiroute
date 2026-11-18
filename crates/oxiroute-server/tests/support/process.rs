@@ -221,6 +221,24 @@ impl ServerProcess {
         fs::read_to_string(&self.stderr_path).expect("server standard error")
     }
 
+    /// Returns what the server has written to standard error once it contains `text`.
+    #[allow(dead_code)]
+    pub async fn wait_for_stderr(&mut self, text: &str) -> String {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            self.assert_running();
+            let written = self.stderr();
+            if written.contains(text) {
+                return written;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server did not write `{text}`: {written}"
+            );
+            sleep(RETRY_DELAY).await;
+        }
+    }
+
     pub fn shutdown(mut self) {
         self.stop();
     }
@@ -388,6 +406,7 @@ fn spawn_server(
     command
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")
+        .env_remove("RUST_LOG")
         .envs(environment.iter().copied())
         .stdout(stdout)
         .stderr(stderr);
