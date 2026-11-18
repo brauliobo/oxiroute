@@ -99,6 +99,7 @@ pub struct WorkerStatus {
     pub runtime_started: bool,
     pub runtime_failed: bool,
     pub drained: bool,
+    pub shutdown_requested: bool,
     pub generation: WorkerGenerationStatus,
     pub metrics: Option<WorkerMetrics>,
     pub listeners: Vec<WorkerListenerStatus>,

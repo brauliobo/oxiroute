@@ -718,6 +718,7 @@ fn worker_status_for_test() -> WorkerStatus {
         runtime_started: true,
         runtime_failed: false,
         drained: false,
+        shutdown_requested: false,
         generation: WorkerGenerationStatus {
             disk_revision: None,
             candidate_revision: None,

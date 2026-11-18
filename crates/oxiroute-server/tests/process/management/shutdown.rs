@@ -150,3 +150,74 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
         .await
         .expect("wait task");
 }
+
+#[tokio::test]
+async fn a_repeated_shutdown_request_is_accepted_and_the_direct_process_exits() {
+    shutdown_twice_and_exit(false).await;
+}
+
+#[tokio::test]
+async fn a_shutdown_request_stops_the_supervised_process_and_a_repeat_is_accepted() {
+    shutdown_twice_and_exit(true).await;
+}
+
+async fn shutdown_twice_and_exit(supervised: bool) {
+    let management_address = reserve_tcp_address();
+    let validated = management_config(management_address, None)
+        .validate()
+        .expect("valid process config");
+    let mut server = if supervised {
+        ServerProcess::start_supervised(&validated, TOKEN)
+    } else {
+        ServerProcess::start(&validated, Some(TOKEN))
+    };
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/generations",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["generation"]["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+    let body = serde_json::to_vec(&json!({ "expectedActiveRevision": revision })).unwrap();
+    let headers = [
+        ("Authorization", authorization.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let mut repeat = TcpStream::connect(management_address)
+        .await
+        .expect("repeat connection");
+    begin_persistent_request(
+        &mut repeat,
+        "POST",
+        "/api/v1/process/shutdown",
+        &headers,
+        body.len(),
+    )
+    .await;
+
+    let first = http_request(
+        management_address,
+        "POST",
+        "/api/v1/process/shutdown",
+        &headers,
+        &body,
+    )
+    .await;
+    let second = finish_persistent_request(&mut repeat, &body).await;
+
+    assert_eq!(first.status, 202, "{}", first.text());
+    assert_eq!(first.json()["outcome"], "shutdown_requested");
+    assert_eq!(second.status, 202, "{}", second.text());
+    assert_eq!(second.json()["outcome"], "shutdown_requested");
+    drop(repeat);
+    tokio::task::spawn_blocking(move || server.wait_for_exit())
+        .await
+        .expect("wait task");
+}

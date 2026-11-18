@@ -169,6 +169,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             runtime_started: true,
             runtime_failed: false,
             drained: matches!(phase, ControlPhase::Drain | ControlPhase::Shutdown),
+            shutdown_requested: false,
             generation: WorkerGenerationStatus {
                 disk_revision: None,
                 candidate_revision: None,

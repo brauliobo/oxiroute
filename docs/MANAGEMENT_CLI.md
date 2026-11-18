@@ -250,6 +250,10 @@ drain polling are cancellation-aware; after the deadline the daemon stops waitin
 starting another independent timeout. Unexpected death of the active runtime is a daemon failure
 and exits nonzero.
 
+`oxiroute shutdown` stops a supervised daemon the same way: the worker reports the request in its
+status and the master shuts the daemon down. A repeated request while the daemon is stopping is
+accepted with the same `shutdown_requested` outcome rather than refused with `409`.
+
 ## Socket-loop translations
 
 A common HAProxy drain loop:

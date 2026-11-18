@@ -220,7 +220,7 @@ impl MasterRunner {
         );
 
         loop {
-            if signals.stop.load(Ordering::Acquire) {
+            if signals.stop.load(Ordering::Acquire) || shutdown_requested_by_worker(master) {
                 return shutdown_master(master);
             }
             let now = Instant::now();

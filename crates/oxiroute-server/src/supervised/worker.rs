@@ -175,7 +175,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         return Err(reject(&mut control, &adoption, REJECT_RUNTIME, error));
     }
     let mut lifecycle = WorkerLifecycle::Ready;
-    let mut reporter = StatusReporter::new(identity.generation, &generation, &manager);
+    let mut reporter = StatusReporter::new(identity.generation, &generation, &manager, &stop);
     control.acknowledge(&adoption, ControlOutcome::Accepted)?;
     reporter.report(&mut control, lifecycle)?;
 

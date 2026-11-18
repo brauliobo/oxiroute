@@ -125,6 +125,9 @@ impl DirectLifecycleControl {
         let Some(shutdown) = &self.process_shutdown else {
             return Err(LifecycleError::ShutdownUnavailable);
         };
+        if shutdown.load(Ordering::Acquire) {
+            return Ok(LifecycleOutcome::ShutdownRequested);
+        }
         let mutation = self.begin_mutation(expected_revision)?;
         drop(
             self.generations

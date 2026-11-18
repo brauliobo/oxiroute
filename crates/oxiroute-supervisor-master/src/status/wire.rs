@@ -120,7 +120,7 @@ pub(crate) fn decode_status(
     }
     let lifecycle = decode_lifecycle(decoder.u8()?)?;
     let flags = decoder.u8()?;
-    if flags & !0x1f != 0 {
+    if flags & !0x3f != 0 {
         return Err(StatusProtocolError::InvalidPayload);
     }
     let administrative_state = decode_administrative_state(decoder.u8()?)?;
@@ -203,6 +203,7 @@ pub(crate) fn decode_status(
         runtime_failed: flags & 0x04 != 0,
         drained: flags & 0x08 != 0,
         degraded: flags & 0x10 != 0,
+        shutdown_requested: flags & 0x20 != 0,
         generation,
         metrics,
         listeners,
@@ -307,6 +308,7 @@ const fn status_flags(status: &WorkerStatus) -> u8 {
         | ((if status.runtime_failed { 1 } else { 0 }) << 2)
         | ((if status.drained { 1 } else { 0 }) << 3)
         | ((if status.degraded { 1 } else { 0 }) << 4)
+        | ((if status.shutdown_requested { 1 } else { 0 }) << 5)
 }
 
 const fn encode_lifecycle(lifecycle: WorkerLifecycle) -> u8 {

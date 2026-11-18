@@ -101,6 +101,17 @@ pub(super) fn encode_token(token: InstanceToken) -> String {
     encoded
 }
 
+pub(super) fn shutdown_requested_by_worker(master: &Master) -> bool {
+    [
+        WorkerRole::Active,
+        WorkerRole::Candidate,
+        WorkerRole::Retired,
+    ]
+    .into_iter()
+    .filter_map(|role| master.worker_status(role))
+    .any(|status| status.shutdown_requested)
+}
+
 pub(super) fn shutdown_master(master: &mut Master) -> Result<(), Box<dyn Error>> {
     master.shutdown(Instant::now())?;
     loop {
