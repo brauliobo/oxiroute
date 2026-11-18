@@ -48,7 +48,15 @@ mod tests;
 pub(crate) const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "oxiroute", version = BUILD_VERSION, arg_required_else_help = true)]
+#[command(
+    name = "oxiroute",
+    version = BUILD_VERSION,
+    about = help::ABOUT,
+    long_about = help::LONG_ABOUT,
+    after_help = help::GETTING_STARTED,
+    after_long_help = help::OVERVIEW,
+    arg_required_else_help = true
+)]
 pub struct Cli {
     #[command(flatten)]
     global: Global,

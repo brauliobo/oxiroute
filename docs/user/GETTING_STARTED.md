@@ -75,7 +75,7 @@ In terminal C, from the repository root:
 ```sh
 curl -i http://127.0.0.1:3000/healthz
 curl -i http://127.0.0.1:8080/healthz
-./target/debug/oxiroute --endpoint http://127.0.0.1:9080 ready
+./target/debug/oxiroute --endpoint http://127.0.0.1:9080 ready --wait --timeout 30s
 ```
 
 Both HTTP requests should return `200` with an `ok` body. Wait for the first health check if the
@@ -95,7 +95,9 @@ export OXIROUTE_MANAGEMENT_TOKEN_FILE=/path/to/management.token
 ```
 
 The explicit endpoint matters: the CLI default is port `9900`, while this example uses `9080`.
-Readiness and metrics probes need no token; recognized management API routes do.
+Readiness and metrics probes need no token; recognized management API routes do. `oxiroute --help` lists
+the commands with a getting-started section and the exit codes; each command has its own `--help` with
+examples.
 
 ## 4. Make a first change
 

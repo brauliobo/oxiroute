@@ -10,6 +10,7 @@ use super::{
     error::CliError,
     events::EventsCommand,
     generation::GenerationCommand,
+    help,
     import::ImportCommand,
     listener::ListenerCommand,
     man::ManArgs,
@@ -31,6 +32,8 @@ pub(crate) enum Command {
     Serve(ServeArgs),
     #[command(flatten)]
     Process(ProcessCommand),
+    /// Read the management events: generation changes, administrative actions and their outcomes.
+    #[command(after_help = help::EVENTS_EXAMPLES)]
     Events {
         #[command(subcommand)]
         command: EventsCommand,
@@ -51,44 +54,61 @@ pub(crate) enum Command {
     /// sort column, r reverses it, / filters by name, p pauses, j k select, q quits.
     Top(TopArgs),
     /// Inspect the requests currently inside the router.
+    #[command(after_help = help::REQUESTS_EXAMPLES)]
     Requests {
         #[command(subcommand)]
         command: RequestsCommand,
     },
+    /// Inspect and change servers: drain, weight, limits, health, registration.
+    #[command(after_help = help::SERVER_EXAMPLES)]
     Server {
         #[command(subcommand)]
         command: ServerCommand,
     },
+    /// Inspect pools and drain or evacuate all their servers at once.
+    #[command(after_help = help::POOL_EXAMPLES)]
     Pool {
         #[command(subcommand)]
         command: PoolCommand,
     },
+    /// Inspect listeners and stop or resume their new connections.
+    #[command(after_help = help::LISTENER_EXAMPLES)]
     Listener {
         #[command(subcommand)]
         command: ListenerCommand,
     },
+    /// Inspect, reload, roll back and drain configuration generations.
+    #[command(after_help = help::GENERATION_EXAMPLES)]
     Generation {
         #[command(subcommand)]
         command: GenerationCommand,
     },
+    /// Check, compare and apply configurations.
+    #[command(after_help = help::CONFIG_EXAMPLES)]
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect certificates and reload them from disk.
+    #[command(after_help = help::TLS_EXAMPLES)]
     Tls {
         #[command(subcommand)]
         command: TlsCommand,
     },
+    /// Inspect RTMP streams and control their recorders and relays.
+    #[command(after_help = help::RTMP_EXAMPLES)]
     Rtmp {
         #[command(subcommand)]
         command: RtmpCommand,
     },
     /// Manage the runtime server registry.
+    #[command(after_help = help::REGISTRY_EXAMPLES)]
     Registry {
         #[command(subcommand)]
         command: RegistryCommand,
     },
     /// Import a native configuration.
+    #[command(after_help = help::IMPORT_EXAMPLES)]
     Import {
         #[command(subcommand)]
         command: ImportCommand,

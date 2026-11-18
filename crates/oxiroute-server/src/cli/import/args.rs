@@ -8,9 +8,12 @@ use crate::cli::config::ComposeFormat;
 
 #[derive(Subcommand)]
 pub(crate) enum ImportCommand {
+    /// Import an nginx configuration.
     Nginx {
+        /// Main nginx configuration file.
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
+        /// Directory the configuration's absolute paths are resolved under.
         #[arg(long, value_name = "DIRECTORY", default_value = "/")]
         root_prefix: PathBuf,
         /// Preserve native local-time recording suffixes with this IANA timezone.
@@ -45,7 +48,9 @@ pub(crate) enum ImportCommand {
         #[command(flatten)]
         options: ImportOptions,
     },
+    /// Import `haproxy` configuration files.
     Haproxy {
+        /// Configuration files, in the order `haproxy` loads them.
         #[arg(value_name = "CONFIG", required = true)]
         configs: Vec<PathBuf>,
         /// Expand `${NODE_IP}` using this exact host address.
@@ -57,19 +62,25 @@ pub(crate) enum ImportCommand {
         #[command(flatten)]
         options: ImportOptions,
     },
+    /// Import a Squid configuration.
     Squid {
+        /// Squid configuration file.
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
         #[command(flatten)]
         options: ImportOptions,
     },
+    /// Import an Apache httpd configuration.
     Apache {
+        /// Apache configuration file.
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
         #[command(flatten)]
         options: ImportOptions,
     },
+    /// Import a Varnish VCL file.
     Varnish {
+        /// VCL file.
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
         /// Add one exact varnishd argument used to interpret the VCL source.

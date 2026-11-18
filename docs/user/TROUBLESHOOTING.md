@@ -15,6 +15,11 @@ oxiroute --output json topology
 
 | Symptom | Check | Likely meaning |
 | --- | --- | --- |
+| The CLI exits `4` with `cannot connect to ... is the daemon running?` | The `management { bind }` address, `--endpoint` or `OXIROUTE_ENDPOINT` | Nothing listens there: the daemon is down, or the endpoint names another port |
+| The CLI exits `4` with `did not answer within ...` | The daemon's load and logs; `--timeout` | The daemon accepted the connection but did not answer in time (default 10s per answer); raise `--timeout` only after finding why it is slow |
+| `ready --wait` or `generation reload --wait` exits `4` with `did not complete within ...` | The last observation in the message, `generation status`, `events list` | The daemon did not become ready, or the candidate did not become active, within `--timeout` (30s by default) |
+| `requests show ID` exits `6` | `requests list` | The request is no longer in flight; only live requests can be shown |
+| A list command prints nothing and `no <things>` on stderr | The configuration | There are no such entries; the exit code is `0` |
 | `ready` returns nonzero | `/ready`, `status`, generation state | No active non-degraded generation or a traffic listener is not listening |
 | Matched HTTP route returns `503` | Pool availability and endpoint health | The route exists, but no endpoint is selectable |
 | Health remains `unknown` | Probe path, host, timeout, startup policy | Checks have not completed successfully enough to make the endpoint eligible |

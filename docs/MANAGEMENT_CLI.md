@@ -45,11 +45,12 @@ Status meanings:
 | Domain | Operation | Status | Command or reason |
 |---|---|---|---|
 | Process | status | Supported | `oxiroute status` |
-| Process | readiness | Supported | `oxiroute ready` |
+| Process | readiness | Supported | `oxiroute ready [--wait]`; `--wait` keeps asking until the daemon answers, up to `--timeout` (30s by default). |
 | Process | drain admissions | Supported | `oxiroute drain` |
+| Process | completions, manual page | Supported | `oxiroute completions bash|zsh|fish [--name oxr]` and `oxiroute man [--name oxr]`; installed by the packages for `oxiroute` and `oxr`. |
 | Process | graceful shutdown | Supported | `oxiroute shutdown`; authenticated loopback request enters the daemon's existing shutdown path. |
-| Generation | validate/prepare | Supported | `oxiroute config validate FILE`; performs complete runtime preparation without publication. |
-| Generation | reload/activate | Supported | `oxiroute generation reload`; loads and fully prepares persisted canonical config, then queues an opaque candidate. The supervisor publishes it only after the replacement runtime reports ready. |
+| Generation | validate/prepare | Supported | `oxiroute config validate FILE`; FILE is canonical JSON (the `config` of `config get --output json`), not a native file; performs complete runtime preparation without publication. `oxiroute config check FILE` checks a native file offline. |
+| Generation | reload/activate | Supported | `oxiroute generation reload [--wait]`; `--wait` polls `generation status` until the candidate revision is active or the file is refused, up to `--timeout`. Loads and fully prepares persisted canonical config, then queues an opaque candidate. The supervisor publishes it only after the replacement runtime reports ready. |
 | Generation | rollback | Supported | `oxiroute generation rollback`; prepares the retained previous configuration as a new candidate and uses the same readiness-before-publication path. |
 | Generation | drain | Supported | `oxiroute generation drain --timeout-ms N`; stops the active generation from admitting new connections on its traffic listeners and immediately reports the traffic references that remain (`drained` when none do). The management and statistics listeners keep serving, `ready` answers `503` while the generation is drained, and `generation reload` ends the drain by activating a fresh generation. The request does not block a Pingora worker for the timeout. |
 | Generation | status | Supported | `oxiroute generation status` |

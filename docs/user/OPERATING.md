@@ -20,8 +20,11 @@ For the packaged service, the client discovers `/etc/oxiroute/management.token` 
 local token-file error when the selected file is missing or unreadable. The daemon still requires
 the path assignment in `/etc/oxiroute/oxiroute.env` when its management listener is enabled.
 
-`ready` is the cheap admission check. `status` reports build and generation revisions. Use
-`monitoring` for host/process/load and traffic evidence:
+`ready` is the cheap admission check; `ready --wait` blocks until the daemon answers, which suits a deploy
+script that has just started it. `status` reports the build, health, active revision and listeners. Use
+`monitoring` for host/process/load and traffic evidence. Tables are the default output; `--output plain`
+prints one `key=value` record per line for scripts and `--output json` the management API body (see
+[the CLI reference](../reference/CLI.md#output)):
 
 ```sh
 oxiroute --output json monitoring > /tmp/oxiroute-monitoring.json
@@ -84,6 +87,12 @@ HTTP/3, TCP, UDP and RTMP traffic is drain only. The rules, the
 route settings that make a `POST` replayable and the report are in the
 [runbook](RUNBOOK.md#evacuate-a-server).
 
+## Shell Completion And Manual Page
+
+The packages install completions for `oxiroute` and `oxr` and the manual pages (`man oxiroute`). From a
+source build, `source <(oxiroute completions bash)` completes in the current shell and
+`oxiroute man | man -l -` shows the page; `zsh` and `fish` are supported too.
+
 ## Reload And Roll Back
 
 Candidate preparation validates the complete runtime plan before publication. A rejected candidate
@@ -91,11 +100,17 @@ leaves the active generation unchanged. The runtime exposes the distinction betw
 active, previous, and quarantined generations:
 
 ```sh
-oxiroute config validate /etc/oxiroute/oxiroute.kdl
-oxiroute generation reload
+oxiroute config check /etc/oxiroute/oxiroute.kdl
+oxiroute generation reload --wait
 oxiroute generation status
 oxiroute generation rollback
 ```
+
+`config check` reads a native file (kdl, lua, uci, hocon) without a daemon or a token. `config validate FILE`
+is the daemon-side check of a canonical JSON configuration, the document `config get --output json` prints
+under `config`; it does not read native files. `generation reload --wait` returns when the candidate
+revision is active, or fails with the first diagnostic when the file is refused; `--timeout` bounds the
+wait (30s by default).
 
 The file watcher observes rename-based replacements through the parent directory and periodically
 reconciles effective revisions, including strict native references. Use generation status as the

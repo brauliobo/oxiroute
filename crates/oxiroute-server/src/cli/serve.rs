@@ -12,6 +12,7 @@ const DEFAULT_CONFIG: &str = "oxiroute.kdl";
 
 #[derive(Args)]
 pub(crate) struct ServeArgs {
+    /// Configuration file to serve.
     #[arg(value_name = "CONFIG", default_value = DEFAULT_CONFIG)]
     pub(super) config: PathBuf,
 }
