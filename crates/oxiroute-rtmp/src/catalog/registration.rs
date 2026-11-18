@@ -9,6 +9,7 @@ pub struct PublisherRegistration {
     pub(super) recorder_ids: Vec<RecorderId>,
     pub(super) last_observed_at_unix_ms: u64,
     pub(super) active: bool,
+    pub(super) end_reason: PublisherEndReason,
 }
 
 pub(crate) struct PublisherShutdown {
@@ -49,6 +50,10 @@ impl PublisherRegistration {
         self.last_observed_at_unix_ms = self.last_observed_at_unix_ms.max(at_unix_ms);
     }
 
+    pub fn set_end_reason(&mut self, reason: PublisherEndReason) {
+        self.end_reason = reason;
+    }
+
     /// Explicitly releases the registration at the supplied catalog timestamp.
     ///
     /// # Errors
@@ -67,9 +72,12 @@ impl PublisherRegistration {
             return Ok(PublisherShutdown::empty());
         }
         let at_unix_ms = at_unix_ms.max(self.last_observed_at_unix_ms);
-        let shutdown =
-            self.registry
-                .detach_publisher_deferred(self.stream_id, self.session_id, at_unix_ms)?;
+        let shutdown = self.registry.detach_publisher_deferred(
+            self.stream_id,
+            self.session_id,
+            at_unix_ms,
+            self.end_reason,
+        )?;
         self.active = false;
         Ok(shutdown)
     }
@@ -82,11 +90,15 @@ impl PublisherRegistration {
 impl Drop for PublisherRegistration {
     fn drop(&mut self) {
         if self.active {
-            let _ = self.registry.detach_publisher(
-                self.stream_id,
-                self.session_id,
-                self.last_observed_at_unix_ms,
-            );
+            let _ = self
+                .registry
+                .detach_publisher_deferred(
+                    self.stream_id,
+                    self.session_id,
+                    self.last_observed_at_unix_ms,
+                    self.end_reason,
+                )
+                .map(|shutdown| shutdown.shutdown(self.last_observed_at_unix_ms));
         }
     }
 }

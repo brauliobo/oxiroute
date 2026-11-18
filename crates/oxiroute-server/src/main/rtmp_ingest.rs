@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use oxiroute_rtmp::PublisherEndReason;
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -163,9 +164,13 @@ impl ServerApp for RtmpIngest {
 
             loop {
                 let outbound = tokio::select! {
-                    _ = shutdown.changed() => break,
+                    _ = shutdown.changed() => {
+                        session.set_end_reason(PublisherEndReason::Shutdown);
+                        break;
+                    }
                     _ = control_poll.tick() => {
                         if session.take_control_action().is_some() {
+                            session.set_end_reason(PublisherEndReason::Dropped);
                             break;
                         }
                         Vec::new()
@@ -173,11 +178,13 @@ impl ServerApp for RtmpIngest {
                     _ = publisher_liveness.tick() => {
                         let Some(now_unix_ms) = unix_time_ms() else {
                             warn!("closing RTMP session because the system clock is invalid");
+                            session.set_end_reason(PublisherEndReason::Failed);
                             break;
                         };
                         at_unix_ms = now_unix_ms;
                         if session.is_publisher_stale(now_unix_ms) {
                             warn!("closing stale RTMP publisher session after media inactivity");
+                            session.set_end_reason(PublisherEndReason::Stale);
                             break;
                         }
                         Vec::new()
@@ -186,6 +193,7 @@ impl ServerApp for RtmpIngest {
                         match session.drain_playback(MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN) {
                             Ok(outbound) => outbound,
                             Err(error) => {
+                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP playback serialization failed: {error}");
                                 break;
                             }
@@ -196,11 +204,13 @@ impl ServerApp for RtmpIngest {
                             Ok(0) => break,
                             Ok(bytes_read) => bytes_read,
                             Err(error) => {
+                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP transport read failed: {error}");
                                 break;
                             }
                         };
                         let Ok(bytes_received) = u64::try_from(bytes_read) else {
+                            session.set_end_reason(PublisherEndReason::Failed);
                             warn!("RTMP read size exceeds the supported metrics range");
                             break;
                         };
@@ -211,11 +221,13 @@ impl ServerApp for RtmpIngest {
                             .messages_received
                             .saturating_add(1);
                         if let Err(error) = self.metrics.record_bytes_received(bytes_received) {
+                            session.set_end_reason(PublisherEndReason::Failed);
                             warn!("could not account for RTMP ingress: {error}");
                             break;
                         }
                         let Some(now_unix_ms) = unix_time_ms() else {
                             warn!("closing RTMP session because the system clock is invalid");
+                            session.set_end_reason(PublisherEndReason::Failed);
                             break;
                         };
                         at_unix_ms = now_unix_ms;
@@ -257,6 +269,7 @@ impl ServerApp for RtmpIngest {
                                         Some(failure_code),
                                     );
                                 }
+                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP session failed: {error}");
                                 break;
                             }
@@ -303,6 +316,7 @@ impl ServerApp for RtmpIngest {
                             last_failure_code,
                         );
                     }
+                    session.set_end_reason(PublisherEndReason::Failed);
                     warn!("RTMP transport write failed: {error}");
                     break;
                 }

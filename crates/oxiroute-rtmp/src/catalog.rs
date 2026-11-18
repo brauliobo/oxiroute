@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::{Display, Formatter},
     str::FromStr,
     sync::{Arc, Mutex, MutexGuard},
@@ -39,6 +39,8 @@ use registry::*;
 pub use snapshot::*;
 pub use state::*;
 
+pub const MAX_ENDED_STREAMS: usize = 64;
+pub const ENDED_STREAM_WINDOW_MS: u64 = 3_600_000;
 pub const MAX_RTMP_APPLICATION_BYTES: usize = 128;
 pub const MAX_RTMP_STREAM_NAME_BYTES: usize = 512;
 pub const MAX_RTMP_QUERY_BYTES: usize = 1024;

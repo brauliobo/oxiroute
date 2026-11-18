@@ -145,6 +145,9 @@ impl RtmpControlHandle {
             snapshot
                 .streams
                 .retain(|stream| service_ids.contains(&stream.key.server_id));
+            snapshot
+                .ended_streams
+                .retain(|stream| service_ids.contains(&stream.key.server_id));
         }
         Arc::new(snapshot)
     }

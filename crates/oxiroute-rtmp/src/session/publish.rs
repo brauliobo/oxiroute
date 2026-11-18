@@ -7,8 +7,8 @@ use rml_rtmp::{
 };
 
 use crate::{
-    CatalogError, LiveHub, MediaEvent, PublisherLease, PublisherRegistration, RtmpCallbackEvent,
-    RtmpRegistry, SessionId, StreamId, StreamKey,
+    CatalogError, LiveHub, MediaEvent, PublisherEndReason, PublisherLease, PublisherRegistration,
+    RtmpCallbackEvent, RtmpRegistry, SessionId, StreamId, StreamKey,
     auto_push::AutoPushPublisher,
     exec::worker::{ExecProfileSet, ExecWorker},
     media::snapshot::MediaSnapshotAccumulator,
@@ -152,7 +152,11 @@ impl PublishSession {
         }
     }
 
-    pub(super) fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+    pub(super) fn release(
+        &mut self,
+        at_unix_ms: u64,
+        reason: PublisherEndReason,
+    ) -> Result<(), CatalogError> {
         let exec_profiles = self.exec_profiles.take();
         let exec_workers = std::mem::take(&mut self.exec_workers);
         let hub = self.hub.clone();
@@ -163,6 +167,7 @@ impl PublishSession {
                 .take()
                 .map_or(Ok(None), |mut registration| {
                     registration.observe_at(at_unix_ms);
+                    registration.set_end_reason(reason);
                     registration.release_deferred(at_unix_ms).map(Some)
                 });
             self.lease.take();

@@ -1,9 +1,10 @@
 use std::{sync::Arc, thread};
 
 use oxiroute_rtmp::{
-    CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
-    MediaSnapshot, RecorderDefinition, RtmpCapabilities, RtmpRegistry, RtmpStreamPath,
-    RtmpStreamPathError, SessionId, StreamKey, TrackSnapshot,
+    CatalogError, ENDED_STREAM_WINDOW_MS, MAX_ENDED_STREAMS, MAX_RTMP_APPLICATION_BYTES,
+    MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot, PublisherEndReason,
+    RecorderDefinition, RtmpCapabilities, RtmpRegistry, RtmpStreamPath, RtmpStreamPathError,
+    SessionId, StreamId, StreamKey, TrackSnapshot,
 };
 
 #[test]
@@ -142,7 +143,7 @@ fn snapshots_active_streams_without_mutating_prior_revisions() {
             600,
         )
         .expect("replacement stream");
-    assert_ne!(replacement, stream_id);
+    assert_eq!(replacement, stream_id);
 }
 
 #[test]
@@ -169,6 +170,7 @@ fn publishes_absolute_media_samples_and_ignores_stale_sequences() {
             last_observed_at_unix_ms: Some(200),
         },
         video: TrackSnapshot::default(),
+        profile: oxiroute_rtmp::StreamProfile::default(),
         fanout_payload_bytes_queued: 2_048,
     };
 
@@ -349,4 +351,99 @@ fn unmanaged_recorders_are_rejected_regardless_of_advertised_capability() {
         "RTMP recording is unavailable in the active runtime"
     );
     assert!(registry.snapshot().streams.is_empty());
+}
+
+fn publishing_registry() -> RtmpRegistry {
+    RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    })
+}
+
+#[test]
+fn a_departed_publisher_leaves_an_offline_entry_until_the_stream_publishes_again() {
+    let registry = publishing_registry();
+    let key = StreamKey::new("edge", "live", "camera");
+    let publisher = SessionId::new();
+    let stream_id = registry
+        .attach_publisher(key.clone(), publisher, Vec::new(), 1_000)
+        .expect("publisher");
+    registry
+        .update_media_sample(stream_id, publisher, 1, MediaSnapshot::default(), 2_000)
+        .expect("sample");
+    registry
+        .detach_publisher(stream_id, publisher, 3_000)
+        .expect("detach");
+
+    let snapshot = registry.snapshot();
+    assert!(snapshot.streams.is_empty());
+    let [ended] = snapshot.ended_streams.as_slice() else {
+        panic!("one ended stream expected");
+    };
+    assert_eq!(ended.stream_id, stream_id);
+    assert_eq!(ended.key, key);
+    assert_eq!(ended.publisher_session_id, publisher);
+    assert_eq!(ended.published_at_unix_ms, 1_000);
+    assert_eq!(ended.last_seen_at_unix_ms, 2_000);
+    assert_eq!(ended.ended_at_unix_ms, 3_000);
+    assert_eq!(ended.end_reason, PublisherEndReason::Closed);
+
+    registry
+        .attach_publisher(key, SessionId::new(), Vec::new(), 4_000)
+        .expect("republish");
+    assert!(registry.snapshot().ended_streams.is_empty());
+}
+
+#[test]
+fn ended_entries_expire_after_the_window_and_are_capped() {
+    let registry = publishing_registry();
+    let publish_and_end = |name: String, at: u64| {
+        let publisher = SessionId::new();
+        let stream_id = registry
+            .attach_publisher(
+                StreamKey::new("edge", "live", name),
+                publisher,
+                Vec::new(),
+                at,
+            )
+            .expect("publisher");
+        registry
+            .detach_publisher(stream_id, publisher, at + 1)
+            .expect("detach");
+    };
+    publish_and_end("old".to_owned(), 1_000);
+    publish_and_end("fresh".to_owned(), 1_000 + ENDED_STREAM_WINDOW_MS + 10);
+    let names = |registry: &RtmpRegistry| {
+        registry
+            .snapshot()
+            .ended_streams
+            .iter()
+            .map(|stream| stream.key.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&registry), ["fresh"]);
+
+    for index in 0..MAX_ENDED_STREAMS + 5 {
+        publish_and_end(format!("camera-{index}"), 10_000_000 + index as u64);
+    }
+    let kept = names(&registry);
+    assert_eq!(kept.len(), MAX_ENDED_STREAMS);
+    assert_eq!(kept.last().map(String::as_str), Some("camera-68"));
+}
+
+#[test]
+fn a_stream_keeps_its_identifier_across_registries() {
+    let key = StreamKey::new("edge", "live", "camera");
+    let first = publishing_registry()
+        .attach_subscriber(key.clone(), SessionId::new(), 1)
+        .expect("first");
+    let second = publishing_registry()
+        .attach_subscriber(key.clone(), SessionId::new(), 2)
+        .expect("second");
+    assert_eq!(first, second);
+    assert_eq!(first, StreamId::for_key(&key));
+    assert_ne!(
+        first,
+        StreamId::for_key(&StreamKey::new("edge", "live", "other"))
+    );
 }

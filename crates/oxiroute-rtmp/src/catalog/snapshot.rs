@@ -7,6 +7,19 @@ pub struct PublisherSnapshot {
     pub attached_at_unix_ms: u64,
 }
 
+/// Encoder parameters a publisher advertised plus rates and intervals measured on its media.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StreamProfile {
+    pub video_width: Option<u32>,
+    pub video_height: Option<u32>,
+    pub frame_rate_millihertz: Option<u32>,
+    pub video_bitrate_bps: Option<u64>,
+    pub audio_bitrate_bps: Option<u64>,
+    pub keyframe_interval_ms: Option<u32>,
+    pub audio_sample_rate_hz: Option<u32>,
+    pub audio_channels: Option<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TrackSnapshot {
     pub flv_codec_id: Option<u8>,
@@ -20,6 +33,7 @@ pub struct TrackSnapshot {
 pub struct MediaSnapshot {
     pub audio: TrackSnapshot,
     pub video: TrackSnapshot,
+    pub profile: StreamProfile,
     pub fanout_payload_bytes_queued: u64,
 }
 
@@ -129,12 +143,43 @@ pub struct StreamSnapshot {
     pub recorders: Vec<RecorderSnapshot>,
 }
 
+/// Why a publisher left a stream.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PublisherEndReason {
+    /// The publisher closed its connection or unpublished.
+    #[default]
+    Closed,
+    /// An operator dropped the publisher.
+    Dropped,
+    /// The publisher stopped sending media.
+    Stale,
+    /// The runtime was shutting down.
+    Shutdown,
+    /// The session ended on a transport or protocol error.
+    Failed,
+}
+
+/// A stream whose publisher left recently, kept visible as offline for a bounded time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EndedStreamSnapshot {
+    pub stream_id: StreamId,
+    pub key: StreamKey,
+    pub publisher_session_id: SessionId,
+    pub created_at_unix_ms: u64,
+    pub published_at_unix_ms: u64,
+    pub last_seen_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    pub end_reason: PublisherEndReason,
+    pub media: MediaSnapshot,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpCatalogSnapshot {
     pub revision: u64,
     pub as_of_unix_ms: u64,
     pub capabilities: RtmpCapabilities,
     pub streams: Vec<StreamSnapshot>,
+    pub ended_streams: Vec<EndedStreamSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

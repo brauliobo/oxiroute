@@ -1,18 +1,25 @@
+mod profile;
+
+use profile::ProfileAccumulator;
+
 use crate::{MediaEvent, MediaEventKind, MediaSnapshot, TrackSnapshot, VideoCodecIdentifier};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MediaSnapshotAccumulator {
     audio: TrackSnapshot,
     video: TrackSnapshot,
+    profile: ProfileAccumulator,
 }
 
 impl MediaSnapshotAccumulator {
     pub(crate) fn observe(&mut self, event: &MediaEvent, at_unix_ms: u64) {
+        self.profile.observe(event);
         match event.kind() {
             MediaEventKind::Metadata => {
                 let Some(metadata) = event.stream_metadata() else {
                     return;
                 };
+                self.profile.advertise(metadata);
                 self.audio.flv_codec_id = metadata
                     .audio_codec_id
                     .and_then(|codec| u8::try_from(codec).ok());
@@ -41,10 +48,11 @@ impl MediaSnapshotAccumulator {
         }
     }
 
-    pub(crate) const fn snapshot(self, fanout_payload_bytes_queued: u64) -> MediaSnapshot {
+    pub(crate) fn snapshot(self, fanout_payload_bytes_queued: u64) -> MediaSnapshot {
         MediaSnapshot {
             audio: self.audio,
             video: self.video,
+            profile: self.profile.profile(),
             fanout_payload_bytes_queued,
         }
     }

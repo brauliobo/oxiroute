@@ -10,9 +10,9 @@ use rml_rtmp::{
 };
 
 use crate::{
-    CatalogError, LiveHub, RtmpCallbackContext, RtmpCallbackError, RtmpCallbackEvent,
-    RtmpCallbackPolicy, RtmpClientSnapshot, RtmpMessageStreamSnapshot, RtmpRegistry,
-    RtmpSessionControlAction, RtmpSessionRole, SessionId,
+    CatalogError, LiveHub, PublisherEndReason, RtmpCallbackContext, RtmpCallbackError,
+    RtmpCallbackEvent, RtmpCallbackPolicy, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
+    RtmpRegistry, RtmpSessionControlAction, RtmpSessionRole, SessionId,
 };
 
 mod identity;
@@ -58,6 +58,7 @@ pub struct RtmpSession {
     control: Option<Arc<RtmpSessionControl>>,
     last_rejection_code: Option<&'static str>,
     last_callback_update_at_unix_ms: BTreeMap<u32, u64>,
+    end_reason: PublisherEndReason,
 }
 
 impl RtmpSession {
@@ -91,6 +92,7 @@ impl RtmpSession {
             control,
             last_rejection_code: None,
             last_callback_update_at_unix_ms: BTreeMap::new(),
+            end_reason: PublisherEndReason::Closed,
         }
     }
 
@@ -194,6 +196,11 @@ impl RtmpSession {
     /// Returns an error if the catalog no longer contains the role owned by this session.
     pub fn close(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
         self.cleanup(Some(at_unix_ms))
+    }
+
+    /// Records why this connection ends so a publisher role reports it when released.
+    pub const fn set_end_reason(&mut self, reason: PublisherEndReason) {
+        self.end_reason = reason;
     }
 
     fn cleanup(&mut self, at_unix_ms: Option<u64>) -> Result<(), CatalogError> {
@@ -439,7 +446,7 @@ impl RtmpSession {
     fn detach_role(&mut self, stream_id: u32, at_unix_ms: u64) -> Result<(), CatalogError> {
         self.last_callback_update_at_unix_ms.remove(&stream_id);
         let result = self.roles.remove(&stream_id).map_or(Ok(()), |mut role| {
-            let result = role.release(at_unix_ms);
+            let result = role.release(at_unix_ms, PublisherEndReason::Closed);
             self.notify_role_callbacks(&role);
             result
         });
@@ -453,7 +460,7 @@ impl RtmpSession {
         for stream_id in stream_ids {
             self.last_callback_update_at_unix_ms.remove(&stream_id);
             if let Some(mut role) = self.roles.remove(&stream_id) {
-                let result = role.release(at_unix_ms);
+                let result = role.release(at_unix_ms, self.end_reason);
                 self.notify_role_callbacks(&role);
                 if first_error.is_none() {
                     first_error = result.err();
@@ -732,9 +739,9 @@ impl<'a> AdmissionTransaction<'a> {
     }
 
     fn close(&mut self) -> Result<(), CatalogError> {
-        self.role
-            .take()
-            .map_or(Ok(()), |mut role| role.release(self.at_unix_ms))
+        self.role.take().map_or(Ok(()), |mut role| {
+            role.release(self.at_unix_ms, PublisherEndReason::Closed)
+        })
     }
 }
 

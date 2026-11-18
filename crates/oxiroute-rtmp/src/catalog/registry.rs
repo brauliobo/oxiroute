@@ -17,7 +17,9 @@ impl RtmpRegistry {
                     as_of_unix_ms: 0,
                     capabilities,
                     streams: Vec::new(),
+                    ended_streams: Vec::new(),
                 }),
+                ended_streams: VecDeque::new(),
                 snapshot_dirty: false,
                 work_stats: RtmpRegistryWorkStats::default(),
             }),
@@ -139,6 +141,7 @@ impl RtmpRegistry {
             recorder_ids: self.recorder_ids(stream_id, session_id)?,
             last_observed_at_unix_ms: at_unix_ms,
             active: true,
+            end_reason: PublisherEndReason::Closed,
         })
     }
 
@@ -159,6 +162,7 @@ impl RtmpRegistry {
             recorder_ids: self.recorder_ids(stream_id, session_id)?,
             last_observed_at_unix_ms: at_unix_ms,
             active: true,
+            end_reason: PublisherEndReason::Closed,
         })
     }
 
@@ -189,9 +193,9 @@ impl RtmpRegistry {
         let mut inner = self.lock();
         detach_publisher_inner(
             &mut inner,
-            owner.stream_id,
-            owner.session_id,
+            (owner.stream_id, owner.session_id),
             at_unix_ms,
+            PublisherEndReason::Stale,
             self.capabilities,
         )
     }
@@ -259,6 +263,7 @@ impl RtmpRegistry {
         if !inner.admission_open {
             return Err(CatalogError::AdmissionClosed);
         }
+        let ended_key = key.clone();
         let stream_id = ensure_stream(&mut inner, key, at_unix_ms);
         let stream = inner
             .streams
@@ -280,6 +285,7 @@ impl RtmpRegistry {
             attached_at_unix_ms: at_unix_ms,
         });
         stream.publisher_activity_at_unix_ms = at_unix_ms;
+        stream.published_at_unix_ms = at_unix_ms;
         stream.media = MediaSnapshot::default();
         stream.media_sample_sequence = 0;
         stream.relays = relays
@@ -325,6 +331,7 @@ impl RtmpRegistry {
             .collect();
         stream.recorder_order = recorder_order;
         stream.revision = stream.revision.saturating_add(1);
+        inner.ended_streams.retain(|entry| entry.key != ended_key);
         mark_mutation(&mut inner, at_unix_ms);
         publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(stream_id)
@@ -408,8 +415,13 @@ impl RtmpRegistry {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<(), CatalogError> {
-        self.detach_publisher_deferred(stream_id, session_id, at_unix_ms)?
-            .shutdown(at_unix_ms);
+        self.detach_publisher_deferred(
+            stream_id,
+            session_id,
+            at_unix_ms,
+            PublisherEndReason::Closed,
+        )?
+        .shutdown(at_unix_ms);
         Ok(())
     }
 
@@ -418,13 +430,14 @@ impl RtmpRegistry {
         stream_id: StreamId,
         session_id: SessionId,
         at_unix_ms: u64,
+        reason: PublisherEndReason,
     ) -> Result<PublisherShutdown, CatalogError> {
         let mut inner = self.lock();
         detach_publisher_inner(
             &mut inner,
-            stream_id,
-            session_id,
+            (stream_id, session_id),
             at_unix_ms,
+            reason,
             self.capabilities,
         )
     }
@@ -476,12 +489,12 @@ impl RtmpRegistry {
 
 fn detach_publisher_inner(
     inner: &mut RegistryInner,
-    stream_id: StreamId,
-    session_id: SessionId,
+    (stream_id, session_id): (StreamId, SessionId),
     at_unix_ms: u64,
+    reason: PublisherEndReason,
     capabilities: RtmpCapabilities,
 ) -> Result<PublisherShutdown, CatalogError> {
-    let (remove, recorder_controls, relay_controls) = {
+    let (remove, recorder_controls, relay_controls, ended) = {
         let stream = inner
             .streams
             .get_mut(&stream_id)
@@ -492,6 +505,19 @@ fn detach_publisher_inner(
                 session_id,
             });
         }
+        let ended = EndedStreamSnapshot {
+            stream_id,
+            key: stream.key.clone(),
+            publisher_session_id: session_id,
+            created_at_unix_ms: stream.created_at_unix_ms,
+            published_at_unix_ms: stream.published_at_unix_ms,
+            last_seen_at_unix_ms: stream
+                .publisher_activity_at_unix_ms
+                .max(stream.published_at_unix_ms),
+            ended_at_unix_ms: at_unix_ms,
+            end_reason: reason,
+            media: stream.media,
+        };
         stream.publisher = None;
         stream.publisher_activity_at_unix_ms = 0;
         stream.media = MediaSnapshot::default();
@@ -513,8 +539,10 @@ fn detach_publisher_inner(
             stream.subscribers.is_empty(),
             recorder_controls,
             relay_controls,
+            ended,
         )
     };
+    record_ended_stream(inner, ended);
     if remove {
         remove_stream(inner, stream_id);
     }
@@ -524,6 +552,19 @@ fn detach_publisher_inner(
         recorder_controls,
         relay_controls,
     })
+}
+
+fn record_ended_stream(inner: &mut RegistryInner, ended: EndedStreamSnapshot) {
+    let cutoff = ended
+        .ended_at_unix_ms
+        .saturating_sub(ENDED_STREAM_WINDOW_MS);
+    inner
+        .ended_streams
+        .retain(|entry| entry.key != ended.key && entry.ended_at_unix_ms >= cutoff);
+    inner.ended_streams.push_back(ended);
+    while inner.ended_streams.len() > MAX_ENDED_STREAMS {
+        inner.ended_streams.pop_front();
+    }
 }
 
 fn ensure_stream(inner: &mut RegistryInner, key: StreamKey, at_unix_ms: u64) -> StreamId {
@@ -570,6 +611,7 @@ pub(super) fn publish_snapshot_if_dirty(inner: &mut RegistryInner, capabilities:
         as_of_unix_ms: inner.as_of_unix_ms,
         capabilities,
         streams,
+        ended_streams: inner.ended_streams.iter().cloned().collect(),
     });
     inner.snapshot_dirty = false;
 }

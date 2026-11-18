@@ -234,6 +234,12 @@ observations, byte and fanout totals, recorder phase, relative current/completed
 segment counters, discontinuities, relay state, and bounded client `messageStreams` snapshots. They
 do not expose recording roots, stream query arguments, or private material.
 
+A stream whose publisher left stays listed as `offline` in `recently_ended_streams` for one hour (at
+most 64 streams, cleared on restart), with `last_seen_at_unix_ms` and an `end_reason` (`closed`,
+`dropped`, `stale`, `shutdown`, `failed`). `media.profile` shows resolution, frame rate, bitrates,
+keyframe interval and audio format, and `subscriber_count` shows the viewers. Stream ids stay the
+same across reconnects and restarts.
+
 The dashboard disables manual controls when there is no publisher, no manual recorder, a transition
 is in progress, or an observed codec is not recordable.
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rml_rtmp::sessions::StreamMetadata;
 
 use super::*;
+use crate::StreamProfile;
 
 #[test]
 fn identical_traces_produce_identical_controlled_observations() {
@@ -40,6 +41,7 @@ fn identical_traces_produce_identical_controlled_observations() {
             last_rtmp_timestamp_ms: Some(25),
             last_observed_at_unix_ms: Some(150),
         },
+        profile: StreamProfile::default(),
         fanout_payload_bytes_queued: 77,
     };
     assert_eq!(first, second);
@@ -80,6 +82,7 @@ fn payload_byte_totals_saturate() {
             payload_bytes_received: u64::MAX - 1,
             ..TrackSnapshot::default()
         },
+        profile: ProfileAccumulator::default(),
     };
 
     accumulator.observe(&audio(1, &[0xaf, 1, 1]), 2);
@@ -88,6 +91,59 @@ fn payload_byte_totals_saturate() {
     let snapshot = accumulator.snapshot(0);
     assert_eq!(snapshot.audio.payload_bytes_received, u64::MAX);
     assert_eq!(snapshot.video.payload_bytes_received, u64::MAX);
+}
+
+#[test]
+fn advertised_parameters_fill_the_profile_until_media_measures_them() {
+    let mut metadata = StreamMetadata::new();
+    metadata.video_width = Some(1280);
+    metadata.video_height = Some(720);
+    metadata.video_frame_rate = Some(30.0);
+    metadata.video_bitrate_kbps = Some(2_500);
+    metadata.audio_bitrate_kbps = Some(128);
+    metadata.audio_sample_rate = Some(44_100);
+    metadata.audio_channels = Some(2);
+    let mut accumulator = MediaSnapshotAccumulator::default();
+    accumulator.observe(&MediaEvent::metadata(metadata).expect("metadata"), 10);
+
+    assert_eq!(
+        accumulator.snapshot(0).profile,
+        StreamProfile {
+            video_width: Some(1280),
+            video_height: Some(720),
+            frame_rate_millihertz: Some(30_000),
+            video_bitrate_bps: Some(2_500_000),
+            audio_bitrate_bps: Some(128_000),
+            keyframe_interval_ms: None,
+            audio_sample_rate_hz: Some(44_100),
+            audio_channels: Some(2),
+        }
+    );
+}
+
+#[test]
+fn media_measures_frame_rate_bitrate_gop_and_aac_parameters() {
+    let mut accumulator = MediaSnapshotAccumulator::default();
+    accumulator.observe(&audio(0, &[0xaf, 0x00, 0x12, 0x10]), 1);
+    let keyframe = [&[0x17, 1, 0, 0, 0][..], &[0; 995]].concat();
+    let interframe = [&[0x27, 1, 0, 0, 0][..], &[0; 495]].concat();
+    for index in 0..=60_u32 {
+        let payload = if index % 30 == 0 {
+            &keyframe
+        } else {
+            &interframe
+        };
+        accumulator.observe(&video(index * 50, payload), 10 + u64::from(index));
+    }
+
+    let profile = accumulator.snapshot(0).profile;
+
+    assert_eq!(profile.audio_sample_rate_hz, Some(44_100));
+    assert_eq!(profile.audio_channels, Some(2));
+    assert_eq!(profile.keyframe_interval_ms, Some(1_500));
+    assert_eq!(profile.frame_rate_millihertz, Some(20_000));
+    assert_eq!(profile.video_bitrate_bps, Some(85_333));
+    assert_eq!(profile.video_width, None);
 }
 
 fn audio(timestamp_ms: u32, payload: &[u8]) -> MediaEvent {

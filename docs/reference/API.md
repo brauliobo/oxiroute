@@ -82,6 +82,58 @@ revision returns `409` and does not perform a last-writer-wins write.
   the 64-byte safe-character bound, otherwise the service generates one.
 - A `503` sampling or canonical-state error is not replaced with fabricated zeroes.
 
+## RTMP Stream Catalog
+
+`GET /api/v1/rtmp/streams` returns `streams` (streams that currently have a publisher, a viewer, or a
+recorder) and `recently_ended_streams` (streams whose publisher left within the last hour, at most 64,
+newest last). `GET /api/v1/rtmp/streams/{streamId}` returns one entry of `streams`.
+
+A stream `id` is derived from the service id, application and stream name, so it is the same after a
+reconnect or a restart. `subscriber_count` is the number of viewers.
+
+Every `streams` entry carries `state` (`live` with a publisher, `idle` without one) and
+`media.profile`:
+
+```json
+{
+  "state": "live",
+  "subscriber_count": 3,
+  "media": {
+    "profile": {
+      "video_width": 1280,
+      "video_height": 720,
+      "frame_rate_millihertz": 30000,
+      "video_bitrate_bps": 2500000,
+      "audio_bitrate_bps": 128000,
+      "keyframe_interval_ms": 2000,
+      "audio_sample_rate_hz": 44100,
+      "audio_channels": 2
+    }
+  }
+}
+```
+
+Width and height come from the publisher's metadata. Frame rate and bitrates are measured over the
+publisher's media once at least one second has been seen and fall back to the advertised values before
+that. `keyframe_interval_ms` is the latest measured distance between keyframes. Sample rate and
+channels come from the AAC configuration, else from metadata. A value that is not known is `null`.
+Codecs are in `media.audio` and `media.video`.
+
+A `recently_ended_streams` entry has `state: "offline"`, `id`, `server_id`, `application`, `name`,
+`publisher_session_id`, `created_at_unix_ms`, `published_at_unix_ms`, `last_seen_at_unix_ms` (latest
+media or metadata), `ended_at_unix_ms`, `media` as above (final values), and `end_reason`:
+
+| `end_reason` | Meaning |
+| --- | --- |
+| `closed` | the publisher unpublished or closed its connection |
+| `dropped` | an operator dropped the session |
+| `stale` | the publisher stopped sending media |
+| `shutdown` | the runtime was stopping |
+| `failed` | a transport, protocol or runtime error ended the session |
+
+The ended list is memory-only: it is empty after a restart, and an entry disappears when the stream
+publishes again.
+
 ## RTMP Recordings
 
 The recording inventory covers every recorder `root_directory` of the active generation. A recording

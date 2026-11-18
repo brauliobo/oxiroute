@@ -1,15 +1,20 @@
 use oxiroute_rtmp::{
-    RecorderPhase, RecorderSnapshot, RelaySnapshot, RtmpCatalogSnapshot, RtmpClientSnapshot,
-    StreamSnapshot, TrackSnapshot, VideoCodecIdentifier,
+    MediaSnapshot, RecorderPhase, RecorderSnapshot, RelaySnapshot, RtmpCatalogSnapshot,
+    RtmpClientSnapshot, StreamSnapshot, TrackSnapshot, VideoCodecIdentifier,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::DecimalCounter;
+use ended::RtmpProfileDto;
+
+mod ended;
+
 use crate::rtmp::api::wire::{
     RecorderErrorCodeDto, RecorderNotificationDto, RelayDnsRefreshFailureDto, RelayFailureDto,
     RelayPhaseDto, RtmpSessionControlActionDto, RtmpSessionControlOutcomeDto, RtmpSessionRoleDto,
 };
+pub(crate) use ended::RtmpEndedStreamResponse;
 
 #[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -242,6 +247,7 @@ pub(crate) struct RtmpCatalogResponse {
     as_of_unix_ms: u64,
     capabilities: RtmpCapabilitiesDto,
     streams: Vec<RtmpStreamResponse>,
+    recently_ended_streams: Vec<RtmpEndedStreamResponse>,
 }
 
 impl RtmpCatalogResponse {
@@ -254,6 +260,7 @@ impl RtmpCatalogResponse {
                 manual_recording: snapshot.capabilities.manual_recording,
             },
             streams: snapshot.streams.iter().map(Into::into).collect(),
+            recently_ended_streams: snapshot.ended_streams.iter().map(Into::into).collect(),
         }
     }
 }
@@ -271,6 +278,7 @@ pub(crate) struct RtmpStreamResponse {
     server_id: String,
     application: String,
     name: String,
+    state: &'static str,
     created_at_unix_ms: u64,
     publisher: Option<RtmpPublisherDto>,
     subscriber_count: usize,
@@ -289,17 +297,18 @@ impl From<&StreamSnapshot> for RtmpStreamResponse {
             server_id: stream.key.server_id.clone(),
             application: stream.key.application.clone(),
             name: stream.key.name.clone(),
+            state: if stream.publisher.is_some() {
+                "live"
+            } else {
+                "idle"
+            },
             created_at_unix_ms: stream.created_at_unix_ms,
             publisher: stream.publisher.map(|publisher| RtmpPublisherDto {
                 session_id: publisher.session_id.to_string(),
                 attached_at_unix_ms: publisher.attached_at_unix_ms,
             }),
             subscriber_count: stream.subscriber_count,
-            media: RtmpMediaDto {
-                audio: (&stream.media.audio).into(),
-                video: (&stream.media.video).into(),
-                fanout_payload_bytes: stream.media.fanout_payload_bytes_queued.into(),
-            },
+            media: (&stream.media).into(),
             relays: stream.relays.iter().map(Into::into).collect(),
             recording_supported: !stream.recorders.is_empty(),
             manual_recording: stream.recorders.iter().any(|recorder| recorder.manual),
@@ -318,7 +327,19 @@ struct RtmpPublisherDto {
 struct RtmpMediaDto {
     audio: RtmpTrackDto,
     video: RtmpTrackDto,
+    profile: RtmpProfileDto,
     fanout_payload_bytes: DecimalCounter,
+}
+
+impl From<&MediaSnapshot> for RtmpMediaDto {
+    fn from(media: &MediaSnapshot) -> Self {
+        Self {
+            audio: (&media.audio).into(),
+            video: (&media.video).into(),
+            profile: (&media.profile).into(),
+            fanout_payload_bytes: media.fanout_payload_bytes_queued.into(),
+        }
+    }
 }
 
 #[derive(JsonSchema, Serialize)]

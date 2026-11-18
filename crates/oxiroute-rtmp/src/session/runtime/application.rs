@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::PublisherEndReason;
 
 #[derive(Clone)]
 pub struct RtmpApplication {
@@ -326,9 +327,13 @@ impl SessionRole {
         }
     }
 
-    pub(in super::super) fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+    pub(in super::super) fn release(
+        &mut self,
+        at_unix_ms: u64,
+        reason: PublisherEndReason,
+    ) -> Result<(), CatalogError> {
         match self {
-            Self::Publisher(publisher) => publisher.release(at_unix_ms),
+            Self::Publisher(publisher) => publisher.release(at_unix_ms, reason),
             Self::Playback(playback) => playback.release(at_unix_ms),
             Self::VodPlayback(playback) => {
                 playback.release();

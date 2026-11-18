@@ -288,6 +288,14 @@ The bearer-authenticated management service exposes these bounded RTMP views:
 | `/api/v1/rtmp/clients/<session-id>/publisher/drop` | `POST` | drop only a publisher session |
 | `/api/v1/rtmp/clients/<session-id>/subscriber/drop` | `POST` | drop only a subscriber session |
 
+`GET /api/v1/rtmp/streams` additionally lists `recently_ended_streams`: streams whose publisher left
+within one hour (at most 64, memory-only), each `state: "offline"` with `last_seen_at_unix_ms`,
+`ended_at_unix_ms`, the final `media` and an `end_reason` of `closed`, `dropped`, `stale`, `shutdown`
+or `failed`. Stream ids are derived from service, application and name, so they are stable across
+reconnects and restarts. `media.profile` exposes width, height, frame rate, video and audio bitrate,
+keyframe interval, sample rate and channels; frame rate and bitrates are measured from media after one
+second and fall back to publisher metadata.
+
 Client responses include a bounded `messageStreams` array. Each entry contains the RTMP message-stream
 ID, application, stream name without query arguments, and `publisher` or `subscriber` role. A client
 may own at most eight message streams; one ID may have only one role, and duplicate, conflicting, or

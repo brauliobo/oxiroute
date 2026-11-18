@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, str::FromStr};
 
 use oxiroute_rtmp::{
-    MediaSnapshot, RtmpCapabilities, RtmpCatalogSnapshot, RtmpSessionControlAction,
-    RtmpSessionRole, SessionId, StreamId, StreamKey, StreamSnapshot, TrackSnapshot,
+    EndedStreamSnapshot, MediaSnapshot, PublisherEndReason, RtmpCapabilities, RtmpCatalogSnapshot,
+    RtmpSessionControlAction, RtmpSessionRole, SessionId, StreamId, StreamKey, StreamProfile,
+    StreamSnapshot, TrackSnapshot,
 };
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
@@ -23,6 +24,7 @@ fn empty_catalog() -> RtmpCatalogSnapshot {
             manual_recording: false,
         },
         streams: Vec::new(),
+        ended_streams: Vec::new(),
     }
 }
 
@@ -57,6 +59,7 @@ fn empty_stats_and_catalog_match_the_existing_v1_golden_objects() {
             "as_of_unix_ms": 1_750_000_000_000_u64,
             "capabilities": { "live_ingest": true, "manual_recording": false },
             "streams": [],
+            "recently_ended_streams": [],
         })
     );
 }
@@ -121,6 +124,7 @@ fn stats_and_catalog_preserve_maximum_cumulative_counters_as_decimal_strings() {
                 ..TrackSnapshot::default()
             },
             video: TrackSnapshot::default(),
+            profile: StreamProfile::default(),
             fanout_payload_bytes_queued: u64::MAX,
         },
         relays: Vec::new(),
@@ -204,4 +208,43 @@ fn rtmp_schemas_own_the_expected_nested_sections_and_exclude_secret_fields() {
     for forbidden in ["token", "password", "secret", "authorization", "privatekey"] {
         assert!(!schemas.contains(forbidden), "schema exposed {forbidden}");
     }
+}
+
+#[test]
+fn recently_ended_streams_are_offline_with_last_seen_end_reason_and_profile() {
+    let mut catalog = empty_catalog();
+    catalog.ended_streams.push(EndedStreamSnapshot {
+        stream_id: StreamId::from_str("2a130dea-5db7-43e0-afb8-f07c4bcb1814")
+            .expect("fixed stream ID"),
+        key: StreamKey::new("edge", "live", "camera"),
+        publisher_session_id: SessionId::from_str("5b9c6a52-4f55-4d62-9d4c-3a1f7a4e5c10")
+            .expect("fixed session ID"),
+        created_at_unix_ms: 1_000,
+        published_at_unix_ms: 2_000,
+        last_seen_at_unix_ms: 9_000,
+        ended_at_unix_ms: 9_500,
+        end_reason: PublisherEndReason::Stale,
+        media: MediaSnapshot {
+            profile: StreamProfile {
+                video_width: Some(1280),
+                video_height: Some(720),
+                frame_rate_millihertz: Some(30_000),
+                keyframe_interval_ms: Some(2_000),
+                ..StreamProfile::default()
+            },
+            ..MediaSnapshot::default()
+        },
+    });
+
+    let catalog =
+        serde_json::to_value(RtmpCatalogResponse::project(&catalog)).expect("catalog JSON");
+    let ended = &catalog["recently_ended_streams"][0];
+
+    assert_eq!(ended["state"], "offline");
+    assert_eq!(ended["last_seen_at_unix_ms"], 9_000);
+    assert_eq!(ended["ended_at_unix_ms"], 9_500);
+    assert_eq!(ended["end_reason"], "stale");
+    assert_eq!(ended["media"]["profile"]["video_width"], 1280);
+    assert_eq!(ended["media"]["profile"]["frame_rate_millihertz"], 30_000);
+    assert_eq!(ended["media"]["profile"]["keyframe_interval_ms"], 2_000);
 }

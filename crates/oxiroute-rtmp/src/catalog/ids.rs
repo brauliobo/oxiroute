@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use sha2::{Digest, Sha256};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -39,6 +40,22 @@ id_type!(StreamId);
 id_type!(RecorderId);
 id_type!(RelayId);
 id_type!(OperationId);
+
+impl StreamId {
+    /// Derives the identifier of the stream a key names, so it survives restarts and reconnects.
+    #[must_use]
+    pub fn for_key(key: &StreamKey) -> Self {
+        let mut hasher = Sha256::new();
+        for part in [&key.server_id, &key.application, &key.name] {
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
+        let digest = hasher.finalize();
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        Self(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RtmpCapabilities {
