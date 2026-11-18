@@ -1335,6 +1335,35 @@
         ],
         "type": "object"
       },
+      "RuntimeWorkers": {
+        "properties": {
+          "active": {
+            "description": "Workers that currently take new connections.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "relocations": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Connections moved between workers since the start."
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "workers": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runtime",
+          "workers",
+          "active",
+          "relocations"
+        ],
+        "type": "object"
+      },
       "Selector": {
         "properties": {
           "kind": {
@@ -1562,6 +1591,9 @@
               "$ref": "#/components/schemas/WarningStats"
             },
             "type": "array"
+          },
+          "workers": {
+            "$ref": "#/components/schemas/WorkerStats"
           }
         },
         "required": [
@@ -1571,6 +1603,7 @@
           "intervalHintMs",
           "process",
           "generation",
+          "workers",
           "bucketBoundsMs",
           "listeners",
           "routes",
@@ -1679,6 +1712,33 @@
         "required": [
           "code",
           "message"
+        ],
+        "type": "object"
+      },
+      "WorkerScaling": {
+        "enum": [
+          "static",
+          "dynamic"
+        ],
+        "type": "string"
+      },
+      "WorkerStats": {
+        "description": "How the listener runtimes place connections on their workers.",
+        "properties": {
+          "runtimes": {
+            "description": "The listener runtimes that scale their workers; empty with `static` scaling. The proxy keeps no\nper-worker load counter.",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeWorkers"
+            },
+            "type": "array"
+          },
+          "scaling": {
+            "$ref": "#/components/schemas/WorkerScaling"
+          }
+        },
+        "required": [
+          "scaling",
+          "runtimes"
         ],
         "type": "object"
       }

@@ -455,3 +455,26 @@ fn a_configuration_at_the_server_limit_gives_a_bounded_snapshot_quickly() {
         started.elapsed()
     );
 }
+
+#[test]
+fn a_configuration_without_worker_scaling_reports_static_workers() {
+    let (_fixture, snapshot) = snapshot();
+    assert_eq!(snapshot.workers.scaling, WorkerScaling::Static);
+    assert!(snapshot.workers.runtimes.is_empty());
+    assert_eq!(
+        json_of(&snapshot)["workers"],
+        json!({"scaling": "static", "runtimes": []})
+    );
+}
+
+#[test]
+fn the_snapshot_document_reads_back_into_the_snapshot_it_was_written_from() {
+    let (_fixture, snapshot) = snapshot();
+    let document = serde_json::to_vec(&StatsDocument {
+        admin: true,
+        snapshot: &snapshot,
+    })
+    .expect("json");
+    let read: StatsSnapshot = serde_json::from_slice(&document).expect("document reads back");
+    assert_eq!(json_of(&read), json_of(&snapshot));
+}

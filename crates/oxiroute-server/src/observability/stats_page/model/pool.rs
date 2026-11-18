@@ -1,12 +1,12 @@
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     AdministrativeState, CanaryResult, Counter, HealthFailure, HealthOverride, HealthState,
     Histogram, PoolStatus, ServerOrigin, ServerStatus,
 };
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PoolStats {
     pub(crate) name: String,
@@ -31,7 +31,7 @@ pub(crate) struct PoolStats {
 
 /// Requests waiting for server capacity. The proxy bounds the wait by time (`timeoutMs`), not by depth,
 /// so there is no queue capacity.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueueStats {
     pub(crate) current: u64,
@@ -50,20 +50,20 @@ pub(crate) struct QueueStats {
     pub(crate) wait: Histogram,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 pub(crate) struct ClassCount {
     pub(crate) class: String,
     pub(crate) count: u64,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InflightStats {
     pub(crate) requests: u64,
     pub(crate) oldest_age_ms: u64,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LatencyStats {
     /// Until the response finished.
@@ -73,7 +73,7 @@ pub(crate) struct LatencyStats {
 }
 
 /// What the proxy counted for a server, or for a whole pool as the sum over its servers.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TrafficStats {
     pub(crate) sessions: SessionStats,
@@ -86,7 +86,7 @@ pub(crate) struct TrafficStats {
     pub(crate) evacuated: EvacuationStats,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionStats {
     pub(crate) current: u64,
@@ -95,7 +95,7 @@ pub(crate) struct SessionStats {
 }
 
 /// Responses by status class; `none` counts attempts that ended without a response.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 pub(crate) struct ResponseStats {
     #[serde(rename = "1xx")]
     pub(crate) c1xx: Counter,
@@ -110,7 +110,7 @@ pub(crate) struct ResponseStats {
     pub(crate) none: Counter,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AttemptStats {
     pub(crate) ok: Counter,
@@ -125,7 +125,7 @@ pub(crate) struct AttemptStats {
 }
 
 /// What an evacuation did to the requests of a server.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EvacuationStats {
     pub(crate) redispatched: Counter,
@@ -134,7 +134,7 @@ pub(crate) struct EvacuationStats {
     pub(crate) failed: Counter,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CanaryStats {
     /// Absent until the first run that was not skipped for capacity.
@@ -153,7 +153,7 @@ pub(crate) struct CanaryStats {
     pub(crate) interval_ms: u64,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerStats {
     pub(crate) name: String,
@@ -184,7 +184,7 @@ pub(crate) struct ServerStats {
 }
 
 /// Active health checks. The proxy does not record how long a check took.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CheckStats {
     pub(crate) enabled: bool,
@@ -200,7 +200,7 @@ pub(crate) struct CheckStats {
 }
 
 /// Ejections driven by what real requests experienced.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PassiveStats {
     pub(crate) ejected: bool,

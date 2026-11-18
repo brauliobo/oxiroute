@@ -19,6 +19,7 @@ mod listeners;
 pub(super) mod pools;
 mod routes;
 mod traffic;
+mod workers;
 
 /// The page cannot show anything until a generation is active and the runtime can be sampled.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +48,7 @@ pub(crate) fn build_snapshot(
         interval_hint_ms: refresh_ms.max(MIN_INTERVAL_MS),
         process: process(&runtime, &inflight),
         generation: generation_stats(&runtime, &status),
+        workers: workers::workers(config),
         bucket_bounds_ms: BucketBounds {
             operation: OPERATION_LATENCY_BUCKETS_MS.to_vec(),
             queue_wait: QUEUE_WAIT_BUCKETS_MS.to_vec(),

@@ -523,6 +523,7 @@ HAProxy-style export and `GET <prefix>` the table that needs no script. The cont
 | --- | --- |
 | `process` | version, uptime, state, CPU, memory, threads, descriptors, connections (active, max, accepted, rejected), bytes in/out, retries, upstream in-flight (count, oldest, overdue, stuck), `host` load and memory |
 | `generation` | number, age, accepting, degraded, active/candidate/previous/disk/quarantined revision, last failure and rejection, counters, `retired` generations still draining |
+| `workers` | `scaling` (`static`, `dynamic`) and, with `dynamic`, `runtimes[]`: runtime name, workers, active workers, connection relocations. The proxy keeps no per-worker load counter |
 | `listeners[]` | name, protocol, bind, service, TLS profile, relay pool, state, administrative state, connections (active, max, accepted, rejected), bytes in/out, `http` outcomes and latency, `tcpRelays`, `proxyProtocol`, `cache` |
 | `routes[]` | id, service, index, listeners, host and path selectors, methods, action, pool, status, max retries, `rescues`, `poolSelections` |
 | `pools[]` | name, algorithm, `status` (`up`, `degraded`, `down`, `empty`), available/total servers, selections, `queue` (current, per class, oldest wait, totals, timeout, wait histogram), `inflight`, summed `traffic` and `latency`, `canary`, `servers[]` |

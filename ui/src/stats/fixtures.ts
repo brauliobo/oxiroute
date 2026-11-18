@@ -189,6 +189,7 @@ export function wireDocument(overrides: Partial<StatsDocument> = {}): StatsDocum
       maxRetiredGenerations: 4,
       retired: [],
     },
+    workers: { scaling: 'static', runtimes: [] },
     listeners: [wireListener('public-http')],
     routes: [{
       id: 'site#0',

@@ -1,12 +1,12 @@
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     AdministrativeState, Counter, Histogram, HttpOutcome, ListenerState, ProxyProtocolOutcome,
     TcpRelayOutcome,
 };
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListenerStats {
     pub(crate) name: String,
@@ -43,7 +43,7 @@ pub(crate) struct ListenerStats {
     pub(crate) cache: Option<CacheStats>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "{T}Count")]
 pub(crate) struct OutcomeCount<T> {
@@ -53,7 +53,7 @@ pub(crate) struct OutcomeCount<T> {
 
 /// Finished HTTP operations by outcome; absent until the listener has finished one. The proxy keeps no
 /// per-listener status-class counters.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HttpStats {
     pub(crate) outcomes: Vec<OutcomeCount<HttpOutcome>>,
@@ -62,7 +62,7 @@ pub(crate) struct HttpStats {
     pub(crate) latency: Histogram,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TcpRelayStats {
     pub(crate) outcomes: Vec<OutcomeCount<TcpRelayOutcome>>,
@@ -70,13 +70,13 @@ pub(crate) struct TcpRelayStats {
     pub(crate) latency: Histogram,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyProtocolStats {
     pub(crate) outcomes: Vec<OutcomeCount<ProxyProtocolOutcome>>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheStats {
     pub(crate) hits: Counter,

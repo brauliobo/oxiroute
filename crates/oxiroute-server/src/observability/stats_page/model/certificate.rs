@@ -1,9 +1,9 @@
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{CertbotWatcherHealth, CertificateSource, Counter};
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CertificateStats {
     pub(crate) name: String,
@@ -22,7 +22,7 @@ pub(crate) struct CertificateStats {
     pub(crate) last_error_code: Option<String>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CertificateWatcherStats {
     pub(crate) source: CertificateSource,

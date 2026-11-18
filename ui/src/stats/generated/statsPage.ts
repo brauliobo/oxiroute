@@ -332,6 +332,13 @@ export interface RouteStats {
   status?: number
 }
 
+export interface RuntimeWorkers {
+  active: number
+  relocations: DecimalCounter
+  runtime: string
+  workers: number
+}
+
 export interface Selector {
   kind: SelectorKind
   value: string
@@ -383,6 +390,7 @@ export interface StatsDocument {
   sampledAtUnixMs: number
   schemaVersion: number
   warnings: Array<WarningStats>
+  workers: WorkerStats
 }
 
 export type TcpRelayOutcome = "success" | "connect_error" | "connect_timeout" | "idle_timeout" | "lifetime_timeout" | "cancelled" | "io_error" | "accounting_error" | "proxy_protocol_error"
@@ -410,6 +418,13 @@ export interface TrafficStats {
 export interface WarningStats {
   code: string
   message: string
+}
+
+export type WorkerScaling = "static" | "dynamic"
+
+export interface WorkerStats {
+  runtimes: Array<RuntimeWorkers>
+  scaling: WorkerScaling
 }
 
 export interface StatsPageResponses {
@@ -443,10 +458,12 @@ export const statsPageCounterShape: Readonly<Record<string, Readonly<Record<stri
   RescueCount: { count: 'c' },
   ResponseStats: { "1xx": 'c', "2xx": 'c', "3xx": 'c', "4xx": 'c', "5xx": 'c', none: 'c' },
   RouteStats: { poolSelections: 'PoolSelectionCount[]', rescues: 'RescueCount[]' },
+  RuntimeWorkers: { relocations: 'c' },
   ServerStats: { check: 'CheckStats', latency: 'LatencyStats', passive: 'PassiveStats', traffic: 'TrafficStats' },
   SessionStats: { total: 'c' },
-  StatsDocument: { certificateWatchers: 'CertificateWatcherStats[]', generation: 'GenerationStats', listeners: 'ListenerStats[]', pools: 'PoolStats[]', process: 'ProcessStats', routes: 'RouteStats[]' },
+  StatsDocument: { certificateWatchers: 'CertificateWatcherStats[]', generation: 'GenerationStats', listeners: 'ListenerStats[]', pools: 'PoolStats[]', process: 'ProcessStats', routes: 'RouteStats[]', workers: 'WorkerStats' },
   TcpRelayOutcomeCount: { count: 'c' },
   TcpRelayStats: { latency: 'Histogram', outcomes: 'TcpRelayOutcomeCount[]', total: 'c' },
   TrafficStats: { attempts: 'AttemptStats', bytesReceived: 'c', bytesSent: 'c', evacuated: 'EvacuationStats', responses: 'ResponseStats', sessions: 'SessionStats' },
+  WorkerStats: { runtimes: 'RuntimeWorkers[]' },
 }

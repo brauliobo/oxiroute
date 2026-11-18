@@ -1,11 +1,11 @@
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Counter, RouteAction, SelectorKind};
 
 /// A configured HTTP route. The proxy keeps no per-route request counters, so a route carries
 /// configuration plus the two counters it does keep (`rescues`, `poolSelections`).
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RouteStats {
     /// `<service>#<index>`: stable while the configuration keeps the route in place.
@@ -39,20 +39,20 @@ pub(crate) struct RouteStats {
     pub(crate) pool_selections: Option<Vec<PoolSelectionCount>>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 pub(crate) struct Selector {
     pub(crate) kind: SelectorKind,
     pub(crate) value: String,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RescueCount {
     pub(crate) status: u16,
     pub(crate) count: Counter,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PoolSelectionCount {
     pub(crate) pool: String,

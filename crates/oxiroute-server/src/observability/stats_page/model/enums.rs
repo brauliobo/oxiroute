@@ -2,12 +2,12 @@
 //! compiler rejects a runtime change the page contract has not followed.
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 macro_rules! mirror_enum {
     ($(#[$meta:meta])* $name:ident <= $source:path { $($variant:ident),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
         #[serde(rename_all = "snake_case")]
         pub(crate) enum $name {
             $($variant),+
@@ -121,7 +121,7 @@ mirror_enum!(
 );
 
 /// The state a person reads first: the server's own judgement of whether it takes traffic.
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ServerStatus {
     Up,
@@ -134,7 +134,7 @@ pub(crate) enum ServerStatus {
 }
 
 /// Worst-of-children state of a pool.
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PoolStatus {
     /// Every server is available.
@@ -147,9 +147,16 @@ pub(crate) enum PoolStatus {
     Empty,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerScaling {
+    Static,
+    Dynamic,
+}
+
 mirror_enum!(RetiredState <= crate::RetiredState { Draining, Closing });
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CertificateSource {
     Certbot,
@@ -157,7 +164,7 @@ pub(crate) enum CertificateSource {
     DirectFile,
 }
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RouteAction {
     Proxy,
@@ -166,7 +173,7 @@ pub(crate) enum RouteAction {
     StaticFiles,
 }
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SelectorKind {
     NormalizedHost,

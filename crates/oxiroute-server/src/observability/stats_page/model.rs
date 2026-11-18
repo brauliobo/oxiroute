@@ -8,7 +8,7 @@
 //!   because it is unknown, so clients must treat an absent key as "not available".
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::rtmp::api::dto::DecimalCounter;
 
@@ -35,7 +35,7 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 /// A monotonic counter as an unsigned decimal string.
 pub(crate) type Counter = DecimalCounter;
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatsSnapshot {
     /// Bumped on any incompatible change of this document.
@@ -45,6 +45,7 @@ pub(crate) struct StatsSnapshot {
     pub(crate) interval_hint_ms: u64,
     pub(crate) process: ProcessStats,
     pub(crate) generation: GenerationStats,
+    pub(crate) workers: WorkerStats,
     pub(crate) bucket_bounds_ms: BucketBounds,
     pub(crate) listeners: Vec<ListenerStats>,
     pub(crate) routes: Vec<RouteStats>,
@@ -67,7 +68,7 @@ pub(crate) struct StatsDocument<'a> {
 
 /// Upper bounds, in milliseconds, of the cumulative buckets of every [`Histogram`]. The overflow
 /// bucket is `count`.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BucketBounds {
     /// Request, header and relay latencies.
@@ -78,7 +79,7 @@ pub(crate) struct BucketBounds {
 
 /// A latency distribution. `buckets[i]` is the cumulative number of observations at or below the
 /// i-th bound of the matching [`BucketBounds`] list; percentiles read from it are bucket upper bounds.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Histogram {
     pub(crate) count: Counter,
@@ -86,7 +87,7 @@ pub(crate) struct Histogram {
     pub(crate) buckets: Vec<Counter>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProcessStats {
     pub(crate) version: String,
@@ -121,7 +122,7 @@ pub(crate) struct ProcessStats {
 }
 
 /// Requests currently waiting for or served by an upstream server.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProcessInflight {
     pub(crate) upstream_requests: u64,
@@ -132,7 +133,7 @@ pub(crate) struct ProcessInflight {
     pub(crate) stuck: u64,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostStats {
     pub(crate) state: ComponentState,
@@ -148,7 +149,28 @@ pub(crate) struct HostStats {
     pub(crate) available_memory_bytes: Option<u64>,
 }
 
-#[derive(JsonSchema, Serialize)]
+/// How the listener runtimes place connections on their workers.
+#[derive(Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkerStats {
+    pub(crate) scaling: WorkerScaling,
+    /// The listener runtimes that scale their workers; empty with `static` scaling. The proxy keeps no
+    /// per-worker load counter.
+    pub(crate) runtimes: Vec<RuntimeWorkers>,
+}
+
+#[derive(Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeWorkers {
+    pub(crate) runtime: String,
+    pub(crate) workers: u64,
+    /// Workers that currently take new connections.
+    pub(crate) active: u64,
+    /// Connections moved between workers since the start.
+    pub(crate) relocations: Counter,
+}
+
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerationStats {
     /// Number of the live generation.
@@ -180,7 +202,7 @@ pub(crate) struct GenerationStats {
     pub(crate) retired: Vec<RetiredGeneration>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RejectionStats {
     pub(crate) at_unix_ms: u64,
@@ -189,14 +211,14 @@ pub(crate) struct RejectionStats {
     pub(crate) diagnostics: Vec<DiagnosticStats>,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 pub(crate) struct DiagnosticStats {
     pub(crate) code: String,
     pub(crate) stage: String,
     pub(crate) message: String,
 }
 
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetiredGeneration {
     pub(crate) revision: String,
@@ -209,7 +231,7 @@ pub(crate) struct RetiredGeneration {
 }
 
 /// A valid setting that cannot behave the way it reads.
-#[derive(JsonSchema, Serialize)]
+#[derive(Deserialize, JsonSchema, Serialize)]
 pub(crate) struct WarningStats {
     pub(crate) code: String,
     pub(crate) message: String,
