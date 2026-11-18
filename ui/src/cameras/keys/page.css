@@ -1,0 +1,21 @@
+@layer ox.page {
+  .ox-keys {
+    display: grid;
+    gap: var(--ox-gap);
+    align-content: start;
+  }
+
+  .ox-keys-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-keys-heading div {
+    display: grid;
+    gap: var(--ox-space-3);
+    max-width: 44rem;
+  }
+}
