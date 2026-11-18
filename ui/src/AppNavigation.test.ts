@@ -29,7 +29,7 @@ describe('application navigation', () => {
 
     expect(wrapper.get('a[href="#/stats"]').attributes('aria-current')).toBe('page')
     expect(wrapper.get('.haproxy-stats').text()).toContain('Statistics')
-    const apiPaths = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith('/api/v1/'))
+    const apiPaths = fetch.mock.calls.map((call) => String((call as unknown as [RequestInfo | URL])[0])).filter((url) => url.startsWith('/api/v1/'))
     expect(apiPaths).toEqual(['/api/v1/monitoring'])
     expect(fetch).toHaveBeenCalledWith('/api/v1/monitoring', expect.objectContaining({ cache: 'no-store' }))
     expect(wrapper.find('.monitoring-overview').exists()).toBe(false)

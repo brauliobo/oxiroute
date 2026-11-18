@@ -76,4 +76,14 @@
       margin-inline-start: 0;
     }
   }
+
+  .ox-confirm-details {
+    margin: var(--ox-space-4) 0 0;
+    padding-inline-start: var(--ox-space-7);
+    color: var(--ox-muted);
+  }
+
+  .ox-confirm-typed {
+    margin-top: var(--ox-space-5);
+  }
 }

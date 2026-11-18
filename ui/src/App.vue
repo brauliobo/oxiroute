@@ -92,6 +92,8 @@ Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme")
     )
 
   template(v-slot:footer)
+    ConfirmHost
+    Region
     footer.ox-footer
       p OxiRoute pre-alpha
       p Live measurements / runtime inventory
@@ -106,6 +108,7 @@ import { useStoredTheme } from '#design/composables/useTheme'
 import Loading from '#design/empty/Loading.vue'
 import Shell from '#design/layout/Shell.vue'
 import Nav from '#design/nav/Nav.vue'
+import Region from '#design/toast/Region.vue'
 
 import AuditWorkspace from './AuditWorkspace.vue'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
@@ -117,6 +120,7 @@ import MonitoringOverview from './overview/MonitoringOverview.vue'
 import StreamInventory from './overview/StreamInventory.vue'
 import ProvenanceWorkspace from './ProvenanceWorkspace.vue'
 import RtmpClientPanel from './RtmpClientPanel.vue'
+import ConfirmHost from './shell/ConfirmHost.vue'
 import FeedStatus from './shell/FeedStatus.vue'
 import LoginPanel from './shell/LoginPanel.vue'
 import Readouts from './shell/Readouts.vue'
