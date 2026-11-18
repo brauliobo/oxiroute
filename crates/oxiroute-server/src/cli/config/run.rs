@@ -6,7 +6,7 @@ use super::{ConfigCommand, check, compose::compose};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
-    fs::{MAX_FILE_BYTES, read_regular_file},
+    fs::{MAX_FILE_BYTES, read_regular_file, unreadable_config},
     net::Client,
     render,
 };
@@ -75,8 +75,12 @@ fn current_config(client: &Client) -> Result<Value, CliError> {
 
 fn config_file(path: &Path) -> Result<Value, CliError> {
     let bytes = read_regular_file(path, MAX_FILE_BYTES, false)
-        .map_err(|_| CliError::Local("configuration file could not be read securely".into()))?;
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| CliError::Local("configuration file must contain JSON".into()))?;
+        .map_err(|error| unreadable_config(path, &error))?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        CliError::Local(format!(
+            "configuration {} must contain JSON: {error}",
+            path.display()
+        ))
+    })?;
     Ok(value.get("config").cloned().unwrap_or(value))
 }

@@ -1,33 +1,141 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser as _;
 
 use super::{
     Cli, Command,
     config::{ComposeFormat, ConfigCommand},
+    global::Output,
     pool::PoolCommand,
     process::ProcessCommand,
 };
 
 fn serve_config(arguments: &[&str]) -> PathBuf {
     let cli = Cli::try_parse_process_from(arguments).expect("serve");
-    match cli.command() {
+    match cli.subcommand() {
         Command::Serve(args) => args.config.clone(),
         _ => panic!("serve command"),
     }
 }
 
+fn parse_error(arguments: &[&str]) -> clap::Error {
+    Cli::try_parse_process_from(arguments)
+        .err()
+        .expect("a parse error")
+}
+
 #[test]
-fn a_lone_path_or_no_argument_serves_a_configuration() {
+fn serve_takes_its_configuration_explicitly_or_as_a_path_shorthand() {
+    let directory = tempfile::TempDir::new().expect("directory");
+    let plain_file = directory.path().join("edge");
+    std::fs::write(&plain_file, "version 1\n").expect("file");
+    let plain_file = plain_file.display().to_string();
+    for operand in [
+        "edge.lua",
+        "oxiroute.hocon",
+        "./edge",
+        "etc/edge",
+        &plain_file,
+    ] {
+        assert_eq!(
+            serve_config(&["oxiroute", operand]),
+            PathBuf::from(operand),
+            "{operand}"
+        );
+    }
     assert_eq!(
         serve_config(&["oxiroute", "serve", "edge.lua"]),
         PathBuf::from("edge.lua")
     );
     assert_eq!(
-        serve_config(&["oxiroute", "edge.lua"]),
+        serve_config(&["oxiroute", "serve"]),
+        PathBuf::from("oxiroute.kdl")
+    );
+    assert_eq!(
+        serve_config(&[
+            "oxiroute",
+            "--quiet",
+            "--endpoint",
+            "http://127.0.0.1:1",
+            "edge.lua"
+        ]),
         PathBuf::from("edge.lua")
     );
-    assert_eq!(serve_config(&["oxiroute"]), PathBuf::from("oxiroute.kdl"));
+}
+
+#[test]
+fn a_mistyped_subcommand_is_reported_with_suggestions_and_never_served() {
+    for (typo, suggestion) in [
+        ("stauts", "status"),
+        ("servr", "server"),
+        ("complitions", "completions"),
+    ] {
+        let error = parse_error(&["oxiroute", typo]);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::InvalidSubcommand,
+            "{typo}"
+        );
+        if typo != "complitions" {
+            assert!(error.to_string().contains(suggestion), "{typo}: {error}");
+        }
+    }
+    assert_eq!(
+        parse_error(&["oxiroute", "--quiet", "stauts"]).kind(),
+        clap::error::ErrorKind::InvalidSubcommand
+    );
+}
+
+#[test]
+fn no_subcommand_prints_the_help() {
+    assert_eq!(
+        parse_error(&["oxiroute"]).kind(),
+        clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+}
+
+#[test]
+fn global_flags_are_accepted_before_and_after_every_subcommand() {
+    for tail in [
+        &["status"][..],
+        &["check"],
+        &["top", "--once"],
+        &["server", "list", "--pool", "farm"],
+        &["pool", "drain", "farm"],
+        &["generation", "reload"],
+        &["config", "get"],
+        &["version"],
+    ] {
+        let flags = [
+            "--endpoint",
+            "http://127.0.0.1:9",
+            "--output",
+            "json",
+            "--quiet",
+        ];
+        let before =
+            Cli::try_parse_process_from(["oxiroute"].iter().chain(flags.iter()).chain(tail.iter()))
+                .expect("flags before");
+        let after =
+            Cli::try_parse_process_from(["oxiroute"].iter().chain(tail.iter()).chain(flags.iter()))
+                .expect("flags after");
+        for cli in [before, after] {
+            assert_eq!(
+                cli.global.endpoint.as_deref(),
+                Some("http://127.0.0.1:9"),
+                "{tail:?}"
+            );
+            assert!(matches!(cli.global.output, Output::Json), "{tail:?}");
+            assert!(cli.global.quiet, "{tail:?}");
+        }
+    }
+    let socket =
+        Cli::try_parse_process_from(["oxiroute", "check", "--socket", "/run/oxiroute/status.sock"])
+            .expect("socket after check");
+    assert_eq!(
+        socket.global.socket.as_deref(),
+        Some(Path::new("/run/oxiroute/status.sock"))
+    );
 }
 
 #[test]
@@ -38,19 +146,19 @@ fn offline_and_management_commands_parse_beside_serve() {
     let status = Cli::try_parse_process_from(["oxiroute", "status"]).expect("status");
 
     assert!(matches!(
-        check.command(),
+        check.subcommand(),
         Command::Config {
             command: ConfigCommand::Check { config }
         } if config == &PathBuf::from("edge.lua")
     ));
     assert!(matches!(
-        get.command(),
+        get.subcommand(),
         Command::Config {
             command: ConfigCommand::Get
         }
     ));
     assert!(matches!(
-        status.command(),
+        status.subcommand(),
         Command::Process(ProcessCommand::Status)
     ));
 }
@@ -69,7 +177,7 @@ fn parses_canonical_config_composition_inputs_in_order() {
     .expect("config compose");
 
     assert!(matches!(
-        cli.command(),
+        cli.subcommand(),
         Command::Config {
             command: ConfigCommand::Compose { format, configs }
         } if *format == ComposeFormat::Hocon
@@ -83,7 +191,7 @@ fn parses_pool_evacuate_without_force_by_default() {
         .expect("CLI");
     let Command::Pool {
         command: PoolCommand::Evacuate { pools, force },
-    } = cli.command()
+    } = cli.subcommand()
     else {
         panic!("pool evacuate command")
     };

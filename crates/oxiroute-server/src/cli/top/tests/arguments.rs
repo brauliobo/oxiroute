@@ -15,7 +15,7 @@ fn top(arguments: &[&str]) -> TopArgs {
         .expect("valid arguments")
         .command
     {
-        Some(Command::Top(args)) => args,
+        Command::Top(args) => args,
         _ => panic!("not the top command"),
     }
 }
@@ -77,7 +77,7 @@ fn a_registry_socket_is_refused_because_it_serves_no_statistics() {
         parse(&["--socket", "/run/oxiroute/status.sock", "top", "--once"]).expect("arguments");
     let context = Context::new(&cli.global, |_| Ok(()));
     let error = cli
-        .command()
+        .subcommand()
         .run(&context)
         .expect_err("sockets serve no statistics");
     assert!(

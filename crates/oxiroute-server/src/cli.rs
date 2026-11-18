@@ -1,6 +1,6 @@
-use std::{ffi::OsString, path::PathBuf, process::ExitCode};
+use std::{ffi::OsString, process::ExitCode};
 
-use clap::Parser;
+use clap::{CommandFactory as _, Parser};
 
 use command::Command;
 use context::Context;
@@ -29,6 +29,7 @@ mod requests;
 mod rtmp;
 mod serve;
 mod server;
+mod shorthand;
 mod tls;
 mod top;
 mod version;
@@ -39,16 +40,12 @@ mod tests;
 pub(crate) const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "oxiroute", version = BUILD_VERSION)]
+#[command(name = "oxiroute", version = BUILD_VERSION, arg_required_else_help = true)]
 pub struct Cli {
     #[command(flatten)]
     global: Global,
     #[command(subcommand)]
-    command: Option<Command>,
-
-    /// Shorthand for `serve CONFIG` when no subcommand is present.
-    #[arg(value_name = "CONFIG")]
-    legacy_config: Option<PathBuf>,
+    command: Command,
 }
 
 impl Cli {
@@ -70,27 +67,18 @@ impl Cli {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        Self::try_parse_from(arguments).map(Self::normalize)
+        let arguments = arguments.into_iter().map(Into::into).collect();
+        Self::try_parse_from(shorthand::expand(arguments, &Self::command()))
     }
 
-    fn normalize(mut cli: Self) -> Self {
-        if cli.command.is_none() {
-            let config = cli.legacy_config.take();
-            cli.command = Some(Command::Serve(serve::ServeArgs::new(config)));
-        }
-        cli
-    }
-
-    pub(crate) fn command(&self) -> &Command {
-        self.command
-            .as_ref()
-            .expect("CLI parsing always resolves a command")
+    pub(crate) fn subcommand(&self) -> &Command {
+        &self.command
     }
 
     #[must_use]
     pub fn execute(&self, serve: ServeFn) -> ExitCode {
         let context = Context::new(&self.global, serve);
-        match self.command().run(&context) {
+        match self.subcommand().run(&context) {
             Ok(code) => code,
             Err(error) => {
                 if !self.global.quiet || matches!(error, CliError::Startup(_)) {

@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::json;
 
-use super::{Client, Endpoint, MANAGEMENT_TOKEN_ENV, Response, read_token, resolve_token_path};
+use super::{Client, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Response, read_token};
 use crate::cli::error::{CliError, EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND};
 
 #[test]
@@ -62,57 +62,109 @@ fn response_parser_rejects_conflicting_lengths() {
     assert!(error.to_string().contains("conflicting"));
 }
 
+struct Layout {
+    directory: tempfile::TempDir,
+}
+
+impl Layout {
+    fn new() -> Self {
+        Self {
+            directory: tempfile::TempDir::new().expect("directory"),
+        }
+    }
+
+    fn path(&self, name: &str) -> std::path::PathBuf {
+        self.directory.path().join(name)
+    }
+
+    fn write(&self, name: &str, text: &str) {
+        std::fs::write(self.path(name), text).expect("file");
+    }
+
+    fn package(&self) -> Package {
+        Package::at(
+            self.path("oxiroute.env"),
+            vec![self.path("oxiroute.kdl"), self.path("oxiroute.lua")],
+            self.path("management.token"),
+        )
+    }
+}
+
+#[test]
+fn the_endpoint_comes_from_the_environment_file_then_the_management_bind() {
+    let layout = Layout::new();
+    assert_eq!(layout.package().discovered_endpoint(), None);
+
+    layout.write(
+        "oxiroute.kdl",
+        "version 1\n(object)management { bind \"127.0.0.1:9081\" }\n",
+    );
+    assert_eq!(
+        layout.package().discovered_endpoint().as_deref(),
+        Some("http://127.0.0.1:9081")
+    );
+
+    layout.write(
+        "oxiroute.env",
+        "RUST_LOG=info\nOXIROUTE_ENDPOINT=http://127.0.0.1:9082\n",
+    );
+    assert_eq!(
+        layout.package().discovered_endpoint().as_deref(),
+        Some("http://127.0.0.1:9082")
+    );
+}
+
+#[test]
+fn a_config_without_a_management_block_or_a_broken_one_discovers_nothing() {
+    let layout = Layout::new();
+    layout.write("oxiroute.kdl", "version 1\n");
+    layout.write("oxiroute.lua", "this is not a configuration");
+    assert_eq!(layout.package().discovered_endpoint(), None);
+}
+
 #[test]
 fn token_path_resolution_obeys_precedence_and_default_presence() {
-    let directory = tempfile::TempDir::new().expect("directory");
-    let explicit = directory.path().join("explicit.token");
-    let configured = directory.path().join("configured.token");
-    let package = directory.path().join("oxiroute.env");
-    let package_token = directory.path().join("package.token");
-    let default = directory.path().join("management.token");
+    let layout = Layout::new();
+    let explicit = layout.path("explicit.token");
+    let package_token = layout.path("package.token");
+    let config_token = layout.path("config.token");
 
+    assert_eq!(layout.package().token_path(None).expect("none"), None);
+    layout.write("management.token", "placeholder");
     assert_eq!(
-        resolve_token_path(Some(&explicit), Some(&configured), &package, &default)
-            .expect("explicit path"),
-        Some(explicit.clone())
-    );
-    assert_eq!(
-        resolve_token_path(None, Some(&configured), &package, &default).expect("configured path"),
-        Some(configured.clone())
+        layout.package().token_path(None).expect("default path"),
+        Some(layout.path("management.token"))
     );
 
-    std::fs::write(
-        &package,
-        format!(
+    layout.write(
+        "oxiroute.kdl",
+        &format!(
+            "version 1\n(object)management {{ bind \"127.0.0.1:9081\"\ntoken_file \"{}\" }}\n",
+            config_token.display()
+        ),
+    );
+    assert_eq!(
+        layout.package().token_path(None).expect("config path"),
+        Some(config_token)
+    );
+
+    layout.write(
+        "oxiroute.env",
+        &format!(
             "RUST_LOG=info\n{MANAGEMENT_TOKEN_ENV}={}\n",
             package_token.display()
         ),
-    )
-    .expect("package environment");
-    assert_eq!(
-        resolve_token_path(Some(&explicit), Some(&configured), &package, &default)
-            .expect("explicit path over package path"),
-        Some(explicit.clone())
     );
     assert_eq!(
-        resolve_token_path(None, Some(&configured), &package, &default)
-            .expect("configured path over package path"),
-        Some(configured)
-    );
-    assert_eq!(
-        resolve_token_path(None, None, &package, &default).expect("package path"),
+        layout.package().token_path(None).expect("package path"),
         Some(package_token)
     );
-
-    std::fs::remove_file(&package).expect("remove package environment");
     assert_eq!(
-        resolve_token_path(None, None, &package, &default).expect("missing default"),
-        None
-    );
-    std::fs::write(&default, b"placeholder").expect("default token");
-    assert_eq!(
-        resolve_token_path(None, None, &package, &default).expect("default path"),
-        Some(default)
+        layout
+            .package()
+            .token_path(Some(&explicit))
+            .expect("explicit path"),
+        Some(explicit)
     );
 }
 

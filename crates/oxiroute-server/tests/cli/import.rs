@@ -101,7 +101,7 @@ fn apache_cli_report_exposes_deterministic_include_provenance() {
             "import",
             "apache",
             root.to_str().unwrap(),
-            "--output",
+            "--emit",
             "report",
         ])
         .output()
@@ -187,7 +187,7 @@ fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
     );
 
     let preview = cli()
-        .args(["import", "haproxy", path, "--output", "preview"])
+        .args(["import", "haproxy", path, "--emit", "preview"])
         .output()
         .expect("import preview");
     assert!(preview.status.success(), "{}", output_text(&preview));
@@ -348,7 +348,7 @@ fn varnish_import_report_and_preview_use_exact_invocation_arguments() {
         "import",
         "varnish",
         root.to_str().unwrap(),
-        "--output",
+        "--emit",
         "preview",
     ]);
     for argument in invocation {
@@ -374,7 +374,7 @@ fn varnish_import_report_and_preview_use_exact_invocation_arguments() {
 
 fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat) -> ConfigDraft {
     let mut command = cli();
-    command.args(args).args(["--output", "preview"]);
+    command.args(args).args(["--emit", "preview"]);
     if let Some(format_name) = format_name {
         command.args(["--format", format_name]);
     }

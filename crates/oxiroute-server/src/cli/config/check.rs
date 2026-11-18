@@ -4,7 +4,7 @@ use oxiroute_config::ConfigWarning;
 
 use crate::{
     GenerationManager,
-    cli::error::CliError,
+    cli::{error::CliError, fs::ensure_readable_config},
     config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
 };
 
@@ -17,6 +17,7 @@ pub(super) fn report(path: &Path) -> Result<String, CliError> {
 }
 
 fn check(path: &Path) -> Result<Vec<ConfigWarning>, CliError> {
+    ensure_readable_config(path)?;
     let coordinator = CanonicalConfigCoordinator::new(path).map_err(CliError::startup)?;
     let document = match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,

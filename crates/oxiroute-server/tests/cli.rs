@@ -475,7 +475,7 @@ fn import_nginx_preview_applies_bearer_token_files_and_upstream_tls() {
                 "api.example.org=/run/secrets/api.token",
                 "--upstream-tls",
                 tls,
-                "--output",
+                "--emit",
                 "preview",
             ],
         );
@@ -494,7 +494,7 @@ fn import_nginx_preview_applies_bearer_token_files_and_upstream_tls() {
 #[test]
 fn import_nginx_preview_without_the_overlays_is_not_finalized() {
     let directory = TempDir::new().expect("directory");
-    let output = import_nginx_overlays(&directory, &["--output", "preview"]);
+    let output = import_nginx_overlays(&directory, &["--emit", "preview"]);
     assert!(!output.status.success(), "{}", output_text(&output));
 }
 
@@ -514,8 +514,7 @@ fn import_nginx_overlays_matching_nothing_are_reported_and_block_the_preview() {
     assert!(
         String::from_utf8_lossy(&report.stdout).contains("matches no lowered authorization rule")
     );
-    let preview =
-        import_nginx_overlays(&directory, &[&flags[..], &["--output", "preview"]].concat());
+    let preview = import_nginx_overlays(&directory, &[&flags[..], &["--emit", "preview"]].concat());
     assert!(!preview.status.success(), "{}", output_text(&preview));
 }
 

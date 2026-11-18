@@ -11,11 +11,11 @@ existing invocations. Offline commands are:
 ```sh
 oxiroute serve /etc/oxiroute/oxiroute.kdl
 oxiroute config check /etc/oxiroute/oxiroute.kdl
-oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --output report
-oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --host-timezone America/Argentina/Buenos_Aires --default-access-log-file /var/lib/oxiroute/http-access.jsonl --recording-root /mnt/cloud/4tb/cam-rtmp --default-error-server nginx/1.30.2 --format kdl --output preview
-oxiroute import haproxy /etc/haproxy/haproxy.cfg --output preview
-oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 192.0.2.37 --gpu1-defined --output preview
-oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 192.0.2.37 --gpu1-defined --shadow-port-offset 10000 --output preview
+oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --emit report
+oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --host-timezone America/Argentina/Buenos_Aires --default-access-log-file /var/lib/oxiroute/http-access.jsonl --recording-root /mnt/cloud/4tb/cam-rtmp --default-error-server nginx/1.30.2 --format kdl --emit preview
+oxiroute import haproxy /etc/haproxy/haproxy.cfg --emit preview
+oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 192.0.2.37 --gpu1-defined --emit preview
+oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 192.0.2.37 --gpu1-defined --shadow-port-offset 10000 --emit preview
 oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf
 oxiroute config compose --format hocon edge.kdl legacy.lua
 oxiroute version
@@ -41,9 +41,9 @@ configuration: templates and native references are resolved rather than copied. 
 on the composed file in the target host environment to verify runtime preparation and referenced
 files before activation.
 
-The standalone `import nginx|haproxy --output preview` commands accept only fully finalized native
+The standalone `import nginx|haproxy --emit preview` commands accept only fully finalized native
 candidates and emit deterministic KDL by default. `--format kdl|lua|uci|hocon` selects preview
-syntax. The flag does not change `--output report`; report output remains importer evidence.
+syntax. The flag does not change `--emit report`; report output remains importer evidence.
 
 `serve` defaults to `oxiroute.kdl`. Extensionless paths and `.kdl`/`.kdl2` use KDL 2.0; `.lua` uses
 restricted Lua, `.uci` uses OpenWrt UCI, and `.hocon`/`.conf` use HOCON.

@@ -1,19 +1,26 @@
 # CLI Reference
 
 The `oxiroute` binary is both the daemon and the offline/operator client. `oxr` is the packaged
-short alias. A lone configuration path remains an alias for `serve CONFIG`.
+short alias. `oxiroute CONFIG` stays shorthand for `serve CONFIG` when `CONFIG` is an existing file or
+looks like a path (it contains `/` or ends in `.kdl`, `.kdl2`, `.lua`, `.uci`, `.hocon` or `.conf`); any
+other unknown word is a usage error with suggestions, so a mistyped command never starts the daemon.
+Without arguments the help is printed.
 
 ## Global Options
 
 ```sh
-oxiroute [--endpoint URL] [--token-file FILE] [--output table|json|plain] [--quiet] COMMAND
+oxiroute [--endpoint URL | --socket PATH] [--token-file FILE] [--output table|json|plain] [--quiet] COMMAND
 ```
 
-- `--endpoint` defaults to `OXIROUTE_ENDPOINT`, then `http://127.0.0.1:9900`.
+The global options work before and after the command name (`oxiroute status --output json`).
+
+- `--endpoint` defaults to `OXIROUTE_ENDPOINT`. Without it the CLI looks for a local daemon: the
+  `OXIROUTE_ENDPOINT` assignment in `/etc/oxiroute/oxiroute.env`, then the management `bind` of
+  `/etc/oxiroute/oxiroute.kdl` or `/etc/oxiroute/oxiroute.lua`, then `http://127.0.0.1:9900`.
 - `--token-file` explicitly selects the token file and wins over all automatic discovery.
 - `OXIROUTE_MANAGEMENT_TOKEN_FILE` is the next source; when unset, the packaged
-  `/etc/oxiroute/oxiroute.env` assignment is checked, followed by the built-in
-  `/etc/oxiroute/management.token` path when that file exists.
+  `/etc/oxiroute/oxiroute.env` assignment is checked, then the management `token_file` of the packaged
+  configuration, followed by the built-in `/etc/oxiroute/management.token` path when that file exists.
 - `--output json` writes one JSON value to stdout; diagnostics use stderr.
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
   use the bearer token according to their route contract.
@@ -126,11 +133,11 @@ oxiroute config check /etc/oxiroute/oxiroute.kdl
 oxiroute --output json server show --pool public-v4 --pool public-v6 origin-a
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 oxiroute generation rollback
-oxiroute import nginx /etc/nginx/nginx.conf --output report
-oxiroute import squid /etc/squid/squid.conf --output report
-oxiroute import apache /etc/httpd/conf/httpd.conf --output report
-oxiroute import apache /etc/httpd/conf/httpd.conf --shadow-port-offset 10000 --output preview
-oxiroute import varnish /etc/varnish/default.vcl --output report
+oxiroute import nginx /etc/nginx/nginx.conf --emit report
+oxiroute import squid /etc/squid/squid.conf --emit report
+oxiroute import apache /etc/httpd/conf/httpd.conf --emit report
+oxiroute import apache /etc/httpd/conf/httpd.conf --shadow-port-offset 10000 --emit preview
+oxiroute import varnish /etc/varnish/default.vcl --emit report
 ```
 
 See [MANAGEMENT_CLI.md](../MANAGEMENT_CLI.md) for every subcommand, capability status, revision

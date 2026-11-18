@@ -6,7 +6,29 @@ use std::{
 
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 
+use super::error::CliError;
+
 pub(super) const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
+
+pub(super) fn ensure_readable_config(path: &Path) -> Result<(), CliError> {
+    File::open(path)
+        .and_then(|file| file.metadata())
+        .and_then(|metadata| {
+            if metadata.is_file() {
+                Ok(())
+            } else {
+                Err(io::Error::other("not a regular file"))
+            }
+        })
+        .map_err(|error| unreadable_config(path, &error))
+}
+
+pub(super) fn unreadable_config(path: &Path, error: &dyn std::fmt::Display) -> CliError {
+    CliError::Local(format!(
+        "cannot read configuration {}: {error}",
+        path.display()
+    ))
+}
 
 pub(super) fn read_regular_file(
     path: &Path,

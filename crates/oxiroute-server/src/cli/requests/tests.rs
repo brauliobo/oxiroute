@@ -9,7 +9,7 @@ fn path(arguments: &[&str]) -> String {
             .chain(arguments.iter().copied()),
     )
     .expect("CLI");
-    let Command::Requests { command } = cli.command() else {
+    let Command::Requests { command } = cli.subcommand() else {
         panic!("requests command")
     };
     command.path()

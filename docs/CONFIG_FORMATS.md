@@ -250,7 +250,7 @@ The default output is KDL; `--format` accepts `kdl`, `lua`, `uci`, or `hocon`. C
 not retain comments, templates, HOCON substitutions, UCI record names, native declarations, or
 provenance. It is the explicit flattening operation.
 
-Standalone `import nginx|haproxy --output preview` also defaults to KDL and accepts
+Standalone `import nginx|haproxy --emit preview` also defaults to KDL and accepts
 `--format kdl|lua|uci|hocon` for a fully finalized candidate. `--format` does not alter `report`
 output, which remains evidence rather than a configuration source.
 

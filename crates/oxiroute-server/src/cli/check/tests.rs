@@ -16,7 +16,7 @@ fn args(extra: &[&str]) -> CheckArgs {
     let mut words = vec!["oxiroute", "check"];
     words.extend_from_slice(extra);
     match Cli::try_parse_from(words).expect("check arguments").command {
-        Some(Command::Check(args)) => args,
+        Command::Check(args) => args,
         _ => panic!("check command"),
     }
 }

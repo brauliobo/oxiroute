@@ -4,6 +4,7 @@ pub fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oxiroute"))
 }
 
+#[allow(dead_code)]
 pub fn output_text(output: &Output) -> String {
     format!(
         "stdout: {}\nstderr: {}",

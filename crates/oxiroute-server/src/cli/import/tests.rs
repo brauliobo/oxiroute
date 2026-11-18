@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use oxiroute_config_source::ConfigFormat;
 
-use super::args::{ImportCommand, ImportOutput};
+use super::args::{ImportCommand, ImportEmit};
 use crate::cli::{Cli, Command, config::ComposeFormat};
 
 fn parse(arguments: &[&str]) -> Result<Cli, clap::Error> {
@@ -18,7 +18,7 @@ fn parsed(arguments: &[&str]) -> Cli {
 }
 
 fn import(cli: &Cli) -> &ImportCommand {
-    match cli.command() {
+    match cli.subcommand() {
         Command::Import { command } => command,
         _ => panic!("import command"),
     }
@@ -43,14 +43,14 @@ fn parses_explicit_haproxy_preprocessing_environment() {
         "10000",
         "--format",
         "hocon",
-        "--output",
+        "--emit",
         "preview",
     ]);
     let ImportCommand::Haproxy {
         configs,
         node_ip,
         gpu1_defined,
-        emit,
+        options,
     } = import(&cli)
     else {
         panic!("HAProxy import command")
@@ -58,9 +58,9 @@ fn parses_explicit_haproxy_preprocessing_environment() {
     assert_eq!(configs, &[PathBuf::from("/etc/haproxy/haproxy.cfg")]);
     assert_eq!(*node_ip, Some("192.0.2.37".parse().unwrap()));
     assert!(*gpu1_defined);
-    assert_eq!(emit.shadow_port_offset, Some(10_000));
-    assert_eq!(emit.format, ComposeFormat::Hocon);
-    assert_eq!(emit.output, ImportOutput::Preview);
+    assert_eq!(options.shadow_port_offset, Some(10_000));
+    assert_eq!(options.format, ComposeFormat::Hocon);
+    assert_eq!(options.emit, ImportEmit::Preview);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn parses_nginx_timezone_and_shadow_inputs() {
         "10000",
         "--format",
         "lua",
-        "--output",
+        "--emit",
         "preview",
     ]);
     let ImportCommand::Nginx {
@@ -88,7 +88,7 @@ fn parses_nginx_timezone_and_shadow_inputs() {
         default_access_log_file: Some(path),
         recording_root: Some(recording_root),
         default_error_server: Some(server),
-        emit,
+        options,
         ..
     } = import(&cli)
     else {
@@ -98,9 +98,9 @@ fn parses_nginx_timezone_and_shadow_inputs() {
     assert_eq!(path, Path::new("/var/lib/oxiroute/http-access.jsonl"));
     assert_eq!(recording_root, Path::new("/mnt/cloud/4tb/cam-rtmp"));
     assert_eq!(server, "nginx/1.30.2");
-    assert_eq!(emit.shadow_port_offset, Some(10_000));
-    assert_eq!(emit.format, ComposeFormat::Lua);
-    assert_eq!(emit.output, ImportOutput::Preview);
+    assert_eq!(options.shadow_port_offset, Some(10_000));
+    assert_eq!(options.format, ComposeFormat::Lua);
+    assert_eq!(options.emit, ImportEmit::Preview);
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn haproxy_shadow_preview_shifts_only_listener_ports() {
         "10000",
         "--format",
         "hocon",
-        "--output",
+        "--emit",
         "preview",
     ]);
     let output = import(&cli).render().expect("shadow preview");
@@ -146,7 +146,7 @@ fn haproxy_shadow_preview_rejects_port_overflow_and_report_mode() {
             "--gpu1-defined",
             "--shadow-port-offset",
             offset,
-            "--output",
+            "--emit",
             output,
         ]);
         import(&cli).render().is_err()

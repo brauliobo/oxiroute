@@ -25,7 +25,7 @@ and deployment requirements:
 ```sh
 oxiroute import nginx /etc/nginx/nginx.conf \
   --root-prefix / \
-  --output report
+  --emit report
 ```
 
 For a fully representable candidate, render KDL (the default) or another supported format:
@@ -35,7 +35,7 @@ oxiroute import nginx /etc/nginx/nginx.conf \
   --root-prefix / \
   --host-timezone UTC \
   --default-access-log-file /var/lib/oxiroute/http-access.jsonl \
-  --output preview
+  --emit preview
 ```
 
 The complete-root path retains process/events/module/error-log deployment requirements and can
@@ -59,7 +59,7 @@ match exactly one lowered rule fail the import, so a typo never silently disable
   ```sh
   oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / \
     --bearer-token-file api.example.com=/run/secrets/api.token \
-    --output preview
+    --emit preview
   ```
 
   The file must be a regular file with mode 0400 or 0600 holding one printable-ASCII token line. The
@@ -107,12 +107,12 @@ Before moving ports 80 and 443, preview the candidate on shifted listener ports 
 oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / \
   --bearer-token-file api.example.com=/run/secrets/api.token \
   --shadow-port-offset 20000 \
-  --output preview > shadow.kdl
+  --emit preview > shadow.kdl
 oxiroute config check shadow.kdl
 ```
 
 `--shadow-port-offset` adds the offset to every imported IP socket listener (`80` becomes `20080`) and
-requires `--output preview`. Replay your probe requests against the offset ports, compare status codes,
+requires `--emit preview`. Replay your probe requests against the offset ports, compare status codes,
 redirects, certificates, and headers with nginx, then remove the offset for cutover. Reference nodes in a live
 configuration cannot use the offset; rehearse with the preview and `oxiroute config compose` the result with the
 live file.
@@ -126,7 +126,7 @@ environment variables implicitly:
 oxiroute import haproxy /etc/haproxy/haproxy.cfg \
   --node-ip 192.0.2.37 \
   --gpu1-defined \
-  --output report
+  --emit report
 ```
 
 Preview a finalized candidate and shift imported IP listeners for a side-by-side check:
@@ -135,7 +135,7 @@ Preview a finalized candidate and shift imported IP listeners for a side-by-side
 oxiroute import haproxy /etc/haproxy/haproxy.cfg \
   --node-ip 192.0.2.37 \
   --shadow-port-offset 10000 \
-  --output preview
+  --emit preview
 ```
 
 HAProxy logging, process identity, chroot, and worker topology are deployment requirements, not
@@ -148,8 +148,8 @@ The current subset targets direct authenticated HTTP/1 forwarding. Cache and ref
 not silently converted into a non-caching runtime:
 
 ```sh
-oxiroute import squid /etc/squid/squid.conf --output report
-oxiroute import squid /etc/squid/squid.conf --output preview
+oxiroute import squid /etc/squid/squid.conf --emit report
+oxiroute import squid /etc/squid/squid.conf --emit preview
 ```
 
 If refresh rules are present, explicit `externalize_cache` acceptance is required before a direct
@@ -164,7 +164,7 @@ blocking; full Squid parity is not claimed.
 The Apache importer accepts a deliberately narrow static reverse-proxy subset. Start with a report:
 
 ```sh
-oxiroute import apache /etc/httpd/conf/httpd.conf --output report
+oxiroute import apache /etc/httpd/conf/httpd.conf --emit report
 ```
 
 Preview a finalized candidate on a shadow port range:
@@ -172,7 +172,7 @@ Preview a finalized candidate on a shadow port range:
 ```sh
 oxiroute import apache /etc/httpd/conf/httpd.conf \
   --shadow-port-offset 10000 \
-  --output preview
+  --emit preview
 ```
 
 `Listen`, exact `VirtualHost` names, inherited server defaults, static `ProxyPass`, equal-weight

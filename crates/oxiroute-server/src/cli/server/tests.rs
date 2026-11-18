@@ -16,7 +16,7 @@ fn server(arguments: &[&str]) -> Cli {
 }
 
 fn command(cli: &Cli) -> &ServerCommand {
-    match cli.command() {
+    match cli.subcommand() {
         Command::Server { command } => command,
         _ => panic!("server command"),
     }

@@ -1,5 +1,6 @@
 mod client;
 mod endpoint;
+mod package;
 mod response;
 mod token;
 
@@ -8,8 +9,6 @@ mod tests;
 
 pub(crate) use client::Client;
 pub(crate) use endpoint::Endpoint;
+pub(super) use package::{DEFAULT_ENDPOINT, ENDPOINT_ENV, MANAGEMENT_TOKEN_ENV, Package};
 pub(crate) use response::Response;
-pub(super) use token::{
-    DEFAULT_MANAGEMENT_TOKEN_FILE, DEFAULT_PACKAGE_ENV_FILE, MANAGEMENT_TOKEN_ENV, read_token,
-    resolve_token_path,
-};
+pub(super) use token::read_token;

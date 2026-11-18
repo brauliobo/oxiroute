@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::{
     error::CliError,
     global::{Global, Output},
-    net::{Client, Response},
+    net::{Client, Package, Response},
     render,
 };
 
@@ -17,12 +17,17 @@ pub(crate) trait Execute {
 
 pub(crate) struct Context<'a> {
     global: &'a Global,
+    package: Package,
     serve: ServeFn,
 }
 
 impl<'a> Context<'a> {
-    pub(super) const fn new(global: &'a Global, serve: ServeFn) -> Self {
-        Self { global, serve }
+    pub(super) fn new(global: &'a Global, serve: ServeFn) -> Self {
+        Self {
+            global,
+            package: Package::installed(),
+            serve,
+        }
     }
 
     pub(crate) fn serve(&self, config: &Path) -> Result<(), CliError> {
@@ -39,18 +44,18 @@ impl<'a> Context<'a> {
 
     /// A client that sends the management token wherever the endpoint needs one.
     pub(crate) fn client(&self) -> Result<Client, CliError> {
-        let endpoint = self.global.endpoint()?;
+        let endpoint = self.global.endpoint(&self.package)?;
         let token = if endpoint.is_unix() {
             None
         } else {
-            self.global.token()?
+            self.global.token(&self.package)?
         };
         Ok(Client::new(endpoint, token))
     }
 
     /// A client for the public probes, which never read the token file.
     pub(crate) fn public_client(&self) -> Result<Client, CliError> {
-        Ok(Client::new(self.global.endpoint()?, None))
+        Ok(Client::new(self.global.endpoint(&self.package)?, None))
     }
 
     pub(crate) fn print(&self, value: &Value) -> Result<(), CliError> {

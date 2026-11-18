@@ -11,7 +11,7 @@ use oxiroute_import::{
     squid, varnish,
 };
 
-use super::args::{Emit, ImportCommand, ImportOutput};
+use super::args::{ImportCommand, ImportEmit, ImportOptions};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
@@ -38,9 +38,9 @@ impl ImportCommand {
                 recording_root,
                 default_error_server,
                 x_accel_controls_absent,
-                emit,
+                options,
             } => {
-                let options = NginxImportOptions {
+                let overlays = NginxImportOptions {
                     host_timezones: host_timezone
                         .iter()
                         .map(|timezone| NginxHostTimezoneOverlay {
@@ -62,8 +62,8 @@ impl ImportCommand {
                     bearer_tokens: bearer_token_file.clone(),
                     upstream_tls: upstream_tls.clone(),
                 };
-                let report = nginx::import_root_with_options(config, root_prefix, &options);
-                emit.finish(report.candidate.validated(), || {
+                let report = nginx::import_root_with_options(config, root_prefix, &overlays);
+                options.finish(report.candidate.validated(), || {
                     ImportReportEnvelope::from_nginx(&report).to_json_line()
                 })
             }
@@ -71,7 +71,7 @@ impl ImportCommand {
                 configs,
                 node_ip,
                 gpu1_defined,
-                emit,
+                options,
             } => {
                 let report = node_ip.map_or_else(
                     || haproxy::import_roots(configs),
@@ -85,30 +85,30 @@ impl ImportCommand {
                         )
                     },
                 );
-                emit.finish(report.value().validated(), || {
+                options.finish(report.value().validated(), || {
                     ImportReportEnvelope::from_haproxy(&report, configs).to_json_line()
                 })
             }
-            Self::Squid { config, emit } => {
+            Self::Squid { config, options } => {
                 let report = squid::import(config);
-                emit.finish(report.candidate.validated(), || {
+                options.finish(report.candidate.validated(), || {
                     ImportReportEnvelope::from_squid(&report).to_json_line()
                 })
             }
-            Self::Apache { config, emit } => {
+            Self::Apache { config, options } => {
                 let report = apache::import_root(config);
-                emit.finish(report.candidate.validated(), || {
+                options.finish(report.candidate.validated(), || {
                     ImportReportEnvelope::from_apache(&report).to_json_line()
                 })
             }
             Self::Varnish {
                 config,
                 arguments,
-                emit,
+                options,
             } => {
                 let invocation = varnish::VarnishdInvocation::new(arguments.iter().cloned());
                 let report = varnish::import(config, &invocation);
-                emit.finish(report.candidate.validated(), || {
+                options.finish(report.candidate.validated(), || {
                     ImportReportEnvelope::from_varnish(&report).to_json_line()
                 })
             }
@@ -116,18 +116,18 @@ impl ImportCommand {
     }
 }
 
-impl Emit {
+impl ImportOptions {
     pub(super) fn finish(
         &self,
         candidate: Option<&ValidatedConfig>,
         report: impl FnOnce() -> Result<String, serde_json::Error>,
     ) -> Result<String, Box<dyn Error>> {
-        match self.output {
-            ImportOutput::Preview => self.preview(candidate),
-            ImportOutput::Report if self.shadow_port_offset.is_some() => {
-                Err("--shadow-port-offset requires --output preview".into())
+        match self.emit {
+            ImportEmit::Preview => self.preview(candidate),
+            ImportEmit::Report if self.shadow_port_offset.is_some() => {
+                Err("--shadow-port-offset requires --emit preview".into())
             }
-            ImportOutput::Report => Ok(report()?),
+            ImportEmit::Report => Ok(report()?),
         }
     }
 

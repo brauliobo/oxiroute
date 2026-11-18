@@ -43,7 +43,7 @@ pub(crate) enum ImportCommand {
         #[arg(long)]
         x_accel_controls_absent: bool,
         #[command(flatten)]
-        emit: Emit,
+        options: ImportOptions,
     },
     Haproxy {
         #[arg(value_name = "CONFIG", required = true)]
@@ -55,19 +55,19 @@ pub(crate) enum ImportCommand {
         #[arg(long, requires = "node_ip")]
         gpu1_defined: bool,
         #[command(flatten)]
-        emit: Emit,
+        options: ImportOptions,
     },
     Squid {
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
         #[command(flatten)]
-        emit: Emit,
+        options: ImportOptions,
     },
     Apache {
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
         #[command(flatten)]
-        emit: Emit,
+        options: ImportOptions,
     },
     Varnish {
         #[arg(value_name = "CONFIG")]
@@ -81,24 +81,25 @@ pub(crate) enum ImportCommand {
         )]
         arguments: Vec<String>,
         #[command(flatten)]
-        emit: Emit,
+        options: ImportOptions,
     },
 }
 
 #[derive(Args)]
-pub(crate) struct Emit {
+pub(crate) struct ImportOptions {
     /// Shift imported IP socket listener ports for side-by-side validation.
     #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
     pub(super) shadow_port_offset: Option<u16>,
     /// Render preview output in this canonical configuration format.
     #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
     pub(super) format: ComposeFormat,
-    #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
-    pub(super) output: ImportOutput,
+    /// Print the importer's evidence report, or a finalized canonical configuration preview.
+    #[arg(long, value_enum, default_value_t = ImportEmit::Report)]
+    pub(super) emit: ImportEmit,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub(crate) enum ImportOutput {
+pub(crate) enum ImportEmit {
     #[default]
     Report,
     Preview,

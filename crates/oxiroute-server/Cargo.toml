@@ -115,6 +115,10 @@ name = "cli_import"
 path = "tests/cli/import.rs"
 
 [[test]]
+name = "cli_usage"
+path = "tests/cli/usage.rs"
+
+[[test]]
 name = "forward_proxy_h1"
 path = "tests/forward/proxy/h1/main.rs"
 
@@ -161,6 +165,10 @@ path = "tests/process/cache_revalidation_wire.rs"
 [[test]]
 name = "process_check"
 path = "tests/process/check.rs"
+
+[[test]]
+name = "process_cli"
+path = "tests/process/cli.rs"
 
 [[test]]
 name = "process_connection_limit"

@@ -62,7 +62,7 @@ that will be captured by process inspection.
 
 ## Import Failures
 
-Use `--output report`, read blocking errors first, and keep the native source unchanged. A finalized
+Use `--emit report`, read blocking errors first, and keep the native source unchanged. A finalized
 preview can still contain deployment warnings; reproduce user/group/chroot/logging/process behavior
 outside OxiRoute before cutover.
 

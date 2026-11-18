@@ -156,7 +156,7 @@ disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-li
 
 Squid directive coverage is a versioned registry for checkout `6f4c814` in
 [`coverage/squid-directives.json`](../coverage/squid-directives.json). The importer publishes the
-same registry in the machine-readable `capabilities` object of `oxiroute import squid --output
+same registry in the machine-readable `capabilities` object of `oxiroute import squid --emit
 report`. `compatible` is reserved for an exact form with both runtime integration and failure
 coverage. `partial` means an audited subset exists; `unsupported`, `obsolete`, and `not_planned`
 forms are never treated as parity.
