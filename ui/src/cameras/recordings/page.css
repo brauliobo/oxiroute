@@ -1,0 +1,93 @@
+@layer ox.page {
+  .ox-recs {
+    display: grid;
+    gap: var(--ox-gap);
+    align-content: start;
+  }
+
+  .ox-recs-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-recs-heading p {
+    max-width: 44rem;
+  }
+
+  .ox-recs-quota {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+    gap: var(--ox-gap);
+  }
+
+  .ox-recs-root {
+    display: grid;
+    gap: var(--ox-space-5);
+    align-content: start;
+    min-width: 0;
+  }
+
+  .ox-recs-root h3 {
+    font-size: var(--ox-text-lg);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-recs-usage {
+    display: grid;
+    gap: var(--ox-space-2);
+  }
+
+  .ox-recs-usage-text {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-sm);
+  }
+
+  .ox-recs-retention {
+    display: grid;
+    gap: var(--ox-space-2);
+    margin: 0;
+    padding-left: var(--ox-space-7);
+    color: var(--ox-muted);
+    font-size: var(--ox-text-sm);
+  }
+
+  .ox-recs-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    align-items: end;
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-recs-filter-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-recs-note {
+    display: block;
+    margin-top: var(--ox-space-2);
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-recs-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-recs-sort-pick {
+    display: none;
+  }
+
+  @media (max-width: 64rem) {
+    .ox-recs-sort-pick {
+      display: flex;
+    }
+  }
+}
