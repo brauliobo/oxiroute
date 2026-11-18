@@ -3,44 +3,143 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
-pub(super) struct UnixSocketIdentity {
-    pub(super) path_identity: PathIdentity,
-    pub(super) _lease: UnixSocketLease,
+pub(crate) struct UnixSocketIdentity {
+    path_identity: PathIdentity,
+    _lease: UnixSocketLease,
+    default_mode: u16,
+    mode: Mutex<u16>,
 }
 
-pub(super) struct PathIdentity {
-    pub(super) device: u64,
-    pub(super) inode: u64,
-    pub(super) path: PathBuf,
-    pub(super) socket: bool,
+impl UnixSocketIdentity {
+    pub(crate) fn bind(
+        listener_name: &str,
+        path: &Path,
+        mode: Option<u16>,
+    ) -> io::Result<(std::os::unix::net::UnixListener, Self)> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let path_text = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "listener `{listener_name}` Unix socket path is not valid UTF-8 and cannot be bound"
+                ),
+            )
+        })?;
+        let lease = UnixSocketLease::acquire(path)?;
+        remove_stale_unix_socket(path)?;
+        let listener = std::os::unix::net::UnixListener::bind(path).map_err(|source| {
+            io::Error::new(
+                source.kind(),
+                format!(
+                    "listener `{listener_name}` could not bind Unix socket `{path_text}`: {source}"
+                ),
+            )
+        })?;
+        listener.set_nonblocking(true)?;
+        let metadata = std::fs::symlink_metadata(path)?;
+        let default_mode = permission_bits(metadata.mode());
+        let identity = Self {
+            path_identity: PathIdentity {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                path: path.to_owned(),
+                socket: true,
+            },
+            _lease: lease,
+            default_mode,
+            mode: Mutex::new(default_mode),
+        };
+        if let Err(source) = identity.set_mode(identity.target_mode(mode)) {
+            identity.remove_if_unchanged();
+            return Err(source);
+        }
+        Ok((listener, identity))
+    }
+
+    pub(crate) fn target_mode(&self, mode: Option<u16>) -> u16 {
+        mode.unwrap_or(self.default_mode)
+    }
+
+    pub(crate) fn mode(&self) -> u16 {
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn set_mode(&self, target: u16) -> io::Result<()> {
+        use rustix::fs::{AtFlags, CWD, Mode, chmodat};
+
+        let mut current = self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.path_identity.names_same_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Unix socket `{}` no longer names the reserved socket",
+                    self.path_identity.path.display()
+                ),
+            ));
+        }
+        chmodat(
+            CWD,
+            &self.path_identity.path,
+            Mode::from_raw_mode(u32::from(target)),
+            AtFlags::empty(),
+        )
+        .map_err(io::Error::from)?;
+        *current = target;
+        Ok(())
+    }
+
+    pub(crate) fn remove_if_unchanged(&self) {
+        self.path_identity.remove_if_unchanged();
+    }
+}
+
+pub(crate) fn permission_bits(mode: u32) -> u16 {
+    u16::try_from(mode & 0o7777).expect("permission bits fit sixteen bits")
+}
+
+pub(crate) struct PathIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) path: PathBuf,
+    pub(crate) socket: bool,
 }
 
 impl PathIdentity {
-    pub(super) fn remove_if_unchanged(&self) {
+    pub(crate) fn names_same_file(&self) -> bool {
         use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
-        let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
-            return;
-        };
-        if (self.socket && metadata.file_type().is_socket()
-            || !self.socket && metadata.file_type().is_file())
-            && metadata.dev() == self.device
-            && metadata.ino() == self.inode
-        {
+        std::fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
+            (self.socket && metadata.file_type().is_socket()
+                || !self.socket && metadata.file_type().is_file())
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+        })
+    }
+
+    pub(crate) fn remove_if_unchanged(&self) {
+        if self.names_same_file() {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-pub(super) struct UnixSocketLease {
+pub(crate) struct UnixSocketLease {
     _descriptor: rustix::fd::OwnedFd,
     marker_identity: PathIdentity,
 }
 
 impl UnixSocketLease {
-    pub(super) fn acquire(path: &Path) -> io::Result<Self> {
+    pub(crate) fn acquire(path: &Path) -> io::Result<Self> {
         use rustix::{
             fs::{self, FileType, FlockOperation, Mode, OFlags},
             io::Errno,
@@ -149,7 +248,7 @@ fn validate_unix_socket_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn unix_socket_marker_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn unix_socket_marker_path(path: &Path) -> io::Result<PathBuf> {
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -161,7 +260,7 @@ pub(super) fn unix_socket_marker_path(path: &Path) -> io::Result<PathBuf> {
     Ok(path.with_file_name(marker_name))
 }
 
-pub(super) fn remove_stale_unix_socket(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_stale_unix_socket(path: &Path) -> io::Result<()> {
     use rustix::{
         io::Errno,
         net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with},

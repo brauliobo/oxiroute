@@ -1,7 +1,7 @@
 use std::{fs, os::unix::fs::PermissionsExt as _, time::Duration};
 
 use oxiroute_config::{ListenerBind, Management};
-use serde_json::{Value, json};
+use serde_json::json;
 use tempfile::TempDir;
 
 use crate::http_support::http_request;
@@ -56,11 +56,7 @@ async fn built_process_activates_a_real_unix_listener() {
 
 #[cfg(unix)]
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one process test covers validation, save, active preservation, and restart application"
-)]
-async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket() {
+async fn unix_listener_mode_change_is_applied_in_place_by_the_saved_configuration() {
     let directory = TempDir::new().expect("Unix mode reload case");
     let socket_path = directory.path().join("listener.sock");
     let management_address = reserve_tcp_address();
@@ -89,10 +85,7 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     )
     .await
     .json();
-    let active_revision = snapshot["activeRevision"]
-        .as_str()
-        .expect("active revision")
-        .to_owned();
+    let active_revision = snapshot["activeRevision"].clone();
 
     let mut candidate = active.clone();
     candidate.listeners[0].bind = ListenerBind::Unix {
@@ -114,33 +107,20 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     .await;
     assert_eq!(validated.status, 200, "{}", validated.text());
     let validated = validated.json();
-    assert_eq!(validated["restartRequired"], true);
-    let direct_diagnostic = validated["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
-        .expect("direct restart diagnostic");
-    assert_eq!(direct_diagnostic["path"], "/config/listeners");
-    assert_eq!(
-        direct_diagnostic["message"],
-        "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
-    );
+    assert_eq!(validated["restartRequired"], false);
     assert!(
         validated["diagnostics"]
             .as_array()
-            .is_some_and(|diagnostics| diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED"))
+            .unwrap()
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != "I_RESTART_REQUIRED")
     );
     assert_eq!(
-        fs::metadata(&socket_path)
-            .expect("validated active Unix socket")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
+        socket_mode(&socket_path),
+        0o600,
+        "validation changes nothing"
     );
+
     let saved = http_request(
         management_address,
         "PUT",
@@ -158,64 +138,40 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     .await;
     assert_eq!(saved.status, 200, "{}", saved.text());
     let saved = saved.json();
-    assert_eq!(saved["outcome"], "saved_restart_required");
-    assert_eq!(saved["activationState"], "restart_required");
-    assert_eq!(saved["restartRequired"], true);
-    let direct_diagnostic = saved["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
-        .expect("saved direct restart diagnostic");
-    assert_eq!(direct_diagnostic["path"], "/config/listeners");
-    assert_eq!(
-        direct_diagnostic["message"],
-        "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
-    );
-    assert_eq!(saved["activeRevision"], active_revision);
-    assert!(saved["diagnostics"].as_array().is_some_and(|diagnostics| {
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
-    }));
-    assert_eq!(
-        fs::metadata(&socket_path)
-            .expect("active Unix socket")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let status = http_request(
-        management_address,
-        "GET",
-        "/api/v1/generations",
-        &[("Authorization", &authorization)],
-        &[],
-    )
-    .await
-    .json();
-    assert_eq!(status["generation"]["activeRevision"], active_revision);
-    assert_eq!(status["generation"]["quarantinedRevision"], Value::Null);
-    assert_eq!(status["generation"]["lastFailure"], Value::Null);
+    assert_eq!(saved["restartRequired"], false);
+    assert_eq!(saved["outcome"], "saved_pending_activation");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        let status = http_request(
+            management_address,
+            "GET",
+            "/api/v1/generations",
+            &[("Authorization", &authorization)],
+            &[],
+        )
+        .await
+        .json();
+        if status["generation"]["activeRevision"] != active_revision {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the saved mode did not activate"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert_eq!(status["generation"]["degraded"], false);
+    assert_eq!(socket_mode(&socket_path), 0o660);
     let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
     assert_eq!(ready.status, 200, "{}", ready.text());
     server.shutdown();
+}
 
-    let mut restarted = ServerProcess::start(
-        &candidate.validate().expect("valid restart candidate"),
-        Some(TOKEN),
-    );
-    restarted.wait_for_unix(&socket_path).await;
-    assert_eq!(
-        fs::metadata(&socket_path)
-            .expect("restarted Unix socket")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o660
-    );
-    restarted.shutdown();
+fn socket_mode(path: &std::path::Path) -> u32 {
+    fs::metadata(path)
+        .expect("Unix socket metadata")
+        .permissions()
+        .mode()
+        & 0o777
 }

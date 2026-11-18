@@ -62,6 +62,7 @@ mod reload;
 mod replacement;
 mod stores;
 mod udp;
+mod unix_mode;
 
 #[allow(clippy::wildcard_imports)]
 use configs::*;

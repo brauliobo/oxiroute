@@ -2,18 +2,13 @@
 use super::*;
 
 #[cfg(unix)]
-#[test]
-fn unix_reservation_reload_reuses_only_an_identical_path_and_mode() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let directory = tempfile::tempdir().expect("Unix reservation directory");
-    let path = directory.path().join("reload.sock");
-    let mut first_config = empty_config();
-    first_config.listeners.push(oxiroute_config::Listener {
+fn unix_mode_config(path: &std::path::Path, mode: Option<u16>) -> ConfigDraft {
+    let mut config = empty_config();
+    config.listeners.push(oxiroute_config::Listener {
         name: "unix".into(),
         bind: ListenerBind::Unix {
-            path: path.clone(),
-            mode: Some(0o600),
+            path: path.to_owned(),
+            mode,
         },
         protocol: oxiroute_config::Protocol::Http,
         service: Some("http".into()),
@@ -24,48 +19,116 @@ fn unix_reservation_reload_reuses_only_an_identical_path_and_mode() {
         h2_initial_stream_window: None,
         h2_initial_connection_window: None,
     });
-    let first = prepare_reservations(&first_config, None).expect("first Unix bind");
-    let unchanged =
-        prepare_reservations(&first_config, Some(&first)).expect("identical Unix bind reuse");
+    config
+}
+
+#[cfg(unix)]
+fn socket_mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::metadata(path)
+        .expect("reserved socket metadata")
+        .permissions()
+        .mode()
+        & 0o7777
+}
+
+#[cfg(unix)]
+#[test]
+fn a_changed_unix_mode_is_applied_to_the_kept_socket_and_keeps_its_connections() {
+    use std::io::{Read as _, Write as _};
+
+    let directory = tempfile::tempdir().expect("Unix reservation directory");
+    let path = directory.path().join("reload.sock");
+    let default_path = directory.path().join("default.sock");
+    let default = prepare_reservations(&unix_mode_config(&default_path, None), None)
+        .expect("Unix bind without a mode");
+    let first =
+        prepare_reservations(&unix_mode_config(&path, Some(0o600)), None).expect("first Unix bind");
+    assert_eq!(socket_mode(&path), 0o600);
+    let listener = std::os::unix::net::UnixListener::from(
+        first
+            .get("unix")
+            .expect("first")
+            .duplicate_owned_fd()
+            .expect("duplicate"),
+    );
+    let client = std::os::unix::net::UnixStream::connect(&path).expect("established client");
+    let (mut accepted, _) = listener.accept().expect("accepted client");
+
+    let loosened = prepare_reservations(&unix_mode_config(&path, Some(0o660)), Some(&first))
+        .expect("mode change on the kept path");
     assert!(Arc::ptr_eq(
         &first.get("unix").expect("first").inner,
-        &unchanged.get("unix").expect("unchanged").inner,
+        &loosened.get("unix").expect("loosened").inner,
     ));
+    assert_eq!(socket_mode(&path), 0o660);
+    let mut tightened =
+        prepare_reservations(&unix_mode_config(&path, Some(0o640)), Some(&loosened))
+            .expect("tightening on the kept path");
+    assert_eq!(socket_mode(&path), 0o640);
+    drop((loosened, first));
+    assert_eq!(socket_mode(&path), 0o640);
 
-    let mut changed_config = first_config.clone();
-    changed_config.listeners[0].bind = ListenerBind::Unix {
-        path: path.clone(),
-        mode: Some(0o660),
-    };
-    let validated_config =
-        validated_test_config(&changed_config).expect("valid changed Unix config");
-    let validated = ListenerReservations::prepare_for_validation(&validated_config, Some(&first))
+    (&client)
+        .write_all(b"ping")
+        .expect("established client survives");
+    let mut received = [0_u8; 4];
+    accepted
+        .read_exact(&mut received)
+        .expect("accepted side survives");
+    assert_eq!(&received, b"ping");
+    tightened = prepare_reservations(&unix_mode_config(&path, None), Some(&tightened))
+        .expect("an unset mode returns to the bind default");
+    assert_eq!(socket_mode(&path), socket_mode(&default_path));
+    drop((tightened, default));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_discarded_candidate_restores_the_unix_mode_it_changed() {
+    let directory = tempfile::tempdir().expect("Unix reservation directory");
+    let path = directory.path().join("restore.sock");
+    let active = prepare_reservations(&unix_mode_config(&path, Some(0o600)), None)
+        .expect("active Unix bind");
+
+    let candidate = prepare_reservations(&unix_mode_config(&path, Some(0o666)), Some(&active))
+        .expect("candidate mode change");
+    assert_eq!(socket_mode(&path), 0o666);
+    drop(candidate);
+    assert_eq!(socket_mode(&path), 0o600);
+
+    let committed = prepare_reservations(&unix_mode_config(&path, Some(0o660)), Some(&active))
+        .expect("committed mode change");
+    let next = prepare_reservations(&unix_mode_config(&path, Some(0o660)), Some(&committed))
+        .expect("next reload settles the committed mode");
+    drop((committed, active));
+    assert_eq!(socket_mode(&path), 0o660);
+    drop(next);
+}
+
+#[cfg(unix)]
+#[test]
+fn validation_reuses_the_unix_path_without_changing_its_mode() {
+    let directory = tempfile::tempdir().expect("Unix reservation directory");
+    let path = directory.path().join("validate.sock");
+    let active = prepare_reservations(&unix_mode_config(&path, Some(0o600)), None)
+        .expect("active Unix bind");
+    let candidate = validated_test_config(&unix_mode_config(&path, Some(0o660)))
+        .expect("valid candidate config");
+
+    let validation = ListenerReservations::prepare_for_validation(&candidate, Some(&active))
         .expect("validation reuses the active Unix path");
     assert!(Arc::ptr_eq(
-        &first.get("unix").expect("first").inner,
-        &validated.get("unix").expect("validated").inner,
+        &active.get("unix").expect("active").inner,
+        &validation.get("unix").expect("validation").inner,
     ));
-    assert!(ListenerReservations::listener_restart_required(
+    assert_eq!(socket_mode(&path), 0o600);
+    assert!(!ListenerReservations::listener_restart_required(
         crate::RuntimeMode::Direct,
-        &validated_test_config(&first_config).expect("valid first config"),
-        &validated_config,
+        &validated_test_config(&unix_mode_config(&path, Some(0o600))).expect("valid active"),
+        &candidate,
     ));
-    changed_config.listeners[0].max_connections = Some(7);
-    assert!(ListenerReservations::listener_restart_required(
-        crate::RuntimeMode::Direct,
-        &validated_test_config(&first_config).expect("valid first config"),
-        &validated_test_config(&changed_config).expect("valid changed config"),
-    ));
-    assert!(prepare_reservations(&changed_config, Some(&first)).is_err());
-    assert_eq!(
-        std::fs::metadata(path)
-            .expect("reserved socket metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600,
-        "a changed mode must not silently reuse the old reservation"
-    );
 }
 
 #[cfg(unix)]

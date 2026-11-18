@@ -18,11 +18,11 @@ use crate::listener::inventory::{
 #[cfg(unix)]
 mod quic;
 #[cfg(unix)]
-mod unix_socket;
-#[cfg(all(unix, test))]
-use unix_socket::unix_socket_marker_path;
+mod unix;
 #[cfg(unix)]
-use unix_socket::{PathIdentity, UnixSocketIdentity, UnixSocketLease, remove_stale_unix_socket};
+use unix::{UnixModeChange, UnixSocketIdentity};
+#[cfg(all(unix, test))]
+use unix::{UnixSocketLease, unix_socket_marker_path};
 
 #[derive(Clone)]
 pub struct ListenerReservation {
@@ -110,7 +110,7 @@ impl Drop for ReservationInner {
     fn drop(&mut self) {
         #[cfg(unix)]
         if let Some(unix_socket) = &self.unix_socket {
-            unix_socket.path_identity.remove_if_unchanged();
+            unix_socket.remove_if_unchanged();
         }
     }
 }
@@ -139,8 +139,6 @@ impl ListenerReservation {
     ) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt as _;
-
             let (socket, unix_socket, bind_text) = match bind {
                 ListenerBind::Socket { address, ipv6_only } => {
                     let listener = bind_tcp(*address, *ipv6_only).map_err(|source| {
@@ -170,49 +168,12 @@ impl ListenerReservation {
                     )
                 }
                 ListenerBind::Unix { path, mode } => {
-                    let path_text = path.to_str().ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "listener `{listener_name}` Unix socket path is not valid UTF-8 and cannot be bound"
-                            ),
-                        )
-                    })?;
-                    let lease = UnixSocketLease::acquire(path)?;
-                    remove_stale_unix_socket(path)?;
-                    let listener = std::os::unix::net::UnixListener::bind(path).map_err(|source| {
-                        io::Error::new(
-                            source.kind(),
-                            format!(
-                                "listener `{listener_name}` could not bind Unix socket `{path_text}`: {source}"
-                            ),
-                        )
-                    })?;
-                    listener.set_nonblocking(true)?;
-                    let metadata = std::fs::symlink_metadata(path)?;
-                    let path_identity = PathIdentity {
-                        device: metadata.dev(),
-                        inode: metadata.ino(),
-                        path: path.clone(),
-                        socket: true,
-                    };
-                    if let Some(mode) = mode {
-                        use std::os::unix::fs::PermissionsExt as _;
-                        if let Err(source) = std::fs::set_permissions(
-                            path,
-                            std::fs::Permissions::from_mode(u32::from(*mode)),
-                        ) {
-                            path_identity.remove_if_unchanged();
-                            return Err(source);
-                        }
-                    }
+                    let (listener, identity) =
+                        UnixSocketIdentity::bind(listener_name, path, *mode)?;
                     (
                         ReservedSocket::Unix(listener),
-                        Some(UnixSocketIdentity {
-                            path_identity,
-                            _lease: lease,
-                        }),
-                        path_text.to_owned(),
+                        Some(identity),
+                        path.to_string_lossy().into_owned(),
                     )
                 }
             };
@@ -400,9 +361,17 @@ impl ListenerReservation {
 
 type ReservationKey = ListenerId;
 
+#[derive(Clone, Copy)]
+struct PrepareOptions {
+    apply_unix_modes: bool,
+    share_udp: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct ListenerReservations {
     by_key: HashMap<ReservationKey, ListenerReservation>,
+    #[cfg(unix)]
+    unix_mode_changes: Vec<Arc<UnixModeChange>>,
 }
 
 impl ListenerReservations {
@@ -423,7 +392,10 @@ impl ListenerReservations {
         Self::prepare_inventory(
             &ListenerInventory::compile(config),
             previous,
-            (false, shares_udp(config)),
+            PrepareOptions {
+                apply_unix_modes: true,
+                share_udp: shares_udp(config),
+            },
         )
     }
 
@@ -431,33 +403,76 @@ impl ListenerReservations {
         config: &ValidatedConfig,
         previous: Option<&Self>,
     ) -> io::Result<Self> {
-        // Validation intentionally performs real, temporary bind probes. Dropping the returned
-        // set closes descriptors and removes any Unix socket namespace entries it created.
         Self::prepare_inventory(
             &ListenerInventory::compile(config),
             previous,
-            (true, shares_udp(config)),
+            PrepareOptions {
+                apply_unix_modes: false,
+                share_udp: shares_udp(config),
+            },
         )
     }
 
     fn prepare_inventory(
         inventory: &ListenerInventory,
         previous: Option<&Self>,
-        (reuse_unix_path, share_udp): (bool, bool),
+        options: PrepareOptions,
     ) -> io::Result<Self> {
-        let mut by_key = HashMap::with_capacity(inventory.len());
+        let mut prepared = Self {
+            by_key: HashMap::with_capacity(inventory.len()),
+            ..Self::default()
+        };
         for entry in inventory.entries() {
-            let reservation = previous
-                .and_then(|reservations| reservations.by_bind(&entry.bind, reuse_unix_path))
-                .cloned()
-                .map_or_else(
-                    || ListenerReservation::bind_with(&entry.name, &entry.bind, share_udp),
-                    Ok,
-                )?;
-            by_key.insert(entry.id.clone(), reservation);
+            let reservation = match previous.and_then(|kept| kept.by_bind(&entry.bind)) {
+                Some(kept) => {
+                    prepared.retarget(kept, &entry.bind, options)?;
+                    kept.clone()
+                }
+                None => {
+                    ListenerReservation::bind_with(&entry.name, &entry.bind, options.share_udp)?
+                }
+            };
+            prepared.by_key.insert(entry.id.clone(), reservation);
         }
-        Ok(Self { by_key })
+        if options.apply_unix_modes {
+            previous.inspect(|kept| kept.settle_unix_modes());
+        }
+        Ok(prepared)
     }
+
+    #[cfg(unix)]
+    fn retarget(
+        &mut self,
+        kept: &ListenerReservation,
+        bind: &ListenerBind,
+        options: PrepareOptions,
+    ) -> io::Result<()> {
+        if let (true, ListenerBind::Unix { mode, .. }) = (options.apply_unix_modes, bind) {
+            self.unix_mode_changes
+                .extend(UnixModeChange::apply(kept, *mode)?);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn retarget(
+        &mut self,
+        _kept: &ListenerReservation,
+        _bind: &ListenerBind,
+        _options: PrepareOptions,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn settle_unix_modes(&self) {
+        self.unix_mode_changes
+            .iter()
+            .for_each(|change| change.settle());
+    }
+
+    #[cfg(not(unix))]
+    fn settle_unix_modes(&self) {}
 
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ListenerReservation> {
@@ -608,14 +623,16 @@ impl ListenerReservations {
                 "listener adoption left unconsumed descriptor slots",
             ));
         }
-        Ok(Self { by_key })
+        Ok(Self {
+            by_key,
+            ..Self::default()
+        })
     }
 
-    fn by_bind(&self, bind: &ListenerBind, reuse_unix_path: bool) -> Option<&ListenerReservation> {
-        self.by_key.values().find(|reservation| {
-            same_bind_identity(reservation.bind_config(), bind)
-                || reuse_unix_path && same_unix_path(reservation.bind_config(), bind)
-        })
+    fn by_bind(&self, bind: &ListenerBind) -> Option<&ListenerReservation> {
+        self.by_key
+            .values()
+            .find(|reservation| same_bind_identity(reservation.bind_config(), bind))
     }
 
     #[must_use]
@@ -844,28 +861,11 @@ fn same_bind_identity(left: &ListenerBind, right: &ListenerBind) -> bool {
         (ListenerBind::Udp { address: left }, ListenerBind::Udp { address: right }) => {
             left == right
         }
-        (
-            ListenerBind::Unix {
-                path: left_path,
-                mode: left_mode,
-            },
-            ListenerBind::Unix {
-                path: right_path,
-                mode: right_mode,
-            },
-        ) => left_path == right_path && left_mode == right_mode,
+        (ListenerBind::Unix { path: left, .. }, ListenerBind::Unix { path: right, .. }) => {
+            left == right
+        }
         _ => false,
     }
-}
-
-fn same_unix_path(left: &ListenerBind, right: &ListenerBind) -> bool {
-    matches!(
-        (left, right),
-        (
-            ListenerBind::Unix { path: left, .. },
-            ListenerBind::Unix { path: right, .. }
-        ) if left == right
-    )
 }
 
 #[cfg(test)]

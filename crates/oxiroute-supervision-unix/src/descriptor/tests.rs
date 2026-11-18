@@ -99,15 +99,14 @@ fn the_same_address_with_another_socket_kind_is_a_different_socket() {
 }
 
 #[test]
-fn a_unix_socket_matches_by_path_and_mode() {
+fn a_unix_socket_matches_by_path_whatever_its_mode() {
     let current = manifest(vec![unix(0, "local", "/run/a.sock", Some(0o660))]);
     let same = manifest(vec![unix(5, "local", "/run/a.sock", Some(0o660))]);
     assert_eq!(current.diff(&same).kept, [(SlotId(0), SlotId(5))]);
     let other_mode = manifest(vec![unix(0, "local", "/run/a.sock", Some(0o600))]);
     let diff = current.diff(&other_mode);
-    assert!(diff.kept.is_empty());
-    assert_eq!(diff.removed, [SlotId(0)]);
-    assert_eq!(diff.added, [SlotId(0)]);
+    assert_eq!(diff.kept, [(SlotId(0), SlotId(0))]);
+    assert!(diff.is_unchanged());
     let other_path = manifest(vec![unix(0, "local", "/run/b.sock", Some(0o660))]);
     assert!(current.diff(&other_path).kept.is_empty());
 }

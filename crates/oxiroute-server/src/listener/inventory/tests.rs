@@ -109,7 +109,7 @@ fn descriptor_compatibility_ignores_runtime_policy_but_not_topology() {
 }
 
 #[test]
-fn only_a_unix_socket_that_keeps_its_path_and_changes_its_mode_needs_a_restart() {
+fn no_listener_change_but_ipv6_only_on_a_kept_address_needs_a_restart() {
     let active = matrix_config();
     let assert_restart = |candidate: oxiroute_config::ValidatedConfig, expected: bool| {
         let active_inventory = ListenerInventory::compile(&active);
@@ -120,7 +120,7 @@ fn only_a_unix_socket_that_keeps_its_path_and_changes_its_mode_needs_a_restart()
         );
         assert_eq!(
             active_inventory.restart_reason(&candidate_inventory),
-            expected.then_some(ListenerRestartReason::UnixModeChange),
+            expected.then_some(ListenerRestartReason::Ipv6OnlyChange),
         );
     };
     let validated = |draft: ConfigDraft| draft.validate().expect("valid matrix candidate");
@@ -157,7 +157,7 @@ fn only_a_unix_socket_that_keeps_its_path_and_changes_its_mode_needs_a_restart()
         panic!("Unix fixture")
     };
     *mode = Some(0o660);
-    assert_restart(validated(unix_mode), true);
+    assert_restart(validated(unix_mode), false);
 
     let mut removed_listener = active.to_draft();
     removed_listener.listeners.remove(0);

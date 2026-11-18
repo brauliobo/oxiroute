@@ -1824,22 +1824,24 @@ restricted Lua, UCI, or HOCON.
 - The backend MUST re-read and compare immediately before writing.
 - A mismatch returns a conflict and does not write.
 - Validation and writes prepare the complete candidate runtime, management UI assets, and Certbot
-  watcher prerequisites before any disk mutation. The sole live-reservation exception is an
-  explicitly detected active Unix-listener mode change: the plan is validated without rebinding the
-  active path and the complete candidate is marked restart-required. Every other listener change
-  (added, removed or moved bind addresses, and changed protocol, service or TLS profile) is
-  validated by binding the addresses the active generation does not already own and then releasing
-  them, and is reported in an `I_LISTENER_CHANGES` diagnostic.
+  watcher prerequisites before any disk mutation. Validation never changes an active socket, a
+  Unix listener mode included. Every listener change (added, removed or moved bind addresses, and
+  changed protocol, service, TLS profile or Unix mode) is validated by binding the addresses the
+  active generation does not already own and then releasing them, and is reported in an
+  `I_LISTENER_CHANGES` diagnostic. A TCP socket that keeps its address and changes `ipv6_only`
+  returns `restartRequired = true`.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
 - A changed save normally returns `saved_pending_activation`; an idempotent save of the active
   generation returns `unchanged_active`. The parent-directory watcher and generation supervisor
   prepare, start, and atomically publish reloadable changed generations in-process, binding added
   listeners before publication and closing removed listeners after their accepted connections drain.
-  A candidate that changes the mode of an active Unix listener instead returns
+  A candidate that changes `ipv6_only` of a kept TCP address instead returns
   `saved_restart_required`, `activationState = "restart_required"`, and `restartRequired = true`;
   candidate preparation does not mutate or silently reuse the active socket, and the complete
-  candidate is applied on process restart.
+  candidate is applied on process restart. A candidate that changes the mode of a kept Unix socket
+  applies it in place (`chmod` on the unchanged socket) when the candidate is prepared, and gives
+  the socket its previous mode back when the candidate is turned down.
 - The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
   files plus include/glob parent directories, rebuilds that set after each successful resolution, and
   periodically re-resolves the root and native references. Invalid edits are rejected while the last

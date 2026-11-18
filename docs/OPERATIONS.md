@@ -595,10 +595,11 @@ Cost. One snapshot build per second is shared by every viewer of a page, however
 measured cost of a build and the page weight are recorded in the release notes, filled in from the
 benchmark run by the release notes owner.
 
-Changing the mode of an active Unix listener is not a live reload, even when the candidate contains
-other changes. The configuration API saves the valid candidate as `saved_restart_required` with
-`restartRequired = true`, leaves the complete active generation and socket mode untouched, and
-applies the saved candidate when the process is restarted. Unix listeners retain an exclusive
+Changing the mode of an active Unix listener is a live reload like any other: the socket keeps its
+path, its inode and the connections it accepted, and the new mode is applied to the socket in place
+when the candidate is prepared, so a client that connects after that sees it. A candidate that is
+turned down (it cannot bind another listener, or the replacement worker refuses it) gives the
+socket the mode it had before. Unix listeners retain an exclusive
 `<socket>.oxiroute.lock` ownership marker so abnormal termination can safely reclaim unchanged
 stale sockets that reject connection attempts. Permission-denied sockets fail closed because their
 liveness cannot be proven.
@@ -624,11 +625,11 @@ time left of each server, and joins, changes, departures and expiries are `serve
 ### Listener changes on reload
 
 A reload compares the sockets of the running revision with those of the new one. A socket is
-identified by its transport and bind address (and, for a Unix socket, its path and mode), not by the
-listener's name, position or protocol.
+identified by its transport and bind address (for a Unix socket, its path), not by the listener's
+name, position, protocol or Unix mode.
 
 - **Kept**: the same bind address. The socket is never closed or re-bound, so connections already
-  queued on it are accepted by the new revision. A kept listener may change its protocol, service,
+  queued on it are accepted by the new revision. A kept Unix socket takes a changed `mode` in place. A kept listener may change its protocol, service,
   TLS profile, limits and timeouts at the same time; the new revision applies them to every new
   connection while connections accepted earlier finish under the old revision.
 - **Added**: a new bind address. It is bound before any traffic moves to the new revision.
@@ -677,6 +678,9 @@ metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`
 `oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
 them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.
 
+One case still needs a process restart: a TCP socket that keeps its address and changes `ipv6_only`,
+because the new socket would need the port the running one owns.
+
 ### Stores one worker writes
 
 A disk cache store (`cache_stores` with `type = "disk"`) and a managed ACME state root
@@ -693,9 +697,6 @@ reload is rejected, the active worker takes it back and the log names the store,
 `managed ACME certificate `www` state at `/var/lib/oxiroute/acme` is owned by the active worker`; a
 store another daemon owns is not shared. In the direct runtime the same hand-over runs between the
 two generations of the process.
-
-One case still needs a process restart: a Unix socket that keeps its path and changes its mode,
-because the new socket would need the path the running one owns.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor
 may be group/world writable unless it has the sticky bit.
 

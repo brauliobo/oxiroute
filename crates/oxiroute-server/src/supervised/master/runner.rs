@@ -325,8 +325,8 @@ impl MasterRunner {
             )?;
             catalog.record_restart_required(restart_required)?;
             warn!(
-                "supervised master retained a configuration reload that changes the mode of a \
-                 unix listener socket; restart the service to apply it"
+                "supervised master retained a configuration reload that changes ipv6_only of a \
+                 listener socket; restart the service to apply it"
             );
             return Ok(());
         }

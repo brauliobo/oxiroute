@@ -214,8 +214,9 @@ impl DescriptorManifest {
 
     /// Compares this manifest with the next one by the kernel socket each slot stands for.
     ///
-    /// Two slots refer to the same socket when their kind, bind identity and Unix mode are equal,
-    /// whatever their slot identifier or role (a renamed listener keeps its socket). A slot without
+    /// Two slots refer to the same socket when their kind and bind identity are equal, whatever
+    /// their slot identifier, role or Unix mode (a renamed listener keeps its socket, and a socket
+    /// takes a changed mode in place). A slot without
     /// a bind identity is matched by role instead. Slots are paired in manifest order, so a
     /// manifest that repeats one identity pairs the repeats one to one.
     #[must_use]
@@ -320,7 +321,6 @@ impl ListenerChanges {
 fn same_socket(left: &DescriptorSlot, right: &DescriptorSlot) -> bool {
     left.kind == right.kind
         && left.bind == right.bind
-        && left.mode == right.mode
         && (left.bind.is_some() || left.role == right.role)
 }
 

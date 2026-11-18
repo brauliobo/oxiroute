@@ -233,6 +233,10 @@ name = "process_store_reload"
 path = "tests/process/store_reload.rs"
 
 [[test]]
+name = "process_socket_reload"
+path = "tests/process/socket_reload/main.rs"
+
+[[test]]
 name = "process_top"
 path = "tests/process/top.rs"
 

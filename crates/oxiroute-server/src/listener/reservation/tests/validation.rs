@@ -49,7 +49,7 @@ fn validation_unix_probe_removes_its_temporary_namespace_entries() {
 
 #[cfg(unix)]
 #[test]
-fn validation_source_preserves_direct_capacity_and_unix_path_only_reuse_semantics() {
+fn validation_source_preserves_direct_capacity_and_unix_path_reuse() {
     let direct = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
     assert_eq!(
         ListenerReservations::prepare_for_validation(&direct, None)
@@ -93,7 +93,6 @@ fn validation_source_preserves_direct_capacity_and_unix_path_only_reuse_semantic
             .expect("validation Unix reservation")
             .inner,
     ));
-    assert!(ListenerReservations::prepare(&changed, Some(&active)).is_err());
     drop(validation);
     assert!(path.exists(), "validation unlinked the active Unix socket");
     drop(active);

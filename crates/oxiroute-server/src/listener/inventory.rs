@@ -41,8 +41,6 @@ pub(crate) enum ListenerMetricPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ListenerRestartReason {
-    /// A Unix socket keeps its path and changes its mode, which a running socket cannot do.
-    UnixModeChange,
     /// A TCP socket keeps its address and changes `ipv6_only`, which a running socket cannot do.
     Ipv6OnlyChange,
 }
@@ -232,9 +230,9 @@ impl ListenerInventory {
     ///
     /// Listeners that are added, removed, renamed, reordered or given another protocol or TLS
     /// profile never need a restart: a reload binds the new sockets, carries over the sockets whose
-    /// bind address is unchanged and closes the removed ones after draining. Only a Unix socket
-    /// that keeps its path and changes its mode, or a TCP socket that keeps its address and changes
-    /// `ipv6_only`, is refused, because the new socket would need the path or port the running one owns.
+    /// bind address is unchanged and closes the removed ones after draining. A Unix socket that
+    /// keeps its path takes a changed mode in place. Only a TCP socket that keeps its address and
+    /// changes `ipv6_only` is refused, because the new socket would need the port the running one owns.
     pub(crate) fn restart_reason(&self, candidate: &Self) -> Option<ListenerRestartReason> {
         candidate.entries.iter().find_map(|candidate| {
             self.entries
@@ -257,15 +255,6 @@ fn restart_reason(
     candidate: &ListenerBind,
 ) -> Option<ListenerRestartReason> {
     match (active, candidate) {
-        (
-            ListenerBind::Unix { path, mode },
-            ListenerBind::Unix {
-                path: candidate_path,
-                mode: candidate_mode,
-            },
-        ) if path == candidate_path && mode != candidate_mode => {
-            Some(ListenerRestartReason::UnixModeChange)
-        }
         (
             ListenerBind::Socket { address, ipv6_only },
             ListenerBind::Socket {

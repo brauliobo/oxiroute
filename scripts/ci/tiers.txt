@@ -238,6 +238,7 @@ oxiroute::process_management                          core
 oxiroute::process_registry                            planes
 oxiroute::process_rtmp_runtime                        planes
 oxiroute::process_store_reload                        core
+oxiroute::process_socket_reload                       planes
 oxiroute::process_top                                 planes
 oxiroute::process_udp_drain                           core
 oxiroute::process_worker_scaling                      planes
