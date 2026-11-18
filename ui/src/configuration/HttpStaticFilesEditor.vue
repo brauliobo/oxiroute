@@ -2,10 +2,10 @@
 .action-editor
   .field-grid
     ConfigField.field-wide(path="http_services[].routes[].action.root_directory" label="Static root directory")
-      input(type="text" v-model="action.root_directory" required placeholder="/srv/www")
+      Input(v-model="action.root_directory" required placeholder="/srv/www")
       small Authenticated configuration only; the absolute root is suppressed from topology views.
     ConfigField(path="http_services[].routes[].action.spa_fallback" label="SPA fallback path")
-      input(type="text" :value="action.spa_fallback ?? ''" placeholder="Optional relative path" @input="setFallback")
+      Input(:model-value="action.spa_fallback ?? ''" placeholder="Optional relative path" @input="setFallback")
   StringListField(
     v-model="action.index_files"
     label="Index files"
@@ -25,6 +25,7 @@
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
 import StringListField from '../StringListField.vue'
 import type { HttpStaticFilesActionConfig } from '../config'
 import ConfigField from './fields/ConfigField.vue'

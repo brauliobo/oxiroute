@@ -1,5 +1,5 @@
 <template lang="pug">
-.capability-panel.canonical-unavailable-panel(role="alert")
+Card.capability-panel.canonical-unavailable-panel(role="alert")
   span.capability-index 503
   div
     h3 Canonical configuration unavailable
@@ -20,18 +20,15 @@
           span {{ diagnostic.severity }}
           code {{ diagnostic.code }}
         strong {{ diagnostic.message }}
-    button.secondary-button(type="button" @click="emit('retry')") Retry configuration load
+    Button.secondary-button(@click="emit('retry')") Retry configuration load
 </template>
 
 <script setup lang="ts" vapor>
+import Card from '#design/panel/Card.vue'
+import Button from '#design/button/Button.vue'
 import { shortRevision } from '../../formatters'
 import type { CanonicalUnavailableState } from './loadErrors'
 
 defineProps<{ state: CanonicalUnavailableState }>()
 const emit = defineEmits<{ retry: [] }>()
 </script>
-
-<style scoped src="./base.css"></style>
-<style scoped src="./controls.css"></style>
-<style scoped src="./panels.css"></style>
-<style scoped src="./diagnostics.css"></style>

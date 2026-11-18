@@ -4,7 +4,7 @@ ItemScope.route-card.http-route-card(:index="index")
     div
       strong Route {{ index + 1 }}
       span.route-summary {{ routeSummary }}
-    button.danger-link(type="button" :aria-label="`Remove route ${index + 1}`" @click="emit('remove')") Remove
+    Button.danger-link(variant="danger" small :aria-label="`Remove route ${index + 1}`" @click="emit('remove')") Remove
 
   ConfigGroup.object-block(path="http_services[].routes[].host" legend="Host matcher")
     label.enable-row
@@ -12,22 +12,22 @@ ItemScope.route-card.http-route-card(:index="index")
       span Match a specific host or authority
     .field-grid(v-if="route.host")
       ConfigField(path="http_services[].routes[].host.kind" label="Host match kind")
-        select(v-model="route.host.kind")
-          option(value="normalized_host") Normalized host
-          option(value="exact_authority") Exact authority
-          option(value="ascii_case_insensitive_exact_authority") ASCII case-insensitive exact authority
+        Select(
+          v-model="route.host.kind"
+          :options="[{ value: 'normalized_host', label: 'Normalized host' }, { value: 'exact_authority', label: 'Exact authority' }, { value: 'ascii_case_insensitive_exact_authority', label: 'ASCII case-insensitive exact authority' }]"
+        )
       ConfigField(path="http_services[].routes[].host.value" :label="`${route.host.kind.includes('authority') ? 'Authority' : 'Host'} value`")
-        input(type="text" v-model="route.host.value" :placeholder="route.host.kind === 'ascii_case_insensitive_exact_authority' ? 'API.Example.Test:8443' : route.host.kind === 'exact_authority' ? 'api.example.test:8443' : '*.example.test'")
+        Input(v-model="route.host.value" :placeholder="route.host.kind === 'ascii_case_insensitive_exact_authority' ? 'API.Example.Test:8443' : route.host.kind === 'exact_authority' ? 'api.example.test:8443' : '*.example.test'")
 
   ConfigGroup.object-block(path="http_services[].routes[].path" legend="Path matcher")
     .field-grid
       ConfigField(path="http_services[].routes[].path.kind" label="Path match kind")
-        select(v-model="route.path.kind")
-          option(value="segment_prefix") Segment prefix
-          option(value="raw_prefix") Raw prefix
-          option(value="exact") Exact path
+        Select(
+          v-model="route.path.kind"
+          :options="[{ value: 'segment_prefix', label: 'Segment prefix' }, { value: 'raw_prefix', label: 'Raw prefix' }, { value: 'exact', label: 'Exact path' }]"
+        )
       ConfigField(path="http_services[].routes[].path.value" label="Absolute path")
-        input(type="text" v-model="route.path.value" placeholder="/api")
+        Input(v-model="route.path.value" placeholder="/api")
         small Segment prefix respects path boundaries; raw prefix matches bytes directly.
 
   StringListField(
@@ -46,23 +46,24 @@ ItemScope.route-card.http-route-card(:index="index")
       span Require a bearer token loaded from a server file
     .field-grid(v-if="bearerPolicy")
       ConfigField(path="http_services[].routes[].access_policy.type" label="Policy type")
-        select(:value="bearerPolicy.type" disabled title="Bearer token file is the only supported route access policy.")
-          option(value="bearer_token_file") Bearer token file
+        Select(
+          :model-value="bearerPolicy.type" disabled title="Bearer token file is the only supported route access policy."
+          :options="[{ value: 'bearer_token_file', label: 'Bearer token file' }]"
+        )
       ConfigField(path="http_services[].routes[].access_policy.token_file_path" label="Token file path")
-        input(type="text" v-model="bearerPolicy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
+        Input(v-model="bearerPolicy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
         small Authenticated configuration only; this path is suppressed from topology views.
       ConfigField(path="http_services[].routes[].access_policy.header_name" label="Request header name")
-        input(type="text" v-model="bearerPolicy.header_name" placeholder="authorization")
+        Input(v-model="bearerPolicy.header_name" placeholder="authorization")
       ConfigField(path="http_services[].routes[].access_policy.realm" label="Bearer realm")
-        input(type="text" :value="bearerPolicy.realm ?? ''" placeholder="Optional" @input="setRealm")
+        Input(:model-value="bearerPolicy.realm ?? ''" placeholder="Optional" @input="setRealm")
 
   ConfigGroup.object-block(path="http_services[].routes[].action" legend="Route action")
     ConfigField(path="http_services[].routes[].action.type" label="Action type")
-      select(:value="route.action.type" @change="changeAction")
-        option(value="proxy") Proxy upstream
-        option(value="fixed_response") Fixed response
-        option(value="redirect") Redirect
-        option(value="static_files") Static files
+      Select(
+        :model-value="route.action.type" @change="changeAction"
+        :options="[{ value: 'proxy', label: 'Proxy upstream' }, { value: 'fixed_response', label: 'Fixed response' }, { value: 'redirect', label: 'Redirect' }, { value: 'static_files', label: 'Static files' }]"
+      )
 
     HttpProxyActionEditor(v-if="route.action.type === 'proxy'" :action="route.action" :route-policy="route.policy" :pool-names="poolNames" :cache-store-names="cacheStoreNames" @changed="emit('changed')")
     HttpFixedResponseEditor(v-else-if="route.action.type === 'fixed_response'" :action="route.action" @changed="emit('changed')")
@@ -71,6 +72,9 @@ ItemScope.route-card.http-route-card(:index="index")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
 
 import StringListField from '../StringListField.vue'

@@ -1,10 +1,4 @@
 @layer ox.page {
-  .revision-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--ox-space-4);
-  }
-
   .reapply-report {
     margin-top: var(--ox-space-5);
     padding: var(--ox-space-5) var(--ox-space-6);

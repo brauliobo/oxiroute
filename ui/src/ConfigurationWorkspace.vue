@@ -202,6 +202,8 @@ import StatsSection from './configuration/workspace/StatsSection.vue'
 import { hasErrors, summarizeDiagnostics } from './configuration/workspace/diagnosticSummary'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
 import { useLiveRegion } from '#design/composables/useLiveRegion'
+import './configuration/editor.css'
+import './configuration/workspace/chrome.css'
 import { confirmAction } from './shell/confirm'
 import { useSnapshotLoader } from './configuration/workspace/useSnapshotLoader'
 import { useTlsAlpnPreparation } from './configuration/workspace/useTlsAlpnPreparation'
@@ -444,50 +446,3 @@ onBeforeUnmount(() => {
   abortRequests()
 })
 </script>
-
-<style src="./configuration/editor.css"></style>
-
-<style scoped>
-.config-workspace {
-  padding: clamp(34px, 6vw, 68px) 0 58px;
-}
-
-.config-layout {
-  display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
-  min-height: 680px;
-  margin-top: 28px;
-  border: 1px solid #3a4034;
-  background: rgb(16 19 14 / 82%);
-}
-
-.editor-surface {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.editor-form {
-  flex: 1;
-  padding: clamp(22px, 4vw, 42px);
-}
-
-@media (max-width: 900px) {
-  .config-layout {
-    grid-template-columns: 210px minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 700px) {
-  .config-layout {
-    display: block;
-    min-height: 0;
-  }
-}
-
-@media (max-width: 440px) {
-  .editor-form {
-    padding-inline: 15px;
-  }
-}
-</style>

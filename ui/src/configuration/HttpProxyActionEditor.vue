@@ -1,7 +1,7 @@
 <template lang="pug">
 .action-editor
   ConfigField(path="http_services[].routes[].action.upstream_pool" label="Upstream pool")
-    select(v-model="action.upstream_pool" required)
+    select.ox-input(v-model="action.upstream_pool" required)
       option(value="") Select a pool
       option(v-for="name in poolNames" :key="name" :value="name") {{ name }}
 
@@ -9,18 +9,17 @@
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.upstream_host" legend="Upstream Host header")
       .field-grid
         ConfigField(path="http_services[].routes[].action.policy.upstream_host.type" label="Host policy")
-          select(:value="action.policy.upstream_host.type" @change="changeUpstreamHost")
-            option(value="preserve_incoming") Preserve incoming authority
-            option(value="nginx_host") nginx $host with fallback
-            option(value="endpoint") Selected endpoint authority
-            option(value="literal") Literal authority
+          Select(
+            :model-value="action.policy.upstream_host.type" @change="changeUpstreamHost"
+            :options="[{ value: 'preserve_incoming', label: 'Preserve incoming authority' }, { value: 'nginx_host', label: 'nginx $host with fallback' }, { value: 'endpoint', label: 'Selected endpoint authority' }, { value: 'literal', label: 'Literal authority' }]"
+          )
         ConfigField(v-if="action.policy.upstream_host.type === 'endpoint'" path="http_services[].routes[].action.policy.upstream_host.unix_fallback" label="Unix endpoint fallback")
-          input(type="text" :value="action.policy.upstream_host.unix_fallback ?? ''" placeholder="localhost" @input="setUnixFallback")
+          Input(:model-value="action.policy.upstream_host.unix_fallback ?? ''" placeholder="localhost" @input="setUnixFallback")
           small Required when the selected pool contains a Unix endpoint.
         ConfigField(v-else-if="action.policy.upstream_host.type === 'nginx_host'" path="http_services[].routes[].action.policy.upstream_host.fallback" label="Missing-Host fallback")
-          input(type="text" v-model="action.policy.upstream_host.fallback" placeholder="localhost")
+          Input(v-model="action.policy.upstream_host.fallback" placeholder="localhost")
         ConfigField(v-else-if="action.policy.upstream_host.type === 'literal'" path="http_services[].routes[].action.policy.upstream_host.value" label="Literal authority")
-          input(type="text" v-model="action.policy.upstream_host.value" placeholder="origin.example.test")
+          Input(v-model="action.policy.upstream_host.value" placeholder="origin.example.test")
 
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.upstream_path_rewrite" legend="Upstream path rewrite")
       label.enable-row
@@ -28,76 +27,72 @@
         span Rewrite the matched path before proxying
       .field-grid(v-if="action.policy.upstream_path_rewrite")
         ConfigField(path="http_services[].routes[].action.policy.upstream_path_rewrite.from" label="Source prefix")
-          input(type="text" v-model="action.policy.upstream_path_rewrite.from" placeholder="/public")
+          Input(v-model="action.policy.upstream_path_rewrite.from" placeholder="/public")
         ConfigField(path="http_services[].routes[].action.policy.upstream_path_rewrite.to" label="Destination prefix")
-          input(type="text" v-model="action.policy.upstream_path_rewrite.to" placeholder="/internal")
+          Input(v-model="action.policy.upstream_path_rewrite.to" placeholder="/internal")
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.request_headers")
       template(#legend)
         .route-heading
           legend Request header mutations
-          button.add-row(type="button" :disabled="action.policy.request_headers.length >= 32" :title="action.policy.request_headers.length >= 32 ? 'The server allows at most 32 request header mutations.' : undefined" @click="addHeader(action.policy.request_headers)") + Add request mutation
+          Button.add-row(:disabled="action.policy.request_headers.length >= 32" :title="action.policy.request_headers.length >= 32 ? 'The server allows at most 32 request header mutations.' : undefined" @click="addHeader(action.policy.request_headers)") + Add request mutation
       ItemScope.route-card(v-for="(mutation, mutationIndex) in action.policy.request_headers" :key="mutationIndex" :index="mutationIndex")
         header.route-card-heading
           strong Request mutation {{ mutationIndex + 1 }}
-          button.danger-link(type="button" :aria-label="`Remove request header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.request_headers, mutationIndex)") Remove
+          Button.danger-link(variant="danger" small :aria-label="`Remove request header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.request_headers, mutationIndex)") Remove
         .field-grid
           ConfigField(path="http_services[].routes[].action.policy.request_headers[].operation" label="Operation")
-            select(:value="mutation.operation" @change="changeRequestOperation(mutationIndex, $event)")
-              option(value="set") Set
-              option(value="add") Add
-              option(value="remove") Remove
+            Select(
+              :model-value="mutation.operation" @change="changeRequestOperation(mutationIndex, $event)"
+              :options="[{ value: 'set', label: 'Set' }, { value: 'add', label: 'Add' }, { value: 'remove', label: 'Remove' }]"
+            )
           ConfigField(path="http_services[].routes[].action.policy.request_headers[].name" label="Header name")
-            input(type="text" v-model="mutation.name" placeholder="x-forwarded-for")
+            Input(v-model="mutation.name" placeholder="x-forwarded-for")
           ConfigGroup.object-block(v-if="mutation.operation === 'set'" path="http_services[].routes[].action.policy.request_headers[].value" legend="Value source")
             .field-grid
               ConfigField(path="http_services[].routes[].action.policy.request_headers[].value.type" label="Source type")
-                select(:value="mutation.value.type" @change="changeRequestValue(mutationIndex, $event)")
-                  option(value="literal") Literal
-                  option(value="incoming_authority") Incoming authority
-                  option(value="normalized_host") Normalized host
-                  option(value="nginx_host") nginx $host with fallback
-                  option(value="client_ip") Client IP
-                  option(value="appended_x_forwarded_for") Append client IP to X-Forwarded-For
-                  option(value="downstream_scheme") Downstream scheme
-                  option(value="selected_upstream_host") Selected upstream Host
+                Select(
+                  :model-value="mutation.value.type" @change="changeRequestValue(mutationIndex, $event)"
+                  :options="[{ value: 'literal', label: 'Literal' }, { value: 'incoming_authority', label: 'Incoming authority' }, { value: 'normalized_host', label: 'Normalized host' }, { value: 'nginx_host', label: 'nginx $host with fallback' }, { value: 'client_ip', label: 'Client IP' }, { value: 'appended_x_forwarded_for', label: 'Append client IP to X-Forwarded-For' }, { value: 'downstream_scheme', label: 'Downstream scheme' }, { value: 'selected_upstream_host', label: 'Selected upstream Host' }]"
+                )
               ConfigField(v-if="mutation.value.type === 'literal'" path="http_services[].routes[].action.policy.request_headers[].value.value" label="Literal value")
-                input(type="text" v-model="mutation.value.value")
+                Input(v-model="mutation.value.value")
               ConfigField(v-if="mutation.value.type === 'nginx_host'" path="http_services[].routes[].action.policy.request_headers[].value.fallback" label="Missing-Host fallback")
-                input(type="text" v-model="mutation.value.fallback" placeholder="localhost")
+                Input(v-model="mutation.value.fallback" placeholder="localhost")
               ConfigField(v-if="mutation.value.type === 'appended_x_forwarded_for'" path="http_services[].routes[].action.policy.request_headers[].value.max_bytes" label="Maximum header bytes")
-                input(type="number" min="1" step="1" v-model.number="mutation.value.max_bytes")
+                NumberInput(min="1" step="1" v-model="mutation.value.max_bytes")
             ConfigGroup.route-list(v-if="mutation.value.type === 'appended_x_forwarded_for'" path="http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs")
               template(#legend)
                 .route-heading
                   legend Source CIDR exceptions
-                  button.add-row(type="button" :disabled="mutation.value.except_source_cidrs.length >= 16" :title="mutation.value.except_source_cidrs.length >= 16 ? 'The server allows at most 16 source CIDR exceptions.' : undefined" @click="addXffException(mutationIndex)") + Add source CIDR
+                  Button.add-row(:disabled="mutation.value.except_source_cidrs.length >= 16" :title="mutation.value.except_source_cidrs.length >= 16 ? 'The server allows at most 16 source CIDR exceptions.' : undefined" @click="addXffException(mutationIndex)") + Add source CIDR
               ItemScope.route-card(v-for="(cidr, cidrIndex) in mutation.value.except_source_cidrs" :key="cidrIndex" :index="cidrIndex")
                 header.route-card-heading
                   strong Source CIDR {{ cidrIndex + 1 }}
-                  button.danger-link(type="button" :aria-label="`Remove source CIDR ${cidrIndex + 1}`" @click="removeXffException(mutationIndex, cidrIndex)") Remove
+                  Button.danger-link(variant="danger" small :aria-label="`Remove source CIDR ${cidrIndex + 1}`" @click="removeXffException(mutationIndex, cidrIndex)") Remove
                 label.field
                   span Canonical CIDR
-                  input(type="text" :value="cidr" placeholder="127.0.0.0/8" @input="setXffException(mutationIndex, cidrIndex, $event)")
+                  Input(:model-value="cidr" placeholder="127.0.0.0/8" @input="setXffException(mutationIndex, cidrIndex, $event)")
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.response_headers")
       template(#legend)
         .route-heading
           legend Response header mutations
-          button.add-row(type="button" :disabled="action.policy.response_headers.length >= 32" :title="action.policy.response_headers.length >= 32 ? 'The server allows at most 32 response header mutations.' : undefined" @click="addHeader(action.policy.response_headers)") + Add response mutation
+          Button.add-row(:disabled="action.policy.response_headers.length >= 32" :title="action.policy.response_headers.length >= 32 ? 'The server allows at most 32 response header mutations.' : undefined" @click="addHeader(action.policy.response_headers)") + Add response mutation
       ItemScope.route-card(v-for="(mutation, mutationIndex) in action.policy.response_headers" :key="mutationIndex" :index="mutationIndex")
         header.route-card-heading
           strong Response mutation {{ mutationIndex + 1 }}
-          button.danger-link(type="button" :aria-label="`Remove response header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.response_headers, mutationIndex)") Remove
+          Button.danger-link(variant="danger" small :aria-label="`Remove response header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.response_headers, mutationIndex)") Remove
         .field-grid
           ConfigField(path="http_services[].routes[].action.policy.response_headers[].operation" label="Operation")
-            select(:value="mutation.operation" @change="changeResponseOperation(mutationIndex, $event)")
-              option(value="set") Set
-              option(value="remove") Remove
+            Select(
+              :model-value="mutation.operation" @change="changeResponseOperation(mutationIndex, $event)"
+              :options="[{ value: 'set', label: 'Set' }, { value: 'remove', label: 'Remove' }]"
+            )
           ConfigField(path="http_services[].routes[].action.policy.response_headers[].name" label="Header name")
-            input(type="text" v-model="mutation.name")
+            Input(v-model="mutation.name")
           ConfigField(v-if="mutation.operation !== 'remove'" path="http_services[].routes[].action.policy.response_headers[].value" label="Header value")
-            input(type="text" v-model="mutation.value")
+            Input(v-model="mutation.value")
           ConfigField(v-if="mutation.operation !== 'remove'" path="http_services[].routes[].action.policy.response_headers[].always" label="Add on every response status" check)
             input(type="checkbox" v-model="mutation.always")
 
@@ -105,33 +100,35 @@
       template(#legend)
         .route-heading
           legend Response cookie path rewrites
-          button.add-row(type="button" :disabled="action.policy.response_cookie_path_rewrites.length >= 16" :title="action.policy.response_cookie_path_rewrites.length >= 16 ? 'The server allows at most 16 cookie path rewrites.' : undefined" @click="addCookieRewrite") + Add cookie rewrite
+          Button.add-row(:disabled="action.policy.response_cookie_path_rewrites.length >= 16" :title="action.policy.response_cookie_path_rewrites.length >= 16 ? 'The server allows at most 16 cookie path rewrites.' : undefined" @click="addCookieRewrite") + Add cookie rewrite
       ItemScope.route-card(v-for="(rewrite, rewriteIndex) in action.policy.response_cookie_path_rewrites" :key="rewriteIndex" :index="rewriteIndex")
         header.route-card-heading
           strong Cookie rewrite {{ rewriteIndex + 1 }}
-          button.danger-link(type="button" :aria-label="`Remove cookie path rewrite ${rewriteIndex + 1}`" @click="removeCookieRewrite(rewriteIndex)") Remove
+          Button.danger-link(variant="danger" small :aria-label="`Remove cookie path rewrite ${rewriteIndex + 1}`" @click="removeCookieRewrite(rewriteIndex)") Remove
         .field-grid
           ConfigField(path="http_services[].routes[].action.policy.response_cookie_path_rewrites[].from" label="Source path")
-            input(type="text" v-model="rewrite.from" placeholder="/")
+            Input(v-model="rewrite.from" placeholder="/")
           ConfigField(path="http_services[].routes[].action.policy.response_cookie_path_rewrites[].to" label="Replacement path")
-            input(type="text" v-model="rewrite.to" placeholder="/app")
+            Input(v-model="rewrite.to" placeholder="/app")
           ConfigField(path="http_services[].routes[].action.policy.response_cookie_path_rewrites[].mode" label="Match")
-            select(:value="rewrite.mode ?? 'exact'" @change="setCookieRewriteMode(rewrite, $event)")
-              option(value="exact") Exact path
-              option(value="nginx_prefix") nginx prefix (verbatim replacement)
+            Select(
+              :model-value="rewrite.mode ?? 'exact'" @change="setCookieRewriteMode(rewrite, $event)"
+              :options="[{ value: 'exact', label: 'Exact path' }, { value: 'nginx_prefix', label: 'nginx prefix (verbatim replacement)' }]"
+            )
 
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.retry" legend="Retry policy")
       .field-grid
         ConfigField(path="http_services[].routes[].action.policy.retry.max_retries" label="Maximum retries")
-          input(type="number" min="0" max="3" step="1" :value="action.policy.retry.max_retries" @input="setMaxRetries")
+          NumberInput(min="0" max="3" step="1" :model-value="action.policy.retry.max_retries" @input="setMaxRetries")
         ConfigField(path="http_services[].routes[].action.policy.retry.target" label="Retry target")
-          select(:value="action.policy.retry.target" @change="setRetryTarget")
-            option(value="next_server") Next available server
-            option(value="same_server") Same server
+          Select(
+            :model-value="action.policy.retry.target" @change="setRetryTarget"
+            :options="[{ value: 'next_server', label: 'Next available server' }, { value: 'same_server', label: 'Same server' }]"
+          )
         ConfigField(path="http_services[].routes[].action.policy.retry.delay_ms" label="Delay (milliseconds)")
-          input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
+          NumberInput(min="0" max="60000" step="1" v-model="action.policy.retry.delay_ms")
         ConfigField(path="http_services[].routes[].action.policy.retry.jitter_percent" label="Delay jitter (percent)")
-          input(type="number" min="0" max="100" step="1" v-model.number="action.policy.retry.jitter_percent")
+          NumberInput(min="0" max="100" step="1" v-model="action.policy.retry.jitter_percent")
         ConfigField(path="http_services[].routes[].action.policy.retry.method_safety" label="Allow replay of buffered idempotent requests, including POST" check)
           span(data-field="http_services[].routes[].action.policy.retry.body_safety")
             input(
@@ -142,7 +139,7 @@
         small.field-hint
           | Enable only when every request handled by this route is idempotent. OxiRoute buffers the complete request body before replaying it.
         ConfigField(v-if="allowsBufferedIdempotentRetries" path="http_services[].routes[].action.policy.retry.idempotency_header" label="Replay non-GET requests only with header")
-          input(type="text" :value="action.policy.retry.idempotency_header ?? ''" placeholder="Idempotency-Key" @input="setIdempotencyHeader")
+          Input(:model-value="action.policy.retry.idempotency_header ?? ''" placeholder="Idempotency-Key" @input="setIdempotencyHeader")
         ConfigField(path="http_services[].routes[].action.policy.retry.final_redispatch" label="Redispatch the final retry to another server" check)
           input(
             type="checkbox"
@@ -156,9 +153,9 @@
           span Cap the retries of this route
         .field-grid(v-if="action.policy.retry.budget")
           ConfigField(path="http_services[].routes[].action.policy.retry.budget.per_second" label="Retries per second")
-            input(type="number" min="1" max="100000" step="1" placeholder="unlimited" :value="action.policy.retry.budget.per_second ?? ''" @input="setBudgetLimit('per_second', $event)")
+            NumberInput(min="1" max="100000" step="1" placeholder="unlimited" :model-value="action.policy.retry.budget.per_second ?? ''" @input="setBudgetLimit('per_second', $event)")
           ConfigField(path="http_services[].routes[].action.policy.retry.budget.ratio_percent" label="Share of recent requests (percent)")
-            input(type="number" min="1" max="100" step="1" placeholder="unlimited" :value="action.policy.retry.budget.ratio_percent ?? ''" @input="setBudgetLimit('ratio_percent', $event)")
+            NumberInput(min="1" max="100" step="1" placeholder="unlimited" :model-value="action.policy.retry.budget.ratio_percent ?? ''" @input="setBudgetLimit('ratio_percent', $event)")
       ConfigGroup.retry-triggers(path="http_services[].routes[].action.policy.retry.triggers" legend="Retry triggers")
         label.enable-row(v-for="trigger in HTTP_RETRY_TRIGGERS" :key="trigger")
           input(
@@ -187,13 +184,13 @@
         | Leave a phase empty to inherit the pool, route policy or service timeout. The total never exceeds the service upstream I/O timeout.
       .field-grid
         ConfigField(path="http_services[].routes[].action.policy.timeouts.connect_ms" label="Connect timeout per attempt (ms)")
-          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.connect_ms ?? ''" @input="setTimeoutMs('connect_ms', $event)")
+          NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.connect_ms ?? ''" @input="setTimeoutMs('connect_ms', $event)")
         ConfigField(path="http_services[].routes[].action.policy.timeouts.header_ms" label="Response start timeout per attempt (ms)")
-          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.header_ms ?? ''" @input="setTimeoutMs('header_ms', $event)")
+          NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.header_ms ?? ''" @input="setTimeoutMs('header_ms', $event)")
         ConfigField(path="http_services[].routes[].action.policy.timeouts.idle_ms" label="Idle timeout between body chunks (ms)")
-          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.idle_ms ?? ''" @input="setTimeoutMs('idle_ms', $event)")
+          NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.idle_ms ?? ''" @input="setTimeoutMs('idle_ms', $event)")
         ConfigField(path="http_services[].routes[].action.policy.timeouts.total_ms" label="Total request deadline (ms)")
-          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
+          NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
 
     ConfigField(path="http_services[].routes[].action.policy.queue_headers" label="Tell clients that waited for capacity their queue position and wait time" check)
       input(type="checkbox" v-model="action.policy.queue_headers")
@@ -220,11 +217,12 @@
         )
         .field-grid
           ConfigField(path="http_services[].routes[].action.policy.rescue.target" label="Replay target")
-            select(:value="action.policy.rescue.target" @change="setRescueTarget")
-              option(value="next_server") Another server of the pool
-              option(value="pool") A rescue pool
+            Select(
+              :model-value="action.policy.rescue.target" @change="setRescueTarget"
+              :options="[{ value: 'next_server', label: 'Another server of the pool' }, { value: 'pool', label: 'A rescue pool' }]"
+            )
           ConfigField(v-if="action.policy.rescue.target === 'pool'" path="http_services[].routes[].action.policy.rescue.pool" label="Rescue pool")
-            select(v-model="action.policy.rescue.pool" required)
+            select.ox-input(v-model="action.policy.rescue.pool" required)
               option(value="") Select a pool
               option(v-for="name in poolNames.filter((pool) => pool !== action.upstream_pool)" :key="name" :value="name") {{ name }}
 
@@ -237,6 +235,10 @@
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
 
 import type {

@@ -2,16 +2,17 @@
 ItemScope.route-card.recorder-card(:index="index")
   header.route-card-heading
     strong Recorder {{ index + 1 }}
-    button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
+    Button.danger-link(variant="danger" small :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
     ConfigField(path="rtmp_services[].applications[].recorders[].name" label="Stable name")
-      input(type="text" v-model="recorder.name" required)
+      Input(v-model="recorder.name" required)
     ConfigField(path="rtmp_services[].applications[].recorders[].start" label="Start policy")
-      select(v-model="recorder.start")
-        option(value="continuous") Continuous
-        option(value="manual") Manual control
+      Select(
+        v-model="recorder.start"
+        :options="[{ value: 'continuous', label: 'Continuous' }, { value: 'manual', label: 'Manual control' }]"
+      )
     ConfigField(path="rtmp_services[].applications[].recorders[].root_directory" label="Recording root directory")
-      input(type="text" v-model="recorder.root_directory" required placeholder="/var/lib/oxiroute/recordings")
+      Input(v-model="recorder.root_directory" required placeholder="/var/lib/oxiroute/recordings")
   ConfigGroup.object-block(path="rtmp_services[].applications[].recorders[].record_mask" legend="Media selection")
     .field-grid
       ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].record_mask.audio" label="Include audio" check)
@@ -21,7 +22,7 @@ ItemScope.route-card.recorder-card(:index="index")
       ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].record_mask.keyframes" label="Keep keyframes only" check)
         input(type="checkbox" v-model="recorder.record_mask.keyframes")
     ConfigField(path="rtmp_services[].applications[].recorders[].suffix_template" label="File suffix template")
-      input(type="text" v-model="recorder.suffix_template" required placeholder="-%Y-%m-%dT%H-%M-%S.flv")
+      Input(v-model="recorder.suffix_template" required placeholder="-%Y-%m-%dT%H-%M-%S.flv")
     ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].append_unix_seconds" label="Append Unix seconds to file names" check)
       input(type="checkbox" v-model="recorder.append_unix_seconds")
     ConfigField.compact-enable(path="rtmp_services[].applications[].recorders[].append" label="Resume a valid existing segment" check)
@@ -50,16 +51,18 @@ ItemScope.route-card.recorder-card(:index="index")
       unbounded-label="No recording frame limit"
     )
     ConfigField(path="rtmp_services[].applications[].recorders[].timezone" label="Filename timezone")
-      input(type="text" v-model="recorder.timezone" required placeholder="America/Argentina/Buenos_Aires")
+      Input(v-model="recorder.timezone" required placeholder="America/Argentina/Buenos_Aires")
       small Use `utc` or an IANA timezone name.
     ConfigField(path="rtmp_services[].applications[].recorders[].time_basis" label="Filename time basis")
-      select(v-model="recorder.time_basis")
-        option(value="segment_start") Segment start
-        option(value="segment_end") Segment end
+      Select(
+        v-model="recorder.time_basis"
+        :options="[{ value: 'segment_start', label: 'Segment start' }, { value: 'segment_end', label: 'Segment end' }]"
+      )
     ConfigField(path="rtmp_services[].applications[].recorders[].segment_naming" label="Rotation naming")
-      select(v-model="recorder.segment_naming")
-        option(value="safe_unique") Sequenced safe names
-        option(value="nginx_compatible") Rerender suffix each segment
+      Select(
+        v-model="recorder.segment_naming"
+        :options="[{ value: 'safe_unique', label: 'Sequenced safe names' }, { value: 'nginx_compatible', label: 'Rerender suffix each segment' }]"
+      )
   NullableLimitField(
     v-model="recorder.rotation_interval_ms"
     :default-value="60000"
@@ -75,12 +78,12 @@ ItemScope.route-card.recorder-card(:index="index")
     legend Queue and shutdown
     .field-grid
       ConfigField(path="rtmp_services[].applications[].recorders[].max_queue_messages" label="Maximum queued messages")
-        input(type="number" min="1" max="65536" step="1" v-model.number="recorder.max_queue_messages")
+        NumberInput(min="1" max="65536" step="1" v-model="recorder.max_queue_messages")
       ConfigField(path="rtmp_services[].applications[].recorders[].max_queue_bytes" label="Maximum queued bytes")
-        input(type="number" min="1" :max="recorder.max_storage_bytes === null ? 1073741824 : Math.min(1073741824, recorder.max_storage_bytes)" step="1" v-model.number="recorder.max_queue_bytes")
+        NumberInput(min="1" :max="recorder.max_storage_bytes === null ? 1073741824 : Math.min(1073741824, recorder.max_storage_bytes)" step="1" v-model="recorder.max_queue_bytes")
         small Must not exceed a configured storage byte limit.
       ConfigField(path="rtmp_services[].applications[].recorders[].shutdown_timeout_ms" label="Shutdown timeout (ms)")
-        input(type="number" min="1" max="60000" step="1" v-model.number="recorder.shutdown_timeout_ms")
+        NumberInput(min="1" max="60000" step="1" v-model="recorder.shutdown_timeout_ms")
   fieldset.object-block.recorder-limits
     legend Shared storage limits
     NullableLimitField(
@@ -103,7 +106,7 @@ ItemScope.route-card.recorder-card(:index="index")
     )
     .field-grid
       ConfigField(path="rtmp_services[].applications[].recorders[].max_active_recorders" label="Maximum active recorders")
-        input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")
+        NumberInput(min="1" max="256" step="1" v-model="recorder.max_active_recorders")
       ConfigField(path="rtmp_services[].applications[].recorders[].retention" label="When a storage quota is reached")
         Select(:model-value="recorder.retention" :options="retentionOptions" @update:modelValue="setRetention")
         small Delete oldest removes the oldest finished recordings in the root, never an active one.
@@ -119,6 +122,9 @@ ItemScope.route-card.recorder-card(:index="index")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Button from '#design/button/Button.vue'
 import Select from '#design/field/Select.vue'
 import type { SelectOption } from '#design/field/types'
 import type { RtmpRecorderConfig, RtmpRecorderRetention } from '../config'

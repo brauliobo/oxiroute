@@ -4,17 +4,16 @@ ConfigField(path="stats" label="Enable observability binds and/or standalone sta
   input(type="checkbox" :checked="config.stats != null" @change="toggleStats")
 .field-grid(v-if="config.stats")
   ConfigField(path="stats.binds" label="Bind addresses")
-    input(type="text" :value="config.stats.binds.join(', ')" placeholder="127.0.0.1:8404, [::1]:8404" @input="setBinds")
+    Input(:model-value="config.stats.binds.join(', ')" placeholder="127.0.0.1:8404, [::1]:8404" @input="setBinds")
     small Comma-separated IPv4/IPv6 sockets.
   ConfigField(path="stats.admin_token_file" label="Admin token file")
-    input(type="text" :value="config.stats.admin_token_file ?? ''" placeholder="/etc/oxiroute/stats-admin.token" @input="setAdminTokenFile")
+    Input(:model-value="config.stats.admin_token_file ?? ''" placeholder="/etc/oxiroute/stats-admin.token" @input="setAdminTokenFile")
     small Optional; without it, administration remains disabled.
 ConfigGroup.route-list(v-if="config.stats" path="stats.pages")
   template(#legend)
     .route-heading
       legend HAProxy-compatible pages
-      button.add-row(
-        type="button"
+      Button.add-row(
         :disabled="config.stats.binds.length + config.stats.pages.length >= MAX_BINDS_AND_PAGES"
         title="The server allows at most eight statistics binds and pages in total."
         @click="addPage"
@@ -23,30 +22,35 @@ ConfigGroup.route-list(v-if="config.stats" path="stats.pages")
   ItemScope.route-card(v-for="(page, pageIndex) in config.stats.pages" :key="pageIndex" :index="pageIndex")
     header.route-card-heading
       strong Statistics page {{ pageIndex + 1 }}
-      button.danger-link(type="button" :aria-label="`Remove statistics page ${pageIndex + 1}`" @click="removePage(pageIndex)") Remove
+      Button.danger-link(variant="danger" small :aria-label="`Remove statistics page ${pageIndex + 1}`" @click="removePage(pageIndex)") Remove
     .field-grid
       ConfigField(path="stats.pages[].bind" label="Bind address")
-        input(type="text" v-model="page.bind" placeholder="127.0.0.1:8404")
+        Input(v-model="page.bind" placeholder="127.0.0.1:8404")
       ConfigField(path="stats.pages[].uri_prefix" label="URI prefix")
-        input(type="text" v-model="page.uri_prefix" placeholder="/stats")
+        Input(v-model="page.uri_prefix" placeholder="/stats")
       ConfigField(path="stats.pages[].refresh_ms" label="Refresh (milliseconds)")
-        input(type="number" min="1" max="86400000" step="1" v-model.number="page.refresh_ms")
+        NumberInput(min="1" max="86400000" step="1" v-model="page.refresh_ms")
       ConfigField(path="stats.pages[].admin" label="Administration")
-        select(v-model="page.admin")
-          option(value="disabled") Disabled
-          option(value="localhost") Localhost only
+        Select(
+          v-model="page.admin"
+          :options="[{ value: 'disabled', label: 'Disabled' }, { value: 'localhost', label: 'Localhost only' }]"
+        )
       ConfigField(path="stats.pages[].max_connections" label="Maximum connections")
-        input(type="number" min="1" step="1" :value="page.max_connections ?? ''" placeholder="Unbounded" @input="page.max_connections = nullableIntegerInput($event)")
+        NumberInput(min="1" step="1" :model-value="page.max_connections ?? ''" placeholder="Unbounded" @input="page.max_connections = nullableIntegerInput($event)")
       ConfigField(path="stats.pages[].downstream_timeouts.client_timeout_ms" label="Client timeout (milliseconds)")
-        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.client_timeout_ms ?? ''" placeholder="No timeout" @input="page.downstream_timeouts.client_timeout_ms = nullableIntegerInput($event)")
+        NumberInput(min="1" max="86400000" step="1" :model-value="page.downstream_timeouts.client_timeout_ms ?? ''" placeholder="No timeout" @input="page.downstream_timeouts.client_timeout_ms = nullableIntegerInput($event)")
       ConfigField(path="stats.pages[].downstream_timeouts.request_timeout_ms" label="Request-header timeout (milliseconds)")
-        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.request_timeout_ms ?? ''" placeholder="Inherit client timeout" @input="page.downstream_timeouts.request_timeout_ms = nullableIntegerInput($event)")
+        NumberInput(min="1" max="86400000" step="1" :model-value="page.downstream_timeouts.request_timeout_ms ?? ''" placeholder="Inherit client timeout" @input="page.downstream_timeouts.request_timeout_ms = nullableIntegerInput($event)")
       ConfigField(path="stats.pages[].downstream_timeouts.keepalive_timeout_ms" label="Keep-alive timeout (milliseconds)")
-        input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.keepalive_timeout_ms ?? ''" placeholder="Runtime default" @input="page.downstream_timeouts.keepalive_timeout_ms = nullableIntegerInput($event)")
+        NumberInput(min="1" max="86400000" step="1" :model-value="page.downstream_timeouts.keepalive_timeout_ms ?? ''" placeholder="Runtime default" @input="page.downstream_timeouts.keepalive_timeout_ms = nullableIntegerInput($event)")
     small The page is public and adds no routes beyond its URI prefix. Localhost administration accepts only same-origin loopback requests.
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import type { CanonicalConfig } from '../../config'
 import { nullableInput, nullableIntegerInput } from './inputValues'
 import SectionHeading from './SectionHeading.vue'
@@ -97,7 +101,3 @@ function removePage(index: number): void {
   props.config.stats?.pages.splice(index, 1)
 }
 </script>
-
-<style scoped src="./base.css"></style>
-<style scoped src="./controls.css"></style>
-<style scoped src="./fields.css"></style>

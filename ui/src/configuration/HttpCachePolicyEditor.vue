@@ -7,27 +7,30 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
   template(v-if="cache")
     .field-grid
       ConfigField(:path="`${fieldPath}.store`" label="Cache store")
-        select(v-model="cache.store" required)
+        select.ox-input(v-model="cache.store" required)
           option(value="") Select a store
           option(v-for="name in storeNames" :key="name" :value="name") {{ name }}
       ConfigField(:path="`${fieldPath}.default_ttl_ms`" label="Default TTL (ms)")
-        input(type="number" min="0" max="31536000000" step="1" v-model.number="cache.default_ttl_ms")
+        NumberInput(min="0" max="31536000000" step="1" v-model="cache.default_ttl_ms")
       ConfigField(:path="`${fieldPath}.grace_ms`" label="Grace period (ms)")
-        input(type="number" min="0" :max="Math.min(31536000000, cache.keep_ms)" step="1" v-model.number="cache.grace_ms")
+        NumberInput(min="0" :max="Math.min(31536000000, cache.keep_ms)" step="1" v-model="cache.grace_ms")
       ConfigField(:path="`${fieldPath}.keep_ms`" label="Keep period (ms)")
-        input(type="number" :min="cache.grace_ms" max="31536000000" step="1" v-model.number="cache.keep_ms")
+        NumberInput(:min="cache.grace_ms" max="31536000000" step="1" v-model="cache.keep_ms")
       ConfigField(:path="`${fieldPath}.set_cookie_policy`" label="Set-Cookie response policy")
-        select(v-model="cache.set_cookie_policy")
-          option(value="bypass") Bypass cache
-          option(value="ignore") Ignore Set-Cookie
+        Select(
+          v-model="cache.set_cookie_policy"
+          :options="[{ value: 'bypass', label: 'Bypass cache' }, { value: 'ignore', label: 'Ignore Set-Cookie' }]"
+        )
       ConfigField(:path="`${fieldPath}.authorization_policy`" label="Authorization request policy")
-        select(v-model="cache.authorization_policy")
-          option(value="bypass") Bypass cache
-          option(value="cache") Allow caching
+        Select(
+          v-model="cache.authorization_policy"
+          :options="[{ value: 'bypass', label: 'Bypass cache' }, { value: 'cache', label: 'Allow caching' }]"
+        )
       ConfigField(:path="`${fieldPath}.vary_policy`" label="Vary response policy")
-        select(v-model="cache.vary_policy")
-          option(value="respect") Respect Vary
-          option(value="ignore") Ignore Vary
+        Select(
+          v-model="cache.vary_policy"
+          :options="[{ value: 'respect', label: 'Respect Vary' }, { value: 'ignore', label: 'Ignore Vary' }]"
+        )
     .field-grid.boolean-grid
       ConfigField.compact-enable(:path="`${fieldPath}.use_origin_cache_control`" label="Use origin Cache-Control" check)
         input(type="checkbox" v-model="cache.use_origin_cache_control")
@@ -45,36 +48,34 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
       template(#legend)
         .route-heading
           legend Cache key components
-          button.add-row(type="button" :disabled="cache.key_components.length >= 32" @click="cache.key_components.push({ type: 'scheme' })") + Add component
+          Button.add-row(:disabled="cache.key_components.length >= 32" @click="cache.key_components.push({ type: 'scheme' })") + Add component
       ItemScope.route-card(v-for="(component, index) in cache.key_components" :key="index" :index="index")
         header.route-card-heading
           strong Key component {{ index + 1 }}
-          button.danger-link(type="button" :disabled="cache.key_components.length === 1" :aria-label="`Remove cache key component ${index + 1}`" @click="cache.key_components.splice(index, 1)") Remove
+          Button.danger-link(variant="danger" small :disabled="cache.key_components.length === 1" :aria-label="`Remove cache key component ${index + 1}`" @click="cache.key_components.splice(index, 1)") Remove
         .field-grid
           ConfigField(:path="`${fieldPath}.key_components[].type`" label="Component type")
-            select(:value="component.type" @change="changeKeyComponent(index, $event)")
-              option(value="scheme") Scheme
-              option(value="normalized_host") Normalized host
-              option(value="path_and_query") Path and query
-              option(value="header") Request header
-              option(value="cookie") Request cookie
+            Select(
+              :model-value="component.type" @change="changeKeyComponent(index, $event)"
+              :options="[{ value: 'scheme', label: 'Scheme' }, { value: 'normalized_host', label: 'Normalized host' }, { value: 'path_and_query', label: 'Path and query' }, { value: 'header', label: 'Request header' }, { value: 'cookie', label: 'Request cookie' }]"
+            )
           ConfigField(v-if="component.type === 'header' || component.type === 'cookie'" :path="`${fieldPath}.key_components[].name`" :label="`${component.type === 'header' ? 'Header' : 'Cookie'} name`")
-            input(type="text" v-model="component.name")
+            Input(v-model="component.name")
 
     ConfigGroup.route-list(:path="`${fieldPath}.status_ttls`")
       template(#legend)
         .route-heading
           legend Status TTL overrides
-          button.add-row(type="button" :disabled="cache.status_ttls.length >= 64" @click="cache.status_ttls.push({ status: 200, ttl_ms: 60000 })") + Add status TTL
+          Button.add-row(:disabled="cache.status_ttls.length >= 64" @click="cache.status_ttls.push({ status: 200, ttl_ms: 60000 })") + Add status TTL
       ItemScope.route-card(v-for="(entry, index) in cache.status_ttls" :key="index" :index="index")
         header.route-card-heading
           strong Status TTL {{ index + 1 }}
-          button.danger-link(type="button" :aria-label="`Remove status TTL ${index + 1}`" @click="cache.status_ttls.splice(index, 1)") Remove
+          Button.danger-link(variant="danger" small :aria-label="`Remove status TTL ${index + 1}`" @click="cache.status_ttls.splice(index, 1)") Remove
         .field-grid
           ConfigField(:path="`${fieldPath}.status_ttls[].status`" label="HTTP status")
-            input(type="number" min="100" max="599" step="1" v-model.number="entry.status")
+            NumberInput(min="100" max="599" step="1" v-model="entry.status")
           ConfigField(:path="`${fieldPath}.status_ttls[].ttl_ms`" label="TTL (ms)")
-            input(type="number" min="0" max="31536000000" step="1" v-model.number="entry.ttl_ms")
+            NumberInput(min="0" max="31536000000" step="1" v-model="entry.ttl_ms")
 
     ConfigGroup.retry-triggers(:path="`${fieldPath}.stale_on`" legend="Serve stale on")
       label.enable-row(v-for="trigger in CACHE_STALE_TRIGGERS" :key="trigger")
@@ -85,21 +86,21 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
       template(#legend)
         .route-heading
           legend Bypass request predicates
-          button.add-row(type="button" :disabled="cache.bypass_request.length >= 32" @click="addPredicate(cache.bypass_request)") + Add predicate
+          Button.add-row(:disabled="cache.bypass_request.length >= 32" @click="addPredicate(cache.bypass_request)") + Add predicate
       CachePredicateRows(v-model="cache.bypass_request" :type-field="`${fieldPath}.bypass_request[].type`" :name-field="`${fieldPath}.bypass_request[].name`")
 
     ConfigGroup.route-list(:path="`${fieldPath}.no_store_request`")
       template(#legend)
         .route-heading
           legend No-store request predicates
-          button.add-row(type="button" :disabled="cache.no_store_request.length >= 32" @click="addPredicate(cache.no_store_request)") + Add predicate
+          Button.add-row(:disabled="cache.no_store_request.length >= 32" @click="addPredicate(cache.no_store_request)") + Add predicate
       CachePredicateRows(v-model="cache.no_store_request" :type-field="`${fieldPath}.no_store_request[].type`" :name-field="`${fieldPath}.no_store_request[].name`")
 
     ConfigGroup.route-list(:path="`${fieldPath}.no_store_response`")
       template(#legend)
         .route-heading
           legend No-store response predicates
-          button.add-row(type="button" :disabled="cache.no_store_response.length >= 32" @click="addPredicate(cache.no_store_response)") + Add predicate
+          Button.add-row(:disabled="cache.no_store_response.length >= 32" @click="addPredicate(cache.no_store_response)") + Add predicate
       CachePredicateRows(v-model="cache.no_store_response" :type-field="`${fieldPath}.no_store_response[].type`" :name-field="`${fieldPath}.no_store_response[].name`")
 
     ConfigGroup.object-block(:path="`${fieldPath}.surrogate_tags`" legend="Surrogate tags")
@@ -108,11 +109,11 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
         span Read bounded surrogate tags from an origin response header
       .field-grid(v-if="cache.surrogate_tags")
         ConfigField(:path="`${fieldPath}.surrogate_tags.response_header`" label="Response header")
-          input(type="text" v-model="cache.surrogate_tags.response_header")
+          Input(v-model="cache.surrogate_tags.response_header")
         ConfigField(:path="`${fieldPath}.surrogate_tags.max_tags`" label="Maximum tags")
-          input(type="number" min="1" max="256" step="1" v-model.number="cache.surrogate_tags.max_tags")
+          NumberInput(min="1" max="256" step="1" v-model="cache.surrogate_tags.max_tags")
         ConfigField(:path="`${fieldPath}.surrogate_tags.max_tag_bytes`" label="Maximum tag bytes")
-          input(type="number" min="1" max="1024" step="1" v-model.number="cache.surrogate_tags.max_tag_bytes")
+          NumberInput(min="1" max="1024" step="1" v-model="cache.surrogate_tags.max_tag_bytes")
 
     ConfigGroup.object-block(:path="`${fieldPath}.purge_authorization`" legend="Purge authorization")
       label.enable-row
@@ -120,10 +121,12 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
         span Require a bearer token loaded from a server file
       .field-grid(v-if="cache.purge_authorization")
         ConfigField(:path="`${fieldPath}.purge_authorization.type`" label="Authorization type")
-          select(v-model="cache.purge_authorization.type" disabled)
-            option(value="bearer_token_file") Bearer token file
+          Select(
+            v-model="cache.purge_authorization.type" disabled
+            :options="[{ value: 'bearer_token_file', label: 'Bearer token file' }]"
+          )
         ConfigField(:path="`${fieldPath}.purge_authorization.token_file_path`" label="Token file path")
-          input(type="text" v-model="cache.purge_authorization.token_file_path" autocomplete="off")
+          Input(v-model="cache.purge_authorization.token_file_path" autocomplete="off")
           small Authenticated configuration only; this path is suppressed from topology views.
 
     ConfigGroup.object-block(:path="`${fieldPath}.compression`" legend="Compressed variants")
@@ -141,18 +144,22 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
             span {{ coding }}
         .field-grid
           ConfigField(:path="`${fieldPath}.compression.content_types`" label="Content types, one per line")
-            textarea(:value="contentTypeLines(cache.compression)" rows="4" @input="setContentTypes")
+            textarea.ox-input(:value="contentTypeLines(cache.compression)" rows="4" @input="setContentTypes")
           ConfigField(:path="`${fieldPath}.compression.min_length_bytes`" label="Minimum body bytes")
-            input(type="number" min="0" step="1" v-model.number="cache.compression.min_length_bytes")
+            NumberInput(min="0" step="1" v-model="cache.compression.min_length_bytes")
           ConfigField(:path="`${fieldPath}.compression.gzip_level`" label="Gzip level")
-            input(type="number" min="1" max="12" step="1" v-model.number="cache.compression.gzip_level")
+            NumberInput(min="1" max="12" step="1" v-model="cache.compression.gzip_level")
           ConfigField(:path="`${fieldPath}.compression.brotli_level`" label="Brotli level")
-            input(type="number" min="0" max="11" step="1" v-model.number="cache.compression.brotli_level")
+            NumberInput(min="0" max="11" step="1" v-model="cache.compression.brotli_level")
           ConfigField(:path="`${fieldPath}.compression.zstd_level`" label="Zstandard level")
-            input(type="number" min="-7" max="19" step="1" v-model.number="cache.compression.zstd_level")
+            NumberInput(min="-7" max="19" step="1" v-model="cache.compression.zstd_level")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
 
 import type {

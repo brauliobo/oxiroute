@@ -3,24 +3,21 @@ header.form-heading
   div
     p.eyebrow Ingress object
     h3 {{ listener.name || 'Unnamed listener' }}
-  button.danger-button(type="button" @click="emit('remove')") Remove listener
+  Button.danger-button(variant="danger" @click="emit('remove')") Remove listener
 .field-grid
   ConfigField(path="listeners[].name" label="Stable name")
-    input(type="text" v-model="listener.name")
+    Input(v-model="listener.name")
   ConfigField(path="listeners[].protocol" label="Protocol")
-    select(v-model="listener.protocol" @change="normalizeReferences")
-      option(value="http") HTTP
-      option(value="tcp") TCP
-      option(value="rtmp") RTMP
-      option(value="forward_http1") Forward HTTP/1.1
-      option(value="forward_http2") Forward HTTP/2
-      option(value="forward_http3") Forward HTTP/3
+    Select(
+      v-model="listener.protocol" @change="normalizeReferences"
+      :options="[{ value: 'http', label: 'HTTP' }, { value: 'tcp', label: 'TCP' }, { value: 'rtmp', label: 'RTMP' }, { value: 'forward_http1', label: 'Forward HTTP/1.1' }, { value: 'forward_http2', label: 'Forward HTTP/2' }, { value: 'forward_http3', label: 'Forward HTTP/3' }]"
+    )
   ConfigField(path="listeners[].service" label="Service reference")
-    select(v-model="listener.service" required @change="normalizeReferences")
+    select.ox-input(v-model="listener.service" required @change="normalizeReferences")
       option(:value="null" disabled) Select a service
       option(v-for="name in serviceNames" :key="name" :value="name") {{ name }}
   ConfigField(path="listeners[].tls_profile" label="TLS / SNI profile")
-    select(
+    select.ox-input(
       v-model="listener.tls_profile"
       :disabled="tlsDisabled"
       :title="tlsDisabled ? 'TLS profiles are supported only by HTTP and forward HTTP network listeners.' : undefined"
@@ -30,25 +27,18 @@ header.form-heading
 ConfigGroup.object-block(path="listeners[].bind" legend="Bind identity")
   .field-grid
     ConfigField(path="listeners[].bind.type" label="Bind type")
-      select(:value="listener.bind.type" @change="changeBind")
+      select.ox-input(:value="listener.bind.type" @change="changeBind")
         option(value="socket" :disabled="listener.protocol === 'forward_http3'") Network socket
         option(value="udp" :disabled="listener.protocol !== 'forward_http3'") UDP datagram
         option(value="unix" :disabled="listener.protocol === 'forward_http3' || (listener.protocol.startsWith('forward_') && forwardService?.tls_required)") Unix socket
     ConfigField(v-if="listener.bind.type !== 'unix'" path="listeners[].bind.address" label="Socket address")
-      input(type="text" v-model="listener.bind.address" placeholder="0.0.0.0:443")
+      Input(v-model="listener.bind.address" placeholder="0.0.0.0:443")
     ConfigField(v-else path="listeners[].bind.path" label="Unix socket path")
-      input(type="text" v-model="listener.bind.path" placeholder="/run/oxiroute/listener.sock")
+      Input(v-model="listener.bind.path" placeholder="/run/oxiroute/listener.sock")
     ConfigField(v-if="listener.bind.type === 'socket'" path="listeners[].bind.ipv6_only" label="IPv6 only (a [::] bind then leaves IPv4 on its port to another listener)" check)
       input(type="checkbox" :checked="listener.bind.ipv6_only === true" @change="toggleIpv6Only")
     ConfigField(v-if="listener.bind.type === 'unix'" path="listeners[].bind.mode" label="Unix socket mode")
-      input(
-        type="text"
-        inputmode="numeric"
-        :value="formatUnixMode(listener.bind.mode)"
-        placeholder="0770"
-        pattern="0?[0-7]{3}"
-        @change="updateUnixMode"
-      )
+      Input(inputmode="numeric" :model-value="formatUnixMode(listener.bind.mode)" placeholder="0770" pattern="0?[0-7]{3}" @change="updateUnixMode")
 NullableLimitField(
   v-model="listener.max_connections"
   :default-value="10000"
@@ -62,15 +52,19 @@ ConfigGroup.object-block(path="listeners[].proxy_protocol" legend="Inbound PROXY
     span Accept a bounded PROXY header before application data
   .field-grid(v-if="listener.proxy_protocol")
     ConfigField(path="listeners[].proxy_protocol.version" label="Accepted version")
-      select(v-model="listener.proxy_protocol.version")
-        option(value="auto") Auto-detect v1 or v2
-        option(value="v1") PROXY v1 only
-        option(value="v2") PROXY v2 only
+      Select(
+        v-model="listener.proxy_protocol.version"
+        :options="[{ value: 'auto', label: 'Auto-detect v1 or v2' }, { value: 'v1', label: 'PROXY v1 only' }, { value: 'v2', label: 'PROXY v2 only' }]"
+      )
     ConfigField(path="listeners[].proxy_protocol.timeout_ms" label="Header timeout (ms)")
-      input(type="number" min="1" max="60000" step="1" v-model.number="listener.proxy_protocol.timeout_ms")
+      NumberInput(min="1" max="60000" step="1" v-model="listener.proxy_protocol.timeout_ms")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
 
 import type { ForwardProxyServiceConfig, ListenerConfig, TlsProfileConfig } from '../config'

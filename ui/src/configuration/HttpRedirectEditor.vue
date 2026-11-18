@@ -2,7 +2,7 @@
 .action-editor
   .field-grid
     ConfigField(path="http_services[].routes[].action.status" label="Redirect status")
-      select(v-model.number="action.status")
+      select.ox-input(v-model.number="action.status")
         option(:value="301") 301 Permanent
         option(:value="302") 302 Temporary
         option(:value="307") 307 Temporary, preserve method
@@ -10,33 +10,37 @@
   ConfigGroup.object-block(path="http_services[].routes[].action.location" legend="Redirect location")
     .field-grid
       ConfigField(path="http_services[].routes[].action.location.kind" label="Location kind")
-        select(:value="action.location.kind" @change="changeLocation")
-          option(value="literal") Literal location
-          option(value="request_template") Request template
+        Select(
+          :model-value="action.location.kind" @change="changeLocation"
+          :options="[{ value: 'literal', label: 'Literal location' }, { value: 'request_template', label: 'Request template' }]"
+        )
       ConfigField.field-wide(path="http_services[].routes[].action.location.value" label="Location value")
-        input(type="text" v-model="action.location.value" maxlength="2048" :aria-describedby="locationHintId")
+        Input(v-model="action.location.value" maxlength="2048" :aria-describedby="locationHintId")
         small(:id="locationHintId") {{ locationHint }}
       ConfigField(v-if="action.location.kind === 'request_template'" path="http_services[].routes[].action.location.nginx_host_fallback" label="Missing-Host fallback")
-        input(type="text" :value="action.location.nginx_host_fallback ?? ''" placeholder="localhost" @input="setNginxHostFallback")
+        Input(:model-value="action.location.nginx_host_fallback ?? ''" placeholder="localhost" @input="setNginxHostFallback")
   ConfigGroup.route-list(path="http_services[].routes[].action.headers")
     template(#legend)
       .route-heading
         legend Response headers
-        button.add-row(type="button" :disabled="action.headers.length >= 32" @click="addHeader") + Add header
+        Button.add-row(:disabled="action.headers.length >= 32" @click="addHeader") + Add header
     ItemScope.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex" :index="headerIndex")
       header.route-card-heading
         strong Header {{ headerIndex + 1 }}
-        button.danger-link(type="button" :aria-label="`Remove redirect header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
+        Button.danger-link(variant="danger" small :aria-label="`Remove redirect header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
       .field-grid
         ConfigField(path="http_services[].routes[].action.headers[].name" label="Header name")
-          input(type="text" v-model="header.name")
+          Input(v-model="header.name")
         ConfigField(path="http_services[].routes[].action.headers[].value" label="Header value")
-          input(type="text" v-model="header.value")
+          Input(v-model="header.value")
         ConfigField(path="http_services[].routes[].action.headers[].always" label="Add on every response status" check)
           input(type="checkbox" v-model="header.always")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed, useId } from 'vue'
 import type { HttpRedirectActionConfig, HttpRedirectLocationConfig } from '../config'
 import { defaultRedirectLocation } from './httpDefaults'

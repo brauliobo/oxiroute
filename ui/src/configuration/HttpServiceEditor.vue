@@ -3,12 +3,12 @@ header.form-heading
   div
     p.eyebrow HTTP dispatch
     h3 {{ service.name || 'Unnamed HTTP service' }}
-  button.danger-button(type="button" @click="emit('remove')") Remove service
+  Button.danger-button(variant="danger" @click="emit('remove')") Remove service
 .field-grid
   ConfigField(path="http_services[].name" label="Stable name")
-    input(type="text" v-model="service.name")
+    Input(v-model="service.name")
   ConfigField(path="http_services[].upstream_io_timeout_ms" label="Upstream I/O timeout (ms)")
-    input(type="number" min="1" step="1" v-model.number="service.upstream_io_timeout_ms")
+    NumberInput(min="1" step="1" v-model="service.upstream_io_timeout_ms")
   ConfigField(path="http_services[].automatic_response_headers" label="Generate Date and Connection response headers" check)
     input(type="checkbox" v-model="service.automatic_response_headers")
 NullableLimitField(
@@ -22,7 +22,7 @@ ConfigGroup.route-list(path="http_services[].routes")
   template(#legend)
     .route-heading
       legend Routes
-      button.add-row(type="button" @click="addRoute") + Add route
+      Button.add-row(@click="addRoute") + Add route
   p.empty-list(v-if="service.routes.length === 0") At least one route is required.
   HttpRouteEditor(
     v-for="(route, routeIndex) in service.routes"
@@ -37,6 +37,9 @@ ConfigGroup.route-list(path="http_services[].routes")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Button from '#design/button/Button.vue'
 import type { HttpServiceConfig } from '../config'
 import HttpRouteEditor from './HttpRouteEditor.vue'
 import NullableLimitField from './NullableLimitField.vue'

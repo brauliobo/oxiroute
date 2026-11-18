@@ -4,52 +4,62 @@ ConfigGroup.object-block(:path="basePath" :legend="`${operation === 'publish' ? 
     template(#legend)
       .route-heading
         legend ACL rules
-        button.add-row(type="button" :disabled="policy.rules.length >= 64" @click="addRule") + Add rule
+        Button.add-row(:disabled="policy.rules.length >= 64" @click="addRule") + Add rule
     p.empty-list(v-if="policy.rules.length === 0") No network rule is configured.
     ItemScope.route-card(v-for="(rule, ruleIndex) in policy.rules" :key="ruleIndex" :index="ruleIndex")
       header.route-card-heading
         strong Rule {{ ruleIndex + 1 }}
-        button.danger-link(type="button" :aria-label="`Remove ${operation} rule ${ruleIndex + 1}`" @click="removeRule(ruleIndex)") Remove
+        Button.danger-link(variant="danger" small :aria-label="`Remove ${operation} rule ${ruleIndex + 1}`" @click="removeRule(ruleIndex)") Remove
       .field-grid
         template(v-if="operation === 'publish'")
           ConfigField(path="rtmp_services[].applications[].publish.rules[].action" label="Action")
-            select(v-model="rule.action")
-              option(value="allow") Allow
-              option(value="deny") Deny
+            Select(
+              v-model="rule.action"
+              :options="[{ value: 'allow', label: 'Allow' }, { value: 'deny', label: 'Deny' }]"
+            )
           ConfigField(path="rtmp_services[].applications[].publish.rules[].network" label="Network")
-            input(type="text" v-model="rule.network" placeholder="all or 192.0.2.0/24")
+            Input(v-model="rule.network" placeholder="all or 192.0.2.0/24")
         template(v-else)
           ConfigField(path="rtmp_services[].applications[].play.rules[].action" label="Action")
-            select(v-model="rule.action")
-              option(value="allow") Allow
-              option(value="deny") Deny
+            Select(
+              v-model="rule.action"
+              :options="[{ value: 'allow', label: 'Allow' }, { value: 'deny', label: 'Deny' }]"
+            )
           ConfigField(path="rtmp_services[].applications[].play.rules[].network" label="Network")
-            input(type="text" v-model="rule.network" placeholder="all or 192.0.2.0/24")
+            Input(v-model="rule.network" placeholder="all or 192.0.2.0/24")
   .field-grid
     ConfigField(:path="`${basePath}.token`" label="Stream-query token")
-      select(:value="policy.token?.source ?? 'disabled'" @change="setToken")
-        option(value="disabled") Disabled
-        option(value="stream_query") Stream query
+      Select(
+        :model-value="policy.token?.source ?? 'disabled'" @change="setToken"
+        :options="[{ value: 'disabled', label: 'Disabled' }, { value: 'stream_query', label: 'Stream query' }]"
+      )
     template(v-if="policy.token")
       template(v-if="operation === 'publish'")
         ConfigField(path="rtmp_services[].applications[].publish.token.source" label="Token source")
-          select(v-model="policy.token.source")
-            option(value="stream_query") Stream query
+          Select(
+            v-model="policy.token.source"
+            :options="[{ value: 'stream_query', label: 'Stream query' }]"
+          )
         ConfigField(path="rtmp_services[].applications[].publish.token.parameter" label="Query parameter")
-          input(type="text" v-model="policy.token.parameter" maxlength="32" autocomplete="off")
+          Input(v-model="policy.token.parameter" maxlength="32" autocomplete="off")
         ConfigField(path="rtmp_services[].applications[].publish.token.secret" label="Token secret")
-          input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
+          input.ox-input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
       template(v-else)
         ConfigField(path="rtmp_services[].applications[].play.token.source" label="Token source")
-          select(v-model="policy.token.source")
-            option(value="stream_query") Stream query
+          Select(
+            v-model="policy.token.source"
+            :options="[{ value: 'stream_query', label: 'Stream query' }]"
+          )
         ConfigField(path="rtmp_services[].applications[].play.token.parameter" label="Query parameter")
-          input(type="text" v-model="policy.token.parameter" maxlength="32" autocomplete="off")
+          Input(v-model="policy.token.parameter" maxlength="32" autocomplete="off")
         ConfigField(path="rtmp_services[].applications[].play.token.secret" label="Token secret")
-          input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
+          input.ox-input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import Select from '#design/field/Select.vue'
+import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
 
 import type { RtmpAccessPolicyConfig } from '../config'

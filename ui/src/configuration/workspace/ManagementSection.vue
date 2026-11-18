@@ -4,16 +4,17 @@ ConfigField(path="management" label="Enable the loopback management listener" ch
   input(type="checkbox" :checked="config.management !== null" @change="toggleManagement")
 .field-grid(v-if="config.management")
   ConfigField(path="management.bind" label="Bind address")
-    input(type="text" v-model="config.management.bind" placeholder="127.0.0.1:9080")
+    Input(v-model="config.management.bind" placeholder="127.0.0.1:9080")
   ConfigField(path="management.ui_dir" label="Prebuilt UI directory")
-    input(type="text" :value="config.management.ui_dir ?? ''" placeholder="/opt/oxiroute/ui/dist" @input="setUiDir")
+    Input(:model-value="config.management.ui_dir ?? ''" placeholder="/opt/oxiroute/ui/dist" @input="setUiDir")
     small Optional; empty writes null.
   ConfigField(path="management.token_file" label="Management token file")
-    input(type="text" :value="config.management.token_file ?? ''" placeholder="/etc/oxiroute/management.token" @input="setTokenFile")
+    Input(:model-value="config.management.token_file ?? ''" placeholder="/etc/oxiroute/management.token" @input="setTokenFile")
     small Optional; empty falls back to OXIROUTE_MANAGEMENT_TOKEN_FILE. The token itself is never stored here.
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
 import type { CanonicalConfig } from '../../config'
 import { nullableInput } from './inputValues'
 import SectionHeading from './SectionHeading.vue'
@@ -39,6 +40,3 @@ function setTokenFile(event: Event): void {
   else management.token_file = value
 }
 </script>
-
-<style scoped src="./controls.css"></style>
-<style scoped src="./fields.css"></style>

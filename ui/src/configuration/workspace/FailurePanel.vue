@@ -1,18 +1,16 @@
 <template lang="pug">
-.capability-panel
+Card.capability-panel
   span.capability-index {{ code }}
   div
     h3 {{ title }}
     p {{ message }}
     p {{ note }}
-    button.secondary-button(type="button" @click="emit('retry')") {{ retryLabel }}
+    Button.secondary-button(@click="emit('retry')") {{ retryLabel }}
 </template>
 
 <script setup lang="ts" vapor>
+import Card from '#design/panel/Card.vue'
+import Button from '#design/button/Button.vue'
 defineProps<{ code: string; title: string; message: string; note: string; retryLabel: string }>()
 const emit = defineEmits<{ retry: [] }>()
 </script>
-
-<style scoped src="./base.css"></style>
-<style scoped src="./controls.css"></style>
-<style scoped src="./panels.css"></style>

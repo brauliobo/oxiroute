@@ -2,9 +2,9 @@
 .action-editor
   .field-grid
     ConfigField(path="http_services[].routes[].action.status" label="HTTP status")
-      input(type="number" min="200" max="599" step="1" v-model.number="action.status")
+      NumberInput(min="200" max="599" step="1" v-model="action.status")
     ConfigField.field-wide(path="http_services[].routes[].action.body" label="Response body")
-      textarea(
+      textarea.ox-input(
         v-model="action.body"
         rows="5"
         maxlength="65536"
@@ -17,21 +17,24 @@
     template(#legend)
       .route-heading
         legend Response headers
-        button.add-row(type="button" :disabled="action.headers.length >= 32" :title="action.headers.length >= 32 ? 'The server allows at most 32 fixed response headers.' : undefined" @click="addHeader") + Add header
+        Button.add-row(:disabled="action.headers.length >= 32" :title="action.headers.length >= 32 ? 'The server allows at most 32 fixed response headers.' : undefined" @click="addHeader") + Add header
     ItemScope.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex" :index="headerIndex")
       header.route-card-heading
         strong Header {{ headerIndex + 1 }}
-        button.danger-link(type="button" :aria-label="`Remove fixed response header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
+        Button.danger-link(variant="danger" small :aria-label="`Remove fixed response header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
       .field-grid
         ConfigField(path="http_services[].routes[].action.headers[].name" label="Header name")
-          input(type="text" v-model="header.name")
+          Input(v-model="header.name")
         ConfigField(path="http_services[].routes[].action.headers[].value" label="Header value")
-          input(type="text" v-model="header.value")
+          Input(v-model="header.value")
         ConfigField(path="http_services[].routes[].action.headers[].always" label="Add on every response status" check)
           input(type="checkbox" v-model="header.always")
 </template>
 
 <script setup lang="ts" vapor>
+import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
+import Button from '#design/button/Button.vue'
 import { computed, useId } from 'vue'
 import type { HttpFixedResponseActionConfig } from '../config'
 import ConfigField from './fields/ConfigField.vue'
