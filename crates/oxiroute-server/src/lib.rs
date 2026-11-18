@@ -75,9 +75,7 @@ pub use l4::tcp::{
     RelayStats, TcpRelayCore, relay_streams, select_upstream_with_shutdown,
 };
 pub use l4::udp::{UdpRelayStats, UdpRuntime};
-pub use listener::reservation::{
-    ListenerReservation, ListenerReservations, PendingListenerChange,
-};
+pub use listener::reservation::{ListenerReservation, ListenerReservations, PendingListenerChange};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
 pub use observability::log_filter::{apply_log_filter, init_logging};
 pub use observability::monitoring::{
