@@ -26,7 +26,7 @@ impl Execute for GenerationCommand {
 
 fn drain(context: &Context<'_>, wait: bool) -> Result<(), CliError> {
     let limit = if wait {
-        context.timeouts().wait()
+        context.timeouts()?.wait()
     } else {
         Duration::ZERO
     };
@@ -39,7 +39,7 @@ fn drain(context: &Context<'_>, wait: bool) -> Result<(), CliError> {
     let timeouts = if wait {
         Timeouts::limited(limit + ANSWER_SLACK)
     } else {
-        context.timeouts()
+        context.timeouts()?
     };
     let body = json!({ "timeoutMs": u64::try_from(limit.as_millis()).unwrap_or(u64::MAX) });
     let response = context.client_within(timeouts)?.mutation_json(

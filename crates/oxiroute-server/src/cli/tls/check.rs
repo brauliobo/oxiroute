@@ -80,7 +80,7 @@ fn live(context: &Context<'_>, args: &CheckArgs, target: &Target) -> Result<Subj
         target,
         args.servername.as_deref(),
         args.ca_file.as_deref(),
-        context.timeouts(),
+        context.timeouts().map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     Ok(Subject {

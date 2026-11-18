@@ -96,7 +96,7 @@ impl Follow<'_> {
     fn reopen(&self) -> Result<BodyStream, CliError> {
         wait::until(
             "event stream reconnect",
-            self.context.timeouts(),
+            self.context.timeouts()?,
             || match self.open() {
                 Ok(stream) => Ok(Attempt::Done(stream)),
                 Err(error @ (CliError::Connect(_) | CliError::Timeout(_))) => {

@@ -33,7 +33,7 @@ impl Execute for TlsOperation {
                     target,
                     servername.as_deref(),
                     ca_file.as_deref(),
-                    context.timeouts(),
+                    context.timeouts()?,
                 )?;
                 context.print(&served.details(now_unix_seconds()), View::TlsServed)
             }

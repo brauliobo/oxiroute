@@ -168,7 +168,7 @@ fn download(
         &format!("{}/content", item(id)),
         "application/octet-stream",
         &[],
-        context.timeouts().answer(),
+        context.timeouts()?.answer(),
     )?;
     let Some(target) = target else {
         return io::copy(&mut body, &mut io::stdout().lock())
