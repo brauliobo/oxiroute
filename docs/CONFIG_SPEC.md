@@ -1076,7 +1076,9 @@ The current certificate and profile rules are:
   cuts a TLS 1.2 resumption by 83% and a TLS 1.3 resumption by 6% to 14%, because TLS 1.3 still runs a
   fresh key exchange; enable it for clients that reconnect often over TLS 1.2. `session_tickets`
   issue two tickets per full handshake (+10% on a full handshake) and pay back only when more than
-  about half of the handshakes resume. The cache holds `size_bytes / 256` sessions (10 MiB: 40,960), evicting
+  about half of the handshakes resume. On the rustls backend the ticket keys belong to the profile, rotate every six
+  hours (a ticket resumes for one to two rotations, and never past `session_timeout_seconds`) and survive a reload.
+  The cache holds `size_bytes / 256` sessions (10 MiB: 40,960), evicting
   the oldest; by default there is no cache and no tickets, so a returning client always runs a full
   handshake.
 - `key_exchange_groups` is an optional nonempty list of unique group names: `x25519`, `secp256r1`,

@@ -761,6 +761,31 @@ two generations of the process.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor
 may be group/world writable unless it has the sticky bit.
 
+### State that survives a reload
+
+A reload replaces the generation: in the direct runtime inside one process, under the supervising master in a
+new worker process. What the new generation starts with:
+
+| State | Direct runtime | Supervised worker |
+| --- | --- | --- |
+| Memory cache store (`cache_stores` with `type = "memory"`) | taken by the new generation at activation, under its own bounds: a lower `max_entries` or `max_bytes` keeps the most recently used representations that fit, an object over a lower `max_object_bytes` is left out; one `memory cache store ... kept N of M entries across the reload` line per store | starts empty: a worker is another process and the cache cannot cross it; use a disk store (above) when the cache must survive a reload |
+| Disk cache store | see "Stores one worker writes" | see "Stores one worker writes" |
+| TLS session tickets (`session_tickets = true`, rustls backend) | one set of ticket keys per profile for the life of the process, so a ticket issued before the reload resumes after it | the replaced worker hands its keys (current, previous, next rotation time) to its replacement over the control channel before the replacement takes traffic |
+| TLS session cache (`session_cache`, rustls backend) | the new generation takes the cached sessions, within a changed capacity | starts empty; tickets resume instead |
+| OpenSSL backend (`policy.backend = "openssl"`) tickets and cache | OpenSSL keeps them per context, so they start empty | start empty |
+| Media ticket key (`/api/v1/rtmp/media/.../ticket`, `/vod/.../ticket`) | one key for the life of the process | handed to the replacement worker like the ticket keys |
+| Registered servers and their lease deadlines, operator drain, weight and checks | kept (registry) | kept (registry store) |
+| Server health state, passive ejections, circuit breaker state | carried by server name to every server whose endpoint did not change: the health state, the last check time, the failure counts, the ejection with its end time and backoff step, an open or half-open breaker | the same, handed to the replacement worker; a pool too large for the control channel (48 KiB with everything else) hands its servers that are unhealthy, ejected or failing first and the rest in order, and the log names how many were left out |
+| Health checks | the new generation starts checking when it is published, each server when its interval since its last check is over, so a reload does not probe every server at once; a server that is new or changed is checked at once | the same |
+| Totals of checks and passive failures, the breaker's failure-ratio window, the latency averages of outlier detection | start again and refill within one window or interval | start again |
+| Upstream keep-alive connections, DNS lookups of `on_connect` servers | start again | start again |
+| Listener and metric counters, in-flight work | per generation: a counter starts at 0 in the new generation and the replaced one finishes its own connections | per worker |
+| Active-connection counts used by `least_conn` | counted by the generation that holds the connections | the same |
+
+A server whose endpoint changed (another address under the same name) and a pool or server that is new starts as
+a fresh start does. An ejection that waited for a readmission probe ends with its quiet period instead of a probe
+when it moves to the new generation. Nothing here needs a restart, so none of it is part of `restartRequired`.
+
 ## Environment variables
 
 Settings live in the configuration. The environment variables that remain are fallbacks that a

@@ -654,7 +654,7 @@ output or the VOD source does not exist, and are audited as `media_ticket_mint`.
 `<expiry unix ms>.<base64url HMAC-SHA256>` over a domain tag, a typed scope string
 (`stream:<service>/<application>/<stream>` for live media, `vod:<service>/<application>/<source>/<path>`
 for one VOD object) and the expiry, keyed by 32 random bytes owned by the process-level
-`RtmpManagementApi`: generation reloads keep it, a restart invalidates every ticket. The MAC is
+`RtmpManagementApi`: generation reloads keep it (the direct runtime shares one key, a supervised worker hands it to its replacement), a restart invalidates every ticket. The MAC is
 compared in constant time. The `ticket` query parameter is honored only on `GET` of the media and VOD
 routes and only when no `Authorization` header is present; `?access_token=` stays refused. A forged,
 altered, repeated or wrong-scope ticket returns `401 invalid_ticket`; an authentic but expired one
