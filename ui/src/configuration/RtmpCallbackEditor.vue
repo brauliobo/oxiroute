@@ -26,10 +26,8 @@ ConfigGroup.object-block(:path="fieldPath" :legend="legend")
       NumberInput(min="1" max="86400000" step="1" v-model="callbacks.timeout_ms")
     ConfigField(:path="`${fieldPath}.notify_update_timeout_ms`" label="Update timeout (ms)")
       NumberInput(min="1" max="86400000" step="1" v-model="callbacks.notify_update_timeout_ms")
-    ConfigField.compact-enable(:path="`${fieldPath}.notify_update_strict`" label="Require update callback success" check)
-      input(type="checkbox" v-model="callbacks.notify_update_strict")
-    ConfigField.compact-enable(:path="`${fieldPath}.notify_relay_redirect`" label="Notify relay redirects" check)
-      input(type="checkbox" v-model="callbacks.notify_relay_redirect")
+    ConfigField.compact-enable(:path="`${fieldPath}.notify_update_strict`" label="Require update callback success" check v-model="callbacks.notify_update_strict")
+    ConfigField.compact-enable(:path="`${fieldPath}.notify_relay_redirect`" label="Notify relay redirects" check v-model="callbacks.notify_relay_redirect")
 </template>
 
 <script setup lang="ts" vapor>

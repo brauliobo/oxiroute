@@ -66,9 +66,7 @@ ConfigGroup.object-block(path="upstream_pools[].health_check" legend="Health che
       ConfigField(path="upstream_pools[].health_check.path" label="Probe path")
         Input(:model-value="pool.health_check.path ?? ''" @input="pool.health_check.path = nullableInput($event)")
 ConfigGroup.object-block(path="upstream_pools[].passive_health" legend="Passive health")
-  label.enable-row
-    input(type="checkbox" :checked="pool.passive_health !== null" @change="togglePassiveHealth")
-    span Enable passive health tracking
+  Checkbox.enable-row(:model-value="pool.passive_health !== null" @change="togglePassiveHealth") Enable passive health tracking
   template(v-if="pool.passive_health")
     .field-grid
       ConfigField(path="upstream_pools[].passive_health.observe" label="Observe")
@@ -83,10 +81,8 @@ ConfigGroup.object-block(path="upstream_pools[].passive_health" legend="Passive 
         )
       ConfigField(path="upstream_pools[].passive_health.error_limit" label="Error limit")
         NumberInput(min="1" max="100" step="1" v-model="pool.passive_health.error_limit")
-      ConfigField(path="upstream_pools[].passive_health.mark_down" label="Mark down on threshold" check)
-        input(type="checkbox" v-model="pool.passive_health.mark_down")
-      ConfigField(path="upstream_pools[].passive_health.mark_up" label="Mark up after recovery" check)
-        input(type="checkbox" v-model="pool.passive_health.mark_up")
+      ConfigField(path="upstream_pools[].passive_health.mark_down" label="Mark down on threshold" check v-model="pool.passive_health.mark_down")
+      ConfigField(path="upstream_pools[].passive_health.mark_up" label="Mark up after recovery" check v-model="pool.passive_health.mark_up")
       ConfigField(path="upstream_pools[].passive_health.initial_backoff_ms" label="Initial backoff (ms)")
         NumberInput(min="1" max="86400000" step="1" v-model="pool.passive_health.initial_backoff_ms")
       ConfigField(path="upstream_pools[].passive_health.max_backoff_ms" label="Maximum backoff (ms)")
@@ -124,8 +120,7 @@ ConfigGroup.object-block(path="upstream_pools[].http_versions" legend="Upstream 
         option(value="1.1") HTTP/1.1
         option(value="2" :disabled="pool.tls === null") HTTP/2
 ConfigGroup.object-block(path="upstream_pools[].resilience" legend="Resilience")
-  ConfigField(path="upstream_pools[].resilience.fail_open" label="Serve the least-bad server when none is healthy" check)
-    input(type="checkbox" v-model="pool.resilience.fail_open")
+  ConfigField(path="upstream_pools[].resilience.fail_open" label="Serve the least-bad server when none is healthy" check v-model="pool.resilience.fail_open")
   .field-grid
     ConfigField(path="upstream_pools[].resilience.min_members" label="Minimum selectable servers kept by passive ejection")
       NumberInput(min="0" step="1" placeholder="1 with fail-open, otherwise 0" :model-value="pool.resilience.min_members ?? ''" @input="pool.resilience.min_members = nullableIntegerInput($event)")
@@ -140,6 +135,7 @@ ConfigGroup.object-block(path="upstream_pools[].resilience" legend="Resilience")
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

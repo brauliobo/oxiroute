@@ -35,8 +35,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
           :disabled="application.recorders.length > 0"
           :title="application.recorders.length > 0 ? 'Remove configured recorders before disabling live publishing.' : undefined"
         )
-      ConfigField.compact-enable(path="rtmp_services[].applications[].idle_streams" label="Allow viewers before a publisher" check)
-        input(type="checkbox" v-model="application.idle_streams")
+      ConfigField.compact-enable(path="rtmp_services[].applications[].idle_streams" label="Allow viewers before a publisher" check v-model="application.idle_streams")
       RtmpAccessPolicyEditor(:policy="application.publish" operation="publish")
       RtmpAccessPolicyEditor(:policy="application.play" operation="play")
       ConfigGroup.object-block(path="rtmp_services[].applications[].limits" legend="Session ceilings")
@@ -48,9 +47,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
           ConfigField(path="rtmp_services[].applications[].limits.max_viewers" label="Maximum viewers")
             NumberInput(min="1" max="1000000" step="1" v-model="application.limits.max_viewers")
       ConfigGroup.object-block(path="rtmp_services[].applications[].hls" legend="HLS output")
-        label.enable-row
-          input(type="checkbox" :checked="application.hls != null" @change="toggleHls(application, $event)")
-          span Publish HLS media output
+        Checkbox.enable-row(:model-value="application.hls != null" @change="toggleHls(application, $event)") Publish HLS media output
         template(v-if="application.hls")
           .field-grid
             ConfigField(path="rtmp_services[].applications[].hls.root_directory" label="HLS root directory")
@@ -77,14 +74,10 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
             ConfigField(path="rtmp_services[].applications[].hls.max_active_streams" label="Maximum active streams")
               NumberInput(min="1" max="100000" step="1" v-model="application.hls.max_active_streams")
           .field-grid
-            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.nested" label="Nest media under the stream name" check)
-              input(type="checkbox" v-model="application.hls.nested")
-            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.cleanup" label="Remove expired media files" check)
-              input(type="checkbox" v-model="application.hls.cleanup")
+            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.nested" label="Nest media under the stream name" check v-model="application.hls.nested")
+            ConfigField.compact-enable(path="rtmp_services[].applications[].hls.cleanup" label="Remove expired media files" check v-model="application.hls.cleanup")
           ConfigGroup.object-block(path="rtmp_services[].applications[].hls.keys" legend="AES-128 keys")
-            label.enable-row
-              input(type="checkbox" :checked="application.hls.keys != null" @change="toggleHlsKeys(application, $event)")
-              span Rotate encrypted HLS keys
+            Checkbox.enable-row(:model-value="application.hls.keys != null" @change="toggleHlsKeys(application, $event)") Rotate encrypted HLS keys
             .field-grid(v-if="application.hls.keys")
               ConfigField(path="rtmp_services[].applications[].hls.keys.rotation_segments" label="Segments per key")
                 NumberInput(min="1" max="10000" step="1" v-model="application.hls.keys.rotation_segments")
@@ -111,9 +104,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
                 ConfigField(path="rtmp_services[].applications[].hls.variants[].height" label="Height")
                   NumberInput(min="1" max="10000" step="1" :model-value="variant.height ?? ''" @input="setNullableVariantField(variant, 'height', $event)")
       ConfigGroup.object-block(path="rtmp_services[].applications[].dash" legend="MPEG-DASH output")
-        label.enable-row
-          input(type="checkbox" :checked="application.dash != null" @change="toggleDash(application, $event)")
-          span Configure DASH output (validation reports unsupported runtime capability)
+        Checkbox.enable-row(:model-value="application.dash != null" @change="toggleDash(application, $event)") Configure DASH output (validation reports unsupported runtime capability)
         .field-grid(v-if="application.dash")
           ConfigField(path="rtmp_services[].applications[].dash.root_directory" label="DASH root directory")
             Input(v-model="application.dash.root_directory" placeholder="/var/lib/oxiroute/dash")
@@ -138,10 +129,8 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
             NumberInput(min="1" max="1000000" step="1" v-model="application.dash.max_storage_files")
           ConfigField(path="rtmp_services[].applications[].dash.max_active_streams" label="Maximum active streams")
             NumberInput(min="1" max="100000" step="1" v-model="application.dash.max_active_streams")
-          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.nested" label="Nest media under the stream name" check)
-            input(type="checkbox" v-model="application.dash.nested")
-          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.cleanup" label="Remove expired media files" check)
-            input(type="checkbox" v-model="application.dash.cleanup")
+          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.nested" label="Nest media under the stream name" check v-model="application.dash.nested")
+          ConfigField.compact-enable(path="rtmp_services[].applications[].dash.cleanup" label="Remove expired media files" check v-model="application.dash.cleanup")
       ConfigGroup.object-block(path="rtmp_services[].applications[].relay" legend="Relay bounds")
         .field-grid
           ConfigField(path="rtmp_services[].applications[].relay.max_queue_messages" label="Maximum relay messages")
@@ -201,8 +190,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
             Input(:model-value="target.tc_url ?? ''" @input="setNullableTargetField(target, 'tc_url', $event)")
           ConfigField(path="rtmp_services[].applications[].pull_targets[].flash_version" label="Flash version")
             Input(:model-value="target.flash_version ?? ''" @input="setNullableTargetField(target, 'flash_version', $event)")
-          ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials" label="Use credentials" check)
-            input(type="checkbox" :checked="target.credentials !== null" @change="toggleTargetCredentials(target)")
+          ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials" label="Use credentials" check :model-value="target.credentials !== null" @change="toggleTargetCredentials(target)")
           template(v-if="target.credentials")
             ConfigField(path="rtmp_services[].applications[].pull_targets[].credentials.username" label="Username")
               Input(v-model="target.credentials.username")
@@ -237,17 +225,14 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
             Input(:model-value="target.tc_url ?? ''" @input="setNullableTargetField(target, 'tc_url', $event)")
           ConfigField(path="rtmp_services[].applications[].push_targets[].flash_version" label="Flash version")
             Input(:model-value="target.flash_version ?? ''" @input="setNullableTargetField(target, 'flash_version', $event)")
-          ConfigField(path="rtmp_services[].applications[].push_targets[].credentials" label="Use credentials" check)
-            input(type="checkbox" :checked="target.credentials !== null" @change="toggleTargetCredentials(target)")
+          ConfigField(path="rtmp_services[].applications[].push_targets[].credentials" label="Use credentials" check :model-value="target.credentials !== null" @change="toggleTargetCredentials(target)")
           template(v-if="target.credentials")
             ConfigField(path="rtmp_services[].applications[].push_targets[].credentials.username" label="Username")
               Input(v-model="target.credentials.username")
             ConfigField(path="rtmp_services[].applications[].push_targets[].credentials.secret_file" label="Secret file")
               Input(v-model="target.credentials.secret_file" autocomplete="off")
     ConfigGroup.object-block(path="rtmp_services[].applications[].vod" legend="VOD sources")
-      label.enable-row
-        input(type="checkbox" :checked="application.vod !== null" @change="toggleVod(application)")
-        span Enable VOD playback
+      Checkbox.enable-row(:model-value="application.vod !== null" @change="toggleVod(application)") Enable VOD playback
       template(v-if="application.vod")
         .field-grid
           ConfigField(path="rtmp_services[].applications[].vod.max_sessions" label="Maximum VOD sessions")
@@ -292,6 +277,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

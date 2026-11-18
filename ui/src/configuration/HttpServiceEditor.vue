@@ -9,8 +9,7 @@ header.form-heading
     Input(v-model="service.name")
   ConfigField(path="http_services[].upstream_io_timeout_ms" label="Upstream I/O timeout (ms)")
     NumberInput(min="1" step="1" v-model="service.upstream_io_timeout_ms")
-  ConfigField(path="http_services[].automatic_response_headers" label="Generate Date and Connection response headers" check)
-    input(type="checkbox" v-model="service.automatic_response_headers")
+  ConfigField(path="http_services[].automatic_response_headers" label="Generate Date and Connection response headers" check v-model="service.automatic_response_headers")
 NullableLimitField(
   v-model="service.max_request_body_bytes"
   :default-value="10485760"

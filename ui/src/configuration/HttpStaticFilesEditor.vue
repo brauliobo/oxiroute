@@ -16,12 +16,9 @@
     @update:model-value="emit('changed')"
   )
   .field-grid
-    ConfigField(path="http_services[].routes[].action.internal_index_redirects" label="Re-evaluate routes for index files" check)
-      input(type="checkbox" v-model="action.internal_index_redirects")
-    ConfigField(path="http_services[].routes[].action.directory_redirects" label="Redirect directories to trailing slash" check)
-      input(type="checkbox" v-model="action.directory_redirects")
-    ConfigField(path="http_services[].routes[].action.etag" label="Emit ETag validators" check)
-      input(type="checkbox" v-model="action.etag")
+    ConfigField(path="http_services[].routes[].action.internal_index_redirects" label="Re-evaluate routes for index files" check v-model="action.internal_index_redirects")
+    ConfigField(path="http_services[].routes[].action.directory_redirects" label="Redirect directories to trailing slash" check v-model="action.directory_redirects")
+    ConfigField(path="http_services[].routes[].action.etag" label="Emit ETag validators" check v-model="action.etag")
 </template>
 
 <script setup lang="ts" vapor>

@@ -35,8 +35,7 @@ ConfigGroup.object-block(path="listeners[].bind" legend="Bind identity")
       Input(v-model="listener.bind.address" placeholder="0.0.0.0:443")
     ConfigField(v-else path="listeners[].bind.path" label="Unix socket path")
       Input(v-model="listener.bind.path" placeholder="/run/oxiroute/listener.sock")
-    ConfigField(v-if="listener.bind.type === 'socket'" path="listeners[].bind.ipv6_only" label="IPv6 only (a [::] bind then leaves IPv4 on its port to another listener)" check)
-      input(type="checkbox" :checked="listener.bind.ipv6_only === true" @change="toggleIpv6Only")
+    ConfigField(v-if="listener.bind.type === 'socket'" path="listeners[].bind.ipv6_only" label="IPv6 only (a [::] bind then leaves IPv4 on its port to another listener)" check :model-value="listener.bind.ipv6_only === true" @change="toggleIpv6Only")
     ConfigField(v-if="listener.bind.type === 'unix'" path="listeners[].bind.mode" label="Unix socket mode")
       Input(inputmode="numeric" :model-value="formatUnixMode(listener.bind.mode)" placeholder="0770" pattern="0?[0-7]{3}" @change="updateUnixMode")
 NullableLimitField(
@@ -47,9 +46,7 @@ NullableLimitField(
   input-label="Maximum active connections"
 )
 ConfigGroup.object-block(path="listeners[].proxy_protocol" legend="Inbound PROXY protocol")
-  label.enable-row
-    input(type="checkbox" :checked="listener.proxy_protocol != null" @change="toggleProxyProtocol")
-    span Accept a bounded PROXY header before application data
+  Checkbox.enable-row(:model-value="listener.proxy_protocol != null" @change="toggleProxyProtocol") Accept a bounded PROXY header before application data
   .field-grid(v-if="listener.proxy_protocol")
     ConfigField(path="listeners[].proxy_protocol.version" label="Accepted version")
       Select(
@@ -61,6 +58,7 @@ ConfigGroup.object-block(path="listeners[].proxy_protocol" legend="Inbound PROXY
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

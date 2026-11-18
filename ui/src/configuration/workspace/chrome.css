@@ -178,14 +178,11 @@
     color: var(--ox-muted);
   }
 
-  .diagnostic-target {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
+  .diagnostic .diagnostic-target {
+    display: block;
+    height: auto;
     text-align: left;
-    cursor: pointer;
+    text-decoration: none;
   }
 
   .validation-output {

@@ -11,7 +11,7 @@ section.diagnostics-section(aria-labelledby="diagnostics-heading")
       .diagnostic-code
         span {{ item.diagnostic.severity }}
         code {{ item.diagnostic.code }}
-      button.diagnostic-target(v-if="item.location" type="button" @click="emit('focusField', item)")
+      Button.diagnostic-target(v-if="item.location" variant="link" @click="emit('focusField', item)")
         DiagnosticText(:diagnostic="item.diagnostic")
       div(v-else)
         DiagnosticText(:diagnostic="item.diagnostic")
@@ -20,6 +20,7 @@ section.diagnostics-section(aria-labelledby="diagnostics-heading")
 <script setup lang="ts" vapor>
 import { computed } from 'vue'
 
+import Button from '#design/button/Button.vue'
 import EmptyState from '#design/empty/EmptyState.vue'
 
 import type { PlacedDiagnostic } from '../fields/context'

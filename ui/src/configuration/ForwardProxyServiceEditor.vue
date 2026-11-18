@@ -14,10 +14,8 @@ header.form-heading
       v-model="service.audit_mode"
       :options="[{ value: 'off', label: 'Off' }, { value: 'metadata', label: 'Metadata only' }]"
     )
-  ConfigField.compact-enable(path="forward_proxy_services[].allow_absolute_form" label="Allow absolute-form requests" check)
-    input(type="checkbox" v-model="service.allow_absolute_form")
-  ConfigField.compact-enable(path="forward_proxy_services[].tls_required" label="Require TLS on network listeners" check)
-    input(type="checkbox" v-model="service.tls_required")
+  ConfigField.compact-enable(path="forward_proxy_services[].allow_absolute_form" label="Allow absolute-form requests" check v-model="service.allow_absolute_form")
+  ConfigField.compact-enable(path="forward_proxy_services[].tls_required" label="Require TLS on network listeners" check v-model="service.tls_required")
 
 ConfigGroup.retry-triggers(path="forward_proxy_services[].enabled_versions" legend="Enabled HTTP versions")
   label.enable-row(v-for="version in FORWARD_HTTP_VERSIONS" :key="version")
@@ -25,8 +23,7 @@ ConfigGroup.retry-triggers(path="forward_proxy_services[].enabled_versions" lege
     span {{ version.toUpperCase() }}
 
 ConfigGroup.object-block(path="forward_proxy_services[].connect" legend="CONNECT tunneling")
-  ConfigField(path="forward_proxy_services[].connect.enabled" label="Enable CONNECT authority tunneling" check)
-    input(type="checkbox" v-model="service.connect.enabled")
+  ConfigField(path="forward_proxy_services[].connect.enabled" label="Enable CONNECT authority tunneling" check v-model="service.connect.enabled")
   NumberListField(
     v-model="service.connect.allowed_ports"
     label="Allowed CONNECT ports"
@@ -40,8 +37,7 @@ ConfigGroup.object-block(path="forward_proxy_services[].connect" legend="CONNECT
   )
 
 ConfigGroup.object-block(path="forward_proxy_services[].connect_udp" legend="CONNECT-UDP tunneling")
-  ConfigField(path="forward_proxy_services[].connect_udp.enabled" label="Enable CONNECT-UDP tunneling" check)
-    input(type="checkbox" v-model="service.connect_udp.enabled")
+  ConfigField(path="forward_proxy_services[].connect_udp.enabled" label="Enable CONNECT-UDP tunneling" check v-model="service.connect_udp.enabled")
   NumberListField(
     v-model="service.connect_udp.allowed_ports"
     label="Allowed CONNECT-UDP ports"
@@ -80,9 +76,7 @@ ConfigGroup.object-block(path="forward_proxy_services[].peer_policy" legend="Sta
           NumberInput(min="1" max="65535" step="1" v-model="peer.port")
 
 ConfigGroup.object-block(path="forward_proxy_services[].auth" legend="Client authentication")
-  label.enable-row
-    input(type="checkbox" :checked="service.auth !== null" @change="toggleAuth")
-    span Require credentials loaded from a server file
+  Checkbox.enable-row(:model-value="service.auth !== null" @change="toggleAuth") Require credentials loaded from a server file
   .field-grid(v-if="service.auth")
     ConfigField(path="forward_proxy_services[].auth.type" label="Authentication type")
       Select(
@@ -99,15 +93,12 @@ ConfigGroup.object-block(path="forward_proxy_services[].auth" legend="Client aut
         Input(v-model="service.auth.realm")
       ConfigField(path="forward_proxy_services[].auth.credential_ttl_ms" label="Validated credential TTL (ms)")
         NumberInput(min="1" max="86400000" step="1" :model-value="service.auth.credential_ttl_ms ?? ''" @input="updateCredentialTtl")
-      ConfigField.compact-enable(path="forward_proxy_services[].auth.username_case_sensitive" label="Match usernames case-sensitively" check)
-        input(type="checkbox" v-model="service.auth.username_case_sensitive")
+      ConfigField.compact-enable(path="forward_proxy_services[].auth.username_case_sensitive" label="Match usernames case-sensitively" check v-model="service.auth.username_case_sensitive")
     ConfigField(v-else path="forward_proxy_services[].auth.client_ca_file_path" label="Client CA file path")
       Input(v-model="service.auth.client_ca_file_path" autocomplete="off" placeholder="/etc/oxiroute/client-ca.pem")
 
 ConfigGroup.object-block(path="forward_proxy_services[].access_policy" legend="Ordered access policy")
-  label.enable-row
-    input(type="checkbox" :checked="service.access_policy !== null" @change="toggleAccessPolicy")
-    span Evaluate first-match access rules
+  Checkbox.enable-row(:model-value="service.access_policy !== null" @change="toggleAccessPolicy") Evaluate first-match access rules
   template(v-if="service.access_policy")
     ConfigField(path="forward_proxy_services[].access_policy.default_action" label="Default action")
       Select(
@@ -131,8 +122,7 @@ ConfigGroup.object-block(path="forward_proxy_services[].access_policy" legend="O
                   :model-value="condition.type" @change="changeConditionType(ruleIndex, conditionIndex, $event)"
                   :options="[{ value: 'all', label: 'All requests' }, { value: 'methods', label: 'Methods' }, { value: 'source_cidrs', label: 'Source CIDRs' }, { value: 'destination_ports', label: 'Destination ports' }, { value: 'authenticated', label: 'Authenticated' }, { value: 'destination_local', label: 'Destination local' }, { value: 'destination_link_local', label: 'Destination link-local' }, { value: 'manager', label: 'Manager' }]"
                 )
-              ConfigField.compact-enable(path="forward_proxy_services[].access_policy.rules[].conditions[].negated" label="Negate matcher" check)
-                input(type="checkbox" v-model="condition.negated")
+              ConfigField.compact-enable(path="forward_proxy_services[].access_policy.rules[].conditions[].negated" label="Negate matcher" check v-model="condition.negated")
               Button.danger-button(variant="danger" @click="removeCondition(ruleIndex, conditionIndex)") Remove condition
             StringListField(v-if="condition.type === 'methods'" v-model="condition.methods" label="Methods" item-label="method" field-path="forward_proxy_services[].access_policy.rules[].conditions[].methods" :max-items="256")
             StringListField(v-if="condition.type === 'source_cidrs'" v-model="condition.cidrs" label="Source CIDRs" item-label="CIDR" field-path="forward_proxy_services[].access_policy.rules[].conditions[].cidrs" :max-items="256")
@@ -168,8 +158,7 @@ HttpCachePolicyEditor(
 )
 
 ConfigGroup.object-block(path="forward_proxy_services[].destination_policy" legend="Destination policy")
-  ConfigField(path="forward_proxy_services[].destination_policy.deny_private" label="Deny private and special-purpose destinations" check)
-    input(type="checkbox" v-model="service.destination_policy.deny_private")
+  ConfigField(path="forward_proxy_services[].destination_policy.deny_private" label="Deny private and special-purpose destinations" check v-model="service.destination_policy.deny_private")
   .field-grid
     StringListField(v-model="service.destination_policy.allow_domains" label="Allowed domains" item-label="domain" field-path="forward_proxy_services[].destination_policy.allow_domains" :max-items="256")
     StringListField(v-model="service.destination_policy.deny_domains" label="Denied domains" item-label="domain" field-path="forward_proxy_services[].destination_policy.deny_domains" :max-items="256")
@@ -238,11 +227,11 @@ ConfigGroup.object-block(path="forward_proxy_services[].resolver" legend="Bounde
       NumberInput(:min="service.resolver.min_ttl_ms" max="86400000" step="1" v-model="service.resolver.max_ttl_ms")
     ConfigField(path="forward_proxy_services[].resolver.negative_ttl_ms" label="Negative TTL (ms)")
       NumberInput(min="0" max="86400000" step="1" v-model="service.resolver.negative_ttl_ms")
-    ConfigField.compact-enable(path="forward_proxy_services[].resolver.revalidate_on_connect" label="Revalidate on connect" check)
-      input(type="checkbox" v-model="service.resolver.revalidate_on_connect")
+    ConfigField.compact-enable(path="forward_proxy_services[].resolver.revalidate_on_connect" label="Revalidate on connect" check v-model="service.resolver.revalidate_on_connect")
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

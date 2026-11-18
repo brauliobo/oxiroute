@@ -33,8 +33,7 @@
           Input(v-model="header.name")
         ConfigField(path="http_services[].routes[].action.headers[].value" label="Header value")
           Input(v-model="header.value")
-        ConfigField(path="http_services[].routes[].action.headers[].always" label="Add on every response status" check)
-          input(type="checkbox" v-model="header.always")
+        ConfigField(path="http_services[].routes[].action.headers[].always" label="Add on every response status" check v-model="header.always")
 </template>
 
 <script setup lang="ts" vapor>

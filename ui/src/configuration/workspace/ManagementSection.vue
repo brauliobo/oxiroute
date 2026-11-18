@@ -1,7 +1,6 @@
 <template lang="pug">
 SectionHeading(eyebrow="Optional object" title="Management" path="Config.management")
-ConfigField(path="management" label="Enable the loopback management listener" check)
-  input(type="checkbox" :checked="config.management !== null" @change="toggleManagement")
+ConfigField(path="management" label="Enable the loopback management listener" check :model-value="config.management !== null" @change="toggleManagement")
 .field-grid(v-if="config.management")
   ConfigField(path="management.bind" label="Bind address")
     Input(v-model="config.management.bind" placeholder="127.0.0.1:9080")

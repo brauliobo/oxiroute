@@ -1,8 +1,6 @@
 <template lang="pug">
 ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forward_proxy_services') ? 'Forward response cache' : 'Response cache'")
-  label.enable-row
-    input(type="checkbox" :checked="cache !== null" @change="toggleCache")
-    span {{ fieldPath.startsWith('forward_proxy_services') ? 'Enable bounded response caching for this forward service' : 'Enable bounded response caching for this route' }}
+  Checkbox.enable-row(:model-value="cache !== null" @change="toggleCache") {{ fieldPath.startsWith('forward_proxy_services') ? 'Enable bounded response caching for this forward service' : 'Enable bounded response caching for this route' }}
 
   template(v-if="cache")
     .field-grid
@@ -32,12 +30,9 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
           :options="[{ value: 'respect', label: 'Respect Vary' }, { value: 'ignore', label: 'Ignore Vary' }]"
         )
     .field-grid.boolean-grid
-      ConfigField.compact-enable(:path="`${fieldPath}.use_origin_cache_control`" label="Use origin Cache-Control" check)
-        input(type="checkbox" v-model="cache.use_origin_cache_control")
-      ConfigField.compact-enable(:path="`${fieldPath}.revalidate`" label="Revalidate stale entries" check)
-        input(type="checkbox" v-model="cache.revalidate")
-      ConfigField.compact-enable(:path="`${fieldPath}.collapsed_forwarding`" label="Collapse concurrent fills" check)
-        input(type="checkbox" v-model="cache.collapsed_forwarding")
+      ConfigField.compact-enable(:path="`${fieldPath}.use_origin_cache_control`" label="Use origin Cache-Control" check v-model="cache.use_origin_cache_control")
+      ConfigField.compact-enable(:path="`${fieldPath}.revalidate`" label="Revalidate stale entries" check v-model="cache.revalidate")
+      ConfigField.compact-enable(:path="`${fieldPath}.collapsed_forwarding`" label="Collapse concurrent fills" check v-model="cache.collapsed_forwarding")
 
     ConfigGroup.retry-triggers(:path="`${fieldPath}.methods`" legend="Cacheable methods")
       label.enable-row(v-for="method in ['GET', 'HEAD']" :key="method")
@@ -104,9 +99,7 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
       CachePredicateRows(v-model="cache.no_store_response" :type-field="`${fieldPath}.no_store_response[].type`" :name-field="`${fieldPath}.no_store_response[].name`")
 
     ConfigGroup.object-block(:path="`${fieldPath}.surrogate_tags`" legend="Surrogate tags")
-      label.enable-row
-        input(type="checkbox" :checked="cache.surrogate_tags !== null" @change="toggleSurrogateTags")
-        span Read bounded surrogate tags from an origin response header
+      Checkbox.enable-row(:model-value="cache.surrogate_tags !== null" @change="toggleSurrogateTags") Read bounded surrogate tags from an origin response header
       .field-grid(v-if="cache.surrogate_tags")
         ConfigField(:path="`${fieldPath}.surrogate_tags.response_header`" label="Response header")
           Input(v-model="cache.surrogate_tags.response_header")
@@ -116,9 +109,7 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
           NumberInput(min="1" max="1024" step="1" v-model="cache.surrogate_tags.max_tag_bytes")
 
     ConfigGroup.object-block(:path="`${fieldPath}.purge_authorization`" legend="Purge authorization")
-      label.enable-row
-        input(type="checkbox" :checked="cache.purge_authorization !== null" @change="togglePurgeAuthorization")
-        span Require a bearer token loaded from a server file
+      Checkbox.enable-row(:model-value="cache.purge_authorization !== null" @change="togglePurgeAuthorization") Require a bearer token loaded from a server file
       .field-grid(v-if="cache.purge_authorization")
         ConfigField(:path="`${fieldPath}.purge_authorization.type`" label="Authorization type")
           Select(
@@ -130,9 +121,7 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
           small Authenticated configuration only; this path is suppressed from topology views.
 
     ConfigGroup.object-block(:path="`${fieldPath}.compression`" legend="Compressed variants")
-      label.enable-row
-        input(type="checkbox" :checked="!!cache.compression" @change="toggleCompression")
-        span Store one compressed copy of each compressible response per negotiated coding
+      Checkbox.enable-row(:model-value="!!cache.compression" @change="toggleCompression") Store one compressed copy of each compressible response per negotiated coding
       template(v-if="cache.compression")
         ConfigGroup.retry-triggers(:path="`${fieldPath}.compression.codings`" legend="Offered codings, most preferred first")
           label.enable-row(v-for="coding in CACHE_COMPRESSION_CODINGS" :key="coding")
@@ -156,6 +145,7 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

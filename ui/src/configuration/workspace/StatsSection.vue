@@ -1,7 +1,6 @@
 <template lang="pug">
 SectionHeading(eyebrow="Optional object" title="Statistics" path="Config.stats")
-ConfigField(path="stats" label="Enable observability binds and/or standalone statistics pages" check)
-  input(type="checkbox" :checked="config.stats != null" @change="toggleStats")
+ConfigField(path="stats" label="Enable observability binds and/or standalone statistics pages" check :model-value="config.stats != null" @change="toggleStats")
 .field-grid(v-if="config.stats")
   ConfigField(path="stats.binds" label="Bind addresses")
     Input(:model-value="config.stats.binds.join(', ')" placeholder="127.0.0.1:8404, [::1]:8404" @input="setBinds")

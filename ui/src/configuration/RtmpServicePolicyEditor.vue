@@ -11,8 +11,7 @@
     )
 ConfigGroup.object-block(path="rtmp_services[].auto_push" legend="Same-daemon worker auto-push")
   .field-grid
-    ConfigField.compact-enable(path="rtmp_services[].auto_push.enabled" label="Enable worker coordination" check)
-      input(type="checkbox" v-model="service.auto_push.enabled")
+    ConfigField.compact-enable(path="rtmp_services[].auto_push.enabled" label="Enable worker coordination" check v-model="service.auto_push.enabled")
     ConfigField(path="rtmp_services[].auto_push.socket_dir" label="Worker socket directory")
       Input(:model-value="service.auto_push.socket_dir ?? ''" @update:model-value="service.auto_push.socket_dir = $event")
     ConfigField(path="rtmp_services[].auto_push.secret_file" label="Shared secret file")
@@ -37,8 +36,7 @@ ConfigGroup.object-block(path="rtmp_services[].outbound_policy" legend="Outbound
     StringListField(v-model="service.outbound_policy.deny_domains" label="Denied domains" item-label="domain" field-path="rtmp_services[].outbound_policy.deny_domains" :max-items="256")
     StringListField(v-model="service.outbound_policy.allow_cidrs" label="Allowed CIDRs" item-label="CIDR" field-path="rtmp_services[].outbound_policy.allow_cidrs" :max-items="256")
     StringListField(v-model="service.outbound_policy.deny_cidrs" label="Denied CIDRs" item-label="CIDR" field-path="rtmp_services[].outbound_policy.deny_cidrs" :max-items="256")
-    ConfigField.compact-enable(path="rtmp_services[].outbound_policy.deny_private" label="Deny private destinations" check)
-      input(type="checkbox" v-model="service.outbound_policy.deny_private")
+    ConfigField.compact-enable(path="rtmp_services[].outbound_policy.deny_private" label="Deny private destinations" check v-model="service.outbound_policy.deny_private")
     ConfigField(path="rtmp_services[].outbound_policy.rtmps" label="RTMPS policy")
       Select(
         v-model="service.outbound_policy.rtmps"

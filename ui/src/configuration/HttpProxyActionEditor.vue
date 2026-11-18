@@ -22,9 +22,7 @@
           Input(v-model="action.policy.upstream_host.value" placeholder="origin.example.test")
 
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.upstream_path_rewrite" legend="Upstream path rewrite")
-      label.enable-row
-        input(type="checkbox" :checked="action.policy.upstream_path_rewrite !== null" @change="toggleUpstreamPathRewrite")
-        span Rewrite the matched path before proxying
+      Checkbox.enable-row(:model-value="action.policy.upstream_path_rewrite !== null" @change="toggleUpstreamPathRewrite") Rewrite the matched path before proxying
       .field-grid(v-if="action.policy.upstream_path_rewrite")
         ConfigField(path="http_services[].routes[].action.policy.upstream_path_rewrite.from" label="Source prefix")
           Input(v-model="action.policy.upstream_path_rewrite.from" placeholder="/public")
@@ -93,8 +91,7 @@
             Input(v-model="mutation.name")
           ConfigField(v-if="mutation.operation !== 'remove'" path="http_services[].routes[].action.policy.response_headers[].value" label="Header value")
             Input(v-model="mutation.value")
-          ConfigField(v-if="mutation.operation !== 'remove'" path="http_services[].routes[].action.policy.response_headers[].always" label="Add on every response status" check)
-            input(type="checkbox" v-model="mutation.always")
+          ConfigField(v-if="mutation.operation !== 'remove'" path="http_services[].routes[].action.policy.response_headers[].always" label="Add on every response status" check v-model="mutation.always")
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.response_cookie_path_rewrites")
       template(#legend)
@@ -148,9 +145,7 @@
             v-model="action.policy.retry.final_redispatch"
           )
       ConfigGroup.object-block(path="http_services[].routes[].action.policy.retry.budget" legend="Retry budget")
-        label.enable-row
-          input(type="checkbox" :checked="action.policy.retry.budget !== null" @change="toggleRetryBudget")
-          span Cap the retries of this route
+        Checkbox.enable-row(:model-value="action.policy.retry.budget !== null" @change="toggleRetryBudget") Cap the retries of this route
         .field-grid(v-if="action.policy.retry.budget")
           ConfigField(path="http_services[].routes[].action.policy.retry.budget.per_second" label="Retries per second")
             NumberInput(min="1" max="100000" step="1" placeholder="unlimited" :model-value="action.policy.retry.budget.per_second ?? ''" @input="setBudgetLimit('per_second', $event)")
@@ -192,14 +187,11 @@
         ConfigField(path="http_services[].routes[].action.policy.timeouts.total_ms" label="Total request deadline (ms)")
           NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
 
-    ConfigField(path="http_services[].routes[].action.policy.queue_headers" label="Tell clients that waited for capacity their queue position and wait time" check)
-      input(type="checkbox" v-model="action.policy.queue_headers")
+    ConfigField(path="http_services[].routes[].action.policy.queue_headers" label="Tell clients that waited for capacity their queue position and wait time" check v-model="action.policy.queue_headers")
     small.field-hint
       | Adds x-oxiroute-queue-position and x-oxiroute-queue-wait-ms to those responses. Off by default because it reveals pool load.
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.rescue" legend="Status rescue")
-      label.enable-row
-        input(type="checkbox" :checked="action.policy.rescue !== null" @change="toggleRescue")
-        span Replay a request on another server when the backend answers a listed status
+      Checkbox.enable-row(:model-value="action.policy.rescue !== null" @change="toggleRescue") Replay a request on another server when the backend answers a listed status
       template(v-if="action.policy.rescue")
         small.field-hint
           | Spends the retry budget and follows the method and body safety rules. When no candidate is left, the client receives the last backend response unchanged.
@@ -235,6 +227,7 @@
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

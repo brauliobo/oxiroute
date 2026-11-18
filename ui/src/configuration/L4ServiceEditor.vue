@@ -18,9 +18,7 @@ header.form-heading
   ConfigField(path="l4_services[].lifetime_timeout_ms" label="Lifetime timeout (ms)")
     NumberInput(min="1" step="1" :model-value="service.lifetime_timeout_ms ?? ''" placeholder="No limit" @input="setLifetimeTimeout")
 ConfigGroup.object-block(path="l4_services[].proxy_protocol" legend="Outbound PROXY protocol")
-  label.enable-row
-    input(type="checkbox" :checked="service.proxy_protocol != null" @change="toggleProxyProtocol")
-    span Send the selected client address upstream
+  Checkbox.enable-row(:model-value="service.proxy_protocol != null" @change="toggleProxyProtocol") Send the selected client address upstream
   .field-grid(v-if="service.proxy_protocol")
     ConfigField(path="l4_services[].proxy_protocol.version" label="Version")
       Select(
@@ -30,9 +28,7 @@ ConfigGroup.object-block(path="l4_services[].proxy_protocol" legend="Outbound PR
     ConfigField(path="l4_services[].proxy_protocol.timeout_ms" label="Header timeout (ms)")
       NumberInput(min="1" max="60000" step="1" v-model="service.proxy_protocol.timeout_ms")
 ConfigGroup.object-block(path="l4_services[].udp" legend="UDP policy")
-  label.enable-row
-    input(type="checkbox" :checked="service.udp !== null" @change="toggleUdp")
-    span Enable bounded UDP relay policy
+  Checkbox.enable-row(:model-value="service.udp !== null" @change="toggleUdp") Enable bounded UDP relay policy
   .field-grid(v-if="service.udp")
     ConfigField(path="l4_services[].udp.max_datagram_bytes" label="Maximum datagram bytes")
       NumberInput(min="1" max="65507" step="1" v-model="service.udp.max_datagram_bytes")
@@ -47,6 +43,7 @@ ConfigGroup.object-block(path="l4_services[].udp" legend="UDP policy")
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'

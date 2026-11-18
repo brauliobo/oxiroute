@@ -7,9 +7,7 @@ ItemScope.route-card.http-route-card(:index="index")
     Button.danger-link(variant="danger" small :aria-label="`Remove route ${index + 1}`" @click="emit('remove')") Remove
 
   ConfigGroup.object-block(path="http_services[].routes[].host" legend="Host matcher")
-    label.enable-row
-      input(type="checkbox" :checked="route.host !== null" @change="toggleHost")
-      span Match a specific host or authority
+    Checkbox.enable-row(:model-value="route.host !== null" @change="toggleHost") Match a specific host or authority
     .field-grid(v-if="route.host")
       ConfigField(path="http_services[].routes[].host.kind" label="Host match kind")
         Select(
@@ -41,9 +39,7 @@ ItemScope.route-card.http-route-card(:index="index")
   )
 
   ConfigGroup.object-block(path="http_services[].routes[].access_policy" legend="Access policy")
-    label.enable-row
-      input(type="checkbox" :checked="route.access_policy !== null" @change="toggleAccess")
-      span Require a bearer token loaded from a server file
+    Checkbox.enable-row(:model-value="route.access_policy !== null" @change="toggleAccess") Require a bearer token loaded from a server file
     .field-grid(v-if="bearerPolicy")
       ConfigField(path="http_services[].routes[].access_policy.type" label="Policy type")
         Select(
@@ -72,6 +68,7 @@ ItemScope.route-card.http-route-card(:index="index")
 </template>
 
 <script setup lang="ts" vapor>
+import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
 import Select from '#design/field/Select.vue'
 import Button from '#design/button/Button.vue'
