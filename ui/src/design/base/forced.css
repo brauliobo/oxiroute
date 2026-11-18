@@ -1,0 +1,6 @@
+@layer ox.base {
+  @media (forced-colors: active) {
+    :focus-visible { outline-color: Highlight; }
+    a { color: LinkText; }
+  }
+}

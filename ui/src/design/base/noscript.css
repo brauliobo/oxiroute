@@ -1,0 +1,43 @@
+@layer ox.base {
+  noscript {
+    display: block;
+    padding: var(--ox-gap);
+  }
+
+  noscript table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+
+  noscript th,
+  noscript td {
+    padding: var(--ox-cell-py) var(--ox-cell-px);
+    border-bottom: var(--ox-border-width) solid var(--ox-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  noscript th {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--ox-tracking-label);
+  }
+
+  noscript form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-2);
+    margin: 0;
+  }
+
+  noscript button {
+    min-height: var(--ox-control-h);
+    padding: 0 var(--ox-control-px);
+    border: var(--ox-border-width) solid var(--ox-control);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+    cursor: pointer;
+  }
+}

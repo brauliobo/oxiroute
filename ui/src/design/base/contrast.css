@@ -1,0 +1,5 @@
+@layer ox.base {
+  @media (prefers-contrast: more) {
+    :root { --ox-border: var(--ox-control); }
+  }
+}

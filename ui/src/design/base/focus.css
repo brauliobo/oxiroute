@@ -1,0 +1,6 @@
+@layer ox.base {
+  :focus-visible {
+    outline: var(--ox-focus-width) solid var(--ox-brand);
+    outline-offset: 2px;
+  }
+}

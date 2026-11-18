@@ -1,49 +1,3 @@
-/* Global tokens and the page chrome (header, toolbar, banner, dialogs, footer). The data views bring their own layout
-   and read the --ox-* tokens. `light-dark()` picks the value for the colour scheme: the system's by default, or the
-   one forced by <html data-theme> (the store's view.theme). */
-*, *::before, *::after { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--ox-bg);
-  color: var(--ox-fg);
-  font: 14px/1.45 var(--ox-font);
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
-}
-
-h1, h2 { margin: 0; line-height: 1.2; }
-h1 { font-size: 1.35rem; }
-h2 { font-size: 1.05rem; }
-a { color: var(--ox-info); }
-kbd {
-  padding: 0.1em 0.5em;
-  border: 1px solid var(--ox-control);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--ox-surface);
-  font: 0.9em var(--ox-mono);
-}
-
-:focus-visible {
-  outline: 3px solid var(--ox-info);
-  outline-offset: 2px;
-}
-
-.ox-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.ox-muted { color: var(--ox-muted); }
-.ox-bad-text { color: var(--ox-bad); }
-
 .ox-app {
   display: flex;
   flex-direction: column;
@@ -237,15 +191,8 @@ kbd {
   .ox-shortcut { grid-template-columns: 3.5rem 1fr; }
 }
 
-/* More contrast on request */
-@media (prefers-contrast: more) {
-  :root { --ox-border: var(--ox-control); }
-  .ox-btn, .ox-chip, .ox-input { border-width: 2px; }
-}
-
 /* Forced colours (Windows high contrast): system colours; state is text and shape, never only colour */
 @media (forced-colors: active) {
-  :focus-visible { outline-color: Highlight; }
   .ox-btn, .ox-chip, .ox-input, .ox-toolbar, .ox-banner, .ox-admin, .ox-dialog { border-color: CanvasText; }
   .ox-btn[aria-pressed='true'], .ox-chip[aria-pressed='true'], .ox-primary {
     background: Highlight;
@@ -253,24 +200,12 @@ kbd {
     box-shadow: none;
   }
   .ox-state::before { background: CanvasText; }
-  .ox-link, a { color: LinkText; }
+  .ox-link { color: LinkText; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
-/* Print: a plain light page of the data; controls do nothing on paper */
+/* Print: controls do nothing on paper */
 @media print {
-  :root, :root[data-theme='light'], :root[data-theme='dark'] { color-scheme: light; }
-  body { background: #fff; color: #000; font-size: 11pt; }
   .ox-app { max-width: none; min-height: 0; padding: 0; }
   .ox-skip, .ox-toolbar, .ox-exports, .ox-admin, .ox-dialog, .ox-link, .ox-banner .ox-btn { display: none !important; }
-  .ox-banner { border-color: #000; }
-  a { color: inherit; text-decoration: none; }
+  .ox-banner { border-color: CanvasText; }
 }

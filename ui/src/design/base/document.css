@@ -1,0 +1,26 @@
+@layer ox.base {
+  body {
+    background: var(--ox-bg);
+    color: var(--ox-fg);
+    font: var(--ox-weight-normal) var(--ox-text-base) / var(--ox-leading-body) var(--ox-font);
+  }
+
+  h1 { font-size: var(--ox-text-xl); }
+  h2 { font-size: var(--ox-text-lg); }
+
+  a { color: var(--ox-info); }
+
+  .ox-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .ox-muted { color: var(--ox-muted); }
+  .ox-bad-text { color: var(--ox-bad); }
+}

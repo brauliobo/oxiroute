@@ -1,0 +1,50 @@
+@layer ox.reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  p,
+  dl,
+  dd,
+  figure {
+    margin: 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    line-height: var(--ox-leading-tight);
+  }
+
+  ul[role='list'],
+  ol[role='list'] {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  table {
+    border-collapse: collapse;
+  }
+}

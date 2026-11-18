@@ -6,3 +6,11 @@
 @import './tokens/shape.css';
 @import './tokens/motion.css';
 @import './tokens/density.css';
+@import './base/reset.css';
+@import './base/document.css';
+@import './base/focus.css';
+@import './base/forced.css';
+@import './base/contrast.css';
+@import './base/motion.css';
+@import './base/print.css';
+@import './base/noscript.css';

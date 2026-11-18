@@ -17,4 +17,8 @@
     --ox-leading-body: 1.45;
     --ox-tracking-label: 0.03em;
   }
+
+  @media (max-width: 45rem) {
+    :root { --ox-text-base: 0.9375rem; }
+  }
 }
