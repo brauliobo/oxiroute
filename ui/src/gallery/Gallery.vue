@@ -12,6 +12,7 @@ import Data from './sections/Data.vue'
 import Feedback from './sections/Feedback.vue'
 import Forms from './sections/Forms.vue'
 import Navigation from './sections/Navigation.vue'
+import Status from './sections/Status.vue'
 
 const params = new URLSearchParams(location.search)
 const theme = ref<Theme>(THEMES.find((item) => item === params.get('theme')) ?? 'auto')
@@ -32,6 +33,7 @@ Shell(title="Design gallery" skip-label="Skip to the primitives" v-model:theme="
   Actions
   Forms
   Data
+  Status
   Feedback
   Navigation
 </template>
