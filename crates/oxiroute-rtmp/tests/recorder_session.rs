@@ -138,6 +138,7 @@ fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() 
         RtmpRecorderStart::Continuous,
         RecordingStoreLimits {
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
             ..limits()
         },
         worker_config(),
@@ -374,6 +375,7 @@ fn recorder_storage_failure_does_not_fail_live_ingest() {
             max_bytes: Some(13),
             max_files: Some(8),
             max_active_recorders: 2,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
         worker_config(),
     );
@@ -726,6 +728,7 @@ fn limits() -> RecordingStoreLimits {
         max_bytes: Some(1024 * 1024),
         max_files: Some(32),
         max_active_recorders: 4,
+        retention: oxiroute_rtmp::RecordingRetention::default(),
     }
 }
 

@@ -742,6 +742,7 @@ impl RecorderFixture {
                 max_bytes: Some(1024 * 1024),
                 max_files: Some(8),
                 max_active_recorders,
+                retention: crate::RecordingRetention::default(),
             },
         )
         .expect("recording store");

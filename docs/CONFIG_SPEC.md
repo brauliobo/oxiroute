@@ -256,6 +256,8 @@ return {
               max_storage_bytes = 10737418240,
               max_storage_files = 10000,
               max_active_recorders = 8,
+              retention = "delete_oldest",
+              retention_max_age_ms = 2592000000,
             },
           },
         },
@@ -1759,10 +1761,12 @@ Recorder fields are:
 | `max_storage_bytes` | no | `null` | `null` for no byte quota, or `1` through `1099511627776`. |
 | `max_storage_files` | no | `null` | `null` for no file-count quota, or `1` through `1000000`. |
 | `max_active_recorders` | no | `8` | `1` through `256`. |
+| `retention` | no | `"reject"` | `"reject"` refuses new recordings once `max_storage_files` or `max_storage_bytes` is reached and reports the recorder as failed with `quota_files` or `quota_bytes` until space is freed; `"delete_oldest"` deletes the oldest finished recordings in the root, never an active one, so recording continues. |
+| `retention_max_age_ms` | no | `null` | `null` or `1` through `315360000000`; finished recordings older than this are deleted whenever a recording starts. |
 
 Repeated `/` separators in `root_directory` are collapsed. `/`, a trailing `/`, NUL, `.` or `..`
 segments, relative paths, and non-UTF-8 paths are rejected. Recorders sharing one normalized root
-MUST configure identical storage-byte, storage-file, and active-recorder limits.
+MUST configure identical storage-byte, storage-file, active-recorder, and retention limits.
 
 Runtime planning opens the existing root one component at a time without following symlinks and
 performs a read-only ownership/quota preflight. The root MUST be owned by the daemon user and MUST

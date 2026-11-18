@@ -95,6 +95,8 @@ fn recorder_and_session_enums_cover_every_domain_variant() {
         names(
             [
                 RecorderErrorCode::OpenFailed,
+                RecorderErrorCode::QuotaFiles,
+                RecorderErrorCode::QuotaBytes,
                 RecorderErrorCode::WriteFailed,
                 RecorderErrorCode::CloseFailed,
                 RecorderErrorCode::BackendUnavailable,
@@ -111,6 +113,8 @@ fn recorder_and_session_enums_cover_every_domain_variant() {
         ),
         [
             "open_failed",
+            "quota_files",
+            "quota_bytes",
             "write_failed",
             "close_failed",
             "backend_unavailable",

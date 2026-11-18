@@ -103,6 +103,7 @@ fn retirement_authority_survives_dropped_lifecycle_and_shutdown_handles() {
             max_bytes: Some(1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -153,6 +154,7 @@ fn retirement_authority_survives_dropped_lifecycle_and_shutdown_handles() {
             max_bytes: Some(1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("retired store reopens");

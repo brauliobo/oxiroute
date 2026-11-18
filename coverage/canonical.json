@@ -1499,6 +1499,26 @@
       "required_tests": ["decode", "validate", "failure", "integration", "observability"]
     },
     {
+      "id": "canonical.rtmp-services.applications.recorders.retention",
+      "kind": "field",
+      "path": "rtmp_services[].applications[].recorders[].retention",
+      "editability": "operator",
+      "normalization": ["default to reject", "closed snake case token"],
+      "validation": ["reject or delete_oldest", "identical for recorders sharing a normalized root"],
+      "runtime": { "target": "rtmp.recorder", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration"]
+    },
+    {
+      "id": "canonical.rtmp-services.applications.recorders.retention-max-age-ms",
+      "kind": "field",
+      "path": "rtmp_services[].applications[].recorders[].retention_max_age_ms",
+      "editability": "operator",
+      "normalization": ["omitted or null means finished recordings never expire"],
+      "validation": ["null or 1 through 315360000000 exact JSON integer", "identical for recorders sharing a normalized root"],
+      "runtime": { "target": "rtmp.recorder", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration"]
+    },
+    {
       "id": "canonical.config.l4-services",
       "kind": "field",
       "path": "l4_services[]",
@@ -2340,6 +2360,36 @@
       "editability": "operator",
       "normalization": ["token manual"],
       "validation": ["starts only through an exact recorder control"],
+      "runtime": { "target": "rtmp.recorder", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration", "observability"]
+    },
+    {
+      "id": "canonical.enum.rtmp-recorder-retention",
+      "kind": "enum",
+      "path": "RtmpRecorderRetention",
+      "editability": "fixed",
+      "normalization": ["snake_case serde token", "default to reject"],
+      "validation": ["closed variant set"],
+      "runtime": { "target": "schema", "disposition": "classified" },
+      "required_tests": ["decode", "validate", "failure", "render"]
+    },
+    {
+      "id": "canonical.enum.rtmp-recorder-retention.reject",
+      "kind": "variant",
+      "path": "RtmpRecorderRetention::Reject",
+      "editability": "operator",
+      "normalization": ["token reject"],
+      "validation": ["refuses new recordings at a storage quota"],
+      "runtime": { "target": "rtmp.recorder", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration", "observability"]
+    },
+    {
+      "id": "canonical.enum.rtmp-recorder-retention.delete-oldest",
+      "kind": "variant",
+      "path": "RtmpRecorderRetention::DeleteOldest",
+      "editability": "operator",
+      "normalization": ["token delete_oldest"],
+      "validation": ["deletes the oldest finished recordings at a storage quota"],
       "runtime": { "target": "rtmp.recorder", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "integration", "observability"]
     },

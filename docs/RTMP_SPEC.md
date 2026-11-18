@@ -552,6 +552,16 @@ queue accordingly. Aligned rotations therefore create neither an unbounded threa
 storm nor a media-worker wait at the following rotation; exhausting the bounded backlog fails
 explicitly as finalization while preserving the current segment.
 
+A recording root enforces `max_storage_files`, `max_storage_bytes`, and the optional retention
+policy. Before a segment is created or grows past a quota the store re-reads the root, so space
+freed outside the process counts. With `retention = "reject"` a reached quota fails the recorder
+with the categorical reason `quota_files` or `quota_bytes`; the continuous controller restarts the
+worker on later media and the recorder recovers when space exists. With
+`retention = "delete_oldest"` the store deletes the oldest finished regular files (by
+modification time, never the file of an active recorder) until the new segment fits, and
+`retention_max_age_ms` deletes finished files older than the age whenever a segment is created.
+Evictions are counted per root.
+
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.
 

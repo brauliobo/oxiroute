@@ -86,8 +86,8 @@ pub(crate) use recording::store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
 pub use recording::store::{
-    RecordingQuotaScope, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
-    RecordingStoreStats,
+    RecordingEvictions, RecordingQuotaScope, RecordingRetention, RecordingStoreError,
+    RecordingStoreLimits, RecordingStoreLimitsError, RecordingStoreStats,
 };
 #[cfg(test)]
 pub(crate) use recording::worker::RecorderShutdown;

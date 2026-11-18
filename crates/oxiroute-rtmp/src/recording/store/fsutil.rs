@@ -17,6 +17,7 @@ pub(super) fn scan_root(
         if matches!(name.to_bytes(), b"." | b"..")
             || name.to_bytes() == OWNERSHIP_LOCK_NAME.as_bytes()
             || is_owner_probe(name.to_bytes())
+            || is_sidecar(name.to_bytes())
         {
             continue;
         }
@@ -78,6 +79,7 @@ pub(super) fn validate_relative_name(name: &str) -> Result<(), RecordingStoreErr
         || name == OWNERSHIP_LOCK_NAME
         || is_owned_partial(name.as_bytes())
         || is_owner_probe(name.as_bytes())
+        || is_sidecar(name.as_bytes())
     {
         return Err(RecordingStoreError::InvalidRelativeName);
     }
@@ -257,4 +259,21 @@ pub(super) fn byte_quota_error(maximum: u64) -> io::Error {
         io::ErrorKind::StorageFull,
         format!("recording byte limit of {maximum} reached"),
     )
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("recording root byte quota of {maximum} reached")]
+pub struct RootByteQuotaReached {
+    pub maximum: u64,
+}
+
+pub(super) fn root_byte_quota_error(maximum: u64) -> io::Error {
+    io::Error::new(io::ErrorKind::StorageFull, RootByteQuotaReached { maximum })
+}
+
+#[must_use]
+pub fn is_root_byte_quota_error(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<RootByteQuotaReached>)
 }

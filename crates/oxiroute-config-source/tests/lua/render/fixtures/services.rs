@@ -319,6 +319,8 @@ pub(crate) fn test_rtmp_services() -> Vec<RtmpService> {
                     max_storage_bytes: Some(10 * 1024 * 1024 * 1024),
                     max_storage_files: Some(10_000),
                     max_active_recorders: 8,
+                    retention: oxiroute_config::RtmpRecorderRetention::default(),
+                    retention_max_age_ms: None,
                 },
                 RtmpRecorder {
                     name: "manual".into(),
@@ -342,6 +344,8 @@ pub(crate) fn test_rtmp_services() -> Vec<RtmpService> {
                     max_storage_bytes: Some(10 * 1024 * 1024 * 1024),
                     max_storage_files: Some(10_000),
                     max_active_recorders: 8,
+                    retention: oxiroute_config::RtmpRecorderRetention::default(),
+                    retention_max_age_ms: None,
                 },
             ],
         }],

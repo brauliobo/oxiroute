@@ -127,6 +127,7 @@ fn simulated_full_disk_fails_only_the_recorder_and_leaves_live_playback_healthy(
             max_bytes: Some(13),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -180,6 +181,7 @@ fn final_name_exhaustion_is_failed_without_creating_an_extra_recording() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(64),
             max_active_recorders: 2,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");

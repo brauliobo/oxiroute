@@ -12,6 +12,7 @@ fn finalizer_runs_one_root_job_at_a_time() {
             max_bytes: Some(1024),
             max_files: Some(8),
             max_active_recorders: 4,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -441,6 +442,7 @@ fn reports_partial_and_published_name_when_publication_rollback_fails() {
             max_bytes: Some(1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -561,5 +563,6 @@ fn test_limits() -> RecordingStoreLimits {
         max_bytes: Some(1024),
         max_files: Some(4),
         max_active_recorders: 1,
+        retention: crate::RecordingRetention::default(),
     }
 }

@@ -7,6 +7,8 @@ use super::{MAX_ROTATION_INTERVAL_MS, RecorderVideoCodec};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecorderFailure {
     Open,
+    QuotaFiles,
+    QuotaBytes,
     Write,
     Finalize,
     FileSync,

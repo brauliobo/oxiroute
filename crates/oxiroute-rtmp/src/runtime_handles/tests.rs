@@ -481,6 +481,7 @@ fn shutdown_retains_canonical_service_order() {
                     max_bytes: Some(1024),
                     max_files: Some(4),
                     max_active_recorders: 1,
+                    retention: crate::RecordingRetention::default(),
                 },
             )
             .expect("recording store"),
@@ -543,6 +544,7 @@ fn shutdown_is_bounded_and_idempotent_for_started_recorders() {
             max_bytes: Some(1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");

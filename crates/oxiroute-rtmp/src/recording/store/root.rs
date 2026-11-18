@@ -34,6 +34,9 @@ pub(super) struct StoreState {
     pub(super) bytes_used: u64,
     pub(super) files: usize,
     pub(super) active_recorders: usize,
+    pub(super) active: HashSet<String>,
+    pub(super) evicted_files: u64,
+    pub(super) evicted_bytes: u64,
     incarnations: HashMap<u64, IncarnationState>,
 }
 
@@ -248,14 +251,11 @@ impl RecordingStore {
         shared.wait_at_operation_gate(RecordingOperationGateKind::CreateBeforeOpen);
         {
             let mut state = shared.lock();
-            if shared
-                .limits
-                .max_files
-                .is_some_and(|maximum| state.files >= maximum)
+            shared.purge_expired(&mut state)?;
+            if let Some(maximum) = shared.limits.max_files
+                && !shared.evict_until(&mut state, |state| state.files < maximum)?
             {
-                return Err(RecordingStoreError::FileLimit {
-                    maximum: shared.limits.max_files.expect("checked file quota"),
-                });
+                return Err(RecordingStoreError::FileLimit { maximum });
             }
             state.files += 1;
         }
@@ -265,11 +265,13 @@ impl RecordingStore {
                 Ok(created) => created,
                 Err(error) => {
                     if !matches!(error, RecordingStoreError::PartialCleanup(_)) {
-                        shared.lock().files -= 1;
+                        let mut state = shared.lock();
+                        state.files = state.files.saturating_sub(1);
                     }
                     return Err(error);
                 }
             };
+        shared.lock().active.insert(relative_name.clone());
         drop(claim);
         Ok(RecordingFile {
             incarnation: self.handle.incarnation,
@@ -298,6 +300,18 @@ impl RecordingStore {
             }),
             resumed: false,
         })
+    }
+
+    #[must_use]
+    pub fn evictions(&self) -> RecordingEvictions {
+        let Ok(shared) = self.shared() else {
+            return RecordingEvictions::default();
+        };
+        let state = shared.lock();
+        RecordingEvictions {
+            files: state.evicted_files,
+            bytes: state.evicted_bytes,
+        }
     }
 
     #[must_use]
@@ -393,6 +407,7 @@ impl RecordingStore {
             return Err(RecordingStoreError::CreationCancelled);
         }
         drop(claim);
+        shared.lock().active.insert(relative_name.to_owned());
         Ok(RecordingResume {
             file: RecordingFile {
                 incarnation: self.handle.incarnation,

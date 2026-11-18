@@ -148,6 +148,7 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(64),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -200,6 +201,7 @@ fn recorder_capacity_is_held_for_the_worker_lifetime_across_rotations() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(16),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -242,6 +244,7 @@ fn two_recorders_rotate_through_the_shared_root_finalizer() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(16),
             max_active_recorders: 2,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -292,6 +295,7 @@ fn hourly_zone_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names(
             max_bytes: Some(1024 * 1024),
             max_files: Some(16),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");

@@ -10,17 +10,18 @@ use oxiroute_config::{
     RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpExecTrigger, RtmpFanoutPolicy, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy,
     RtmpHlsVariant, RtmpNotifyMethod, RtmpOutboundPolicy as ConfigOutboundPolicy, RtmpRecorder,
-    RtmpRecorderSegmentNaming, RtmpRecorderStart as ConfigRecorderStart, RtmpRecorderTimeBasis,
-    RtmpRecorderTimezone, RtmpRtmpsPolicy, RtmpTransport as ConfigTransport, RtmpVodPolicy,
-    RtmpVodSource,
+    RtmpRecorderRetention, RtmpRecorderSegmentNaming, RtmpRecorderStart as ConfigRecorderStart,
+    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRtmpsPolicy, RtmpTransport as ConfigTransport,
+    RtmpVodPolicy, RtmpVodSource,
 };
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode,
     ExecNetworkPolicy, ExecTrigger, HlsFragmentNaming, HlsKeyConfig, HlsVariant, RecorderMediaMask,
-    RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming, RecordingStoreLimits,
-    RecordingTimeBasis, RecordingTimezone, RtmpAccessAction, RtmpAutoPushConfig,
-    RtmpCallbackMethod, RtmpNetwork, RtmpOutboundPolicy, RtmpPushApplication, RtmpRecorderStart,
-    RtmpRtmpsMode, RtmpSessionCeilings, RtmpTransport, VodLimits, VodSourceDefinition,
+    RecorderWorkerConfig, RecordingPathPolicy, RecordingRetention, RecordingSegmentNaming,
+    RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
+    RtmpAutoPushConfig, RtmpCallbackMethod, RtmpNetwork, RtmpOutboundPolicy, RtmpPushApplication,
+    RtmpRecorderStart, RtmpRtmpsMode, RtmpSessionCeilings, RtmpTransport, VodLimits,
+    VodSourceDefinition,
 };
 
 pub(crate) fn outbound_policy(policy: &ConfigOutboundPolicy) -> RtmpOutboundPolicy {
@@ -290,6 +291,10 @@ pub(crate) fn recorder_store(value: &RtmpRecorder) -> RecordingStoreLimits {
             .map(|files| usize::try_from(files).expect("validated recorder storage files")),
         max_active_recorders: usize::try_from(value.max_active_recorders)
             .expect("validated active recorders"),
+        retention: RecordingRetention {
+            delete_oldest: value.retention == RtmpRecorderRetention::DeleteOldest,
+            max_age: value.retention_max_age_ms.map(Duration::from_millis),
+        },
     }
 }
 

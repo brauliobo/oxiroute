@@ -707,6 +707,20 @@ pub struct RtmpRecorder {
     /// Defaults to 8 active recorders per normalized root directory.
     #[serde(default = "default_recorder_max_active_recorders")]
     pub max_active_recorders: u64,
+    /// Defaults to refusing new recordings when a storage quota is reached.
+    #[serde(default)]
+    pub retention: RtmpRecorderRetention,
+    /// Omitted or explicit null means finished recordings never expire by age.
+    #[serde(default)]
+    pub retention_max_age_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpRecorderRetention {
+    #[default]
+    Reject,
+    DeleteOldest,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

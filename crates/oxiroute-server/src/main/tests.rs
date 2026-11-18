@@ -179,6 +179,8 @@ pub(super) fn recorder_runtime_config(
                     max_storage_bytes: Some(1024 * 1024),
                     max_storage_files: Some(32),
                     max_active_recorders: 4,
+                    retention: oxiroute_config::RtmpRecorderRetention::default(),
+                    retention_max_age_ms: None,
                 }],
             }],
         }],

@@ -12,6 +12,7 @@ mod revision_support;
 #[path = "../../support/rtmp.rs"]
 mod rtmp_support;
 
+mod quota;
 mod recording;
 
 use std::{

@@ -619,6 +619,8 @@ impl RecorderController {
 pub(crate) fn recorder_error_code(failure: RecorderFailure) -> RecorderErrorCode {
     match failure {
         RecorderFailure::Open => RecorderErrorCode::OpenFailed,
+        RecorderFailure::QuotaFiles => RecorderErrorCode::QuotaFiles,
+        RecorderFailure::QuotaBytes => RecorderErrorCode::QuotaBytes,
         RecorderFailure::Write => RecorderErrorCode::WriteFailed,
         RecorderFailure::Finalize => RecorderErrorCode::CloseFailed,
         RecorderFailure::FileSync => RecorderErrorCode::FileSyncFailed,

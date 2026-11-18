@@ -33,6 +33,8 @@ pub enum RecordingStoreError {
     InvalidRelativeName,
     #[error("recording active-recorder limit of {maximum} reached")]
     ActiveRecorderLimit { maximum: usize },
+    #[error("recording cannot be deleted")]
+    RecordingDelete(#[source] io::Error),
     #[error("recording file limit of {maximum} reached")]
     FileLimit { maximum: usize },
     #[error("recording partial-name collision retry limit reached")]

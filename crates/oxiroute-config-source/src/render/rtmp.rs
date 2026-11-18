@@ -482,6 +482,8 @@ impl Renderer {
             max_storage_bytes,
             max_storage_files,
             max_active_recorders,
+            retention,
+            retention_max_age_ms,
         } = recorder;
         self.string_field("name", name);
         self.string_field(
@@ -550,6 +552,21 @@ impl Renderer {
             None => self.null_field("max_storage_files"),
         }
         self.integer_field("max_active_recorders", max_active_recorders);
+        self.recorder_retention(*retention, *retention_max_age_ms);
         Ok(())
+    }
+
+    fn recorder_retention(&mut self, retention: RtmpRecorderRetention, max_age_ms: Option<u64>) {
+        self.string_field(
+            "retention",
+            match retention {
+                RtmpRecorderRetention::Reject => "reject",
+                RtmpRecorderRetention::DeleteOldest => "delete_oldest",
+            },
+        );
+        match max_age_ms {
+            Some(age) => self.integer_field("retention_max_age_ms", age),
+            None => self.null_field("retention_max_age_ms"),
+        }
     }
 }

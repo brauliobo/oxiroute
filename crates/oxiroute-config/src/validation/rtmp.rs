@@ -6,6 +6,8 @@ struct RtmpRecorderStorageLimits {
     bytes: Option<u64>,
     files: Option<u64>,
     active_recorders: u64,
+    retention: crate::model::RtmpRecorderRetention,
+    retention_max_age_ms: Option<u64>,
 }
 
 mod access;
@@ -265,6 +267,8 @@ pub(super) fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(),
                     bytes: recorder.max_storage_bytes,
                     files: recorder.max_storage_files,
                     active_recorders: recorder.max_active_recorders,
+                    retention: recorder.retention,
+                    retention_max_age_ms: recorder.retention_max_age_ms,
                 };
                 let identity = format!("{}/{}/{}", service.name, application.name, recorder.name);
                 if let Some((first_limits, first_recorder)) = roots.get(&recorder.root_directory) {

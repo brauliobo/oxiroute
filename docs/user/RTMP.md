@@ -128,9 +128,21 @@ starts only after an exact stream and recorder control request:
     max_storage_bytes 10737418240
     max_storage_files 10000
     max_active_recorders 8
+    retention "delete_oldest"
+    retention_max_age_ms 2592000000
   }
 }
 ```
+
+Storage quotas and retention: `max_storage_files` and `max_storage_bytes` bound the whole recording
+root. With the default `retention "reject"`, reaching a quota fails the recorder with the specific
+reason `quota_files` or `quota_bytes` (visible in `GET /api/v1/rtmp/streams` as
+`phase.code`) and an `rtmp_recorder_failed` event; the continuous recorder retries on the next
+media and recovers by itself as soon as a file is deleted or space is otherwise freed. With
+`retention "delete_oldest"` the oldest finished recordings in the root are deleted to make room
+and recording never stops; the file being written is never deleted. `retention_max_age_ms`
+deletes finished recordings older than the given age whenever a recording starts. All recorders
+sharing one root must use the same quota and retention settings.
 
 `record_mask` may select audio, video, or keyframes-only video; at least one of audio/video is
 required. `append` resumes the exact existing segment when its FLV tail is valid, and `lock` holds

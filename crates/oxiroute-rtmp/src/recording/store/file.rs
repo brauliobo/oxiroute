@@ -326,8 +326,8 @@ impl RecordingFile {
             return;
         }
         let mut state = self.shared.lock();
-        state.files -= 1;
-        state.bytes_used -= self.length;
+        state.files = state.files.saturating_sub(1);
+        state.bytes_used = state.bytes_used.saturating_sub(self.length);
         self.file_accounted = false;
     }
 }
@@ -357,17 +357,23 @@ impl Write for RecordingFile {
         let reserved_growth = requested_end.saturating_sub(self.length);
         {
             let mut state = self.shared.lock();
-            let Some(new_total) = state.bytes_used.checked_add(reserved_growth) else {
-                return Err(byte_quota_error(
-                    self.shared.limits.max_bytes.unwrap_or(u64::MAX),
-                ));
-            };
             if let Some(maximum) = self.shared.limits.max_bytes
-                && new_total > maximum
+                && !self
+                    .shared
+                    .evict_until(&mut state, |state| {
+                        state
+                            .bytes_used
+                            .checked_add(reserved_growth)
+                            .is_some_and(|total| total <= maximum)
+                    })
+                    .map_err(io::Error::other)?
             {
-                return Err(byte_quota_error(maximum));
+                return Err(root_byte_quota_error(maximum));
             }
-            state.bytes_used = new_total;
+            state.bytes_used = state
+                .bytes_used
+                .checked_add(reserved_growth)
+                .ok_or_else(|| root_byte_quota_error(u64::MAX))?;
         }
 
         let result = self
@@ -381,14 +387,19 @@ impl Write for RecordingFile {
                 let actual_end = self.position + written;
                 let actual_growth = actual_end.saturating_sub(self.length);
                 if actual_growth < reserved_growth {
-                    self.shared.lock().bytes_used -= reserved_growth - actual_growth;
+                    let mut state = self.shared.lock();
+                    state.bytes_used = state
+                        .bytes_used
+                        .saturating_sub(reserved_growth - actual_growth);
                 }
                 self.position = actual_end;
                 self.length = self.length.max(actual_end);
                 Ok(usize::try_from(written).expect("write returned a usize byte count"))
             }
             Err(source) => {
-                self.shared.lock().bytes_used -= reserved_growth;
+                let mut state = self.shared.lock();
+                state.bytes_used = state.bytes_used.saturating_sub(reserved_growth);
+                drop(state);
                 Err(source)
             }
         }
@@ -428,6 +439,7 @@ impl Seek for RecordingFile {
 
 impl Drop for RecordingFile {
     fn drop(&mut self) {
+        self.shared.lock().active.remove(&self.partial_name);
         if !self.file_accounted && !self.partial_exists {
             return;
         }
@@ -461,8 +473,8 @@ impl Drop for RecordingFile {
         };
         let mut state = self.shared.lock();
         if removed && self.file_accounted {
-            state.files -= 1;
-            state.bytes_used -= self.length;
+            state.files = state.files.saturating_sub(1);
+            state.bytes_used = state.bytes_used.saturating_sub(self.length);
             self.file_accounted = false;
         }
         if removed || !owned {

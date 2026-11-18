@@ -26,6 +26,8 @@ pub struct MediaSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecorderErrorCode {
     OpenFailed,
+    QuotaFiles,
+    QuotaBytes,
     WriteFailed,
     CloseFailed,
     BackendUnavailable,

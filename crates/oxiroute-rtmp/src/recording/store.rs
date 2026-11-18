@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{self, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
@@ -29,16 +29,19 @@ mod finalizer;
 mod fsutil;
 mod limits;
 mod registry;
+mod retention;
 mod root;
 
 pub use commit::*;
 pub use error::*;
 pub use file::*;
 pub(crate) use finalizer::*;
+pub(crate) use fsutil::is_root_byte_quota_error;
 #[allow(clippy::wildcard_imports)]
 use fsutil::*;
 pub use limits::*;
 pub use registry::*;
+use retention::is_sidecar;
 pub use root::*;
 
 mod flv;
@@ -47,6 +50,8 @@ use flv::inspect_tail as inspect_flv_tail;
 
 const PARTIAL_PREFIX: &str = ".oxiroute-recording-";
 const PARTIAL_SUFFIX: &str = ".partial";
+const SIDECAR_PREFIX: &str = ".oxiroute-meta-";
+const SIDECAR_SUFFIX: &str = ".json";
 const OWNERSHIP_LOCK_NAME: &str = ".oxiroute-recording.lock";
 const OWNER_PROBE_PREFIX: &str = ".oxiroute-owner-probe-";
 const UUID_SIMPLE_LENGTH: usize = 32;

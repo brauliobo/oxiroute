@@ -41,6 +41,8 @@ impl Segment {
                     } else {
                         WorkerError::new(RecorderFailure::ShutdownTimedOut)
                     }
+                } else if matches!(error, RecordingStoreError::FileLimit { .. }) {
+                    WorkerError::new(RecorderFailure::QuotaFiles)
                 } else if matches!(
                     error,
                     RecordingStoreError::FinalNameCollisions { .. }
@@ -199,7 +201,7 @@ fn write_to_muxer(
     match event.kind() {
         MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => muxer
             .write_audio(event.timestamp_ms(), event.payload())
-            .map_err(|_| WorkerError::new(RecorderFailure::Write)),
+            .map_err(write_failure),
         MediaEventKind::AvcSequenceHeader
         | MediaEventKind::HevcSequenceHeader
         | MediaEventKind::Av1SequenceHeader
@@ -207,10 +209,17 @@ fn write_to_muxer(
         | MediaEventKind::VideoInterframe
         | MediaEventKind::VideoDisposable => muxer
             .write_video(event.timestamp_ms(), event.payload())
-            .map_err(|_| WorkerError::new(RecorderFailure::Write)),
-        MediaEventKind::Metadata => muxer
-            .write_metadata(event.payload())
-            .map_err(|_| WorkerError::new(RecorderFailure::Write)),
+            .map_err(write_failure),
+        MediaEventKind::Metadata => muxer.write_metadata(event.payload()).map_err(write_failure),
+    }
+}
+
+fn write_failure(error: FlvMuxerError) -> WorkerError {
+    match error {
+        FlvMuxerError::Io(source) if is_root_byte_quota_error(&source) => {
+            WorkerError::new(RecorderFailure::QuotaBytes)
+        }
+        _ => WorkerError::new(RecorderFailure::Write),
     }
 }
 

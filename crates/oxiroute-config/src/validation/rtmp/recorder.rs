@@ -110,6 +110,15 @@ pub(super) fn validate_rtmp_recorder(
         ));
     }
     if recorder
+        .retention_max_age_ms
+        .is_some_and(|age| age == 0 || age > MAX_RECORDER_RETENTION_AGE_MS)
+    {
+        return Err(invalid(
+            "retention_max_age_ms",
+            "must be null or between 1 and 315360000000",
+        ));
+    }
+    if recorder
         .max_storage_bytes
         .is_some_and(|maximum| recorder.max_queue_bytes > maximum)
     {

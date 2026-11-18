@@ -148,6 +148,8 @@ pub fn rtmp_recorder(name: &str, start: RtmpRecorderStart, root_directory: &Path
         max_storage_bytes: Some(1024 * 1024),
         max_storage_files: Some(32),
         max_active_recorders: 4,
+        retention: oxiroute_config::RtmpRecorderRetention::default(),
+        retention_max_age_ms: None,
     }
 }
 

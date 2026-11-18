@@ -670,6 +670,8 @@ impl Lowerer {
             max_storage_bytes: None,
             max_storage_files: None,
             max_active_recorders: DEFAULT_MAX_ACTIVE_RECORDERS,
+            retention: oxiroute_config::RtmpRecorderRetention::default(),
+            retention_max_age_ms: None,
         }
     }
 

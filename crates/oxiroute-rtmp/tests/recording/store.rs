@@ -160,6 +160,7 @@ fn omitted_storage_quotas_accept_existing_usage_and_new_growth() {
         max_bytes: None,
         max_files: None,
         max_active_recorders: 8,
+        retention: oxiroute_rtmp::RecordingRetention::default(),
     };
 
     let stats = RecordingStore::preflight(temporary.path(), limits).expect("unbounded preflight");
@@ -328,6 +329,7 @@ fn independently_opened_stores_share_process_wide_quota_state() {
         max_bytes: Some(5),
         max_files: Some(1),
         max_active_recorders: 1,
+        retention: oxiroute_rtmp::RecordingRetention::default(),
     };
     let first_store = RecordingStore::open(temporary.path(), limits).expect("first store");
     let second_store = RecordingStore::open(temporary.path(), limits).expect("second store");
@@ -385,6 +387,7 @@ fn enforces_recorder_file_and_growth_quotas_and_releases_aborted_partials() {
             max_bytes: Some(5),
             max_files: Some(1),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -431,6 +434,7 @@ fn counts_existing_regular_files_and_reserves_committed_file_slots() {
             max_bytes: Some(8),
             max_files: Some(2),
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -457,6 +461,7 @@ fn publishes_same_requested_name_without_overwrite_and_bounds_collision_names() 
             max_bytes: Some(64),
             max_files: Some(3),
             max_active_recorders: 2,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -539,6 +544,7 @@ fn limits() -> RecordingStoreLimits {
         max_bytes: Some(1024 * 1024),
         max_files: Some(64),
         max_active_recorders: 8,
+        retention: oxiroute_rtmp::RecordingRetention::default(),
     }
 }
 

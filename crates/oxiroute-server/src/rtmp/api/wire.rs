@@ -49,6 +49,8 @@ wire_enum!(RecorderNotificationDto from oxiroute_rtmp::RecorderNotification {
 });
 wire_enum!(RecorderErrorCodeDto from oxiroute_rtmp::RecorderErrorCode {
     oxiroute_rtmp::RecorderErrorCode::OpenFailed => OpenFailed,
+    oxiroute_rtmp::RecorderErrorCode::QuotaFiles => QuotaFiles,
+    oxiroute_rtmp::RecorderErrorCode::QuotaBytes => QuotaBytes,
     oxiroute_rtmp::RecorderErrorCode::WriteFailed => WriteFailed,
     oxiroute_rtmp::RecorderErrorCode::CloseFailed => CloseFailed,
     oxiroute_rtmp::RecorderErrorCode::BackendUnavailable => BackendUnavailable,

@@ -14,6 +14,7 @@ pub(super) fn store(root: &Path) -> RecordingStore {
             max_bytes: Some(1024 * 1024),
             max_files: Some(16),
             max_active_recorders: 2,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .expect("recording store")

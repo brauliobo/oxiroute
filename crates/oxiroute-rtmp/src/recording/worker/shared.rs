@@ -130,6 +130,7 @@ impl WorkerShared {
         } else if matches!(
             failure.kind,
             RecorderFailure::Write
+                | RecorderFailure::QuotaBytes
                 | RecorderFailure::Finalize
                 | RecorderFailure::FileSync
                 | RecorderFailure::Publish

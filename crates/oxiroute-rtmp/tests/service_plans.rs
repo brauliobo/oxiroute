@@ -300,6 +300,7 @@ fn recorder_store_registry_preserves_staged_preparation_and_root_compatibility()
         max_bytes: Some(1_024),
         max_files: Some(4),
         max_active_recorders: 1,
+        retention: oxiroute_rtmp::RecordingRetention::default(),
     };
     let recorder = |name, limits| {
         RtmpRecorderPlan::new(
@@ -697,6 +698,7 @@ fn covered_intrinsic_contract_matrix_rejects_invalid_and_accepts_boundaries() {
             max_bytes: None,
             max_files: None,
             max_active_recorders: 1,
+            retention: oxiroute_rtmp::RecordingRetention::default(),
         },
     )
     .unwrap_err();
@@ -716,6 +718,7 @@ fn covered_intrinsic_contract_matrix_rejects_invalid_and_accepts_boundaries() {
                 max_bytes: None,
                 max_files: None,
                 max_active_recorders: 0,
+                retention: oxiroute_rtmp::RecordingRetention::default(),
             },
         )
         .is_err()

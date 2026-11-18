@@ -594,6 +594,8 @@ fn rtmp_session_failure_code(error: &RtmpSessionError) -> &'static str {
 fn recorder_failure_code(code: RecorderErrorCode) -> &'static str {
     match code {
         RecorderErrorCode::OpenFailed => "record_open_failed",
+        RecorderErrorCode::QuotaFiles => "record_quota_files",
+        RecorderErrorCode::QuotaBytes => "record_quota_bytes",
         RecorderErrorCode::WriteFailed => "record_write_failed",
         RecorderErrorCode::CloseFailed => "record_close_failed",
         RecorderErrorCode::BackendUnavailable => "record_backend_unavailable",

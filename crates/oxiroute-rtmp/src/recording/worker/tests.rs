@@ -19,6 +19,7 @@ fn rotation_drains_media_while_the_previous_segment_is_publishing() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(8),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -94,6 +95,7 @@ fn ten_aligned_recorders_drain_media_while_root_finalization_is_serialized() {
             max_bytes: Some(16 * 1024 * 1024),
             max_files: Some(40),
             max_active_recorders: 10,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -185,6 +187,7 @@ fn queued_finalization_cancels_without_waiting_for_the_busy_root_worker() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(12),
             max_active_recorders: 2,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -277,6 +280,7 @@ fn third_unresolved_rotation_fails_explicitly_and_preserves_the_current_segment(
             max_bytes: Some(1024 * 1024),
             max_files: Some(8),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -360,6 +364,7 @@ fn record_mask_filters_events_before_the_worker_queue() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -395,6 +400,7 @@ fn invalid_recording_bounds_are_rejected_before_thread_start() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
@@ -443,6 +449,7 @@ fn notifications_report_the_worker_lifecycle_when_enabled() {
             max_bytes: Some(1024 * 1024),
             max_files: Some(4),
             max_active_recorders: 1,
+            retention: crate::RecordingRetention::default(),
         },
     )
     .expect("recording store");
