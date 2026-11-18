@@ -88,21 +88,20 @@ Start with [configuration examples](docs/reference/CONFIGURATION.md), then consu
 
 ## Measured performance
 
-A **maintainer-recorded evaluation of the 7.0.0 tree** (measured 2026-11-17 on a release build without profile
-guidance, not the shipped profile-guided binaries) reported these medians for an HTTP/1.1 reverse proxy with a
-1 KiB response:
+A **maintainer-recorded evaluation of the 7.0.0 release** (measured 2026-11-17 on the published profile-guided
+x86_64 binary) reported these medians for an HTTP/1.1 reverse proxy with a 1 KiB response:
 
 | Measure | OxiRoute 7.0 | nginx | HAProxy |
 | --- | ---: | ---: | ---: |
-| Requests/second | 169,706 | 134,205 | 121,704 |
-| p99 latency, µs | 302 | 403 | 368 |
-| Proxy CPU time/request, µs | 5.9 | 7.4 | 8.2 |
+| Requests/second | 178,396 | 134,061 | 114,860 |
+| p99 latency, µs | 254 | 350 | 390 |
+| Proxy CPU time/request, µs | 5.5 | 7.4 | 8.7 |
 
 One worker per proxy, 32 keep-alive connections, loopback, CPU pinning, interleaved runs on a shared
-host; two 4-second measured runs after 2-second warm-ups, except nginx, which has one clean run and is
-indicative. This workload put OxiRoute above nginx and HAProxy in throughput. Other workloads differ.
-The [7.0 report](benchmarks/reports/7.0/README.md) adds 64 KiB, 1,024-connection, TLS, cache, HTTP/3, tokio-plane,
-io_uring and memory results.
+host; two 4-second measured runs after 2-second warm-ups. This workload put OxiRoute above nginx and HAProxy in
+throughput. Other workloads differ.
+The [7.0 report](benchmarks/reports/7.0/README.md) adds 64 KiB, 1 MiB, 1,024-connection, TLS, HTTP/2, cache,
+compression, HTTP/3, tokio-plane, io_uring, two-worker and memory results.
 
 These are summary records: the raw runs, exact binary identity and complete reproducibility
 bundle are not published here. They cannot serve as an independently validated release baseline or

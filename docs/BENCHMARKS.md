@@ -5,11 +5,12 @@ They do not establish production capacity or a general ranking of proxies.
 
 ## Evidence status
 
-The rows labelled **OxiRoute 7.0** come from a maintainer's re-measurement on 2026-11-17 of the final 7.0.0
-tree, built with the release profile and without profile guidance (the shipped binaries are profile-guided and were
-not measured). The remaining rows transcribe a maintainer's historical **integrated 6.5 performance summary**,
+The rows labelled **OxiRoute 7.0** come from a maintainer's measurement on 2026-11-17 of the published 7.0.0
+x86_64 release binary (profile-guided; tarball SHA-256 `5081e6aa...a506c`), run with the nginx and HAProxy rows in the
+same invocation. The remaining rows transcribe a maintainer's historical **integrated 6.5 performance summary**,
 whose build preceded the 6.5.2 release; they were not re-measured and keep their original labels. The complete 7.0
-tables, including the tokio and `io_uring` planes, 64 KiB, 1,024 connections, cache, HTTP/3 and memory, are in the
+tables, including the tokio and `io_uring` planes, 64 KiB, 1 MiB, 1,024 connections, cache, compression, HTTP/2,
+HTTP/3, two workers and memory, are in the
 [7.0 report](../benchmarks/reports/7.0/README.md).
 
 The underlying research notes and harness are local development material, not part of this public
@@ -31,10 +32,11 @@ The 7.0 re-measurement and the historical 6.5 summary record:
 - 7.0 rows: two 4-second runs after a 2-second warm-up, at most two attempts per row; an attempt is discarded when
   the scheduler records more than 1.5 CPUs of foreign work on the pinned CPUs. A row with one clean run is marked
   indicative and shows that single sample. CPU pressure (`/proc/pressure/cpu`, `some` avg10) stayed at or below
-  3.3% in these rows and was never used to discard a run.
-- Release builds with fat LTO and one codegen unit, without profile-guided optimization. 6.5 TLS rows use
-  OxiRoute's OpenSSL backend, 7.0 TLS rows its default rustls backend. The comparison identifies nginx 1.30 and
-  HAProxy 3.4, without complete patch-version, dependency and compiler provenance. The 7.0 harness is a local
+  7.9% in these rows and was never used to discard a run.
+- 6.5 rows: release builds with fat LTO and one codegen unit, without profile-guided optimization. 7.0 rows: the
+  published profile-guided binary (build record: tree `c01445fe`, `pgo: true`, `bolt: false`). 7.0 TLS rows use
+  OxiRoute's default rustls backend. The 7.0 comparison is nginx 1.30.6 and
+  HAProxy 3.4.7; the 6.5 summary has no complete patch-version, dependency and compiler provenance. The 7.0 harness is a local
   script that is not part of this checkout.
 - Medians and observed minimum–maximum ranges, rather than confidence intervals. Latencies come
   from a closed-loop load generator; they do not model a production arrival rate or remove coordinated
@@ -48,36 +50,39 @@ nor a universal hardware-independent cost. Keep these metrics separate when comp
 ## Throughput, latency and CPU
 
 Each row comes from one invocation of that workload; no best-run selection or pooling
-across different builds is applied. Bodies are 1 KiB. H1 means HTTP/1.1; TLS keep-alive reuses an
-established TLS 1.3 connection. The handshake row opens a new TLS 1.3 ECDSA connection per request. Rows not labelled 7.0 are from the 6.5 summary.
+across different builds is applied (the 7.0 keep-alive row is the second invocation of its lane after a first with
+one clean run for two proxies). Bodies are 1 KiB. H1 means HTTP/1.1; TLS keep-alive reuses an
+established TLS 1.3 connection. The handshake row opens a new TLS 1.3 ECDSA connection per request. Rows labelled 6.5 are from the 6.5 summary; the other rows are 7.0 measurements.
 
 | Workload | Proxy | Requests/s, median (min–max) | p50, µs | p99, µs | CPU µs/request |
 | --- | --- | ---: | ---: | ---: | ---: |
-| H1 proxy, keep-alive | OxiRoute 7.0 | 169,706 (167,747–171,664) | 184 | 302 | 5.9 |
-| H1 proxy, keep-alive | nginx (one clean run, indicative) | 134,205 | 230 | 403 | 7.4 |
-| H1 proxy, keep-alive | HAProxy | 121,704 (121,154–122,253) | 252 | 368 | 8.2 |
-| H1 proxy, new connection | OxiRoute 7.0 | 88,643 (88,118–89,168) | 340 | 639 | 11.1 |
-| H1 proxy, new connection | nginx | 74,708 (74,429–74,987) | 406 | 702 | 13.2 |
-| H1 proxy, new connection | HAProxy | 67,016 (66,047–67,986) | 456 | 683 | 14.8 |
-| H1 POST, 1 KiB body | OxiRoute 6.5 integrated | 127,491 (126,404–129,164) | 255 | 392 | 5.5 |
-| H1 POST, 1 KiB body | nginx | 126,375 (125,847–139,378) | 238 | 714 | 5.3 |
-| H1 POST, 1 KiB body | HAProxy | 116,524 (109,215–118,762) | 267 | 701 | 6.3 |
-| TLS keep-alive | OxiRoute 7.0 (one clean run, indicative) | 108,694 | 295 | 492 | 9.2 |
-| TLS keep-alive | nginx | 101,283 (100,827–101,739) | 308 | 504 | 9.9 |
-| TLS keep-alive | HAProxy (6.5 integrated) | 88,547 (70,982–88,908) | 335 | 1,490 | 8.6 |
-| H2 over TLS | OxiRoute 6.5 integrated | 86,098 (75,895–88,535) | 294 | 2,296 | 7.8 |
-| H2 over TLS | nginx | 87,138 (81,224–91,768) | 294 | 1,995 | 7.1 |
-| H2 over TLS | HAProxy | 78,729 (66,757–82,785) | 344 | 1,786 | 8.6 |
-| TLS full handshake | OxiRoute 7.0 | 16,108 (16,035–16,180) | 1,949 | 2,778 | 93.1 |
-| TLS full handshake | nginx | 5,397 (5,336–5,458) | 5,873 | 6,613 | 185.3 |
-| TLS full handshake | HAProxy | 4,751 (4,599–4,903) | 6,631 | 8,332 | 210.4 |
+| H1 proxy, keep-alive | OxiRoute 7.0 | 178,396 (177,389–179,402) | 174 | 254 | 5.5 |
+| H1 proxy, keep-alive | nginx | 134,061 (131,708–136,414) | 232 | 350 | 7.4 |
+| H1 proxy, keep-alive | HAProxy | 114,860 (114,644–115,076) | 267 | 390 | 8.7 |
+| H1 proxy, new connection | OxiRoute 7.0 | 91,432 (88,800–94,065) | 322 | 752 | 10.5 |
+| H1 proxy, new connection | nginx (earlier non-PGO pass) | 74,708 (74,429–74,987) | 406 | 702 | 13.2 |
+| H1 proxy, new connection | HAProxy (one clean run, indicative) | 62,840 | 481 | 741 | 15.7 |
+| H1 POST, 1 KiB body | OxiRoute 7.0 (one clean run, indicative) | 180,102 | 171 | 314 | 5.5 |
+| H1 POST, 1 KiB body | nginx (6.5) | 126,375 (125,847–139,378) | 238 | 714 | 5.3 |
+| H1 POST, 1 KiB body | HAProxy | 114,382 (113,089–115,676) | 266 | 398 | 8.6 |
+| TLS keep-alive | OxiRoute 7.0 | 128,113 (126,656–129,570) | 247 | 416 | 7.7 |
+| TLS keep-alive | nginx | 96,906 (95,519–98,293) | 324 | 442 | 10.2 |
+| TLS keep-alive | HAProxy | 84,794 (81,487–88,101) | 360 | 636 | 11.6 |
+| H2 over TLS | OxiRoute 7.0 | 132,781 (131,965–133,597) | 240 | 374 | 7.5 |
+| H2 over TLS | nginx (one clean run, indicative) | 105,442 | 301 | 350 | 9.5 |
+| H2 over TLS | HAProxy | 85,054 (85,030–85,079) | 369 | 546 | 11.6 |
+| TLS full handshake | OxiRoute 7.0 | 16,092 (16,043–16,141) | 1,970 | 2,248 | 86.8 |
+| TLS full handshake | nginx | 5,131 (5,102–5,160) | 6,208 | 6,797 | 194.5 |
+| TLS full handshake | HAProxy | 4,674 (4,666–4,681) | 6,756 | 9,654 | 213.2 |
 
-In the 7.0 pass the plain keep-alive and new-connection rows favor OxiRoute in throughput and CPU cost, the nginx
-keep-alive row being a single clean run. The 6.5 POST and H2 rows were not re-measured; established TLS medians are
-close. A full TLS handshake costs substantially more CPU than an established connection; the 7.0 default rustls
-backend completes about three times as many per second as nginx here, where the 6.5 OpenSSL row was lower. All HAProxy
-TLS keep-alive attempts of the 7.0 pass were discarded, so that row keeps its 6.5 value. These observations do not
-support a claim that OxiRoute is generally faster or cheaper.
+Where all three proxies were measured in the 7.0 pass (plain keep-alive, established TLS, HTTP/2, TLS handshake)
+OxiRoute is ahead of nginx and HAProxy in throughput and CPU cost, by 33% over nginx on plain keep-alive, 32% on
+established TLS and 26% on HTTP/2 (one clean nginx run). The nginx new-connection row has no clean run in the
+shipped-binary pass and the 6.5 nginx POST row was not re-measured. A
+full TLS handshake costs substantially more CPU than an established connection; the 7.0 default rustls
+backend completes about three times as many per second as nginx here, where the optional OpenSSL backend was lower in the earlier 7.0 pass (see the report). The H2
+rows use 8 connections of 4 streams. These observations do not support a claim that OxiRoute is generally faster or
+cheaper.
 
 A later recheck in the maintainer summary did not reproduce an apparent handshake regression against
 6.4.0; this page therefore makes no regression claim. A later H2 rerun recorded zero accepted clean
@@ -86,20 +91,21 @@ runs and is excluded. The optional OpenSSL backend's 7.0 results are in the
 
 ## Idle connection memory
 
-The memory evaluation used fresh processes, one worker per proxy, three runs, and page-cache
-normalization before starting the OxiRoute builds. Values are **incremental worker RSS bytes per
+The memory evaluation (7.0 binary, measured 2026-11-17) used fresh processes, one worker per proxy, two runs, and
+page-cache normalization before starting the OxiRoute processes. Values are **incremental worker RSS bytes per
 connection**: resident memory with idle connections minus empty-worker RSS, divided by connection
 count. They exclude kernel socket memory and other processes and are not total memory budgets.
 The first four workloads used 5,000 connections; H2 used 1,000 connections after eight closed streams each.
-TLS rows use OpenSSL. Values are medians with min–max.
+OxiRoute uses the default rustls backend. Values are medians with min–max over the two runs. The 6.5 summary's
+OpenSSL-backend figures (for example 8,699 bytes for H1 keep-alive and 29,931 over TLS) were replaced by these.
 
-| Idle workload | OxiRoute 6.5 integrated, bytes | nginx, bytes | HAProxy, bytes |
+| Idle workload | OxiRoute 7.0, bytes | nginx, bytes | HAProxy, bytes |
 | --- | ---: | ---: | ---: |
-| WebSocket | 13,115 (13,114–13,116) | 18,426 (18,409–18,439) | 6,065 (5,659–6,141) |
-| WebSocket over TLS | 35,087 (35,073–35,116) | 60,071 (60,069–60,073) | 31,533 (28,801–32,421) |
-| H1 keep-alive | 8,699 (7,832–9,238) | 9,578 (8,720–9,708) | 11,605 (9,384–11,692) |
-| H1 keep-alive over TLS | 29,931 (28,982–29,932) | 34,637 (34,016–34,795) | 35,590 (35,394–35,804) |
-| H2 over TLS | 41,468 (41,402–42,611) | 50,291 (49,443–50,643) | 45,982 (45,859–47,624) |
+| WebSocket | 12,526 (12,526–12,526) | 18,364 (18,358–18,371) | 5,693 (5,106–6,280) |
+| WebSocket over TLS | 21,634 (21,633–21,635) | 59,832 (59,829–59,835) | 31,188 (30,071–32,304) |
+| H1 keep-alive | 1,749 (1,747–1,751) | 9,989 (9,980–9,998) | 11,728 (11,669–11,787) |
+| H1 keep-alive over TLS | 16,749 (16,472–17,026) | 34,784 (34,759–34,809) | 35,762 (35,662–35,863) |
+| H2 over TLS | 29,864 (29,426–30,302) | 48,792 (48,472–49,111) | 47,074 (46,928–47,219) |
 
 The same invocation reports lower incremental RSS than nginx for these workloads; HAProxy is lower
 for idle WebSocket connections. Busy connections, request bodies, caches, queues, retained generations,
