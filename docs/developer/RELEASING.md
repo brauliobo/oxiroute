@@ -130,6 +130,11 @@ is checked again on the rewritten binary. Without BOLT the container runs both s
    workspace test suite with that binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
    panic-containment test drives the shipped bytes, in parallel with the packages. `publish` waits for it. Any failure fails
    the release; nothing falls back to the PGO binary.
+   `publish` also waits for `ci-gate`, which requires a passing `ci.yml` run (a push to `main` or a manual run) on the
+   exact commit of the tag, waiting for a run that is still going (`scripts/ci/ci_green.sh`). Because of that, a tag run
+   skips what `ci.yml` already verified on that commit: the control-plane contract, the fuzz contract, the release
+   archive policy, and the stage timer and profile script tests. A push to `main` cancels the `ci.yml` run of the
+   commit before it; run `ci.yml` by hand on the tag to release such a commit.
 
 BOLT comes from `scripts/install-bolt.sh DIR`: the Ubuntu 24.04 `bolt-18` and `libbolt-18-dev` 18.1.3-1 packages are
 downloaded and used only when their SHA-256 matches the values pinned in the script (a mismatch or an unreachable

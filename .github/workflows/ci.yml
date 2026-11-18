@@ -63,8 +63,11 @@ jobs:
       - name: Verify every test binary is in a test tier
         run: ./scripts/ci/tiers.sh check
 
+      - name: Test the release CI gate
+        run: ./scripts/test/ci_green.sh
+
       - name: Lint the test lane scripts
-        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,core,doc,planes,slow,tls}.sh scripts/ci/{probe,test_budget,tiers}.sh scripts/lib/nextest.sh
+        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,ci_green,core,doc,planes,slow,tls}.sh scripts/ci/{ci_green,probe,test_budget,tiers}.sh scripts/lib/nextest.sh
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings

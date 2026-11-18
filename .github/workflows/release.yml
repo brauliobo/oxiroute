@@ -13,7 +13,8 @@ name: Release archive, binaries and packages
 #     the architecture (no compilation) and installs it in a fresh container of every image of its family. packages-ARCH
 #     starts the moment binary-ARCH is done;
 #   - publish: refuses a release that lacks one of them, that was not profile-guided, whose packages are not the binary of the
-#     tarball of their architecture, or whose notes file is missing (docs/RELEASE_NOTES_<version>.md).
+#     tarball of their architecture, whose notes file is missing (docs/RELEASE_NOTES_<version>.md), or whose commit has no passing
+#     ci.yml run (ci-gate: that is why a tag run skips the checks ci.yml already ran).
 # Nothing is published by a pull request or a push to a branch: they run the same jobs as a dry run (PGO=0, BOLT=0, the default
 # flavour only), and only when a file that the packages depend on changed (recipe_paths_re in scripts/package/families.sh).
 # workflow_dispatch with publish attaches the assets to the existing release of the tag; the source archive is verified byte for
@@ -151,6 +152,25 @@ jobs:
         if: env.RELEASE == 'true'
         run: ./scripts/verify/release/version.sh "${{ steps.what.outputs.version }}"
 
+  ci-gate:
+    name: Require the passing ci.yml run of this commit
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Wait for ci.yml to pass on the exact commit that is published
+        run: scripts/ci/ci_green.sh "$(git rev-parse HEAD)"
+
   selftest:
     name: Test the package scripts and the release asset set
     runs-on: ubuntu-24.04
@@ -161,9 +181,12 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Test the package scripts, the release asset set and the profile scripts
+      - name: Test the package scripts and the release asset set
+        run: scripts/package/main.sh selftest
+
+      - name: Test the stage timer and the profile scripts (ci.yml ran them on the commit a publish requires)
+        if: env.PUBLISH != 'true'
         run: |
-          scripts/package/main.sh selftest
           scripts/test/stage_time.sh
           benchmarks/scripts/test-pgo.sh
 
@@ -210,16 +233,19 @@ jobs:
       - name: Verify locked workspace metadata at MSRV
         run: cargo +1.97.1 metadata --format-version 1 --no-deps --locked
 
-      - name: Verify control-plane OpenAPI artifact
+      - name: Verify control-plane OpenAPI artifact (ci.yml ran it on the commit a publish requires)
+        if: env.PUBLISH != 'true'
         run: ./scripts/verify/control-plane-contract.sh
 
       - name: Verify all committed lockfiles are current
         run: ./scripts/verify/lockfiles.sh
 
-      - name: Verify bounded fuzz targets and crash-corpus seeds
+      - name: Verify bounded fuzz targets and crash-corpus seeds (ci.yml ran them on the commit a publish requires)
+        if: env.PUBLISH != 'true'
         run: ./scripts/verify/fuzz.sh
 
-      - name: Test release archive policy
+      - name: Test release archive policy (ci.yml ran it on the commit a publish requires)
+        if: env.PUBLISH != 'true'
         run: ./scripts/test/release/archive.sh
 
       - name: Create and verify deterministic source archive
@@ -434,6 +460,7 @@ jobs:
     name: Publish the release assets
     needs:
       - changes
+      - ci-gate
       - selftest
       - archive
       - binary-x86_64
@@ -455,12 +482,12 @@ jobs:
     steps:
       - name: Require every job to have succeeded (only a job that has nothing to build may be skipped)
         env:
-          MUST_SUCCEED: ${{ needs.selftest.result }} ${{ needs.archive.result }} ${{ needs.binary-x86_64.result }} ${{ needs.binary-aarch64.result }} ${{ needs.packages-x86_64.result }} ${{ needs.packages-aarch64.result }}
+          MUST_SUCCEED: ${{ needs.ci-gate.result }} ${{ needs.selftest.result }} ${{ needs.archive.result }} ${{ needs.binary-x86_64.result }} ${{ needs.binary-aarch64.result }} ${{ needs.packages-x86_64.result }} ${{ needs.packages-aarch64.result }}
           EXTRAS: ${{ needs.binary-extras.result }}:${{ needs.changes.outputs.has_extras }}
           TESTS: ${{ needs.binary-tests.result }}:${{ needs.changes.outputs.has_tests }}
         run: |
           for result in ${MUST_SUCCEED}; do
-            [[ "${result}" == success ]] || { echo 'refusing to publish: the archive, binary and package jobs must all have succeeded' >&2; exit 1; }
+            [[ "${result}" == success ]] || { echo 'refusing to publish: the CI gate, the archive, binary and package jobs must all have succeeded' >&2; exit 1; }
           done
           for job in "${EXTRAS}" "${TESTS}"; do
             [[ "${job}" == success:true || "${job}" == skipped:false ]] || { echo "refusing to publish: ${job} (result:has jobs)" >&2; exit 1; }
