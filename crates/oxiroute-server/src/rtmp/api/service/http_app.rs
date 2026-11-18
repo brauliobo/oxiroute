@@ -198,27 +198,40 @@ impl HttpServerApp for RtmpManagementHttpApp {
                         .await;
                     }
                 };
-                if let Some(response) =
-                    self.api
-                        .authentication_error(&method, &path, &path_and_query, &session)
-                {
-                    return reply_and_finish(
-                        session,
-                        response.with_correlation(context.correlation_id),
-                    )
-                    .await;
-                }
-                match self.api.recording_content(id, &session).await {
-                    recordings::ContentOutcome::Reply(response) => {
+                let ticketed = match self.api.media_access(
+                    &Scope::Recording { id },
+                    &method,
+                    &path,
+                    &path_and_query,
+                    &session,
+                ) {
+                    Ok(ticket) => ticket.is_some(),
+                    Err(response) => {
                         return reply_and_finish(
                             session,
                             response.with_correlation(context.correlation_id),
                         )
                         .await;
                     }
+                };
+                match self.api.recording_content(id, &session).await {
+                    recordings::ContentOutcome::Reply(response) => {
+                        let response = response.with_correlation(context.correlation_id);
+                        let response = if ticketed {
+                            response.with_ticket_privacy()
+                        } else {
+                            response
+                        };
+                        return reply_and_finish(session, response).await;
+                    }
                     recordings::ContentOutcome::Stream(stream) => {
-                        if !write_recording_stream(&mut session, stream, &context.correlation_id)
-                            .await
+                        if !write_recording_stream(
+                            &mut session,
+                            stream,
+                            &context.correlation_id,
+                            ticketed,
+                        )
+                        .await
                         {
                             return None;
                         }

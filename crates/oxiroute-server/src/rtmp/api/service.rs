@@ -585,6 +585,7 @@ impl RtmpManagementApi {
             }
             EndpointId::MediaTicket => self.mint_media_ticket(method, session).await,
             EndpointId::VodTicket => self.mint_vod_ticket(method, session).await,
+            EndpointId::RecordingTicket => self.mint_recording_ticket(method, session).await,
         }
     }
 

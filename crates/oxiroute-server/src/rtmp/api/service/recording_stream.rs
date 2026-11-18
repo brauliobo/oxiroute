@@ -25,11 +25,7 @@ impl RtmpManagementApi {
         .await
         {
             Ok(outcome) => outcome,
-            Err(_) => ContentOutcome::Reply(ApiResponse::error(
-                503,
-                "recording_storage_unavailable",
-                "the recording storage is unavailable",
-            )),
+            Err(_) => ContentOutcome::Reply(recording_api::storage_unavailable()),
         }
     }
 }
@@ -38,6 +34,7 @@ pub(super) async fn write_recording_stream(
     session: &mut ServerSession,
     stream: RecordingStream,
     correlation_id: &str,
+    ticketed: bool,
 ) -> bool {
     let mut builder = Response::builder()
         .status(if stream.partial { 206 } else { 200 })
@@ -50,6 +47,9 @@ pub(super) async fn write_recording_stream(
             "content-disposition",
             format!("attachment; filename=\"{}\"", stream.filename),
         );
+    if ticketed {
+        builder = builder.header("referrer-policy", "no-referrer");
+    }
     if stream.partial {
         builder = builder.header(
             "content-range",

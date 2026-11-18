@@ -253,3 +253,210 @@ async fn a_recording_cut_short_by_a_crash_is_listed_partial_after_restart() {
     again.close().await;
     server.shutdown();
 }
+
+struct TicketDaemon {
+    server: ServerProcess,
+    address: SocketAddr,
+    id: String,
+    other_id: String,
+    on_disk: Vec<u8>,
+    _directory: TempDir,
+}
+
+impl TicketDaemon {
+    async fn start() -> Self {
+        let directory = TempDir::new().expect("recording directory");
+        let root = create_secure_root(directory.path(), "ticket-recordings");
+        let unused = create_secure_root(directory.path(), "ticket-unused");
+        let address = reserve_tcp_address();
+        let rtmp_address = reserve_tcp_address();
+        let config = inventory_config(address, rtmp_address, &root, &unused);
+        let mut server = ServerProcess::start(&config.validate().unwrap(), Some(TOKEN));
+        server.wait_for_tcp(address).await;
+        server.wait_for_tcp(rtmp_address).await;
+        publish_and_close(rtmp_address, "camera", 12).await;
+        let listing = wait_for_recordings(address, "?stream=camera", |recordings| {
+            recordings.len() >= 2 && recordings.iter().all(|entry| entry["status"] == "complete")
+        })
+        .await;
+        let recordings = &listing["recordings"];
+        let on_disk = fs::read(root.join(recordings[0]["name"].as_str().expect("name")))
+            .expect("recording file");
+        Self {
+            server,
+            address,
+            id: recordings[0]["id"].as_str().expect("id").to_owned(),
+            other_id: recordings[1]["id"].as_str().expect("id").to_owned(),
+            on_disk,
+            _directory: directory,
+        }
+    }
+
+    async fn mint(&self, id: &str, body: &str) -> HttpResponse {
+        let authorization = format!("Bearer {TOKEN}");
+        let headers = [
+            ("Authorization", authorization.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        let path = format!("/api/v1/rtmp/recordings/{id}/ticket");
+        http_request(self.address, "POST", &path, &headers, body.as_bytes()).await
+    }
+
+    async fn ticketed_path(&self) -> (String, String) {
+        let minted = self.mint(&self.id, "").await;
+        assert_eq!(minted.status, 200, "{}", minted.text());
+        let body = minted.json();
+        let ticket = body["ticket"].as_str().expect("ticket").to_owned();
+        (ticket, body["path"].as_str().expect("path").to_owned())
+    }
+
+    async fn anonymous(&self, method: &str, path: &str) -> HttpResponse {
+        http_request(self.address, method, path, &[], &[]).await
+    }
+
+    fn content_path(id: &str) -> String {
+        format!("/api/v1/rtmp/recordings/{id}/content")
+    }
+}
+
+#[tokio::test]
+async fn a_recording_ticket_downloads_the_file_with_ranges_and_without_the_bearer_token() {
+    let daemon = TicketDaemon::start().await;
+    let minted = daemon.mint(&daemon.id, "").await;
+    assert_eq!(minted.status, 200, "{}", minted.text());
+    assert_eq!(minted.header("cache-control"), Some("no-store"));
+    assert_eq!(minted.header("referrer-policy"), Some("no-referrer"));
+    let body = minted.json();
+    let ticket = body["ticket"].as_str().expect("ticket");
+    let path = body["path"].as_str().expect("path");
+    assert_eq!(body["ttlSeconds"], 90);
+    assert!(body["expiresAtUnixMs"].is_u64());
+    assert_eq!(
+        path,
+        format!("{}?ticket={ticket}", TicketDaemon::content_path(&daemon.id))
+    );
+
+    let download = daemon.anonymous("GET", path).await;
+    assert_eq!(download.status, 200);
+    assert_eq!(download.body, daemon.on_disk);
+    assert_eq!(download.header("cache-control"), Some("no-store"));
+    assert_eq!(download.header("referrer-policy"), Some("no-referrer"));
+    assert_eq!(download.header("accept-ranges"), Some("bytes"));
+    assert!(
+        download
+            .header("content-disposition")
+            .is_some_and(|value| value.starts_with("attachment; filename=\""))
+    );
+    let range = [("Range", "bytes=2-9")];
+    let ranged = http_request(daemon.address, "GET", path, &range, &[]).await;
+    assert_eq!(ranged.status, 206);
+    assert_eq!(ranged.body, daemon.on_disk[2..10]);
+    assert_eq!(ranged.header("referrer-policy"), Some("no-referrer"));
+
+    let authorization = format!("Bearer {TOKEN}");
+    let bearer = [("Authorization", authorization.as_str())];
+    let plain = http_request(daemon.address, "GET", path, &bearer, &[]).await;
+    assert_eq!(plain.status, 200);
+    assert_eq!(plain.header("referrer-policy"), None);
+    daemon.server.shutdown();
+}
+
+#[tokio::test]
+async fn a_recording_ticket_works_only_on_the_content_of_its_own_recording() {
+    let daemon = TicketDaemon::start().await;
+    let (ticket, _) = daemon.ticketed_path().await;
+    let id = &daemon.id;
+    for refused in [
+        format!(
+            "{}?ticket={ticket}",
+            TicketDaemon::content_path(&daemon.other_id)
+        ),
+        format!("{}?ticket={ticket}A", TicketDaemon::content_path(id)),
+        format!(
+            "{}?ticket={ticket}&ticket={ticket}",
+            TicketDaemon::content_path(id)
+        ),
+        format!("/api/v1/rtmp/recordings/{id}?ticket={ticket}"),
+        format!("/api/v1/rtmp/recordings?ticket={ticket}"),
+        format!("/api/v1/rtmp/streams?ticket={ticket}"),
+    ] {
+        let response = daemon.anonymous("GET", &refused).await;
+        assert_eq!(response.status, 401, "{refused}");
+    }
+    let forged = format!("{}?ticket={ticket}A", TicketDaemon::content_path(id));
+    let forged = daemon.anonymous("GET", &forged).await;
+    assert_eq!(forged.json()["error"]["code"], "invalid_ticket");
+    assert_eq!(forged.header("referrer-policy"), None);
+
+    let delete = format!("/api/v1/rtmp/recordings/{id}?ticket={ticket}");
+    assert_eq!(daemon.anonymous("DELETE", &delete).await.status, 401);
+    let item = format!("/api/v1/rtmp/recordings/{id}");
+    assert_eq!(
+        management(daemon.address, "GET", &item, None).await.status,
+        200
+    );
+    daemon.server.shutdown();
+}
+
+#[tokio::test]
+async fn minting_a_recording_ticket_checks_the_recording_and_lifetime_and_hides_the_ticket() {
+    let daemon = TicketDaemon::start().await;
+    let (ticket, _) = daemon.ticketed_path().await;
+    let unknown = daemon.mint("missing", "").await;
+    assert_eq!(unknown.status, 404);
+    assert_eq!(unknown.json()["error"]["code"], "recording_not_found");
+    for invalid in [r#"{"ttlSeconds":0}"#, r#"{"ttlSeconds":601}"#] {
+        let response = daemon.mint(&daemon.id, invalid).await;
+        assert_eq!(response.status, 400, "{invalid}");
+        assert_eq!(response.json()["error"]["code"], "invalid_ticket_ttl");
+    }
+    let path = format!("/api/v1/rtmp/recordings/{}/ticket", daemon.id);
+    assert_eq!(daemon.anonymous("POST", &path).await.status, 401);
+
+    let audit = management(daemon.address, "GET", "/api/v1/audit?limit=1000", None).await;
+    assert!(
+        audit.text().contains("media_ticket_mint"),
+        "{}",
+        audit.text()
+    );
+    let mac = ticket.split_once('.').expect("ticket shape").1;
+    for page in [audit.text(), daemon.server.stderr()] {
+        assert!(!page.contains(mac));
+        assert!(!page.contains("ticket="));
+    }
+    daemon.server.shutdown();
+}
+
+#[tokio::test]
+async fn an_expired_recording_ticket_is_refused_and_a_deleted_recording_has_nothing_to_download() {
+    let daemon = TicketDaemon::start().await;
+    let minted = daemon.mint(&daemon.id, r#"{"ttlSeconds":1}"#).await;
+    assert_eq!(minted.status, 200);
+    let path = minted.json()["path"].as_str().expect("path").to_owned();
+    let expired = timeout(WIRE_TIMEOUT, async {
+        loop {
+            let response = daemon.anonymous("GET", &path).await;
+            if response.status != 200 {
+                return response;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the ticket did not expire");
+    assert_eq!(expired.status, 401);
+    assert_eq!(expired.json()["error"]["code"], "ticket_expired");
+
+    let (_, fresh_path) = daemon.ticketed_path().await;
+    let item = format!("/api/v1/rtmp/recordings/{}", daemon.id);
+    assert_eq!(
+        management(daemon.address, "DELETE", &item, None)
+            .await
+            .status,
+        200
+    );
+    let gone = daemon.anonymous("GET", &fresh_path).await;
+    assert_eq!(gone.status, 404);
+    assert_eq!(gone.json()["error"]["code"], "recording_not_found");
+    daemon.server.shutdown();
+}

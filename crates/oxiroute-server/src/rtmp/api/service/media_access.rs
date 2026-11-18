@@ -108,6 +108,33 @@ impl RtmpManagementApi {
         self.minted(scope, &object_path, request.ttl_seconds)
     }
 
+    pub(super) async fn mint_recording_ticket(
+        &self,
+        method: &str,
+        session: &mut ServerSession,
+    ) -> ApiResponse {
+        if method != "POST" {
+            return ApiResponse::method_not_allowed("POST");
+        }
+        let request: MediaTicketRequest = match ticket_request(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let path = session.req_header().uri.path().to_owned();
+        let id = recordings::match_ticket_route(&path).expect("registered recording ticket route");
+        let catalog = self.recording_catalog();
+        let owned_id = id.to_owned();
+        match tokio::task::spawn_blocking(move || recordings::ensure_exists(&catalog, &owned_id))
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(response)) => return response,
+            Err(_) => return recordings::storage_unavailable(),
+        }
+        let object_path = format!("/api/v1/rtmp/recordings/{id}/content");
+        self.minted(Scope::Recording { id }, &object_path, request.ttl_seconds)
+    }
+
     fn minted(&self, scope: Scope<'_>, object_path: &str, ttl_seconds: Option<u32>) -> ApiResponse {
         let ttl_seconds = ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS);
         if !(1..=MAX_TTL_SECONDS).contains(&ttl_seconds) {

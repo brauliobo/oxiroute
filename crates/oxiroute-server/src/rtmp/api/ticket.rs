@@ -32,6 +32,9 @@ pub(super) enum Scope<'a> {
         source: &'a str,
         path: &'a str,
     },
+    Recording {
+        id: &'a str,
+    },
 }
 
 impl Scope<'_> {
@@ -48,6 +51,7 @@ impl Scope<'_> {
                 source,
                 path,
             } => format!("vod:{service}/{application}/{source}/{path}"),
+            Self::Recording { id } => format!("recording:{id}"),
         }
     }
 }

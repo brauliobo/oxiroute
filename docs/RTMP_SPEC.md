@@ -657,6 +657,15 @@ query, a ticketed response rewrites every relative `URI=` (HLS tags and variant 
 responses and mint responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; the
 ticket is never logged, audited or placed in events or error text.
 
+`POST /api/v1/rtmp/recordings/{recordingId}/ticket` (management Bearer, same optional body and
+response) mints a download ticket for one recording, with the scope `recording:<id>`, and answers
+`404 recording_not_found` for an unknown id. The returned `path` is
+`/api/v1/rtmp/recordings/{recordingId}/content?ticket=...`; the `ticket` parameter is honored only on
+`GET` of that route for the same id and only without an `Authorization` header, never on the item,
+list or delete routes. A ticketed download keeps `Accept-Ranges`, range support and
+`Content-Disposition: attachment`, and carries `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. Mints are audited as `media_ticket_mint`.
+
 Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
 backpressures when that bound is full, but waits outside registry and recorder-controller locks, so
 catalog snapshots and controller observation remain available. Each worker stops accepting events

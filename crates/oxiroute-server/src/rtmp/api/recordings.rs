@@ -34,6 +34,24 @@ pub(super) fn match_route(path: &str) -> Option<Route<'_>> {
     }
 }
 
+pub(super) fn match_ticket_route(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/v1/rtmp/recordings/")?
+        .strip_suffix("/ticket")
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+}
+
+pub(super) fn ensure_exists(catalog: &RecordingCatalog, id: &str) -> Result<(), ApiResponse> {
+    catalog.get(id).map(|_| ()).map_err(error_response)
+}
+
+pub(super) fn storage_unavailable() -> ApiResponse {
+    ApiResponse::error(
+        503,
+        "recording_storage_unavailable",
+        "the recording storage is unavailable",
+    )
+}
+
 pub(super) struct RecordingStream {
     pub(super) file: Arc<File>,
     pub(super) start: u64,
@@ -249,10 +267,6 @@ fn error_response(error: RecordingCatalogError) -> ApiResponse {
             "recording_active",
             "the recording is being written and cannot be deleted",
         ),
-        RecordingCatalogError::Store(_) => ApiResponse::error(
-            503,
-            "recording_storage_unavailable",
-            "the recording storage is unavailable",
-        ),
+        RecordingCatalogError::Store(_) => storage_unavailable(),
     }
 }

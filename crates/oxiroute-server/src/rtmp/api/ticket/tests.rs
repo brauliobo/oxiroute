@@ -44,6 +44,7 @@ fn a_ticket_for_one_stream_fails_on_another_scope() {
             source: "front",
             path: "",
         },
+        Scope::Recording { id: "front" },
     ] {
         assert_eq!(
             key.verify(&other, &ticket, NOW),
@@ -116,4 +117,26 @@ fn the_ready_path_carries_the_ticket_as_its_only_query() {
         ticket_path("/api/v1/rtmp/media/live/cam/front/index.m3u8", "1.x"),
         "/api/v1/rtmp/media/live/cam/front/index.m3u8?ticket=1.x"
     );
+}
+
+#[test]
+fn a_recording_ticket_verifies_only_for_its_own_recording() {
+    let key = TicketKey::generate();
+    let scope = Scope::Recording { id: "rec-a" };
+    let ticket = key.mint(&scope, NOW + 90_000);
+    assert_eq!(key.verify(&scope, &ticket, NOW), Ok(()));
+    assert_eq!(
+        key.verify(&scope, &ticket, NOW + 90_000),
+        Err(TicketError::Expired)
+    );
+    for other in [
+        Scope::Recording { id: "rec-b" },
+        Scope::Recording { id: "rec-a/" },
+    ] {
+        assert_eq!(
+            key.verify(&other, &ticket, NOW),
+            Err(TicketError::Invalid),
+            "{other:?}"
+        );
+    }
 }

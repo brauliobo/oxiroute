@@ -8,6 +8,7 @@ pub(super) enum EndpointId {
     Requests,
     MediaTicket,
     VodTicket,
+    RecordingTicket,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,7 +74,18 @@ const TICKET_FAILURES: &[Failure] = &[
     },
 ];
 
-const ENDPOINTS: [EndpointSpec; 8] = [
+const RECORDING_TICKET_FAILURES: &[Failure] = &[
+    Failure {
+        status: "400",
+        description: "The request body or the requested lifetime is invalid.",
+    },
+    Failure {
+        status: "404",
+        description: "The recording does not exist.",
+    },
+];
+
+const ENDPOINTS: [EndpointSpec; 9] = [
     EndpointSpec {
         id: EndpointId::Status,
         operation_id: "getStatus",
@@ -168,6 +180,20 @@ const ENDPOINTS: [EndpointSpec; 8] = [
         failures: TICKET_FAILURES,
         success_schema: SuccessSchema::Ticket,
     },
+    EndpointSpec {
+        id: EndpointId::RecordingTicket,
+        operation_id: "createRecordingTicket",
+        path: "/api/v1/rtmp/recordings/{recordingId}/ticket",
+        method: "POST",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: Some(RequestBody {
+            schema: RequestSchema::MediaTicket,
+            required: false,
+        }),
+        failures: RECORDING_TICKET_FAILURES,
+        success_schema: SuccessSchema::Ticket,
+    },
 ];
 
 pub(super) fn all() -> &'static [EndpointSpec] {
@@ -213,7 +239,7 @@ mod tests {
 
     #[test]
     fn registry_owns_the_protected_read_only_management_endpoints() {
-        assert_eq!(all().len(), 8);
+        assert_eq!(all().len(), 9);
         for (endpoint, expected) in all().iter().take(6).zip([
             (
                 EndpointId::Status,
@@ -274,9 +300,13 @@ mod tests {
             match_path("/api/v1/rtmp/vod/live/cam/archive/ticket"),
             Some(EndpointId::VodTicket)
         );
-        for endpoint in &all()[6..] {
+        assert_eq!(
+            match_path("/api/v1/rtmp/recordings/0123abcd/ticket"),
+            Some(EndpointId::RecordingTicket)
+        );
+        for (endpoint, placeholders) in all()[6..].iter().zip([3, 3, 1]) {
             assert_eq!(endpoint.method, "POST");
-            assert_eq!(endpoint.path.matches('{').count(), 3);
+            assert_eq!(endpoint.path.matches('{').count(), placeholders);
         }
         for path in [
             "/api/v1/rtmp/media/live/cam/ticket",
@@ -284,6 +314,10 @@ mod tests {
             "/api/v1/rtmp/media/live//main/ticket",
             "/api/v1/rtmp/media/live/cam/main/ticket/extra",
             "/api/v1/rtmp/vod/live/cam/archive/a/b/ticket",
+            "/api/v1/rtmp/recordings/ticket",
+            "/api/v1/rtmp/recordings//ticket",
+            "/api/v1/rtmp/recordings/0123abcd/content",
+            "/api/v1/rtmp/recordings/0123abcd/ticket/extra",
         ] {
             assert_eq!(match_path(path), None, "unexpected endpoint match: {path}");
         }
