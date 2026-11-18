@@ -331,6 +331,18 @@ the second apply activates when the request ends. `generation status` lists the 
 `retiredGenerations`, with their age and in-flight counts, and a full `max_retired_generations` shows
 `pendingApply`. `check` warns when one drains longer than `--max-retired-age` (default 1 h).
 
+**The daemon exited after its serving worker died.** Under the supervising master the serving worker
+(the child that owns the listeners, RTMP sessions and recorders) is not restarted by the master. If it is
+killed (`kill -9`, the OOM killer) or its control channel closes, the master fails closed: it terminates
+the process group, logs `supervised active worker lost (...)` and `supervised active worker <id> exited:
+signal: 9 (SIGKILL)` at error level, and exits with status 1 (`OxiRoute startup failed: supervised master
+failed during runtime`). Every connection ends, and `status`, `ready` and `events` stop answering until the
+daemon runs again. The packaged unit restarts it (`Restart=on-failure`, `RestartSec=5s`); any other service
+manager must do the same. Find the cause in `journalctl -u oxiroute` (the `exited:` line names the signal or
+exit code); open recordings are cut off where the worker died. Only a crashed candidate or
+retired worker during a reload is contained: the master rolls back to the active worker, or completes the
+reload, and the daemon keeps running.
+
 **A canary fails.** `check` reports `pool P canary failed (reason)` with reason `connect_failed`, `timeout`,
 `unexpected_status` or `protocol_error`: one failed run is a WARNING, two in a row a CRITICAL. The canary
 asks the pool the client's question, so a failing canary with all servers `healthy` means the health path is

@@ -843,3 +843,48 @@ fn retired_reports_are_due_a_second_after_the_last_one() {
 
     assert_eq!(reports.next_due(), Some(sent + Duration::from_secs(1)));
 }
+
+#[test]
+fn a_lost_active_worker_is_reported_with_its_exit_status_and_the_fail_closed_exit() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let instance_id = InstanceId::new("oxiroute-stage-3").expect("instance id");
+    let disconnect = [
+        MasterEvent::WorkerDisconnected {
+            role: WorkerRole::Active,
+            instance_id: instance_id.clone(),
+        },
+        MasterEvent::FailClosed {
+            phase: FailurePhase::Disconnected,
+        },
+    ];
+    let lines = failure_lines(&disconnect);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("fails closed and exits"), "{}", lines[0]);
+
+    let exit = [
+        MasterEvent::WorkerExited {
+            role: WorkerRole::Active,
+            instance_id,
+            status: std::process::ExitStatus::from_raw(9),
+        },
+        MasterEvent::Failed {
+            phase: FailurePhase::Disconnected,
+        },
+    ];
+    let lines = failure_lines(&exit);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("signal: 9"), "{}", lines[0]);
+}
+
+#[test]
+fn a_worker_exit_without_a_master_failure_is_not_reported_as_one() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let events = [MasterEvent::WorkerExited {
+        role: WorkerRole::Active,
+        instance_id: InstanceId::new("oxiroute-stage-3").expect("instance id"),
+        status: std::process::ExitStatus::from_raw(9),
+    }];
+    assert!(failure_lines(&events).is_empty());
+}

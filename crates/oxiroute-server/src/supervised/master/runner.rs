@@ -431,4 +431,37 @@ fn log_master_events(events: &[MasterEvent]) {
     {
         info!("supervised master events: {events:?}");
     }
+    for line in failure_lines(events) {
+        error!("{line}");
+    }
+}
+
+pub(super) fn failure_lines(events: &[MasterEvent]) -> Vec<String> {
+    let failing = events.iter().any(|event| {
+        matches!(
+            event,
+            MasterEvent::FailClosed { .. } | MasterEvent::Failed { .. }
+        )
+    });
+    if !failing {
+        return Vec::new();
+    }
+    events
+        .iter()
+        .filter_map(|event| match event {
+            MasterEvent::FailClosed { phase } => Some(format!(
+                "supervised active worker lost ({phase:?}): the master fails closed and exits \
+                 so the service manager restarts the daemon"
+            )),
+            MasterEvent::WorkerExited {
+                role: WorkerRole::Active,
+                instance_id,
+                status,
+            } => Some(format!(
+                "supervised active worker {} exited: {status}",
+                instance_id.as_str()
+            )),
+            _ => None,
+        })
+        .collect()
 }

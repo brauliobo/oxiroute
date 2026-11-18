@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{info, warn};
+use log::{error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{

@@ -25,6 +25,7 @@ oxiroute --output json topology
 | Configuration save returns `409` | Disk and active revisions | Another writer changed the authoritative file; reconcile instead of overwriting |
 | Configuration save returns `422` | `path` and `detail` of each diagnostic (the failing setting and rule), compositional flag | Draft or runtime preflight failed, or a compositional root cannot be flattened |
 | Configuration save says restart required | Runtime mode and `/config/listeners` diagnostic | A Unix listener kept its path but changed its filesystem mode; the new socket would need the path the running one owns, so only a process restart applies it. Other listener changes reload live |
+| The daemon exited and `status` is refused after a worker was killed | `journalctl -u oxiroute` for `supervised active worker lost` and `exited:` | The supervising master fails closed when its serving worker dies and exits non-zero; the service manager restarts it (`Restart=on-failure` in the packaged unit). See the [runbook](RUNBOOK.md#outage-playbook) |
 | Manual recorder button is disabled | Publisher, recorder phase, capability, observed codec | The requested operation is not safe or supported for this stream |
 | Import produces a report but no preview | Blocking diagnostic or deployment requirement | The source contains behavior that cannot be represented safely |
 | Metrics show large string counters | API shape | Decimal strings preserve exact `u64` values; do not parse through a JavaScript number |

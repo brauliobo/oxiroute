@@ -110,6 +110,14 @@ while UDP keeps the existing session on the retired generation and admits new se
 the candidate commits. A rejected candidate leaves the active worker and its listener ownership
 unchanged.
 
+The master supervises one serving worker and does not restart it. When the active worker exits outside a
+shutdown or replacement (a signal such as `SIGKILL`, a crash, or a closed control channel), the master
+terminates the worker's process group, logs `supervised active worker lost (<phase>)` and `supervised active
+worker <id> exited: <status>` at error level, and exits with status 1, so the service manager restarts the
+daemon (`Restart=on-failure` in the packaged unit). A crashed candidate during a reload is rolled back to the
+active worker and a crashed retired worker completes the reload; neither stops the daemon. This is fail-closed
+by design: a daemon whose listeners nothing serves is never left running.
+
 ## Idle behaviour
 
 An instance with no traffic does no periodic work and takes no wakeups of its own. The supervising master sleeps
