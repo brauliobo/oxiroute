@@ -141,31 +141,39 @@ async fn unix_listener_mode_change_is_applied_in_place_by_the_saved_configuratio
     assert_eq!(saved["restartRequired"], false);
     assert_eq!(saved["outcome"], "saved_pending_activation");
 
+    let status = wait_for_activation(management_address, &authorization, &active_revision).await;
+    assert_eq!(status["generation"]["degraded"], false);
+    assert_eq!(socket_mode(&socket_path), 0o660);
+    let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    server.shutdown();
+}
+
+async fn wait_for_activation(
+    management_address: std::net::SocketAddr,
+    authorization: &str,
+    active_revision: &serde_json::Value,
+) -> serde_json::Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let status = loop {
+    loop {
         let status = http_request(
             management_address,
             "GET",
             "/api/v1/generations",
-            &[("Authorization", &authorization)],
+            &[("Authorization", authorization)],
             &[],
         )
         .await
         .json();
-        if status["generation"]["activeRevision"] != active_revision {
-            break status;
+        if status["generation"]["activeRevision"] != *active_revision {
+            return status;
         }
         assert!(
             std::time::Instant::now() < deadline,
             "the saved mode did not activate"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    assert_eq!(status["generation"]["degraded"], false);
-    assert_eq!(socket_mode(&socket_path), 0o660);
-    let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
-    assert_eq!(ready.status, 200, "{}", ready.text());
-    server.shutdown();
+    }
 }
 
 fn socket_mode(path: &std::path::Path) -> u32 {
