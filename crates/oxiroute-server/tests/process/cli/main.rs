@@ -11,6 +11,7 @@ mod http_support;
 mod process_support;
 
 mod doctor;
+mod drain;
 mod follow;
 mod route;
 mod tls;

@@ -35,7 +35,8 @@ pub(crate) enum ServerCommand {
     },
     /// Show one server of each named pool.
     Show(ServerTarget),
-    /// Return a server to service.
+    /// Return a server to service; the opposite of `drain`.
+    #[command(visible_alias = "undrain")]
     Ready(ChangeTarget),
     /// Stop sending new requests to a server; running ones finish and health checks continue.
     Drain(ChangeTarget),

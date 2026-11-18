@@ -12,7 +12,8 @@ pub(crate) enum ListenerCommand {
         #[arg(value_parser = nonempty_target)]
         listener: String,
     },
-    /// Accept new connections on the listeners again.
+    /// Accept new connections on the listeners again; the opposite of `drain`.
+    #[command(visible_alias = "undrain")]
     Ready {
         /// Names of the listeners.
         #[arg(required = true, value_parser = nonempty_target)]

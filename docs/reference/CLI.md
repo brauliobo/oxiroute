@@ -150,7 +150,7 @@ body through, where `changed` counts the targets of the request.
 | Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
 | Contexts | `context list|add|use|remove|current` | Name daemons and their token sources and pick the one commands talk to (see "Contexts") |
 | Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
-| Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
+| Lifecycle | `generation status|reload|rollback|drain [--wait]` | Prepare, publish, revert, or drain generations; `drain --wait` waits for the traffic references up to `--timeout` |
 | Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt|history|rollback` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |
 | Events | `events list|follow` | Page through the bounded in-memory event ring, or follow its server-sent event stream with reconnect |
 | Audit | `audit list|status|tail` | Query and tail the redacted audit log of administrative actions |
@@ -196,7 +196,7 @@ response and are replayable, which are dispatched again to another server of the
 the caller. `--force` also cancels the requests that cannot move. `pool evacuate` drains every server of
 each pool, so there is no other server left in the pool: by default it only drains and reports the running
 requests as `no_destination`, and `--force` cuts them. The command prints the JSON report (`outcome`, `force`, `cancelledAndRedispatched`, `forced`, `leftRunning` by reason)
-and honours `--output`. `server ready` un-drains. Details and limits:
+and honours `--output`. `server ready` un-drains (`undrain` is an alias of `ready` for servers, pools and listeners). Details and limits:
 [runbook](../user/RUNBOOK.md#evacuate-a-server).
 
 ## `check`: monitoring exit codes

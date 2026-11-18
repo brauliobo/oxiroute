@@ -65,6 +65,11 @@ impl<'a> Context<'a> {
 
     /// A client that sends the management token wherever the endpoint needs one.
     pub(crate) fn client(&self) -> Result<Client, CliError> {
+        self.client_within(self.timeouts()?)
+    }
+
+    /// [`Self::client`] with other time limits, for a request the daemon answers only after a wait.
+    pub(crate) fn client_within(&self, timeouts: Timeouts) -> Result<Client, CliError> {
         let selected = self.selection()?;
         let endpoint = self.global.endpoint(&self.package, selected)?;
         let token = if endpoint.is_unix() {
@@ -72,7 +77,7 @@ impl<'a> Context<'a> {
         } else {
             self.global.token(&self.package, selected)?
         };
-        Ok(Client::new(endpoint, token, self.global.timeouts(selected)))
+        Ok(Client::new(endpoint, token, timeouts))
     }
 
     /// A client for the public probes, which never read the token file.

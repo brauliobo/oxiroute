@@ -12,7 +12,8 @@ pub(crate) enum PoolCommand {
         #[arg(value_parser = nonempty_target)]
         pool: String,
     },
-    /// Return every server of the pools to service.
+    /// Return every server of the pools to service; the opposite of `drain`.
+    #[command(visible_alias = "undrain")]
     Ready {
         /// Names of the pools.
         #[arg(required = true, value_parser = nonempty_target)]
