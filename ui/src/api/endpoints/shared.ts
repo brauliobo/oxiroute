@@ -1,6 +1,7 @@
 import type { ConfigDiagnostic, StartupOnlyChange } from '../../config'
 import { isConfigDiagnostic, isStartupOnlyChange } from '../../config'
-import { isRecord, safeInteger } from '../../valueGuards'
+import { arrayOf, isRecord, nullableSafeInteger, nullableString, safeInteger } from '../../valueGuards'
+import type { RestartRequired } from '../generated/controlPlane'
 
 export function isCountMap(value: unknown): value is Record<string, number> {
   return isRecord(value) && Object.values(value).every(safeInteger)
@@ -24,4 +25,9 @@ export function restartReasons(value: unknown): value is StartupOnlyChange[] {
 
 export function invalidPayload(source: string): never {
   throw new Error(`The ${source} API returned an invalid response payload.`)
+}
+
+export function isRestartRequired(value: unknown): value is RestartRequired {
+  return isRecord(value) && typeof value.required === 'boolean' && nullableString(value.candidateRevision) &&
+    nullableSafeInteger(value.since) && arrayOf(value.reasons, isStartupOnlyChange)
 }

@@ -1,4 +1,5 @@
 import { decimalString, integerInRange, isRecord, nullableSafeInteger, nullableString, safeInteger } from '../valueGuards'
+import { isRestartRequired } from './endpoints/shared'
 import type {
   ListenerInventoryResponse,
   MonitoringListener,
@@ -18,7 +19,8 @@ export function parseRuntimeStatus(value: unknown): RuntimeStatus {
     !statusComponents(value.components) || !statusCertificates(value.certificates) ||
     !auditStatus(value.audit) || !statusCapabilities(value.capabilities) ||
     !Array.isArray(value.listeners) || !value.listeners.every(monitoringListener) ||
-    !Array.isArray(value.tlsProfiles) || !value.tlsProfiles.every(statusTlsProfile)
+    !Array.isArray(value.tlsProfiles) || !value.tlsProfiles.every(statusTlsProfile) ||
+    !isRestartRequired(value.restartRequired)
   ) return invalidPayload('runtime status')
   return value as unknown as RuntimeStatus
 }

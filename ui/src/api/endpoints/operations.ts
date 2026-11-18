@@ -1,12 +1,18 @@
-import { isRecord, safeInteger } from '../../valueGuards'
+import { isRecord, isString, safeInteger } from '../../valueGuards'
 import { request } from '../transport'
+import type { RestartRequired } from '../generated/controlPlane'
 import type { AdministrativeState, HealthOverride, ServerTarget } from '../managementContracts'
-import { invalidPayload, isCountMap, mutationHeaders } from './shared'
+import { invalidPayload, isCountMap, isRestartRequired, mutationHeaders } from './shared'
 
 export interface MutationResponse {
   outcome: string
   changed?: number
+  activeReferences?: number
+  candidateRevision?: string
+  restartRequired?: RestartRequired
 }
+
+export const WEIGHT_RANGE = { min: 1, max: 100 } as const
 
 export interface DnsRefreshResult {
   pool: string
@@ -56,6 +62,12 @@ export async function setServerMaxConnections(
   targets: ServerTarget[], maxConnections: number | null, expectedActiveRevision: string, token: string,
 ): Promise<MutationResponse> {
   return putRevisionMutation('/api/v1/servers/max-connections', { targets, maxConnections }, expectedActiveRevision, token)
+}
+
+export async function setServerWeight(
+  targets: ServerTarget[], weight: number | null, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return putRevisionMutation('/api/v1/servers/weight', { targets, weight }, expectedActiveRevision, token)
 }
 
 export interface EvacuationResponse {
@@ -138,9 +150,18 @@ async function putRevisionMutation(
 
 function parseMutationResponse(value: unknown): MutationResponse {
   if (!isRecord(value) || typeof value.outcome !== 'string' ||
-    (value.changed !== undefined && !safeInteger(value.changed))
+    (value.changed !== undefined && !safeInteger(value.changed)) ||
+    (value.activeReferences !== undefined && !safeInteger(value.activeReferences)) ||
+    (value.candidateRevision !== undefined && !isString(value.candidateRevision)) ||
+    (value.restartRequired !== undefined && !isRestartRequired(value.restartRequired))
   ) return invalidPayload('management mutation')
-  return { outcome: value.outcome, ...(value.changed === undefined ? {} : { changed: value.changed }) }
+  return {
+    outcome: value.outcome,
+    ...(value.changed === undefined ? {} : { changed: value.changed }),
+    ...(value.activeReferences === undefined ? {} : { activeReferences: value.activeReferences }),
+    ...(value.candidateRevision === undefined ? {} : { candidateRevision: value.candidateRevision }),
+    ...(value.restartRequired === undefined ? {} : { restartRequired: value.restartRequired }),
+  }
 }
 
 function parseEvacuationResponse(value: unknown): EvacuationResponse {

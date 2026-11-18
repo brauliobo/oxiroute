@@ -1,5 +1,5 @@
-import { isRecord, nullableString, safeInteger } from '../../../valueGuards'
-import { invalidPayload } from '../shared'
+import { isRecord, nullableSafeInteger, nullableString, safeInteger } from '../../../valueGuards'
+import { invalidPayload, isRestartRequired } from '../shared'
 import type { GenerationResponse, GenerationStatus } from './types'
 
 export function parseGenerationResponse(value: unknown): GenerationResponse {
@@ -18,5 +18,10 @@ function generationStatus(value: unknown): value is GenerationStatus {
     nullableRevision(value.quarantinedRevision) && typeof value.activeAccepting === 'boolean' &&
     typeof value.degraded === 'boolean' && nullableString(value.lastFailure) &&
     safeInteger(value.prepares) && safeInteger(value.activations) && safeInteger(value.failures) &&
-    safeInteger(value.rollbacks)
+    safeInteger(value.rollbacks) && isRestartRequired(value.restartRequired) && pendingApply(value.pendingApply)
+}
+
+function pendingApply(value: unknown): boolean {
+  return value === null || (isRecord(value) && typeof value.revision === 'string' &&
+    typeof value.reason === 'string' && nullableSafeInteger(value.connections))
 }
