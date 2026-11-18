@@ -1,9 +1,12 @@
-use std::io::{BufReader, Write as _};
+use std::{
+    fmt::Write as _,
+    io::{BufReader, Write as _},
+};
 
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use super::{Endpoint, Response, endpoint::connect_io};
+use super::{Endpoint, Response};
 use crate::cli::error::CliError;
 
 pub(crate) struct Client {
@@ -82,34 +85,60 @@ impl Client {
         headers: &[(&str, &str)],
         authenticated: bool,
     ) -> Result<Response, CliError> {
+        self.exchange(method, path, body, headers, authenticated)?
+            .into_result()
+    }
+
+    /// The answer whatever its status, for the probes whose failure statuses carry a body worth showing.
+    pub(crate) fn get_unchecked(&self, path: &str) -> Result<Response, CliError> {
+        self.exchange("GET", path, &[], &[], false)
+    }
+
+    fn exchange(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        headers: &[(&str, &str)],
+        authenticated: bool,
+    ) -> Result<Response, CliError> {
         if !path.starts_with('/') || path.contains(['\r', '\n']) {
             return Err(CliError::Local("request path is invalid".into()));
         }
         let token = if authenticated && !self.endpoint.is_unix() {
             Some(self.token.as_deref().ok_or_else(|| {
-                CliError::Local("management token file is missing or unreadable".into())
+                CliError::Local(
+                    "no management token file: pass --token-file, set OXIROUTE_MANAGEMENT_TOKEN_FILE, \
+                     or put it in /etc/oxiroute/management.token"
+                        .into(),
+                )
             })?)
         } else {
             None
         };
-        let mut stream = self.endpoint.connect()?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n", self.endpoint.host(), body.len()).map_err(connect_io)?;
+        let mut head = Zeroizing::new(format!(
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
+            self.endpoint.host(),
+            body.len()
+        ));
         if !body.is_empty() {
-            stream
-                .write_all(b"Content-Type: application/json\r\n")
-                .map_err(connect_io)?;
+            head.push_str("Content-Type: application/json\r\n");
         }
         if let Some(token) = token {
-            write!(stream, "Authorization: Bearer {token}\r\n").map_err(connect_io)?;
+            let _ = write!(head, "Authorization: Bearer {token}\r\n");
         }
         for (name, value) in headers {
             if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
                 return Err(CliError::Local("request header is invalid".into()));
             }
-            write!(stream, "{name}: {value}\r\n").map_err(connect_io)?;
+            let _ = write!(head, "{name}: {value}\r\n");
         }
-        stream.write_all(b"\r\n").map_err(connect_io)?;
-        stream.write_all(body).map_err(connect_io)?;
-        Response::read(BufReader::new(stream))?.into_result()
+        head.push_str("\r\n");
+        let mut stream = self.endpoint.connect()?;
+        stream
+            .write_all(head.as_bytes())
+            .and_then(|()| stream.write_all(body))
+            .map_err(|error| self.endpoint.transport(CliError::Io(error)))?;
+        Response::read(BufReader::new(stream)).map_err(|error| self.endpoint.transport(error))
     }
 }

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::{CheckArgs, EXIT_UNKNOWN};
 use crate::{
-    cli::{context::Context, global::Output, net::Endpoint},
+    cli::{context::Context, global::Output, net::Endpoint, render},
     observability::status::{
         check::{Finding, Verdict, plugin_line},
         summary::{Severity, StatusSummary},
@@ -68,11 +68,12 @@ pub(super) fn assess(
 pub(in crate::cli) fn run(context: &Context<'_>, args: &CheckArgs) -> ExitCode {
     let report = collect(context, args).unwrap_or_else(|reason| Report::unknown(&reason));
     if !context.quiet() {
-        if args.json || matches!(context.output(), Output::Json) {
-            println!("{}", report.json);
+        let text = if args.json || matches!(context.output(), Output::Json) {
+            report.json.to_string()
         } else {
-            println!("{}", report.line);
-        }
+            report.line.clone()
+        };
+        drop(render::emit(&format!("{text}\n")));
     }
     ExitCode::from(report.code)
 }

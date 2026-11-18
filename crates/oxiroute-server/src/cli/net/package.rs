@@ -87,7 +87,7 @@ impl Package {
     fn env_value(&self, key: &str) -> Result<Option<String>, CliError> {
         let bytes = match read_regular_file(&self.env_file, MAX_PACKAGE_ENV_BYTES, false) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.is_missing() => return Ok(None),
             Err(error) => return Err(env_error(&self.env_file, &error)),
         };
         let contents = std::str::from_utf8(&bytes)

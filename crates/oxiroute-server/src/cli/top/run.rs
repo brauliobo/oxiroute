@@ -37,7 +37,7 @@ impl Execute for TopArgs {
                         }
                     })
                     .collect::<Vec<_>>();
-                render::emit(&once::render(&first, &views, &sorts, &self.filter));
+                render::emit(&once::render(&first, &views, &sorts, &self.filter))?;
             }
             return Ok(());
         }

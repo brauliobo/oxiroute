@@ -20,8 +20,7 @@ use crate::cli::{
 
 impl Execute for ImportCommand {
     fn run(&self, _: &Context<'_>) -> Result<(), CliError> {
-        render::emit(&self.render().map_err(CliError::startup)?);
-        Ok(())
+        render::emit(&self.render().map_err(CliError::local)?)
     }
 }
 

@@ -17,6 +17,7 @@ use crate::cli::{
     error::CliError,
     fs::{MAX_FILE_BYTES, read_regular_file},
     net::{Client, Response},
+    render,
 };
 
 const SLICE: Duration = Duration::from_millis(100);
@@ -50,10 +51,19 @@ pub(super) fn list(client: &Client, pool: Option<&str>) -> Result<Response, CliE
 fn registration_body(args: &RegisterArgs) -> Result<Value, CliError> {
     let metadata = match &args.metadata_file {
         Some(path) => serde_json::from_slice(
-            &read_regular_file(path, MAX_FILE_BYTES, false)
-                .map_err(|_| CliError::Local("metadata file could not be read securely".into()))?,
+            &read_regular_file(path, MAX_FILE_BYTES, false).map_err(|error| {
+                CliError::Local(format!(
+                    "cannot read metadata file {}: {error}",
+                    path.display()
+                ))
+            })?,
         )
-        .map_err(|_| CliError::Local("metadata file must contain JSON".into()))?,
+        .map_err(|error| {
+            CliError::Local(format!(
+                "metadata file {} must contain JSON: {error}",
+                path.display()
+            ))
+        })?,
         None => Value::Null,
     };
     let labels = args.labels.iter().cloned().collect::<BTreeMap<_, _>>();
@@ -115,7 +125,9 @@ pub(super) fn keep_registered(
         match client.json("POST", &format!("{path}/heartbeat"), &json!({}), &[]) {
             Ok(_) => {}
             Err(CliError::Status(404, _)) => drop(register(client, args)?),
-            Err(error) => eprintln!("oxiroute: heartbeat failed, retrying: {error}"),
+            Err(error) => {
+                render::diagnose(&format!("oxiroute: heartbeat failed, retrying: {error}"));
+            }
         }
     }
     client.json(

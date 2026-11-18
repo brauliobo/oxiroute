@@ -27,10 +27,8 @@ impl Execute for RegistryCommand {
                     read,
                 },
         } = self;
-        let secret = create_token(tokens_file, id, pools, name_prefix.as_deref(), *read)
-            .map_err(CliError::startup)?;
-        render::emit(&format!("{secret}\n"));
-        Ok(())
+        let secret = create_token(tokens_file, id, pools, name_prefix.as_deref(), *read)?;
+        render::emit(&format!("{secret}\n"))
     }
 }
 

@@ -1,20 +1,23 @@
+use std::fmt::Write as _;
+
 use serde_json::Value;
 
 use super::plain;
 
-pub(super) fn print(value: &Value) {
+pub(super) fn render(value: &Value) -> String {
+    let mut text = String::new();
     let Some(object) = value.as_object() else {
-        plain::print(value);
-        return;
+        plain::write_value(&mut text, value);
+        return text;
     };
     let Some((_, rows)) = object
         .iter()
         .find_map(|(name, value)| value.as_array().map(|rows| (name, rows)))
     else {
         for (name, value) in object {
-            println!("{name}\t{}", cell(value));
+            let _ = writeln!(text, "{name}\t{}", cell(value));
         }
-        return;
+        return text;
     };
     let mut columns = Vec::<&str>::new();
     for row in rows {
@@ -27,19 +30,22 @@ pub(super) fn print(value: &Value) {
         }
     }
     if columns.is_empty() {
-        rows.iter().for_each(plain::print);
-        return;
+        for row in rows {
+            plain::write_value(&mut text, row);
+        }
+        return text;
     }
-    println!("{}", columns.join("\t"));
+    let _ = writeln!(text, "{}", columns.join("\t"));
     for row in rows {
         if let Some(row) = row.as_object() {
             let values = columns
                 .iter()
                 .map(|column| row.get(*column).map_or_else(String::new, cell))
                 .collect::<Vec<_>>();
-            println!("{}", values.join("\t"));
+            let _ = writeln!(text, "{}", values.join("\t"));
         }
     }
+    text
 }
 
 fn cell(value: &Value) -> String {

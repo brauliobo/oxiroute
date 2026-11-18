@@ -2,11 +2,11 @@ use std::io::{BufRead, Read as _};
 
 use serde_json::{Value, json};
 
-use super::endpoint::connect_io;
 use crate::{cli::error::CliError, config::coordinator::RejectionDiagnostic};
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_REPORTED_DIAGNOSTICS: usize = 5;
 
 #[derive(Clone, Copy)]
 enum BodyFraming {
@@ -112,7 +112,7 @@ fn read_http_head(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
     let mut head = Vec::new();
     loop {
         let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line).map_err(connect_io)?;
+        let read = reader.read_until(b'\n', &mut line).map_err(CliError::Io)?;
         if read == 0 || !line.ends_with(b"\r\n") {
             return Err(CliError::Remote("truncated HTTP response headers".into()));
         }
@@ -144,7 +144,7 @@ fn read_http_body(reader: &mut impl BufRead, framing: BodyFraming) -> Result<Vec
             reader
                 .take(u64::try_from(MAX_RESPONSE_BYTES + 1).expect("response bound fits u64"))
                 .read_to_end(&mut body)
-                .map_err(connect_io)?;
+                .map_err(CliError::Io)?;
             if body.len() > MAX_RESPONSE_BYTES {
                 return Err(CliError::Remote(
                     "response exceeded the client limit".into(),
@@ -205,7 +205,7 @@ fn read_chunked_body(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
 
 fn read_http_line(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
     let mut line = Vec::new();
-    reader.read_until(b'\n', &mut line).map_err(connect_io)?;
+    reader.read_until(b'\n', &mut line).map_err(CliError::Io)?;
     if !line.ends_with(b"\r\n") || line.len() > MAX_HEADER_BYTES {
         return Err(CliError::Remote("invalid HTTP framing line".into()));
     }
@@ -246,31 +246,49 @@ impl Response {
     }
 
     pub(crate) fn into_result(self) -> Result<Self, CliError> {
-        if (200..300).contains(&self.status) {
-            Ok(self)
-        } else {
-            let value = serde_json::from_slice::<Value>(&self.body).ok();
-            let code = value
-                .as_ref()
-                .and_then(|value| value.pointer("/error/code"))
-                .and_then(Value::as_str)
-                .map_or_else(|| format!("http_{}", self.status), str::to_owned);
-            let code = value
-                .as_ref()
-                .and_then(|value| value.pointer("/diagnostics/0"))
-                .and_then(|diagnostic| {
-                    serde_json::from_value::<RejectionDiagnostic>(diagnostic.clone()).ok()
-                })
-                .map_or(code.clone(), |diagnostic| {
-                    format!("{code}: {}", diagnostic.summary())
-                });
-            Err(CliError::Status(self.status, code))
+        if self.is_success() {
+            return Ok(self);
         }
+        let value = serde_json::from_slice::<Value>(&self.body).ok();
+        let pointer = |path| value.as_ref().and_then(|value| value.pointer(path));
+        let mut reasons = pointer("/diagnostics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|diagnostic| {
+                serde_json::from_value::<RejectionDiagnostic>(diagnostic.clone()).ok()
+            })
+            .map(|diagnostic| diagnostic.summary())
+            .take(MAX_REPORTED_DIAGNOSTICS);
+        let mut text = pointer("/error/code")
+            .and_then(Value::as_str)
+            .map_or_else(|| format!("http_{}", self.status), str::to_owned);
+        match reasons.next() {
+            Some(first) => {
+                text = format!("{text}: {first}");
+                for reason in reasons {
+                    text = format!("{text}\n  {reason}");
+                }
+            }
+            None => {
+                if let Some(message) = pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .filter(|message| !message.is_empty())
+                {
+                    text = format!("{text}: {message}");
+                }
+            }
+        }
+        Err(CliError::Status(self.status, text))
     }
 
     pub(crate) fn json(&self) -> Result<Value, CliError> {
         serde_json::from_slice(&self.body)
             .map_err(|_| CliError::Remote("endpoint returned invalid JSON".into()))
+    }
+
+    pub(crate) fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
     }
 
     pub(crate) fn is_json(&self) -> bool {

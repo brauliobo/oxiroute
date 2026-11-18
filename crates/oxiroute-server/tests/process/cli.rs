@@ -12,6 +12,7 @@ mod process_support;
 
 use std::{
     net::SocketAddr,
+    os::unix::fs::PermissionsExt as _,
     path::PathBuf,
     process::{Command, Output},
 };
@@ -221,5 +222,100 @@ async fn the_endpoint_environment_variable_replaces_the_flag() {
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).expect("JSON")["pools"][0]["name"],
         "farm"
+    );
+}
+
+#[tokio::test]
+async fn a_token_the_daemon_does_not_know_is_an_authentication_failure() {
+    let daemon = Daemon::start().await;
+    let other = daemon.token_file.with_file_name("other.token");
+    std::fs::write(&other, format!("{}\n", "f".repeat(64))).expect("token");
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o600)).expect("mode");
+    let output = cli_command()
+        .args([
+            "--endpoint",
+            &daemon.endpoint(),
+            "pool",
+            "list",
+            "--token-file",
+        ])
+        .arg(&other)
+        .output()
+        .expect("oxiroute CLI");
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(message.starts_with("oxiroute: "), "{message}");
+    assert!(message.contains("HTTP 401"), "{message}");
+    assert!(message.contains("--token-file"), "{message}");
+    assert!(!message.contains(&"f".repeat(64)));
+}
+
+#[tokio::test]
+async fn ready_on_a_draining_daemon_prints_the_body_and_exits_with_the_remote_category() {
+    let daemon = Daemon::start().await;
+    let ready = daemon.run(&["--output", "json", "ready"]);
+    assert!(ready.status.success(), "{}", stderr(&ready));
+
+    assert!(daemon.run(&["drain"]).status.success());
+    let draining = daemon.run(&["--output", "json", "ready"]);
+    assert_eq!(draining.status.code(), Some(8), "{}", stderr(&draining));
+    let body = serde_json::from_slice::<Value>(&draining.stdout).expect("the readiness body");
+    assert_eq!(body["ready"], false, "{body}");
+    assert!(
+        stderr(&draining).contains("HTTP 503"),
+        "{}",
+        stderr(&draining)
+    );
+}
+
+#[tokio::test]
+async fn quiet_still_reports_a_missing_resource_on_stderr() {
+    let daemon = Daemon::start().await;
+    let output = daemon.run(&["--quiet", "pool", "show", "nosuch"]);
+    assert_eq!(output.status.code(), Some(6));
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr(&output).starts_with("oxiroute: management endpoint returned HTTP 404"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test]
+async fn a_reader_that_stops_early_ends_the_command_without_a_panic() {
+    let daemon = Daemon::start().await;
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+    let output = cli_command()
+        .args(daemon.connection())
+        .args(["pool", "list"])
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("oxiroute CLI");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stderr(&output).is_empty(), "{}", stderr(&output));
+}
+
+#[tokio::test]
+async fn a_rejected_configuration_names_the_failing_setting() {
+    let daemon = Daemon::start().await;
+    let directory = tempfile::TempDir::new().expect("directory");
+    let rejected = directory.path().join("rejected.json");
+    std::fs::write(
+        &rejected,
+        r#"{"version":1,"upstream_pools":[{"name":"farm","servers":[]}],"listeners":[{"name":"x","bind":"nonsense"}]}"#,
+    )
+    .expect("config");
+    let output = daemon.run(&["config", "validate", rejected.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.starts_with("oxiroute: management endpoint returned HTTP 4"),
+        "{message}"
+    );
+    assert!(
+        message.contains("E_INVALID_FIELD") && message.contains("ListenerBind"),
+        "{message}"
     );
 }

@@ -14,9 +14,11 @@ pub(crate) enum CliError {
     Startup(String),
     Local(String),
     Connect(String),
+    Io(std::io::Error),
     Status(u16, String),
     Remote(String),
     Unsupported(&'static str),
+    OutputClosed,
 }
 
 impl CliError {
@@ -24,23 +26,21 @@ impl CliError {
         Self::Startup(error.to_string())
     }
 
+    pub(super) fn local(error: impl fmt::Display) -> Self {
+        Self::Local(error.to_string())
+    }
+
     pub(super) const fn exit_code(&self) -> u8 {
         match self {
+            Self::OutputClosed => 0,
             Self::Startup(_) => EXIT_STARTUP,
             Self::Local(_) => EXIT_LOCAL,
-            Self::Connect(_) => EXIT_CONNECT,
+            Self::Connect(_) | Self::Io(_) => EXIT_CONNECT,
             Self::Status(401 | 403, _) => EXIT_AUTH,
             Self::Status(404, _) => EXIT_NOT_FOUND,
             Self::Status(409 | 412, _) => EXIT_CONFLICT,
             Self::Status(_, _) | Self::Remote(_) => EXIT_REMOTE,
             Self::Unsupported(_) => EXIT_UNSUPPORTED,
-        }
-    }
-
-    pub(super) const fn prefix(&self) -> &'static str {
-        match self {
-            Self::Startup(_) => "OxiRoute startup failed",
-            _ => "oxiroute",
         }
     }
 }
@@ -52,11 +52,25 @@ impl fmt::Display for CliError {
             | Self::Local(message)
             | Self::Connect(message)
             | Self::Remote(message) => formatter.write_str(message),
-            Self::Status(status, code) => write!(
-                formatter,
-                "management endpoint returned HTTP {status} ({code})"
-            ),
+            Self::Status(status, code) => {
+                write!(
+                    formatter,
+                    "management endpoint returned HTTP {status} ({code})"
+                )?;
+                match status {
+                    401 => formatter.write_str(
+                        "; the token was not accepted: check that --token-file or \
+                         OXIROUTE_MANAGEMENT_TOKEN_FILE names the token this daemon runs with",
+                    ),
+                    403 => formatter.write_str(
+                        "; the token is valid but does not allow this operation: check its scope",
+                    ),
+                    _ => Ok(()),
+                }
+            }
+            Self::Io(error) => error.fmt(formatter),
             Self::Unsupported(message) => write!(formatter, "unsupported: {message}"),
+            Self::OutputClosed => formatter.write_str("output closed"),
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     io::{self, BufReader, Write as _},
     net::{TcpStream, ToSocketAddrs as _},
     os::unix::net::UnixStream,
@@ -8,6 +9,9 @@ use std::{
 
 use super::Response;
 use crate::cli::error::CliError;
+
+const ENDPOINT_HINT: &str = "the management endpoint is `management { bind }` in the configuration; \
+pass it with --endpoint or OXIROUTE_ENDPOINT";
 
 pub(crate) enum Endpoint {
     Tcp { authority: String, address: String },
@@ -68,8 +72,8 @@ impl Endpoint {
             stream,
             "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
         )
-        .map_err(connect_io)?;
-        Response::read(BufReader::new(stream))
+        .map_err(|error| self.transport(CliError::Io(error)))?;
+        Response::read(BufReader::new(stream)).map_err(|error| self.transport(error))
     }
 
     /// Registry sockets authorize by file permission, so no token is read or sent.
@@ -79,29 +83,45 @@ impl Endpoint {
 
     pub(super) fn connect(&self) -> Result<Stream, CliError> {
         let timeout = Some(Duration::from_secs(10));
-        let connect = |error: io::Error| CliError::Connect(error.to_string());
+        let configure = |error: io::Error| self.transport(CliError::Io(error));
         match self {
             Self::Tcp { address, .. } => {
                 let address = address
                     .to_socket_addrs()
-                    .map_err(|_| CliError::Connect("endpoint could not be resolved".into()))?
-                    .next()
+                    .ok()
+                    .and_then(|mut addresses| addresses.next())
                     .ok_or_else(|| {
-                        CliError::Connect("endpoint did not resolve to an address".into())
+                        CliError::Connect(format!(
+                            "cannot resolve {self}: the host does not resolve to an address; {ENDPOINT_HINT}"
+                        ))
                     })?;
                 let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
-                stream.set_read_timeout(timeout).map_err(connect)?;
-                stream.set_write_timeout(timeout).map_err(connect)?;
+                    .map_err(|error| self.refused(&error))?;
+                stream.set_read_timeout(timeout).map_err(configure)?;
+                stream.set_write_timeout(timeout).map_err(configure)?;
                 Ok(Stream::Tcp(stream))
             }
             Self::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
-                stream.set_read_timeout(timeout).map_err(connect)?;
-                stream.set_write_timeout(timeout).map_err(connect)?;
+                let stream = UnixStream::connect(path).map_err(|error| self.refused(&error))?;
+                stream.set_read_timeout(timeout).map_err(configure)?;
+                stream.set_write_timeout(timeout).map_err(configure)?;
                 Ok(Stream::Unix(stream))
             }
+        }
+    }
+
+    fn refused(&self, error: &io::Error) -> CliError {
+        CliError::Connect(format!(
+            "cannot connect to {self}: {error}; is the daemon running? {ENDPOINT_HINT}"
+        ))
+    }
+
+    pub(super) fn transport(&self, error: CliError) -> CliError {
+        match error {
+            CliError::Io(error) => {
+                CliError::Connect(format!("{self} stopped answering the request: {error}"))
+            }
+            other => other,
         }
     }
 
@@ -143,6 +163,11 @@ impl io::Write for Stream {
     }
 }
 
-pub(super) fn connect_io(_: io::Error) -> CliError {
-    CliError::Connect("endpoint I/O failed".into())
+impl fmt::Display for Endpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp { authority, .. } => write!(formatter, "http://{authority}"),
+            Self::Unix(path) => write!(formatter, "unix:{}", path.display()),
+        }
+    }
 }

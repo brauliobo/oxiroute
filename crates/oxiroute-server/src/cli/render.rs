@@ -7,23 +7,38 @@ use serde_json::Value;
 
 use super::{error::CliError, global::Output, net::Response};
 
-pub(super) fn emit(text: &str) {
-    print!("{text}");
+pub(super) fn emit(text: &str) -> Result<(), CliError> {
+    emit_bytes(text.as_bytes())
+}
+
+fn emit_bytes(bytes: &[u8]) -> Result<(), CliError> {
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(bytes)
+        .and_then(|()| stdout.flush())
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::BrokenPipe => CliError::OutputClosed,
+            _ => CliError::Local(format!("cannot write to standard output: {error}")),
+        })
+}
+
+pub(super) fn diagnose(line: &str) {
+    let _ = writeln!(io::stderr().lock(), "{line}");
 }
 
 pub(super) fn print_value(value: &Value, output: Output, quiet: bool) -> Result<(), CliError> {
     if quiet {
         return Ok(());
     }
-    match output {
-        Output::Json => println!(
-            "{}",
-            serde_json::to_string(value).map_err(|error| CliError::Local(error.to_string()))?
-        ),
-        Output::Table => table::print(value),
-        Output::Plain => plain::print(value),
-    }
-    Ok(())
+    let text = match output {
+        Output::Json => {
+            let json = serde_json::to_string(value).map_err(CliError::local)?;
+            format!("{json}\n")
+        }
+        Output::Table => table::render(value),
+        Output::Plain => plain::render(value),
+    };
+    emit(&text)
 }
 
 /// `--output json` of a response that needs no selection: the body the server wrote, after a syntax check, without
@@ -33,9 +48,5 @@ pub(super) fn print_json_body(response: &Response, quiet: bool) -> Result<(), Cl
     if quiet {
         return Ok(());
     }
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(body)
-        .and_then(|()| stdout.write_all(b"\n"))
-        .map_err(|error| CliError::Local(error.to_string()))
+    emit_bytes(&[body, b"\n"].concat())
 }

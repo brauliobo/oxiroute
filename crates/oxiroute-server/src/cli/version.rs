@@ -12,7 +12,6 @@ pub(crate) struct VersionArgs;
 
 impl Execute for VersionArgs {
     fn run(&self, _: &Context<'_>) -> Result<(), CliError> {
-        render::emit(&format!("{BUILD_VERSION}\n"));
-        Ok(())
+        render::emit(&format!("{BUILD_VERSION}\n"))
     }
 }

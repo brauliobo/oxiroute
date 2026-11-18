@@ -187,9 +187,11 @@ fn invalid_token_permissions_are_rejected_without_exposing_contents() {
     let expected = "0123456789abcdefghijklmnopqrstuv";
     std::fs::write(&path, expected).expect("token");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
-    let error = read_token(&path).expect_err("insecure mode");
-    assert!(error.to_string().contains("could not be read securely"));
-    assert!(!error.to_string().contains(expected));
+    let message = read_token(&path).expect_err("insecure mode").to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    assert!(message.contains("mode 0644"), "{message}");
+    assert!(message.contains("0400 or 0600"), "{message}");
+    assert!(!message.contains(expected));
 }
 
 #[test]
@@ -201,9 +203,11 @@ fn authenticated_requests_report_a_missing_token_before_connecting() {
     let error = client
         .request("GET", "/api/v1/status", &[], &[], true)
         .expect_err("missing token");
-    assert_eq!(
-        error.to_string(),
-        "management token file is missing or unreadable"
+    let message = error.to_string();
+    assert!(message.contains("no management token file"), "{message}");
+    assert!(
+        message.contains("OXIROUTE_MANAGEMENT_TOKEN_FILE"),
+        "{message}"
     );
 }
 
@@ -223,4 +227,79 @@ fn unix_endpoints_need_an_absolute_path() {
         Endpoint::parse("unix:/run/oxiroute/read.sock").is_ok_and(|endpoint| endpoint.is_unix())
     );
     assert!(Endpoint::parse("unix:relative.sock").is_err());
+}
+
+#[test]
+fn token_errors_name_the_path_and_the_requirement() {
+    let directory = tempfile::TempDir::new().expect("directory");
+    let message = |path: &std::path::Path| read_token(path).expect_err("refused").to_string();
+    let requirement =
+        "regular file with mode 0400 or 0600 holding 32 to 512 visible ASCII characters";
+
+    let missing = directory.path().join("missing.token");
+    let text = message(&missing);
+    assert!(text.contains(&missing.display().to_string()), "{text}");
+    assert!(text.contains("No such file or directory"), "{text}");
+    assert!(text.contains(requirement), "{text}");
+
+    let short = directory.path().join("short.token");
+    std::fs::write(&short, "secret").expect("token");
+    std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o600)).expect("mode");
+    let text = message(&short);
+    assert!(text.contains("token of 6 characters"), "{text}");
+    assert!(!text.contains("secret"), "{text}");
+
+    let link = directory.path().join("link.token");
+    std::os::unix::fs::symlink(&short, &link).expect("symlink");
+    assert!(message(&link).contains("symbolic link"));
+    assert!(message(directory.path()).contains("not a regular file"));
+}
+
+#[test]
+fn authorization_failures_say_what_to_check() {
+    let unauthorized = CliError::Status(401, "unauthorized".into()).to_string();
+    assert!(unauthorized.contains("--token-file"), "{unauthorized}");
+    assert!(
+        unauthorized.contains("OXIROUTE_MANAGEMENT_TOKEN_FILE"),
+        "{unauthorized}"
+    );
+    let forbidden = CliError::Status(403, "forbidden".into()).to_string();
+    assert!(forbidden.contains("scope"), "{forbidden}");
+}
+
+#[test]
+fn rejections_list_every_diagnostic_and_fall_back_to_the_message() {
+    let rejected = Response {
+        status: 422,
+        content_type: "application/json".into(),
+        body: br#"{"error":{"code":"config_rejected"},"diagnostics":[
+            {"code":"E_INVALID_VALUE","path":"/upstream_pools/farm","detail":"duplicate endpoint"},
+            {"code":"E_SYNTAX","line":3,"message":"unexpected token"}]}"#
+            .to_vec(),
+    };
+    let Err(CliError::Status(_, text)) = rejected.into_result() else {
+        panic!("expected failed response")
+    };
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].starts_with("config_rejected: E_INVALID_VALUE"),
+        "{text}"
+    );
+    assert!(lines[0].contains("/upstream_pools/farm"), "{text}");
+    assert!(
+        lines[1].contains("E_SYNTAX") && lines[1].contains("line 3"),
+        "{text}"
+    );
+
+    let plain = Response {
+        status: 400,
+        content_type: "application/json".into(),
+        body: br#"{"error":{"code":"bad_request","message":"the request body is not JSON"}}"#
+            .to_vec(),
+    };
+    let Err(CliError::Status(_, text)) = plain.into_result() else {
+        panic!("expected failed response")
+    };
+    assert_eq!(text, "bad_request: the request body is not JSON");
 }

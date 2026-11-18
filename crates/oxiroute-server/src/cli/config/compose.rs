@@ -11,11 +11,11 @@ pub(super) fn compose(paths: &[PathBuf], format: ConfigFormat) -> Result<String,
     let mut configs = Vec::with_capacity(paths.len());
     for path in paths {
         ensure_readable_config(path)?;
-        let coordinator = CanonicalConfigCoordinator::new(path).map_err(CliError::startup)?;
+        let coordinator = CanonicalConfigCoordinator::new(path).map_err(CliError::local)?;
         let document = match coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
             ConfigLoadOutcome::Rejected(rejection) => {
-                return Err(CliError::startup(format!(
+                return Err(CliError::local(format!(
                     "`{}`: {}",
                     path.display(),
                     rejection.message()
@@ -24,7 +24,6 @@ pub(super) fn compose(paths: &[PathBuf], format: ConfigFormat) -> Result<String,
         };
         configs.push(document.validated_config.to_draft());
     }
-    let composed =
-        oxiroute_config::compose_validated_configs(configs).map_err(CliError::startup)?;
-    render_config(format, &composed).map_err(CliError::startup)
+    let composed = oxiroute_config::compose_validated_configs(configs).map_err(CliError::local)?;
+    render_config(format, &composed).map_err(CliError::local)
 }

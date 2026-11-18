@@ -14,14 +14,8 @@ use crate::cli::{
 impl Execute for ConfigCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
-            Self::Check { config } => {
-                render::emit(&check::report(config)?);
-                Ok(())
-            }
-            Self::Compose { format, configs } => {
-                render::emit(&compose(configs, (*format).into())?);
-                Ok(())
-            }
+            Self::Check { config } => render::emit(&check::report(config)?),
+            Self::Compose { format, configs } => render::emit(&compose(configs, (*format).into())?),
             Self::Get => context.show("/api/v1/config"),
             Self::Validate { file } => validate(context, file),
             Self::Apply { file } => apply(context, file),
