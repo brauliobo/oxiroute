@@ -1,9 +1,5 @@
 {
-  "HaproxyStatsDashboard.vue": 2,
-  "RtmpClientPanel.vue": 2,
-  "RtmpRecorderPanel.vue": 1,
   "StringListField.vue": 3,
-  "TopologyView.vue": 3,
   "configuration/CachePredicateRows.vue": 3,
   "configuration/CacheStoreEditor.vue": 14,
   "configuration/CertificateEditor.vue": 20,

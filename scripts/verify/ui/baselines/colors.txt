@@ -1,9 +1,5 @@
 2 ui/src/ConfigurationWorkspace.vue
-31 ui/src/HaproxyStatsDashboard.vue
-21 ui/src/RtmpClientPanel.vue
-22 ui/src/RtmpRecorderPanel.vue
 11 ui/src/StringListField.vue
-50 ui/src/TopologyView.vue
 9 ui/src/configuration/NumberListField.vue
 2 ui/src/configuration/UpstreamPoolEditor.vue
 30 ui/src/configuration/editor.css
@@ -23,6 +19,3 @@
 13 ui/src/configuration/workspace/fields.css
 1 ui/src/configuration/workspace/output.css
 5 ui/src/configuration/workspace/panels.css
-65 ui/src/overview/MonitoringOverview.css
-16 ui/src/overview/StreamInventory.css
-4 ui/src/overview/base.css
