@@ -240,6 +240,6 @@ async fn responses_are_never_cached_and_carry_the_strict_policy() {
     assert_eq!(
         headers["content-security-policy"],
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; \
-         font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+         media-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     );
 }

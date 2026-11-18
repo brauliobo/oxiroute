@@ -16,8 +16,8 @@ use http_support::{http_request, raw_http_request};
 use process_support::{ServerProcess, reserve_tcp_address};
 
 const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
-                      img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; \
-                      frame-ancestors 'none'";
+                      img-src 'self' data:; media-src 'self'; font-src 'self'; form-action 'self'; \
+                      base-uri 'none'; frame-ancestors 'none'";
 
 #[tokio::test]
 async fn the_page_listener_serves_its_script_as_an_immutable_validated_asset_and_nothing_nearby() {

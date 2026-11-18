@@ -4,7 +4,7 @@ The management UI is a build-time Vue 3 (Vapor mode) application with Pug templa
 from the configured `management.ui_dir`; it is not a separate remote SaaS console. It needs no inline
 styles or scripts, and the management listener already sends the strict policy it runs under:
 `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:;
-font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`, with
+media-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`, with
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. A
 fronting proxy does not need to add them.
 

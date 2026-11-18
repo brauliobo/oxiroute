@@ -31,7 +31,7 @@ pub(crate) const HARDENED_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
-img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+img-src 'self' data:; media-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     ),
     ("referrer-policy", "no-referrer"),
     ("x-content-type-options", "nosniff"),

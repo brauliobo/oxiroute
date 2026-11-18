@@ -1,4 +1,4 @@
-use super::{ApiResponse, matches_validator, to_http_response};
+use super::{ApiResponse, HARDENED_HEADERS, matches_validator, to_http_response};
 
 #[test]
 fn error_responses_preserve_status_body_and_headers() {
@@ -117,4 +117,18 @@ fn a_cache_policy_is_sent_with_the_response() {
     assert_eq!(response.headers()["cache-control"], "max-age=60");
     let plain = to_http_response(ApiResponse::bytes(200, b"x".to_vec(), "text/plain"));
     assert!(plain.headers().get("cache-control").is_none());
+}
+
+#[test]
+fn the_page_policy_allows_media_from_its_own_origin_and_nothing_inline() {
+    let (_, policy) = HARDENED_HEADERS
+        .iter()
+        .find(|(name, _)| *name == "content-security-policy")
+        .expect("content security policy");
+    let directives = policy.split("; ").collect::<Vec<_>>();
+    assert!(directives.contains(&"default-src 'none'"), "{policy}");
+    assert!(directives.contains(&"media-src 'self'"), "{policy}");
+    for forbidden in ["unsafe-inline", "unsafe-eval", "blob:", "*"] {
+        assert!(!policy.contains(forbidden), "{policy}");
+    }
 }

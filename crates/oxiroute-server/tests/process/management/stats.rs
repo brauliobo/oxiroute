@@ -143,8 +143,8 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         policy.as_deref(),
         Some(
             "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
-             img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; \
-             frame-ancestors 'none'"
+             img-src 'self' data:; media-src 'self'; font-src 'self'; form-action 'self'; \
+             base-uri 'none'; frame-ancestors 'none'"
         )
     );
 

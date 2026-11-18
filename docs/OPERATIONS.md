@@ -584,8 +584,8 @@ needs no node), so the page works without `management.ui_dir` or any file on dis
 - The page is a static shell with no inline script or style. The server fills in `<prefix>`, the
   refresh interval and the table that needs no script; the shell loads its files from
   `<prefix>/assets/`. Every response carries the policy `default-src 'none'; script-src 'self';
-  style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self';
-  base-uri 'none'; frame-ancestors 'none'`.
+  style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self'; font-src 'self';
+  form-action 'self'; base-uri 'none'; frame-ancestors 'none'`.
 
 The files live in `crates/oxiroute-server/assets/stats/` (`index.html` and `assets/<name>`) and are
 the committed output of the UI build, so the real bundle is in the repository and `cargo build` needs no

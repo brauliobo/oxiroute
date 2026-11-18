@@ -67,6 +67,7 @@ async fn the_console_is_served_hardened_cacheable_and_revalidated_over_real_tcp(
         let policy = header(response, "content-security-policy");
         assert!(policy.contains("default-src 'none'"), "{policy}");
         assert!(policy.contains("script-src 'self'"), "{policy}");
+        assert!(policy.contains("media-src 'self'"), "{policy}");
         assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
         assert!(!policy.contains("unsafe"), "{policy}");
         assert_eq!(header(response, "x-content-type-options"), "nosniff");
