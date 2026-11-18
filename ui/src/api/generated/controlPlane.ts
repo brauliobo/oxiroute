@@ -280,6 +280,7 @@ export interface MediaTicketRequest {
 export type NoneDto = "none"
 
 export interface PendingApplyDto {
+  connections: number | null
   reason: string
   revision: string
 }

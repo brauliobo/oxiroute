@@ -31,6 +31,8 @@ pub(super) struct ConfigReports {
     pub(super) retired: RetiredReports,
     restart: RestartRequired,
     reload_cursor: u64,
+    reload_queued: bool,
+    held: Option<EffectiveRevision>,
 }
 
 impl ConfigReports {
@@ -61,6 +63,37 @@ impl ConfigReports {
         events
             .iter()
             .any(|event| event.worker_event.operation.as_deref() == Some("generation_reload"))
+    }
+
+    /// Notes that a reload was requested while a replacement or a retirement keeps the master from
+    /// acting on it, and shows the revision it would apply as pending until it can.
+    pub(super) fn queue_reload(
+        &mut self,
+        master: &mut Master,
+        coordinator: &CanonicalConfigCoordinator,
+        catalog: &GenerationCatalog,
+    ) {
+        self.reload_queued = true;
+        let held = held_back_revision(coordinator, catalog);
+        self.hold(master, held);
+    }
+
+    /// Whether a reload was queued since the master last acted on one.
+    pub(super) fn take_queued_reload(&mut self) -> bool {
+        std::mem::take(&mut self.reload_queued)
+    }
+
+    /// Tells the active worker which revision waits for the retired worker, when that changed.
+    pub(super) fn hold(&mut self, master: &mut Master, revision: Option<EffectiveRevision>) {
+        if revision != self.held {
+            send_notice(
+                master,
+                &WorkerNotice::PendingApply {
+                    revision: revision.as_ref().map(ToString::to_string),
+                },
+            );
+            self.held = revision;
+        }
     }
 
     /// Applies what the master reported to the catalog, tells the worker why a candidate failed, and
@@ -215,6 +248,29 @@ impl ListenerBook {
 }
 
 /// Applies the master's events to the catalog and says why a candidate failed, if one did.
+/// The settings of `document` that only a restart applies, given what the active worker runs.
+pub(super) fn startup_only(
+    catalog: &GenerationCatalog,
+    document: &ResolvedConfigDocument,
+) -> Vec<StartupOnly> {
+    startup_only_changes(
+        RuntimeMode::Supervised,
+        &catalog.active().payload().config,
+        &document.validated_config,
+    )
+}
+
+/// The revision of the file as the master would apply it, when that is not the active one.
+fn held_back_revision(
+    coordinator: &CanonicalConfigCoordinator,
+    catalog: &GenerationCatalog,
+) -> Option<EffectiveRevision> {
+    let document = coordinator.load_shared().ok()?;
+    let kept = startup_only(catalog, &document);
+    let revision = document.keeping(&kept).ok()?.effective_revision;
+    (&revision != catalog.active().revision()).then_some(revision)
+}
+
 pub(super) fn apply_catalog_events(
     catalog: &mut GenerationCatalog,
     events: &[MasterEvent],

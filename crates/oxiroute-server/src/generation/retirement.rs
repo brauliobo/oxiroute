@@ -65,6 +65,9 @@ pub enum WorkerNotice {
     RestartRequired { restart: RestartRequired },
     /// The retired workers still draining; an empty list once none is left.
     Retired { generations: Vec<RemoteRetired> },
+    /// The revision the master holds back until the retired worker has finished, or `None` once it
+    /// no longer does.
+    PendingApply { revision: Option<String> },
 }
 
 /// A replaced generation that drains in another process, as the master last observed it.
@@ -103,6 +106,8 @@ impl RemoteRetired {
 pub struct PendingApply {
     pub revision: EffectiveRevision,
     pub reason: &'static str,
+    /// The connections the draining retired worker still holds, when another process drains it.
+    pub connections: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -250,6 +255,7 @@ impl RetiredGenerations {
             self.pending = Some(PendingApply {
                 revision: revision.clone(),
                 reason: "retired_cap",
+                connections: None,
             });
         }
         true

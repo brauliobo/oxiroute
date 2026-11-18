@@ -149,6 +149,20 @@ fn generation_status_is_a_record_with_short_revisions() {
 }
 
 #[test]
+fn a_reload_waiting_for_a_draining_worker_shows_its_connections() {
+    let value = json!({ "generation": { "pendingApply": {
+        "revision": "d", "reason": "retired_draining", "connections": 3,
+    } } });
+
+    let text = table(View::Generation, &value);
+
+    assert!(
+        text.contains("\npending apply   retired_draining (3 connections)\n"),
+        "{text}"
+    );
+}
+
+#[test]
 fn status_leads_with_build_state_and_revision_then_lists_listeners() {
     let value = json!({
         "buildVersion": "7.1.0", "degraded": false, "activeRevision": "f".repeat(64), "previousRevision": null,

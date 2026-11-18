@@ -859,3 +859,35 @@ async fn supervised_retired_worker_is_listed_by_the_active_worker_until_it_drain
     .await;
     instance.stop();
 }
+
+#[tokio::test]
+async fn supervised_reload_requested_while_a_worker_drains_is_shown_as_pending() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_tcp(Retirement::default(), true).await;
+    let mut relay = open_relay(&instance).await;
+    let first = instance.apply().await["activeRevision"].clone();
+    assert!(instance.generation().await["pendingApply"].is_null());
+
+    instance.write_next_revision();
+    let status = wait_until("the reload is shown as pending", || async {
+        let status = instance.generation().await;
+        status["pendingApply"].is_object().then_some(status)
+    })
+    .await;
+    let pending = &status["pendingApply"];
+    assert_eq!(pending["reason"], "retired_draining", "{status}");
+    assert!(pending["connections"].as_u64().unwrap() >= 1, "{status}");
+    let wanted = instance.get("/api/v1/config").await["candidateRevision"].clone();
+    assert_eq!(pending["revision"], wanted, "{status}");
+    assert_eq!(status["activeRevision"], first);
+    assert_echo(&mut relay, b"still served").await;
+
+    drop(relay);
+    let status = wait_until("the pending reload applies", || async {
+        let status = instance.generation().await;
+        (status["activeRevision"] == wanted).then_some(status)
+    })
+    .await;
+    assert!(status["pendingApply"].is_null(), "{status}");
+    instance.stop();
+}

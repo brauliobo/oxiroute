@@ -245,7 +245,8 @@ impl MasterRunner {
                     reports.retired.report(master, now);
                     let forced_reload = catalog.candidate().is_none() && {
                         let signalled = signals.reload.swap(false, Ordering::AcqRel);
-                        reports.reload_requested(master) || signalled
+                        let queued = reports.take_queued_reload();
+                        reports.reload_requested(master) || signalled || queued
                     };
                     if catalog.candidate().is_none() {
                         if forced_reload || reload.next_trigger(now) {
@@ -271,6 +272,10 @@ impl MasterRunner {
                     log_master_events(&events);
                     reports.observe(master, catalog, &events, book)?;
                     reports.retired.report(master, now);
+                    let signalled = signals.reload.swap(false, Ordering::AcqRel);
+                    if reports.reload_requested(master) || signalled || reload.next_trigger(now) {
+                        reports.queue_reload(master, coordinator, catalog);
+                    }
                     due = reports.retired.next_due();
                 }
             }
@@ -289,6 +294,7 @@ impl MasterRunner {
     ) -> Result<(), Box<dyn Error>> {
         // The coordinator rereads and hashes the file, and reuses the resolved document while the
         // bytes are unchanged, so a quiet reconciliation costs one file read.
+        reports.hold(master, None);
         let document = match coordinator.load_shared() {
             Ok(document) => document,
             Err(rejection) => {
@@ -304,11 +310,7 @@ impl MasterRunner {
         }
         let file = document.authored_revision.clone();
         let file_revision = document.effective_revision.clone();
-        let kept = startup_only_changes(
-            RuntimeMode::Supervised,
-            &catalog.active().payload().config,
-            &document.validated_config,
-        );
+        let kept = startup_only(catalog, &document);
         let mut reasons = startup_only_reasons(&kept);
         let applicable = if kept.is_empty() {
             Ok(Arc::clone(&document))

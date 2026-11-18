@@ -1288,6 +1288,14 @@
       },
       "PendingApplyDto": {
         "properties": {
+          "connections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "reason": {
             "type": "string"
           },
@@ -1297,7 +1305,8 @@
         },
         "required": [
           "revision",
-          "reason"
+          "reason",
+          "connections"
         ],
         "type": "object"
       },

@@ -111,12 +111,30 @@ pub(super) struct GenerationState {
     pub(super) retired: RetiredGenerations,
     /// Retired workers of a supervising master, as it last reported them.
     pub(super) remote_retired: Vec<(EffectiveRevision, RemoteRetired, Instant)>,
+    /// The revision a supervising master holds back while a retired worker drains.
+    pub(super) remote_pending: Option<EffectiveRevision>,
     pub(super) restart_required: RestartRequired,
     pub(super) supervised_lineage: Option<SupervisedLineage>,
     pub(super) quarantined_revision: Option<EffectiveRevision>,
     pub(super) shutdown_generations: Vec<Arc<RuntimeGeneration>>,
     pub(super) shutting_down: bool,
     pub(super) starting_candidate: Option<CandidateStartReservation>,
+}
+
+impl GenerationState {
+    pub(super) fn remote_pending_apply(&self) -> Option<PendingApply> {
+        let revision = self.remote_pending.clone()?;
+        let connections = self
+            .remote_retired
+            .iter()
+            .map(|(_, report, _)| report.connections)
+            .reduce(|total, connections| total + connections)?;
+        Some(PendingApply {
+            revision,
+            reason: "retired_draining",
+            connections: Some(connections),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

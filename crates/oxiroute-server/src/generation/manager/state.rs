@@ -242,7 +242,8 @@ impl GenerationManager {
                         .as_ref()
                         .is_some_and(|candidate| candidate.revision().candidate == pending.revision)
                 })
-                .cloned(),
+                .cloned()
+                .or_else(|| state.remote_pending_apply()),
             restart_required: state.restart_required.clone(),
         }
     }
@@ -265,6 +266,20 @@ impl GenerationManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remote_retired = reports;
+        Ok(())
+    }
+
+    /// Sets the revision a supervising master holds back while a retired worker drains.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision is not a configuration revision.
+    pub fn set_remote_pending(&self, revision: Option<&str>) -> Result<(), RevisionParseError> {
+        let revision = revision.map(str::parse).transpose()?;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remote_pending = revision;
         Ok(())
     }
 

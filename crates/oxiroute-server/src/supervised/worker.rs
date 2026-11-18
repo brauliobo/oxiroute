@@ -453,6 +453,9 @@ fn apply_notice(manager: &GenerationManager, notice: &[u8]) -> Result<(), Box<dy
         WorkerNotice::Config { rejection: None } => manager.accept_configuration(),
         WorkerNotice::RestartRequired { restart } => manager.set_restart_required(restart),
         WorkerNotice::Retired { generations } => manager.set_remote_retired(generations)?,
+        WorkerNotice::PendingApply { revision } => {
+            manager.set_remote_pending(revision.as_deref())?;
+        }
     }
     Ok(())
 }

@@ -67,6 +67,7 @@ struct RetiredGenerationDto {
 struct PendingApplyDto {
     revision: String,
     reason: &'static str,
+    connections: Option<u64>,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -136,6 +137,7 @@ impl From<crate::PendingApply> for PendingApplyDto {
         Self {
             revision: pending.revision.as_str().to_owned(),
             reason: pending.reason,
+            connections: pending.connections,
         }
     }
 }

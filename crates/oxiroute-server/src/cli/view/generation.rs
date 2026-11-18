@@ -82,5 +82,9 @@ fn pending(generation: &Value) -> Option<String> {
     let pending = generation
         .get("pendingApply")
         .filter(|value| value.is_object())?;
-    text(pending, "reason").map(str::to_owned)
+    let reason = text(pending, "reason")?;
+    Some(match pending.get("connections").and_then(Value::as_u64) {
+        Some(connections) => format!("{reason} ({connections} connections)"),
+        None => reason.to_owned(),
+    })
 }
