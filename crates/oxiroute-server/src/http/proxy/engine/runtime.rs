@@ -156,7 +156,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
                 }
             }
         }
-        Self::stop(engine).await;
+        Self::stop(engine, running.then_some(threads)).await;
     }
 
     fn watch(engine: &Arc<Engine>) -> JoinHandle<Option<io::Error>> {
@@ -182,8 +182,11 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
         .expect("switching the engine's accepting does not panic");
     }
 
-    async fn stop(engine: Arc<Engine>) {
+    async fn stop(engine: Arc<Engine>, watcher: Option<JoinHandle<Option<io::Error>>>) {
         engine.stop();
+        if let Some(watcher) = watcher {
+            let _ = watcher.await;
+        }
         let Ok(engine) = Arc::try_unwrap(engine) else {
             return error!("the epoll data plane is still referenced at shutdown");
         };

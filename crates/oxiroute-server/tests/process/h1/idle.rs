@@ -193,3 +193,13 @@ async fn stopping_the_server_closes_every_idle_connection() {
         assert!(waited < Duration::from_secs(3), "closed after {waited:?}");
     }
 }
+
+#[tokio::test]
+async fn stopping_the_server_after_traffic_logs_no_error() {
+    let wire = wire_with(None, None).await;
+    let mut stream = TcpStream::connect(wire.proxy).await.expect("connect");
+    serve(&mut stream, REQUEST).await;
+    let Wire { server, .. } = wire;
+    let output = server.shutdown_output();
+    assert!(!output.contains("ERROR"), "{output}");
+}
