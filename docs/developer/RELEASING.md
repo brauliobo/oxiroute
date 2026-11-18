@@ -125,11 +125,14 @@ is checked again on the rewritten binary. Without BOLT the container runs both s
    virtual machines of hosted runners), ten lanes replay through the counted binary, and `llvm-bolt` rewrites the PGO
    binary (block order, function order, hot/cold splitting). The stage fails when fewer than 1000 functions got a
    profile, when the output grew by more than 50%, or when it is no longer PIE, lost `GNU_RELRO` or `BIND_NOW`, or does
-   not start. Then `smoke` runs again on the rewritten binary. The job `binary-tests` runs
-   `scripts/test/release/binary.sh` on the tarball's binary (the BOLT layout and the abort flavour): the whole
-   workspace test suite with that binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
-   panic-containment test drives the shipped bytes, in parallel with the packages. `publish` waits for it. Any failure fails
-   the release; nothing falls back to the PGO binary.
+   not start. Then `smoke` runs again on the rewritten binary. The job `test-archive` builds the debug nextest archive
+   of the workspace while the binaries build (restoring the dependencies `ci.yml` cached on `main`), and the job
+   `binary-tests` runs `scripts/test/release/shipped.sh` on the tarball's binary (the BOLT layout and the abort flavour):
+   every test binary that embeds the path of `CARGO_BIN_EXE_oxiroute` (process, supervised, CLI and panic-containment
+   tests, the slow tier included) runs from that archive with the shipped bytes installed at that path, in parallel
+   with the packages. `publish` waits for it. Any failure fails the release; nothing falls back to the PGO binary.
+   The other test binaries never execute the binary and run in `ci.yml`.
+   `scripts/test/release/binary.sh` remains the local equivalent that builds the tests itself.
    `publish` also waits for `ci-gate`, which requires a passing `ci.yml` run (a push to `main` or a manual run) on the
    exact commit of the tag, waiting for a run that is still going (`scripts/ci/ci_green.sh`). Because of that, a tag run
    skips what `ci.yml` already verified on that commit: the control-plane contract, the fuzz contract, the release

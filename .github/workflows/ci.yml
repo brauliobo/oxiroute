@@ -67,7 +67,7 @@ jobs:
         run: ./scripts/test/ci_green.sh
 
       - name: Lint the test lane scripts
-        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,ci_green,core,doc,planes,slow,tls}.sh scripts/ci/{ci_green,probe,test_budget,tiers}.sh scripts/lib/nextest.sh
+        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,ci_green,core,doc,planes,slow,tls}.sh scripts/test/release/shipped.sh scripts/ci/{ci_green,probe,test_budget,tiers}.sh scripts/lib/nextest.sh
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
