@@ -155,6 +155,7 @@ body through, where `changed` counts the targets of the request.
 | Events | `events list|follow` | Page through the bounded in-memory event ring, or follow its server-sent event stream with reconnect |
 | Audit | `audit list|status|tail` | Query and tail the redacted audit log of administrative actions |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
+| Routing | `route test` | Ask the daemon which route, action and pool would serve a URL, or a host and path, with the route table of the active generation |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
 | TLS | `tls list|show|inspect|check|reconcile|renew|revoke|delete|acme` | Certificate inventory with UTC expiry and time left, live handshake inspection, an expiry check with monitoring exit codes, renewal and ACME control |
 | RTMP | `rtmp stream`, `rtmp publisher`, `rtmp viewer`, `rtmp recorder`, `rtmp relay`, `rtmp recording` | Inspect live streams, publishers and viewers, disconnect sessions, control recorders, and list, download and delete recordings with their quota |
@@ -166,6 +167,8 @@ the requests currently inside the router, oldest first, and `oxiroute requests s
 shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming` and
 `retry_wait`. There is no command to cancel one request; `server evacuate` and `pool evacuate` move the
 replayable requests of a server (see below).
+
+`oxiroute route test https://example.com/api/users` (or `route test HOST PATH`, optionally with `--method` and `--listener`) shows which route, action and pool would serve the request on each HTTP listener, using the route table of the active generation, without sending it. It exits 6 when no route serves it.
 
 ## `top`
 

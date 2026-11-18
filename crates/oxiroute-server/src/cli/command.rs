@@ -21,6 +21,7 @@ use super::{
     process::ProcessCommand,
     registry::RegistryCommand,
     requests::RequestsCommand,
+    route::RouteCommand,
     rtmp::RtmpCommand,
     serve::ServeArgs,
     server::ServerCommand,
@@ -67,6 +68,12 @@ pub(crate) enum Command {
     Requests {
         #[command(subcommand)]
         command: RequestsCommand,
+    },
+    /// Ask the daemon which route and pool would serve a request.
+    #[command(after_help = help::ROUTE_EXAMPLES)]
+    Route {
+        #[command(subcommand)]
+        command: RouteCommand,
     },
     /// Inspect and change servers: drain, weight, limits, health, registration.
     #[command(after_help = help::SERVER_EXAMPLES)]
@@ -155,6 +162,7 @@ impl Command {
             Self::Audit { command } => command.run(context),
             Self::Top(args) => args.run(context),
             Self::Requests { command } => command.run(context),
+            Self::Route { command } => command.run(context),
             Self::Server { command } => command.run(context),
             Self::Overlay { command } => command.run(context),
             Self::Pool { command } => command.run(context),

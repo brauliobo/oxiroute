@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
+    net::encode,
     parse::nonempty_target,
     view::View,
 };
@@ -119,17 +120,6 @@ impl Execute for RecordingCommand {
 
 fn item(id: &str) -> String {
     format!("{RECORDINGS}/{}", encode(id))
-}
-
-pub(super) fn encode(text: &str) -> String {
-    text.bytes().fold(String::new(), |mut out, byte| {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            let _ = write!(out, "%{byte:02X}");
-        }
-        out
-    })
 }
 
 pub(super) fn list_path(

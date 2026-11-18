@@ -52,6 +52,7 @@ Implemented and recognized endpoints:
 | `POST` | `/api/v1/tls/renew` | Revision-checked immediate renewal of one managed ACME certificate. |
 | `POST` | `/api/v1/tls/revoke`, `/api/v1/tls/delete`, `/api/v1/tls/account/rollover` | Revision-checked authenticated ACME lifecycle actions. |
 | `POST` | `/api/v1/tls/jobs/cancel`, `/api/v1/tls/jobs/pause`, `/api/v1/tls/jobs/resume` | Revision-checked cooperative managed-job controls. |
+| `GET` | `/api/v1/routes/explain?host={authority}&path={path}&method={method}&listener={name}` | Authenticated, read-only: which route, action and pool of each HTTP listener would serve the request. |
 | `GET` | `/api/v1/audit?after={cursor}&limit={n}&category={category}&result={result}` | Authenticated durable redacted control-operation history with bounded cursor pagination and filters. |
 | `GET` | `/api/v1/audit/status` | Authenticated audit persistence, retention, corruption, and degradation status. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |

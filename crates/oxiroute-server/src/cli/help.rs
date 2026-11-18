@@ -193,6 +193,11 @@ pub(crate) const AUDIT_EXAMPLES: &str = "Examples:
   oxiroute audit status
   oxiroute audit tail --interval 2s";
 
+pub(crate) const ROUTE_EXAMPLES: &str = "Examples:
+  oxiroute route test https://example.com/api/users
+  oxiroute route test example.com /static/app.js --method GET
+  oxiroute route test /health --listener edge";
+
 pub(crate) const REQUESTS_EXAMPLES: &str = "Examples:
   oxiroute requests list --older-than 30s
   oxiroute requests show REQUEST_ID";

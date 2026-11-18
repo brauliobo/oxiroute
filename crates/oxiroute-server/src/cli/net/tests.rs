@@ -2,7 +2,9 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::json;
 
-use super::{Client, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Response, Timeouts, read_token};
+use super::{
+    Client, Endpoint, MANAGEMENT_TOKEN_ENV, Package, Response, Timeouts, encode, read_token,
+};
 use crate::cli::error::{CliError, EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND};
 
 #[test]
@@ -303,4 +305,10 @@ fn rejections_list_every_diagnostic_and_fall_back_to_the_message() {
         panic!("expected failed response")
     };
     assert_eq!(text, "bad_request: the request body is not JSON");
+}
+
+#[test]
+fn query_components_are_percent_encoded() {
+    assert_eq!(encode("abc-1.2_x~"), "abc-1.2_x~");
+    assert_eq!(encode("a b/c?d"), "a%20b%2Fc%3Fd");
 }

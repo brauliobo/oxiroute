@@ -1,6 +1,7 @@
 mod client;
 mod endpoint;
 mod package;
+mod query;
 mod response;
 mod stream;
 mod timeouts;
@@ -14,6 +15,7 @@ pub(crate) use endpoint::Endpoint;
 pub(super) use package::{
     CONTEXT_ENV, DEFAULT_ENDPOINT, ENDPOINT_ENV, MANAGEMENT_TOKEN_ENV, Package,
 };
+pub(crate) use query::encode;
 pub(crate) use response::Response;
 pub(crate) use stream::BodyStream;
 pub(crate) use timeouts::{Timeouts, span};

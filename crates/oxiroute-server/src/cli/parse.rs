@@ -10,6 +10,12 @@ pub(super) fn nonempty_target(value: &str) -> Result<String, String> {
     }
 }
 
+pub(super) fn parse_method(value: &str) -> Result<String, String> {
+    http::Method::from_bytes(value.to_ascii_uppercase().as_bytes())
+        .map(|method| method.to_string())
+        .map_err(|_| format!("{value:?} is not an HTTP method"))
+}
+
 pub(super) fn parse_age_ms(value: &str) -> Result<u64, String> {
     parse_duration(value).map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
 }

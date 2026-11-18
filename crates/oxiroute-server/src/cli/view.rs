@@ -12,6 +12,7 @@ mod pools;
 mod read;
 mod recordings;
 mod requests;
+mod routes;
 mod rtmp;
 mod servers;
 mod status;
@@ -54,6 +55,7 @@ pub(crate) enum View {
     AuditStatus,
     Requests,
     Request,
+    RouteTest,
     RtmpStreams,
     RtmpStream,
     RtmpClients,
@@ -88,6 +90,7 @@ impl View {
             Self::Events => events::list(value),
             Self::Audit => audit::list(value),
             Self::AuditStatus => audit::status(value),
+            Self::RouteTest => routes::test(value),
             Self::Requests => requests::list(value),
             Self::Request => requests::detail(value),
             Self::RtmpStreams => rtmp::list(value),

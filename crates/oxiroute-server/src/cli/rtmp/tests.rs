@@ -3,7 +3,7 @@ use serde_json::json;
 
 use super::{
     RtmpCommand,
-    recording::{Status, encode, list_path},
+    recording::{Status, list_path},
 };
 use crate::cli::{Cli, Command, view::View};
 
@@ -14,12 +14,6 @@ fn parse(words: &[&str]) -> Result<RtmpCommand, clap::Error> {
         Command::Rtmp { command } => command,
         _ => panic!("rtmp command"),
     })
-}
-
-#[test]
-fn recording_ids_are_encoded_into_the_path() {
-    assert_eq!(encode("abc-1.2_x~"), "abc-1.2_x~");
-    assert_eq!(encode("a b/c?d"), "a%20b%2Fc%3Fd");
 }
 
 #[test]

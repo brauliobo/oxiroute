@@ -37,6 +37,7 @@ mod process;
 mod registry;
 mod render;
 mod requests;
+mod route;
 mod rtmp;
 mod serve;
 mod server;

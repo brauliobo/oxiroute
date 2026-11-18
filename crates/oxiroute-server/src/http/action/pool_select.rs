@@ -37,6 +37,10 @@ impl PoolSelectPlan {
         &self.header
     }
 
+    pub(crate) fn pools(&self) -> impl Iterator<Item = &Arc<UpstreamPlan>> {
+        self.rules.iter().map(|(_, pool)| pool)
+    }
+
     /// The pool serving a request with these headers; `default` is the route pool.
     pub(crate) fn choose<'a>(
         &'a self,

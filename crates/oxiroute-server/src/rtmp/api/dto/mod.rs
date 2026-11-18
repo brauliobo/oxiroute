@@ -2,6 +2,7 @@ mod audit;
 mod common;
 mod config;
 mod event;
+mod explain;
 mod import;
 mod management;
 mod mutation;
@@ -27,6 +28,7 @@ pub(crate) use event::{
     EventPageV1Response, EventPageV2Response, OperationalEventDto, SseReadyDto, SseResyncDto,
     SseShutdownDto,
 };
+pub(crate) use explain::RouteExplainResponse;
 pub(crate) use import::{ImportReportResponse, RedactedImportReport};
 pub(crate) use management::{
     GenerationResponse, ListenerInventoryResponse, pools_body, servers_body,

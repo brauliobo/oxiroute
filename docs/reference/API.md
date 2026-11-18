@@ -28,6 +28,7 @@ are migrated.
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
 | Managed ACME actions | `POST /api/v1/tls/renew`, `/tls/revoke`, `/tls/delete`, `/tls/account/rollover` | Management bearer token and active-generation revision; failed actions retain active material |
 | Managed ACME jobs | `POST /api/v1/tls/jobs/cancel`, `/tls/jobs/pause`, `/tls/jobs/resume` | Management bearer token and active-generation revision; cooperative controls with redacted job IDs |
+| Route explain | `GET /api/v1/routes/explain?host={authority}&path={path}&method={method}&listener={name}` | Management bearer token; read-only. Runs the request through the active generation's route tables and returns, per HTTP listener, the route id, action, and pool with its available and total servers; `path` is required, `404 listener_not_found` when no HTTP listener matches |
 | Audit | `GET /api/v1/audit?after={cursor}&limit={n}`, `GET /api/v1/audit/status` | Management bearer token; durable redacted history and persistence status |
 | Events v1 | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; shipped 0.4.1 polling/SSE shape |
 | Events v2 | `GET /api/v2/events?after={cursor}&limit={n}`, `GET /api/v2/events/stream` | Management bearer token; authoritative latest cursor and corrected vocabulary |

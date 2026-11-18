@@ -60,6 +60,7 @@ fn every_command_family_ends_its_help_with_examples() {
         "events",
         "audit",
         "requests",
+        "route",
         "server",
         "pool",
         "listener",

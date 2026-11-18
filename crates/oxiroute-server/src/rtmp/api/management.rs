@@ -108,6 +108,7 @@ impl ManagementState {
                 self.tls_job_control(session, context, JobControl::Resume)
                     .await
             }
+            (Route::Explain(query), "GET") => self.route_explain(query),
             (Route::Audit(query), "GET") => self.audit(query),
             (Route::AuditStatus, "GET") => self.audit_status(),
             (Route::Events(version, query), "GET") => Self::events(version, query),
@@ -121,6 +122,7 @@ impl ManagementState {
                 | Route::Generations
                 | Route::Tls
                 | Route::TlsRenew
+                | Route::Explain(_)
                 | Route::Audit(_)
                 | Route::AuditStatus
                 | Route::Events(_, _)
@@ -229,6 +231,7 @@ async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Resu
         .map_err(|_| ApiResponse::error(400, "invalid_json", "request body is invalid JSON"))
 }
 
+mod explain;
 mod mutations;
 mod overlay;
 mod read;
