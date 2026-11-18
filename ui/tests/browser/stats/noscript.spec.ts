@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test'
 import type { Browser, Page } from '@playwright/test'
 
+import { origins } from '../ports'
 import { PAGE, serveStats } from './support'
+
+const statsOrigin = origins.stats
 
 // The page listener fills the shell's tokens before sending it. The preview server sends the build as it is, so this
 // does what the listener does: the same tokens, a table like the server-rendered one, with the prefix empty.
@@ -22,7 +25,7 @@ async function serveShell(page: Page): Promise<void> {
 }
 
 const withoutScript = async (browser: Browser) => {
-  const context = await browser.newContext({ javaScriptEnabled: false, baseURL: 'http://127.0.0.1:4174' })
+  const context = await browser.newContext({ javaScriptEnabled: false, baseURL: statsOrigin })
   return { context, page: await context.newPage() }
 }
 

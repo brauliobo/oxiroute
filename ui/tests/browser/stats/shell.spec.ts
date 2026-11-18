@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test'
 
 import { wireDocument } from '../../../src/stats/fixtures'
+import { origins } from '../ports'
+
+const statsOrigin = origins.stats
 
 // `vite preview --config vite.stats.config.ts` serves dist-stats/ under the policy the page listener sends. The page
 // is at /stats.html here, so its snapshot is /stats.html/snapshot.json (<page path>/snapshot.json).
@@ -25,7 +28,7 @@ test.describe('stats page shell', () => {
     expect(response?.headers()['content-security-policy']).toContain("script-src 'self'")
     await expect(page.getByRole('status').first()).toHaveAttribute('data-status', 'live')
     await expect(page.getByRole('heading', { level: 1, name: 'OxiRoute statistics' })).toBeVisible()
-    expect([...origins]).toEqual(['http://127.0.0.1:4174'])
+    expect([...origins]).toEqual([statsOrigin])
     expect(problems).toEqual([])
   })
 })

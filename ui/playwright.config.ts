@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test'
+import { origins, ports } from './tests/browser/ports'
 
 export default defineConfig({
   testDir: './tests/browser',
@@ -15,7 +16,7 @@ export default defineConfig({
     ? [['line'], ['html', { outputFolder: 'playwright-report', open: 'never' }]]
     : 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: origins.console,
     serviceWorkers: 'block',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
@@ -42,7 +43,7 @@ export default defineConfig({
       testMatch: '**/stats/**/*.spec.ts',
       use: {
         ...devices['Desktop Chrome'],
-        baseURL: 'http://127.0.0.1:4174',
+        baseURL: origins.stats,
         viewport: { width: 1440, height: 1000 },
       },
     },
@@ -51,7 +52,7 @@ export default defineConfig({
       testMatch: '**/stats/**/*.spec.ts',
       use: {
         ...devices['Pixel 5'],
-        baseURL: 'http://127.0.0.1:4174',
+        baseURL: origins.stats,
       },
     },
     {
@@ -59,27 +60,27 @@ export default defineConfig({
       testMatch: '**/gallery/**/*.spec.ts',
       use: {
         ...devices['Desktop Chrome'],
-        baseURL: 'http://127.0.0.1:4175',
+        baseURL: origins.gallery,
         viewport: { width: 1100, height: 900 },
       },
     },
   ],
   webServer: [
     {
-      command: 'pnpm exec vite preview --host 127.0.0.1 --port 4173',
-      url: 'http://127.0.0.1:4173',
+      command: `pnpm exec vite preview --host 127.0.0.1 --port ${ports.console}`,
+      url: origins.console,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'pnpm exec vite preview --config vite.stats.config.ts --base / --host 127.0.0.1 --port 4174',
-      url: 'http://127.0.0.1:4174/stats.html',
+      command: `pnpm exec vite preview --config vite.stats.config.ts --base / --host 127.0.0.1 --port ${ports.stats}`,
+      url: `${origins.stats}/stats.html`,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'pnpm exec vite --host 127.0.0.1 --port 4175',
-      url: 'http://127.0.0.1:4175/gallery.html',
+      command: `pnpm exec vite --host 127.0.0.1 --port ${ports.gallery}`,
+      url: `${origins.gallery}/gallery.html`,
       reuseExistingServer: false,
       timeout: 120_000,
     },

@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import type { Page, Request } from '@playwright/test'
 
 import type { CanonicalConfig, ConfigSnapshot } from '../../src/config'
+import { origins } from './ports'
 import type { SseMockResponse } from './support/sse'
 import {
   contractCatalog,
@@ -37,7 +38,7 @@ export type ApiMockResponse = JsonMockResponse | SseMockResponse
 export type ApiMockHandler = (request: Request) => ApiMockResponse | Promise<ApiMockResponse | undefined> | undefined
 
 export async function installApiMock(page: Page, handler: ApiMockHandler): Promise<void> {
-  const localOrigin = new URL('http://127.0.0.1:4173').origin
+  const localOrigin = origins.console
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url())
     if (url.origin !== localOrigin) {
