@@ -438,7 +438,13 @@ Current constraints:
   `max_file_bytes`) and `max_rotated_files` (1 to 7, default 7). An omitted key falls back to the
   matching deprecated `OXIROUTE_AUDIT_DIR` / `OXIROUTE_AUDIT_MAX_*` environment variable (values above
   the maximum are clamped, unparsable values are ignored), then to the default. The settings are
-  read when a generation starts, so a change applies with the next reload.
+  read when a generation starts, so a change applies with the next reload. The `dir` must be a real
+  directory of mode `0700` (created that way when missing) and its files regular files of mode `0600`;
+  when it cannot be used the audit log stays in memory, a warning on the `oxiroute::startup` target
+  names the path and the requirement, `GET /api/v1/status` reports the audit component `degraded` with
+  `lastError` set to `root_mode_unsafe` (not a directory of mode `0700`), `root_open_failed` (cannot be
+  created or opened), `unsafe_entry` (a file of another type or mode) or `io_failed`, and the top-level
+  `degraded` is `true` while any component is degraded.
 - RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
   single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
   resolved and checked against the RTMP service outbound policy before activation.

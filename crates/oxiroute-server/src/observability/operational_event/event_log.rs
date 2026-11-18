@@ -57,7 +57,16 @@ pub(crate) fn configure_audit_store(
         || AuditStore::memory(limits),
         |path| match AuditStore::open(&path, limits) {
             Ok(store) => store,
-            Err(error) => AuditStore::degraded(limits, error.code()),
+            Err(error) => {
+                log::warn!(
+                    target: crate::observability::log_filter::STARTUP_LOG_TARGET,
+                    "audit store `{}` is unavailable ({}): {}; audit records stay in memory only",
+                    path.display(),
+                    error.code(),
+                    error.requirement()
+                );
+                AuditStore::degraded(limits, error.code())
+            }
         },
     );
     let store = Arc::new(store);

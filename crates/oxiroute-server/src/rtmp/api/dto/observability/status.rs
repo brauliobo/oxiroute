@@ -31,6 +31,12 @@ impl StatusResponse {
         let capabilities = CapabilitiesResponse::project(&runtime.listeners, mode)
             .map_err(|error| error.to_string())?;
         let listeners = runtime.listeners.into_iter().map(Into::into).collect();
+        let components = StatusComponentsDto {
+            process: runtime.process.status.into(),
+            host: runtime.host.status.into(),
+            generation: generation_component(generation),
+            audit: audit.clone().into(),
+        };
         Ok(Self {
             schema_version: 1,
             build_version: crate::cli::BUILD_VERSION,
@@ -46,14 +52,9 @@ impl StatusResponse {
             previous_revision: generation
                 .and_then(|status| status.previous_revision.as_ref())
                 .map(|revision| revision.as_str().to_owned()),
-            degraded: generation.is_none_or(|status| status.degraded),
+            degraded: generation.is_none_or(|status| status.degraded) || components.degraded(),
             active_generation_age_ms: runtime.generation_age_ms,
-            components: StatusComponentsDto {
-                process: runtime.process.status.into(),
-                host: runtime.host.status.into(),
-                generation: generation_component(generation),
-                audit: audit.clone().into(),
-            },
+            components,
             certificates: StatusCertificatesDto {
                 certbot: runtime
                     .certbot_certificates
@@ -115,6 +116,15 @@ struct StatusComponentsDto {
     host: ComponentStatusDto,
     generation: ComponentStatusDto,
     audit: AuditStatusDto,
+}
+
+impl StatusComponentsDto {
+    fn degraded(&self) -> bool {
+        [&self.process, &self.host, &self.generation]
+            .into_iter()
+            .any(ComponentStatusDto::degraded)
+            || self.audit.degraded
+    }
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -330,6 +340,12 @@ pub(super) struct ComponentStatusDto {
     state: ComponentStateDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
+}
+
+impl ComponentStatusDto {
+    const fn degraded(&self) -> bool {
+        matches!(self.state, ComponentStateDto::Degraded)
+    }
 }
 
 impl From<ComponentStatus> for ComponentStatusDto {

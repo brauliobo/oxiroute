@@ -295,7 +295,8 @@ pending journal for recovery, while confirmed cleanup removes it exactly once.
 `generation drain` makes it return 503 until a reload replaces the generation) and all configured
 traffic listeners report `listening`; otherwise it returns 503. `GET /api/v1/status` reports the
 build version, disk/candidate/active/previous revisions, active-generation age, listener states,
-component states, certificate expiry data, and audit component degradation. Process/host sampling
+component states, certificate expiry data, and audit component degradation (`lastError` names the cause);
+its `degraded` is true while the generation or any component is degraded. Process/host sampling
 is healthy on Linux x86_64 and aarch64; other platforms keep status available with explicit
 `unsupported` process/host component states and null unavailable samples.
 

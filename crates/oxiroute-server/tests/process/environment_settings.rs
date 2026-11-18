@@ -200,3 +200,37 @@ async fn a_log_filter_change_takes_effect_with_the_next_reload() {
 
     assert!(server.shutdown_output().contains(LOGGED_MESSAGE));
 }
+
+#[tokio::test]
+async fn an_unusable_audit_directory_degrades_the_status_and_is_logged_with_its_requirement() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let token_directory = TempDir::new().expect("token directory");
+    let audit_directory = TempDir::new().expect("audit directory");
+    let (management, mut config) = management_config(&token_directory);
+    let loose = audit_directory.path().join("loose");
+    std::fs::create_dir(&loose).expect("audit root");
+    std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).expect("loose mode");
+    config.audit = Some(Audit {
+        dir: Some(loose.clone()),
+        ..Audit::default()
+    });
+    let mut server = ServerProcess::start(&validated(config), None);
+
+    let audit = audit_status(management).await;
+    let status = eventually(management, "/api/v1/status", true, |status, body| {
+        (status == 200).then(|| body.clone())
+    })
+    .await;
+    let output = server.wait_for_stderr(&loose.display().to_string()).await;
+
+    assert_eq!(audit["state"], "degraded");
+    assert_eq!(audit["lastError"], "root_mode_unsafe");
+    assert_eq!(status["degraded"], true, "{status}");
+    assert_eq!(
+        status["components"]["audit"]["lastError"],
+        "root_mode_unsafe"
+    );
+    assert!(output.contains("mode 0700"), "{output}");
+    server.shutdown();
+}

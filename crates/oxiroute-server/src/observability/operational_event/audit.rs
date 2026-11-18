@@ -330,6 +330,7 @@ impl AuditLimits {
 pub(crate) enum AuditStoreError {
     InvalidLimits,
     RootOpen,
+    RootUnsafe,
     UnsafeEntry,
     Io,
     RecordTooLarge,
@@ -340,9 +341,23 @@ impl AuditStoreError {
         match self {
             Self::InvalidLimits => "invalid_limits",
             Self::RootOpen => "root_open_failed",
+            Self::RootUnsafe => "root_mode_unsafe",
             Self::UnsafeEntry => "unsafe_entry",
             Self::Io => "io_failed",
             Self::RecordTooLarge => "record_too_large",
+        }
+    }
+
+    pub(super) const fn requirement(self) -> &'static str {
+        match self {
+            Self::InvalidLimits => "the audit limits must be positive and consistent",
+            Self::RootOpen => {
+                "the directory and its parents must be real directories the daemon may create and open"
+            }
+            Self::RootUnsafe => "the directory must be a real directory with mode 0700",
+            Self::UnsafeEntry => "audit files must be regular files with mode 0600",
+            Self::Io => "the directory must be readable and writable by the daemon",
+            Self::RecordTooLarge => "a record exceeded max_record_bytes",
         }
     }
 }

@@ -308,7 +308,7 @@ pub(super) fn open_or_create_root(path: &Path) -> Result<OwnedFd, AuditStoreErro
     if !FileType::from_raw_mode(metadata.st_mode).is_dir()
         || metadata.st_mode & 0o7777 != AUDIT_ROOT_MODE
     {
-        return Err(AuditStoreError::RootOpen);
+        return Err(AuditStoreError::RootUnsafe);
     }
     Ok(directory)
 }
