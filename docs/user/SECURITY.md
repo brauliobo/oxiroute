@@ -8,7 +8,8 @@ recording roots, and management tokens are administrator-owned inputs.
 - The management listener is loopback-only in the current schema.
 - Every recognized management/API route requires the file-backed bearer token loaded at startup,
   except exact `GET /ready` and `GET /metrics` probes.
-- The UI keeps that token in page memory and does not persist it.
+- The UI keeps that token for the browser tab session only (`sessionStorage`), clears it on sign out or when
+  the server rejects it, and never writes it to cookies, `localStorage` or the URL.
 - Monitoring, topology, RTMP, generation, TLS, process, event, and recorder-control routes use the
   same bearer boundary as configuration writes. The management listener remains loopback-only; do
   not expose it remotely.

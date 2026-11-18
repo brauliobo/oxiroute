@@ -83,7 +83,7 @@ proxy initially returns `503`. If it persists, inspect the origin and pool healt
 [troubleshooting](TROUBLESHOOTING.md).
 
 Open `http://127.0.0.1:9080/`. Read the token file locally and enter its contents when prompted;
-the dashboard keeps the token in page memory. For CLI access, use the **token-file path** printed in
+the dashboard keeps the token for the browser tab session only. For CLI access, use the **token-file path** printed in
 terminal B as the value below:
 
 ```sh

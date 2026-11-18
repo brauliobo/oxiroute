@@ -630,7 +630,7 @@ after transient failures, and expose loading/stale/error states. Manual controls
 and are available for configured manual recorder definitions on active publishers. The topology
 inspector exposes stable config paths and exact redacted attributes without recording roots.
 
-The configuration workspace keeps its bearer token only in page memory, exposes every field in the
+The console asks for the bearer token once and shares it with every workspace; the configuration workspace exposes every field in the
 current frontend canonical-field registry, validates through the server, renders the format-preserving
 backend preview and candidate topology for review, and saves with `If-Config-Revision` when the root is
 non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, HOCON, and UCI, and
@@ -662,7 +662,7 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
 
 - Management and traffic listener configuration are separate.
 - Configuration routes require the file-backed bearer token described above. The current UI does
-  not use cookies or persist the token.
+  not use cookies; it keeps the token in `sessionStorage` for the tab session only.
 - Recognized management/API routes, including recorder-control routes, require the bearer token
   except exact `GET /ready`, `GET /metrics` and `GET /status.json`. The management listener remains loopback-only;
   recorder controls MUST gain explicit audit records before any future remote management mode
@@ -670,7 +670,7 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
 - A future remote mode will require authenticated users, short sessions, audit records, TLS, and
   CSRF protection if cookie authentication is introduced.
 - Certificate private-key bytes, ACME account keys, and DNS credentials never enter frontend state.
-  The management bearer token is the explicit exception and is retained only in page memory.
+  The management bearer token is the explicit exception and is retained only for the browser tab session (`sessionStorage`), never in `localStorage`, cookies or the URL.
 - Any future native-file editing workflow will keep unsupported constructs read-only and will not save
   a lossy conversion without explicit ownership change.
 - The backend rejects typed saves to compositional roots, and the browser disables editing/save

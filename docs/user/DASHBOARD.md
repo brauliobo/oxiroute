@@ -221,8 +221,10 @@ are relative names; the configured recording root is never sent to the browser.
 
 ## Access And Accessibility
 
-The management token is entered into the page and held in memory. It is not stored in cookies,
-localStorage, the URL, or the generated dashboard GIFs. The UI uses labeled controls, keyboard-focus
+The management token is entered once on the console login and kept for the browser tab session only
+(`sessionStorage`): it survives a reload, is dropped when the tab closes or you sign out, and is never
+stored in cookies, `localStorage`, the URL, or the generated dashboard GIFs. The console sends no API
+request before the token exists, and tells a rejected token from a missing one. The UI uses labeled controls, keyboard-focus
 states, non-color status labels, responsive detail panels, and explicit loading/stale/error states.
 
 For the exact route and authentication contract, read [API_UI_SPEC.md](../API_UI_SPEC.md).
