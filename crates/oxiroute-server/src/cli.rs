@@ -15,11 +15,11 @@ use std::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub use check::CheckArgs;
-pub use top::TopArgs;
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_import::nginx::{NginxBearerTokenOverlay, NginxUpstreamTlsOverlay};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde_json::{Value, json};
+pub use top::TopArgs;
 use zeroize::Zeroizing;
 
 use crate::{
