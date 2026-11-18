@@ -24,18 +24,19 @@ WorkspaceSection(
     Banner(tone="info") {{ message }}
 
   Panel(title="Recent operations")
-    p.ox-panel-note Cursor {{ cursor }}, latest {{ latestCursor }}{{ oldestCursor === null ? '' : `, oldest retained ${oldestCursor}` }}
-    .ox-toolbar
-      Field.ox-filter(label="Search events" label-for="events-search")
-        Input#events-search(v-model="search" type="search")
-      Field.ox-filter(label="Event" label-for="events-name")
-        Select#events-name(v-model="eventName" :options="nameOptions")
-    p.ox-panel-note(v-if="events.length" role="status") {{ filtering ? `Showing ${visible.length} of ${plural(events.length, 'event')}` : plural(events.length, 'event') }}
-    EmptyState(v-if="events.length === 0 && !loading" title="No events") No operational events have been retained.
-    EmptyState(v-else-if="visible.length === 0 && !loading" title="No matching events") Change the search text or the event filter.
-    EventsTable(v-else-if="visible.length" :events="visible")
-    .ox-more(v-if="hasMore")
-      Button(:disabled="loading" @click="loadNextPage") Load more events
+    .ox-stack
+      p.ox-muted Cursor {{ cursor }}, latest {{ latestCursor }}{{ oldestCursor === null ? '' : `, oldest retained ${oldestCursor}` }}
+      .ox-toolbar
+        Field.ox-filter(label="Search events" label-for="events-search")
+          Input#events-search(v-model="search" type="search")
+        Field.ox-filter(label="Event" label-for="events-name")
+          Select#events-name(v-model="eventName" :options="nameOptions")
+      p.ox-muted(v-if="events.length" role="status") {{ filtering ? `Showing ${visible.length} of ${plural(events.length, 'event')}` : plural(events.length, 'event') }}
+      EmptyState(v-if="events.length === 0 && !loading" title="No events") No operational events have been retained.
+      EmptyState(v-else-if="visible.length === 0 && !loading" title="No matching events") Change the search text or the event filter.
+      EventsTable(v-else-if="visible.length" :events="visible")
+      .ox-more(v-if="hasMore")
+        Button(:disabled="loading" @click="loadNextPage") Load more events
 </template>
 
 <script setup lang="ts" vapor>

@@ -57,7 +57,7 @@ describe('local management workspaces', () => {
     await flushPromises()
 
     expect(wrapper.get('a[href="#/provenance"]').attributes('aria-current')).toBe('page')
-    expect(wrapper.get('.provenance-workspace').text()).toContain('apache import')
+    expect(wrapper.get('main').text()).toContain('apache import')
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/v1/import-reports'))).toBe(true)
     wrapper.unmount()
   })

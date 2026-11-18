@@ -30,9 +30,7 @@ Panel(title="Store health")
       Badge(:tone="badge.tone" :label="badge.label")
     Banner(v-if="degraded" tone="warn")
       strong Durable audit is degraded.
-      |  Persistence reported
-      code.ox-mono  {{ status.lastError ?? 'a bounded storage problem' }}
-      | . {{ degradedCheck(status.lastError) }} Records shown below are only those returned by the durable route.
+      |  Persistence reported #[code.ox-mono {{ status.lastError ?? 'a bounded storage problem' }}]. {{ degradedCheck(status.lastError) }} Records shown below are only those returned by the durable route.
     Banner(v-else-if="memoryOnly" tone="warn")
       strong Durable persistence is not active.
       |  The API reports memory-only audit state. No event stream is treated as durable history.

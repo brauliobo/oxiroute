@@ -44,7 +44,7 @@ test.describe('provenance workspace browser gates', () => {
     await expect(main.getByRole('table', { name: 'Source dependencies' })).toContainText('Source 2')
     await expect(main.getByRole('table', { name: 'Canonical field origins' })).toContainText('/http_services/0/routes/0/action')
     await expect(main.getByRole('heading', { name: 'Requirements' })).toBeVisible()
-    await expect(main.getByText('2 retained from the deployment and activation requirements.')).toBeVisible()
+    await expect(main.getByText('2 requirements retained for deployment and activation.')).toBeVisible()
     await expect(main.locator('pre')).toContainText('version 1')
     await expect(main).toContainText('Native sources remain read-only.')
     await expect(main).toContainText('Editing, rewrite behavior and Lua output remain outside this workflow.')

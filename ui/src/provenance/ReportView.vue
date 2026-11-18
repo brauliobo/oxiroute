@@ -5,6 +5,7 @@ import Banner from '#design/banner/Banner.vue'
 import Panel from '#design/panel/Panel.vue'
 import type { ImportReportEnvelope, ImportReportPreview, ImportReportSummary } from '../api'
 import Facts from '../workspace/Facts.vue'
+import { plural } from '../workspace/plural'
 import ScrollRegion from '../workspace/ScrollRegion.vue'
 import EvidencePanel from './EvidencePanel.vue'
 import {
@@ -71,7 +72,7 @@ const snapshotNote = computed(() =>
   )
   EvidencePanel(
     title="Requirements"
-    :note="`${requirements.length} retained from the deployment and activation requirements.`"
+    :note="`${plural(requirements.length, 'requirement')} retained for deployment and activation.`"
     caption="Deployment and activation requirements"
     :columns="['Directive', 'Kind', 'Values']"
     :rows="requirements"
@@ -79,7 +80,7 @@ const snapshotNote = computed(() =>
   )
   EvidencePanel(
     title="Canonical field origins"
-    :note="`${report.candidate.provenance.length} canonical fields trace back to a source.`"
+    :note="`${plural(report.candidate.provenance.length, 'canonical field')} with a recorded origin.`"
     caption="Canonical field origins"
     :columns="['Field', 'Origins', 'First origin']"
     :rows="originRows(report)"
@@ -96,7 +97,7 @@ const snapshotNote = computed(() =>
   )
   EvidencePanel(
     title="Diagnostics"
-    :note="`${report.diagnostics.length} returned by the import.`"
+    :note="`${plural(report.diagnostics.length, 'diagnostic')} returned by the import.`"
     caption="Import diagnostics"
     :columns="['Code', 'Message', 'Stage', 'Severity']"
     :rows="diagnosticRows(report)"

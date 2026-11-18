@@ -7,8 +7,8 @@ import { origins } from '../ports'
 export const THEMES = ['light', 'dark'] as const
 export type ThemeName = (typeof THEMES)[number]
 
-export function useTheme(page: Page, theme: ThemeName): Promise<void> {
-  return page.addInitScript((value) => localStorage.setItem('oxiroute.theme', value), theme)
+export async function useTheme(page: Page, theme: ThemeName): Promise<void> {
+  await page.addInitScript((value) => localStorage.setItem('oxiroute.theme', value), theme)
 }
 
 export function trackExternalRequests(page: Page): string[] {
