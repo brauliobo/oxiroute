@@ -87,7 +87,7 @@ impl<'a> Context<'a> {
     /// The file the management token lives in, or goes to when it is created.
     pub(crate) fn token_destination(&self) -> Result<PathBuf, CliError> {
         self.package
-            .token_destination(self.global.token_file.as_deref())
+            .token_destination(self.global.token_file(self.selection()?))
     }
 
     /// A client for the public probes, which never read the token file.

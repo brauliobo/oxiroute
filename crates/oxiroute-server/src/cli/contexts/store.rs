@@ -66,6 +66,13 @@ impl Store {
         Ok(Self::at(base.join("oxiroute").join("contexts")))
     }
 
+    pub(super) fn unknown(&self, name: &str) -> CliError {
+        CliError::Local(format!(
+            "no context named {name} in {}: `oxiroute context list` shows the defined ones",
+            self.path.display()
+        ))
+    }
+
     pub(super) fn load(&self) -> Result<ContextFile, CliError> {
         let bytes = match read_regular_file(&self.path, MAX_BYTES, true) {
             Ok(bytes) => bytes,

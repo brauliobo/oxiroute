@@ -89,7 +89,7 @@ fn entry(args: &AddArgs) -> Entry {
 fn select(context: &Context<'_>, store: &Store, name: &str) -> Result<(), CliError> {
     let mut file = store.load()?;
     if !file.contexts.contains_key(name) {
-        return Err(unknown(store, name));
+        return Err(store.unknown(name));
     }
     file.current = Some(name.to_owned());
     store.save(&file)?;
@@ -99,7 +99,7 @@ fn select(context: &Context<'_>, store: &Store, name: &str) -> Result<(), CliErr
 fn remove(context: &Context<'_>, store: &Store, name: &str) -> Result<(), CliError> {
     let mut file = store.load()?;
     if file.contexts.remove(name).is_none() {
-        return Err(unknown(store, name));
+        return Err(store.unknown(name));
     }
     if file.current.as_deref() == Some(name) {
         file.current = None;
@@ -131,11 +131,4 @@ fn outcome(
 ) -> Result<(), CliError> {
     let value: Value = json!({ "outcome": outcome, "context": name, "current": file.current });
     context.print(&value, View::Generic)
-}
-
-fn unknown(store: &Store, name: &str) -> CliError {
-    CliError::Local(format!(
-        "no context named {name} in {}: `oxiroute context list` shows the defined ones",
-        store.path.display()
-    ))
 }

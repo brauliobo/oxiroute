@@ -1,6 +1,9 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
-use super::store::{Entry, Store};
+use super::{
+    source::TokenSource,
+    store::{Entry, Store},
+};
 use crate::cli::{error::CliError, parse::parse_timeout};
 
 pub(crate) struct Selected {
@@ -26,13 +29,18 @@ impl Selected {
         let Some(name) = requested.map(str::to_owned).or_else(|| file.current.take()) else {
             return Ok(None);
         };
-        let entry = file.contexts.remove(&name).ok_or_else(|| {
-            CliError::Local(format!(
-                "no context named {name} in {}: `oxiroute context list` shows the defined ones",
-                store.path.display()
-            ))
-        })?;
+        let entry = file
+            .contexts
+            .remove(&name)
+            .ok_or_else(|| store.unknown(&name))?;
         Ok(Some(Self { name, entry }))
+    }
+
+    pub(crate) fn token_file(&self) -> Option<&Path> {
+        match self.entry.token.as_ref()? {
+            TokenSource::File(path) => Some(path),
+            TokenSource::Env(_) | TokenSource::Command(_) => None,
+        }
     }
 
     pub(crate) fn timeout(&self) -> Option<Duration> {

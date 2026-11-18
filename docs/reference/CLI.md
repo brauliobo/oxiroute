@@ -186,7 +186,7 @@ oxiroute serve oxiroute.kdl
 a management API on `127.0.0.1:9900` (the CLI's default endpoint). `--format` chooses `kdl` (default), `lua`,
 `uci` or `hocon`; `--file -` prints instead of writing, and an existing file is kept unless `--force`.
 `token create` writes the management token as 64 random hex characters in a file only its owner can read
-and never replaces one; `token rotate` swaps in a new token atomically with the same owner and mode; the
+(`--token-file`, else the selected context's token file) and never replaces one; `token rotate` swaps in a new token atomically with the same owner and mode; the
 daemon reads the token when it starts, so restart it to accept the new one. Neither prints the token.
 
 ## `top`

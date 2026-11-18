@@ -10,6 +10,15 @@ fn run(words: &[&str]) -> std::process::Output {
     cli_command().args(words).output().expect("oxiroute CLI")
 }
 
+fn run_in(home: &std::path::Path, words: &[&str]) -> std::process::Output {
+    cli_command()
+        .env_remove("OXIROUTE_CONTEXT")
+        .env("XDG_CONFIG_HOME", home)
+        .args(words)
+        .output()
+        .expect("oxiroute CLI")
+}
+
 fn mode(path: &std::path::Path) -> u32 {
     fs::metadata(path).expect("metadata").permissions().mode() & 0o7777
 }
@@ -56,6 +65,32 @@ fn init_then_token_create_gives_a_configuration_that_checks_clean() {
     );
     let twice = run(&["token", "create", "--token-file", token_arg]);
     assert_eq!(twice.status.code(), Some(3), "{}", stderr(&twice));
+}
+
+#[test]
+fn token_create_writes_where_the_selected_context_reads_its_token() {
+    let directory = TempDir::new().expect("directory");
+    let home = directory.path().join("home");
+    let token = directory.path().join("prod.token");
+    let added = run_in(
+        &home,
+        &[
+            "context",
+            "add",
+            "prod",
+            "--address",
+            "http://192.0.2.10:9900",
+            "--token-from-file",
+            token.to_str().expect("path"),
+            "--use",
+        ],
+    );
+    assert!(added.status.success(), "{}", stderr(&added));
+
+    let created = run_in(&home, &["token", "create"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    assert_eq!(mode(&token), 0o600);
+    assert_eq!(fs::read_to_string(&token).expect("token").trim().len(), 64);
 }
 
 #[test]

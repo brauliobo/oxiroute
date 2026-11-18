@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::{Args, ValueEnum};
 use zeroize::Zeroizing;
@@ -110,6 +113,14 @@ impl Global {
             .or_else(|| package.discovered_endpoint())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
         Endpoint::parse(&endpoint)
+    }
+
+    pub(super) fn token_file<'a>(&'a self, selected: Option<&'a Selected>) -> Option<&'a Path> {
+        self.token_file.as_deref().or_else(|| {
+            selected
+                .and_then(Selected::token_file)
+                .filter(|_| self.endpoint.is_none())
+        })
     }
 
     pub(super) fn token(
