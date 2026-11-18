@@ -54,6 +54,7 @@ install_initial() {
   printf '# edited before the upgrade\n' >> /etc/oxiroute/oxiroute.env
   upgrade_package "/tmp/install/${PACKAGE}"
   grep -qx '# edited before the upgrade' /etc/oxiroute/oxiroute.env || fail 'the upgrade overwrote a modified configuration'
+  sed -i '/^# edited before the upgrade$/d' /etc/oxiroute/oxiroute.env
   pass "upgraded from ${PREVIOUS}, the modified configuration is kept"
 }
 
