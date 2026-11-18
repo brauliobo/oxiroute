@@ -1,5 +1,5 @@
 <template lang="pug">
-Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme")
+Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme" @click="onShellClick")
   template(v-slot:header)
     p.ox-view-title {{ viewTitle(activeView) }}
     .ox-header-end(v-if="signedIn")
@@ -95,8 +95,7 @@ Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme")
     ConfirmHost
     Region
     footer.ox-footer
-      p OxiRoute pre-alpha
-      p Live measurements / runtime inventory
+      p OxiRoute management console
 </template>
 
 <script setup lang="ts" vapor>
@@ -159,11 +158,19 @@ function syncViewFromHash(): void {
   activeView.value = viewFromHash(window.location.hash)
 }
 
+const focusMain = () => document.getElementById('ox-main')?.focus()
+
 function onNavigate(event: MouseEvent): void {
   const href = (event.target as Element).closest('a')?.getAttribute('href')
   if (!href) return
   activeView.value = viewFromHash(href)
-  document.getElementById('ox-main')?.focus()
+  focusMain()
+}
+
+function onShellClick(event: MouseEvent): void {
+  if (!(event.target as Element).closest('.ox-skip')) return
+  event.preventDefault()
+  focusMain()
 }
 
 onMounted(() => window.addEventListener('hashchange', syncViewFromHash))

@@ -56,6 +56,20 @@ describe('console shell', () => {
     expect(wrapper.get('footer').text()).toContain('OxiRoute')
   })
 
+  it('follows the skip link to the content without leaving the view', async () => {
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    window.location.hash = '#/audit'
+    await new Promise((resolve) => window.addEventListener('hashchange', resolve, { once: true }))
+    await flushPromises()
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    wrapper.get('a.ox-skip').element.dispatchEvent(click)
+    expect(click.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(wrapper.get('main').element)
+    expect(window.location.hash).toBe('#/audit')
+    expect(document.title).toBe('Durable audit history - OxiRoute')
+  })
+
   it('updates the document title and moves focus to the content on navigation', async () => {
     const wrapper = mount(App, { attachTo: document.body })
     await flushPromises()
