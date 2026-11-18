@@ -495,6 +495,11 @@ pub enum ConfigError {
         pointer: &'static str,
         detail: String,
     },
+    #[error("config_history setting `{pointer}` is invalid: {detail}")]
+    InvalidConfigHistory {
+        pointer: &'static str,
+        detail: String,
+    },
     #[error("retirement setting `{pointer}` is invalid: {detail}")]
     InvalidRetirement {
         pointer: String,
@@ -518,6 +523,7 @@ impl ConfigError {
             Self::UnsupportedVersion(_) => "/version".to_owned(),
             Self::InvalidRegistry { field, .. } => format!("/registry/{field}"),
             Self::InvalidRetirement { pointer, .. } => pointer.clone(),
+            Self::InvalidConfigHistory { pointer, .. } => (*pointer).to_owned(),
             Self::EmptyUpstreamEndpoints { pool }
             | Self::TooManyUpstreamEndpoints { pool }
             | Self::DuplicateUpstreamEndpoint { pool, .. }

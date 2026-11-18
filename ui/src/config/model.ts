@@ -814,6 +814,11 @@ export interface AuditConfig {
   max_rotated_files?: number
 }
 
+export interface ConfigHistoryConfig {
+  max_entries?: number
+  max_total_bytes?: number
+}
+
 export interface CanonicalConfig {
   version: number
   max_connections: number | null
@@ -833,6 +838,7 @@ export interface CanonicalConfig {
   management: ManagementConfig | null
   log_filter?: string
   audit?: AuditConfig
+  config_history?: ConfigHistoryConfig
   registry?: RegistryConfig | null
   stats?: StatsConfig | null
   certificates: CertificateConfig[]

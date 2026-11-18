@@ -71,6 +71,8 @@ declare their variables in the configuration already.
 | `audit.max_file_bytes` | 1 MiB | 1 to 16 MiB | same |
 | `audit.max_total_bytes` | 8 MiB | 1 to 128 MiB, at least `max_file_bytes` | same |
 | `audit.max_rotated_files` | 7 | 1 to 7 | same |
+| `config_history.max_entries` | 20 | 1 to 1000 | read at each configuration save |
+| `config_history.max_total_bytes` | 16 MiB | 4 MiB to 1 GiB | same |
 | `log_filter` | none (falls back to `RUST_LOG`, then errors only) | `RUST_LOG` syntax without regex, at most 1024 bytes | master: start and each committed replacement; worker: start; direct runtime: each generation |
 
 Out-of-range values that the `OXIROUTE_AUDIT_*` variables used to clamp are rejected in the

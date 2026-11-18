@@ -152,6 +152,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        config_history: None,
         log_filter: None,
     }
 }
@@ -230,6 +231,7 @@ pub(super) fn udp_only_config(
             udp: Some(oxiroute_config::UdpPolicy::default()),
         }],
         audit: None,
+        config_history: None,
         log_filter: None,
     }
 }
@@ -255,6 +257,7 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
         registry: None,
         stats: None,
         audit: None,
+        config_history: None,
         log_filter: None,
         certificates: vec![Certificate {
             name: "downstream".into(),

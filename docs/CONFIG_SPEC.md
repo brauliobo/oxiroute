@@ -42,6 +42,9 @@ return {
     dir = "/var/lib/oxiroute/audit",
     max_records = 10000,
   },
+  config_history = {
+    max_entries = 20,
+  },
   stats = {
     binds = { "127.0.0.1:8404", "[::1]:8404" },
     admin_token_file = "/etc/oxiroute/stats-admin.token",
@@ -452,6 +455,12 @@ Current constraints:
   `lastError` set to `root_mode_unsafe` (not a directory of mode `0700`), `root_open_failed` (cannot be
   created or opened), `unsafe_entry` (a file of another type or mode) or `io_failed`, and the top-level
   `degraded` is `true` while any component is degraded.
+- `config_history` is optional and bounds the earlier versions of the configuration file that the daemon keeps
+  for `config history` and `config rollback`: `max_entries` (1 to 1000, default 20) and `max_total_bytes`
+  (4194304 to 1073741824, default 16777216). Every save through the management API keeps the text it replaces
+  in `<configuration file>.history/`, a `0700` directory of `0600` files, and removes the oldest entries once
+  either bound is exceeded. The bounds of the saved configuration apply at each save. An empty block
+  normalizes away.
 - RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
   single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
   resolved and checked against the RTMP service outbound policy before activation.

@@ -73,6 +73,9 @@ pub struct ConfigDraft {
     /// Durable audit log of management operations: location and retention bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<Audit>,
+    /// Earlier versions of the configuration file the daemon keeps for rollback: count and size bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_history: Option<ConfigHistory>,
     /// Runtime server registration: state directory, tokens, and registry-only endpoints.
     #[serde(default)]
     pub registry: Option<Registry>,
@@ -295,6 +298,27 @@ impl Audit {
     pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
     pub const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
     pub const MAX_ROTATED_FILES: u64 = 7;
+}
+
+/// Bounds of the history of the configuration file. Every save keeps the text it replaces in a private
+/// directory next to the file; the oldest versions go first when either bound is exceeded.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigHistory {
+    /// Versions kept (default 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u64>,
+    /// Bytes kept across all versions (default 16 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<u64>,
+}
+
+impl ConfigHistory {
+    pub const DEFAULT_MAX_ENTRIES: u64 = 20;
+    pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+    pub const MAX_ENTRIES: u64 = 1_000;
+    pub const MIN_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
+    pub const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

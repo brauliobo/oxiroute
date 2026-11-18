@@ -53,6 +53,15 @@ fn audit_settings_round_trip_through_every_source_format() {
 }
 
 #[test]
+fn config_history_bounds_round_trip_through_every_source_format() {
+    assert_round_trips(&validated(&json!({"config_history": {
+        "max_entries": 50,
+        "max_total_bytes": 33_554_432,
+    }})));
+    assert_round_trips(&validated(&json!({"config_history": {"max_entries": 5}})));
+}
+
+#[test]
 fn a_partial_audit_block_round_trips_through_every_source_format() {
     assert_round_trips(&validated(&json!({"audit": {"max_records": 500}})));
 }

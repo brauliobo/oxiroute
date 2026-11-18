@@ -186,6 +186,7 @@ pub(super) fn recorder_runtime_config(
         }],
         l4_services: Vec::new(),
         audit: None,
+        config_history: None,
         log_filter: None,
     }
 }

@@ -38,6 +38,7 @@ fn inventory_core_is_platform_independent_and_unbounded() {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        config_history: None,
         log_filter: None,
     }
     .validate()
@@ -302,6 +303,7 @@ fn inventory_config(
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        config_history: None,
         log_filter: None,
     };
     config.upstream_pools.push(oxiroute_config::UpstreamPool {

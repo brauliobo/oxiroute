@@ -80,6 +80,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
             udp: None,
         }],
         audit: None,
+        config_history: None,
         log_filter: None,
     };
     let directory = tempfile::tempdir().expect("TCP generation directory");

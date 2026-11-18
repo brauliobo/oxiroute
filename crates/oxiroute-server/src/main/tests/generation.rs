@@ -254,6 +254,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        config_history: None,
         log_filter: None,
     };
     let (_, manager, generation) = activate_test_generation(&path, &config);

@@ -40,6 +40,7 @@ impl Renderer {
             rtmp_services,
             l4_services,
             audit,
+            config_history,
             log_filter,
         } = config;
 
@@ -92,6 +93,7 @@ impl Renderer {
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
         self.fallible_optional_table_field("audit", audit.as_ref(), Self::audit)?;
+        self.optional_table_field("config_history", config_history.as_ref(), Self::history);
         self.fallible_optional_table_field("registry", registry.as_ref(), Self::registry)?;
         self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
@@ -171,6 +173,22 @@ impl Renderer {
             }
         }
         Ok(())
+    }
+
+    fn history(&mut self, history: &ConfigHistory) {
+        let ConfigHistory {
+            max_entries,
+            max_total_bytes,
+        } = history;
+
+        for (name, limit) in [
+            ("max_entries", max_entries),
+            ("max_total_bytes", max_total_bytes),
+        ] {
+            if let Some(limit) = limit {
+                self.integer_field(name, limit);
+            }
+        }
     }
 
     fn registry(&mut self, registry: &Registry) -> Result<(), ConfigError> {

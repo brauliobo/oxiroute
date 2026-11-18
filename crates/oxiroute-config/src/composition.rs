@@ -50,6 +50,11 @@ fn compose_drafts(
         )?;
         merge_optional("audit", &mut composed.audit, config.audit.as_ref())?;
         merge_optional(
+            "config_history",
+            &mut composed.config_history,
+            config.config_history.as_ref(),
+        )?;
+        merge_optional(
             "log_filter",
             &mut composed.log_filter,
             config.log_filter.as_ref(),

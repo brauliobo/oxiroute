@@ -58,6 +58,7 @@ oxiroute-config::audit                                core
 oxiroute-config::canary                               core
 oxiroute-config::cipher_list                          core
 oxiroute-config::compression                          core
+oxiroute-config::config_history                         core
 oxiroute-config::connection_scheduling                core
 oxiroute-config::h2_windows                           core
 oxiroute-config::http                                 core
