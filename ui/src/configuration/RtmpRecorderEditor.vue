@@ -123,16 +123,40 @@ article.route-card.recorder-card
       label.field(data-field="rtmp_services[].applications[].recorders[].max_active_recorders")
         span Maximum active recorders
         input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")
+      label.field(data-field="rtmp_services[].applications[].recorders[].retention")
+        span When a storage quota is reached
+        Select(:model-value="recorder.retention" :options="retentionOptions" @update:modelValue="setRetention")
+        small Delete oldest removes the oldest finished recordings in the root, never an active one.
+    NullableLimitField(
+      v-model="recorder.retention_max_age_ms"
+      :default-value="2_592_000_000"
+      field-path="rtmp_services[].applications[].recorders[].retention_max_age_ms"
+      legend="Recording age"
+      input-label="Maximum recording age (ms)"
+      :max="315_360_000_000"
+      unbounded-label="Recordings never expire"
+    )
 </template>
 
 <script setup lang="ts" vapor>
-import type { RtmpRecorderConfig } from '../config'
+import Select from '#design/field/Select.vue'
+import type { SelectOption } from '#design/field/types'
+import type { RtmpRecorderConfig, RtmpRecorderRetention } from '../config'
 import NullableLimitField from './NullableLimitField.vue'
 
-defineProps<{
+const props = defineProps<{
   recorder: RtmpRecorderConfig
   index: number
 }>()
 
 const emit = defineEmits<{ remove: [] }>()
+
+const retentionOptions: SelectOption[] = [
+  { value: 'reject', label: 'Reject new recordings' },
+  { value: 'delete_oldest', label: 'Delete the oldest recordings' },
+]
+
+function setRetention(value: string): void {
+  props.recorder.retention = value as RtmpRecorderRetention
+}
 </script>

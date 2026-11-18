@@ -481,6 +481,8 @@ function newRecorder(): RtmpRecorderConfig {
     max_storage_bytes: null,
     max_storage_files: null,
     max_active_recorders: 8,
+    retention: 'reject',
+    retention_max_age_ms: null,
   }
 }
 

@@ -272,6 +272,10 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="rtmp_services[].applications[].recorders[].max_storage_bytes"] input').setValue(21_474_836_480)
     await wrapper.get('[data-field="rtmp_services[].applications[].recorders[].max_storage_files"] input').setValue(20_000)
     await wrapper.get('[data-field="rtmp_services[].applications[].recorders[].max_active_recorders"] input').setValue(16)
+    await wrapper.get('[data-field="rtmp_services[].applications[].recorders[].retention"] select').setValue('delete_oldest')
+    const retentionAge = wrapper.get('[data-field="rtmp_services[].applications[].recorders[].retention_max_age_ms"]')
+    await retentionAge.get('select').setValue('bounded')
+    await retentionAge.get('input').setValue(86_400_000)
     await findButton(wrapper, 'Add recorder').trigger('click')
     await wrapper.get('[aria-label="Remove recorder 2"]').trigger('click')
     await findButton(wrapper, 'Add application').trigger('click')
@@ -445,6 +449,8 @@ describe('ConfigurationWorkspace', () => {
           max_storage_bytes: 21_474_836_480,
           max_storage_files: 20_000,
           max_active_recorders: 16,
+          retention: 'delete_oldest',
+          retention_max_age_ms: 86_400_000,
         }],
       }],
     })

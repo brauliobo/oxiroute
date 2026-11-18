@@ -481,6 +481,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].recorders[].max_storage_bytes', kind: 'integer' },
   { path: 'rtmp_services[].applications[].recorders[].max_storage_files', kind: 'integer' },
   { path: 'rtmp_services[].applications[].recorders[].max_active_recorders', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].recorders[].retention', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].recorders[].retention_max_age_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].dash', kind: 'object' },
   { path: 'rtmp_services[].applications[].dash.cleanup', kind: 'boolean' },
   { path: 'rtmp_services[].applications[].dash.nested', kind: 'boolean' },

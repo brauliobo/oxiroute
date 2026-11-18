@@ -1,6 +1,7 @@
 import type { AccessLogConfig } from './model'
 
 export type RtmpRecorderStart = 'continuous' | 'manual'
+export type RtmpRecorderRetention = 'reject' | 'delete_oldest'
 export type RtmpAclAction = 'allow' | 'deny'
 export type RtmpTokenSource = 'stream_query'
 export type RtmpNotifyMethod = 'get' | 'post'
@@ -127,6 +128,8 @@ export interface RtmpRecorderConfig {
   max_storage_bytes: number | null
   max_storage_files: number | null
   max_active_recorders: number
+  retention: RtmpRecorderRetention
+  retention_max_age_ms: number | null
 }
 
 export interface RtmpCallbackConfig {

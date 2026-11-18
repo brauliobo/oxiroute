@@ -29,6 +29,8 @@ function recorder(): RtmpRecorderConfig {
     max_storage_bytes: 10_737_418_240,
     max_storage_files: 10_000,
     max_active_recorders: 8,
+    retention: 'reject',
+    retention_max_age_ms: null,
   }
 }
 
@@ -53,6 +55,10 @@ describe('RTMP recorder configuration editors', () => {
     await field('rtmp_services[].applications[].recorders[].max_storage_bytes').get('input').setValue(21_474_836_480)
     await field('rtmp_services[].applications[].recorders[].max_storage_files').get('input').setValue(20_000)
     await field('rtmp_services[].applications[].recorders[].max_active_recorders').get('input').setValue(16)
+    await field('rtmp_services[].applications[].recorders[].retention').get('select').setValue('delete_oldest')
+    const maxAge = field('rtmp_services[].applications[].recorders[].retention_max_age_ms')
+    await maxAge.get('select').setValue('bounded')
+    await maxAge.get('input').setValue(86_400_000)
 
     expect(model).toEqual({
       name: 'manual-archive',
@@ -76,9 +82,12 @@ describe('RTMP recorder configuration editors', () => {
       max_storage_bytes: 21_474_836_480,
       max_storage_files: 20_000,
       max_active_recorders: 16,
+      retention: 'delete_oldest',
+      retention_max_age_ms: 86_400_000,
     })
     expect(field('rtmp_services[].applications[].recorders[].max_queue_messages').get('input').attributes('max')).toBe('65536')
     expect(rotation.get('input').attributes('max')).toBe('2147483647')
+    expect(maxAge.get('input').attributes()).toMatchObject({ min: '1', max: '315360000000' })
   })
 
   it('adds default recorders, removes exact rows, and enforces the application limit', async () => {

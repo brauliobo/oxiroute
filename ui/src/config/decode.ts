@@ -825,7 +825,8 @@ function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
     nullableSafeInteger(value.rotation_interval_ms) && safeInteger(value.max_queue_messages) &&
     safeInteger(value.max_queue_bytes) && safeInteger(value.shutdown_timeout_ms) &&
     nullableSafeInteger(value.max_storage_bytes) && nullableSafeInteger(value.max_storage_files) &&
-    safeInteger(value.max_active_recorders)
+    safeInteger(value.max_active_recorders) && ['reject', 'delete_oldest'].includes(String(value.retention)) &&
+    nullableSafeInteger(value.retention_max_age_ms)
 }
 
 function isL4Service(value: unknown): value is L4ServiceConfig {

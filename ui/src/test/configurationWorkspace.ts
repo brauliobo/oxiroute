@@ -257,6 +257,8 @@ export function canonicalConfig(): CanonicalConfig {
                 max_storage_bytes: 10_737_418_240,
                 max_storage_files: 10_000,
                 max_active_recorders: 8,
+                retention: 'reject',
+                retention_max_age_ms: null,
               },
             ],
           },

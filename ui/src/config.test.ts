@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
+import { canonicalConfig } from './test/configurationWorkspace'
 import { contractConfigSnapshot } from './test/contractFixtures'
 
 const currentCanonicalFields = [
@@ -384,6 +385,8 @@ const currentCanonicalFields = [
   'rtmp_services[].applications[].recorders[].max_storage_bytes',
   'rtmp_services[].applications[].recorders[].max_storage_files',
   'rtmp_services[].applications[].recorders[].max_active_recorders',
+  'rtmp_services[].applications[].recorders[].retention',
+  'rtmp_services[].applications[].recorders[].retention_max_age_ms',
   'l4_services',
   'l4_services[].name',
   'l4_services[].upstream_pool',
@@ -513,6 +516,22 @@ describe('canonical field registry', () => {
     pool.algorithm = { type: 'weighted_round_robin', weights: [1, 2] }
     expect(isCanonicalConfig(config)).toBe(false)
     pool.algorithm = { type: 'weighted_round_robin', weights: ['1'] as unknown as number[] }
+    expect(isCanonicalConfig(config)).toBe(false)
+  })
+
+  it('decodes recorder retention and rejects values outside the canonical shape', () => {
+    const config = canonicalConfig()
+    const recorder = config.rtmp_services[0]!.applications[0]!.recorders[0]!
+    expect(isCanonicalConfig(config)).toBe(true)
+    recorder.retention = 'delete_oldest'
+    recorder.retention_max_age_ms = 2_592_000_000
+    expect(isCanonicalConfig(config)).toBe(true)
+    recorder.retention = 'archive' as typeof recorder.retention
+    expect(isCanonicalConfig(config)).toBe(false)
+    recorder.retention = 'reject'
+    recorder.retention_max_age_ms = '30d' as unknown as number
+    expect(isCanonicalConfig(config)).toBe(false)
+    delete (recorder as Partial<typeof recorder>).retention_max_age_ms
     expect(isCanonicalConfig(config)).toBe(false)
   })
 })
