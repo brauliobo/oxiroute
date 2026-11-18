@@ -79,6 +79,15 @@ impl Package {
         }
     }
 
+    pub(in crate::cli) fn token_destination(
+        &self,
+        explicit: Option<&Path>,
+    ) -> Result<PathBuf, CliError> {
+        Ok(self
+            .token_path(explicit)?
+            .unwrap_or_else(|| self.token_file.clone()))
+    }
+
     fn management(&self) -> Option<&Management> {
         self.management
             .get_or_init(|| self.configs.iter().find_map(|path| management_of(path)))

@@ -61,6 +61,8 @@ fn every_command_family_ends_its_help_with_examples() {
         "audit",
         "requests",
         "route",
+        "token",
+        "init",
         "server",
         "pool",
         "listener",

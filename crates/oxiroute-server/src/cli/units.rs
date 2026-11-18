@@ -94,3 +94,10 @@ pub(crate) fn timestamp(unix_ms: u64) -> String {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = std::fmt::Write::write_fmt(&mut text, format_args!("{byte:02x}"));
+        text
+    })
+}

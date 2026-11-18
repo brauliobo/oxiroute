@@ -199,6 +199,16 @@ pub(crate) const ROUTE_EXAMPLES: &str = "Examples:
   oxiroute route test example.com /static/app.js --method GET
   oxiroute route test /health --listener edge";
 
+pub(crate) const INIT_EXAMPLES: &str = "Examples:
+  oxiroute init proxy
+  oxiroute init static --format lua --file site.lua
+  oxiroute init rtmp --file - | oxiroute config check /dev/stdin";
+
+pub(crate) const TOKEN_EXAMPLES: &str = "Examples:
+  oxiroute token create
+  oxiroute token create --token-file ./management.token
+  oxiroute token rotate";
+
 pub(crate) const REQUESTS_EXAMPLES: &str = "Examples:
   oxiroute requests list --older-than 30s
   oxiroute requests show REQUEST_ID";

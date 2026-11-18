@@ -1,4 +1,8 @@
-use std::{cell::OnceCell, error::Error, path::Path};
+use std::{
+    cell::OnceCell,
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 use serde_json::Value;
 
@@ -78,6 +82,12 @@ impl<'a> Context<'a> {
             self.global.token(&self.package, selected)?
         };
         Ok(Client::new(endpoint, token, timeouts))
+    }
+
+    /// The file the management token lives in, or goes to when it is created.
+    pub(crate) fn token_destination(&self) -> Result<PathBuf, CliError> {
+        self.package
+            .token_destination(self.global.token_file.as_deref())
     }
 
     /// A client for the public probes, which never read the token file.

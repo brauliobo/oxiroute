@@ -154,6 +154,7 @@ body through, where `changed` counts the targets of the request.
 | Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt|history|rollback` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |
 | Events | `events list|follow` | Page through the bounded in-memory event ring, or follow its server-sent event stream with reconnect |
 | Audit | `audit list|status|tail` | Query and tail the redacted audit log of administrative actions |
+| Setup | `init proxy|static|rtmp`, `token create|rotate` | Write a minimal valid configuration in the format you choose, and create or rotate the management token file |
 | Diagnosis | `doctor` | Check the configuration, listen addresses, upstreams, certificate files, file modes and the systemd unit's sandbox in one prioritised report with monitoring exit codes |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Routing | `route test` | Ask the daemon which route, action and pool would serve a URL, or a host and path, with the route table of the active generation |
@@ -170,6 +171,23 @@ shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `str
 replayable requests of a server (see below).
 
 `oxiroute route test https://example.com/api/users` (or `route test HOST PATH`, optionally with `--method` and `--listener`) shows which route, action and pool would serve the request on each HTTP listener, using the route table of the active generation, without sending it. It exits 6 when no route serves it.
+
+## `init` and `token`: first run
+
+```sh
+oxiroute init proxy                       # writes ./oxiroute.kdl
+oxiroute token create --token-file ./management.token
+oxiroute doctor oxiroute.kdl
+oxiroute serve oxiroute.kdl
+```
+
+`init` writes a configuration that loads, validates and prepares: `proxy` (HTTP reverse proxy to one pool),
+`static` (static files from `public/`, which `init` creates) or `rtmp` (an RTMP `live` application), with
+a management API on `127.0.0.1:9900` (the CLI's default endpoint). `--format` chooses `kdl` (default), `lua`,
+`uci` or `hocon`; `--file -` prints instead of writing, and an existing file is kept unless `--force`.
+`token create` writes the management token as 64 random hex characters in a file only its owner can read
+and never replaces one; `token rotate` swaps in a new token atomically with the same owner and mode; the
+daemon reads the token when it starts, so restart it to accept the new one. Neither prints the token.
 
 ## `top`
 

@@ -14,6 +14,7 @@ mod doctor;
 mod drain;
 mod follow;
 mod route;
+mod setup;
 mod tls;
 
 use std::{

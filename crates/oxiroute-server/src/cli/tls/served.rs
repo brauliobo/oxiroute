@@ -1,5 +1,4 @@
 use std::{
-    fmt::Write as _,
     net::{IpAddr, TcpStream, ToSocketAddrs as _},
     path::Path,
 };
@@ -13,7 +12,7 @@ use openssl::{
 use serde_json::{Value, json};
 
 use super::expiry::Expiry;
-use crate::cli::{error::CliError, net::Timeouts};
+use crate::cli::{error::CliError, net::Timeouts, units::hex};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Target {
@@ -177,11 +176,4 @@ fn names(certificate: &X509) -> Vec<String> {
         .flatten()
         .filter_map(|name| name.dnsname().map(str::to_owned))
         .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut text, byte| {
-        let _ = write!(text, "{byte:02x}");
-        text
-    })
 }

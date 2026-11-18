@@ -15,6 +15,7 @@ use super::{
     generation::GenerationCommand,
     help,
     import::ImportCommand,
+    init::InitArgs,
     listener::ListenerCommand,
     man::ManArgs,
     overlay::OverlayCommand,
@@ -27,6 +28,7 @@ use super::{
     serve::ServeArgs,
     server::ServerCommand,
     tls::{self, TlsCommand},
+    token::TokenCommand,
     top::TopArgs,
     version::VersionArgs,
 };
@@ -146,6 +148,15 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: RegistryCommand,
     },
+    /// Write a minimal valid configuration for a proxy, static files or RTMP, in the syntax you choose.
+    #[command(after_help = help::INIT_EXAMPLES)]
+    Init(InitArgs),
+    /// Create and rotate the management token file.
+    #[command(after_help = help::TOKEN_EXAMPLES)]
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
     /// Import a native configuration.
     #[command(after_help = help::IMPORT_EXAMPLES)]
     Import {
@@ -186,6 +197,8 @@ impl Command {
                 command: TlsCommand::Operation(operation),
             } => operation.run(context),
             Self::Rtmp { command } => command.run(context),
+            Self::Init(args) => args.run(context),
+            Self::Token { command } => command.run(context),
             Self::Registry { command } => command.run(context),
             Self::Import { command } => command.run(context),
             Self::Version(args) => args.run(context),
