@@ -3,8 +3,7 @@ use std::time::SystemTime;
 use http::{
     HeaderValue, Response, StatusCode,
     header::{
-        ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName,
-        WWW_AUTHENTICATE,
+        ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, WWW_AUTHENTICATE,
     },
 };
 use serde::Serialize;

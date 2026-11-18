@@ -34,11 +34,12 @@ pub use callback::{
 };
 pub use catalog::{
     CatalogError, CatalogEvent, ENDED_STREAM_WINDOW_MS, EndedStreamSnapshot, MAX_ENDED_STREAMS,
-    MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
-    MediaSnapshot, OperationId, PublisherEndReason, PublisherSnapshot, RecorderDefinition, RecorderErrorCode,
-    RecorderId, RecorderPhase, RecorderSnapshot, RecorderTransition, RecorderTransitionKind, RecordingAction, RelayId, RelaySnapshot,
-    RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistryWorkStats, RtmpStreamPath,
-    RtmpStreamPathError, SessionId, StreamId, StreamKey, StreamProfile, StreamSnapshot, TrackSnapshot,
+    MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot,
+    OperationId, PublisherEndReason, PublisherSnapshot, RecorderDefinition, RecorderErrorCode,
+    RecorderId, RecorderPhase, RecorderSnapshot, RecorderTransition, RecorderTransitionKind,
+    RecordingAction, RelayId, RelaySnapshot, RtmpCapabilities, RtmpCatalogSnapshot,
+    RtmpRegistryWorkStats, RtmpStreamPath, RtmpStreamPathError, SessionId, StreamId, StreamKey,
+    StreamProfile, StreamSnapshot, TrackSnapshot,
 };
 pub(crate) use catalog::{PublisherRegistration, RtmpRegistry, SubscriberRegistration};
 pub use client::{

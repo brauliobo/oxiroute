@@ -75,7 +75,6 @@ pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
 pub use observability::log_filter::{apply_log_filter, init_logging};
-pub use observability::startup::announce_ready;
 pub use observability::monitoring::{
     ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,
@@ -93,6 +92,7 @@ pub use observability::operational_event::{
     emit_rtmp_access, flush_audit, worker_event_page,
 };
 pub use observability::prometheus::PrometheusError;
+pub use observability::startup::announce_ready;
 pub use observability::stats::HaproxyStatsApi;
 pub use observability::stats_page::HaproxyStatsPage;
 pub use routing::{
