@@ -12,7 +12,7 @@ impl MasterRunner {
         {
             use std::os::unix::fs::PermissionsExt as _;
 
-            std::fs::metadata(PRODUCTION_LAUNCHER).is_ok_and(|metadata| {
+            std::fs::metadata(worker_launcher()).is_ok_and(|metadata| {
                 metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
             })
         }
@@ -30,7 +30,7 @@ impl MasterRunner {
             );
         }
         Ok(Self {
-            launcher_path: PathBuf::from(PRODUCTION_LAUNCHER),
+            launcher_path: worker_launcher(),
             executable_path,
         })
     }

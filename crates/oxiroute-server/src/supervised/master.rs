@@ -50,6 +50,12 @@ use thiserror::Error;
 use super::worker;
 
 const PRODUCTION_LAUNCHER: &str = "/usr/lib/oxiroute/oxiroute-worker-launcher";
+const TEST_LAUNCHER_ENV: &str = "OXIROUTE_INTERNAL_TEST_WORKER_LAUNCHER";
+
+fn worker_launcher() -> PathBuf {
+    std::env::var_os(TEST_LAUNCHER_ENV)
+        .map_or_else(|| PathBuf::from(PRODUCTION_LAUNCHER), PathBuf::from)
+}
 const MASTER_INSTANCE_ID: &str = "oxiroute-stage-3";
 const INITIAL_GENERATION: GenerationId = GenerationId(1);
 const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);

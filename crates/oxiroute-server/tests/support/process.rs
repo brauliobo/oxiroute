@@ -423,6 +423,12 @@ fn spawn_server(
     if direct && token_path.is_some() {
         command.env("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME", "1");
     }
+    if !direct {
+        command.env(
+            "OXIROUTE_INTERNAL_TEST_WORKER_LAUNCHER",
+            env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
+        );
+    }
     if let Some(token_path) = token_path {
         command.env("OXIROUTE_MANAGEMENT_TOKEN_FILE", token_path);
     }
