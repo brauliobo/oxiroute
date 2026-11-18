@@ -753,7 +753,11 @@ Current constraints:
   `passive_health` reports `W_PASSIVE_HEALTH_MISSING`, because a server that only returns those
   statuses is never ejected. A pool whose `tls` sets `verify = "none"` reports
   `W_UPSTREAM_TLS_UNVERIFIED`. These are warnings: the configuration stays valid and the effective
-  policy does not change. Every retry also requires the configured
+  policy does not change. A kept-alive upstream connection that the origin closed before it sent
+  any response byte is not a retry: a request the route may replay (the `method_safety` and
+  `body_safety` boundary above, whatever `max_retries` is) goes again on a new connection to the same
+  server within the same attempt, on every data plane, and counts in neither `attempts`, the retry
+  budget, nor the server's passive health. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. A replay never returns to a server that
   already answered the request when `target = "next_server"`; it is not attempted at all when every

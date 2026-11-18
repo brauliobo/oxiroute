@@ -271,6 +271,20 @@ impl HttpRequestContext {
         Ok(Some(base.within(now, remaining)))
     }
 
+    pub(super) async fn reselect_attempted(&mut self) -> pingora::Result<()> {
+        let server = self
+            .attempted_upstreams
+            .last()
+            .cloned()
+            .ok_or_else(|| Error::new_in(ErrorType::InternalError))?;
+        let pool = self
+            .pool
+            .clone()
+            .ok_or_else(|| Error::new_in(ErrorType::InternalError))?;
+        self.selected = Some(pool.select_server_endpoint(&server, self.queue_tag).await?);
+        Ok(())
+    }
+
     /// The lease of the selected server, which the connection of the attempt owns from now on.
     pub(super) fn take_lease(&mut self) -> Option<crate::EndpointLease> {
         self.note_queue_wait();
@@ -432,6 +446,15 @@ impl Exchanged {
 }
 
 impl HttpRequestContext {
+    pub(super) fn closed_while_idle(&self, error: &Error, exchanged: Exchanged) -> bool {
+        self.replay_safe
+            && exchanged.body_replayable
+            && exchanged.response_retryable
+            && error.esource() == &pingora::ErrorSource::Upstream
+            && (matches!(error.retry, pingora::RetryType::ReusedOnly)
+                || error.etype() == &ErrorType::WriteError)
+    }
+
     /// An attempt failed after it connected, with `error`: records what the failure says of the server, releases the
     /// lease and decides, with the retry policy, whether the request goes on. What `error_while_proxy` settles for
     /// both paths.

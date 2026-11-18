@@ -676,6 +676,10 @@ pub trait ProxyHttp {
         e
     }
 
+    fn replaces_idle_upstream(&self, _session: &Session, _error: &Error, _ctx: &Self::CTX) -> bool {
+        false
+    }
+
     /// Called once per upstream attempt, right after [Self::upstream_peer()] returned, to let the
     /// application abandon the attempt while it is in progress.
     ///

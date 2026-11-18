@@ -145,6 +145,7 @@ impl super::super::LaneFront {
         ctx.route = Some(Arc::clone(route));
         let policy = &proxy.policy;
         ctx.connection_retryable = policy.max_retries > 0;
+        ctx.replay_safe = replay_safe;
         ctx.replay_retryable = policy.max_retries > 0 && replay_safe;
         ctx.evacuation_pin = LeftRunning::unmovable(false, replay_safe);
         if let Some(budget) = &policy.retry_budget {
@@ -240,7 +241,7 @@ impl super::super::LaneFront {
             client_left(stream)
         })
         .await?;
-        let (session, reused, release) = match Self::idle_session(ctx, upstream).await {
+        let mut connection = match Self::idle_session(ctx, upstream).await {
             Some(idle) => idle,
             None => {
                 unless_gone(Self::connect(ctx, upstream, timeouts), || {
@@ -249,23 +250,45 @@ impl super::super::LaneFront {
                 .await?
             }
         };
-        self.send_and_open(
-            stream,
-            ctx,
-            session,
-            (reused, release),
-            &timeouts,
-            forward,
-            progress,
-        )
-        .await
-        .map_err(|error| {
+        loop {
+            let (session, reused, release) = connection;
+            let sent = self
+                .send_and_open(
+                    stream,
+                    ctx,
+                    session,
+                    (reused, release),
+                    &timeouts,
+                    forward,
+                    progress,
+                )
+                .await;
             let exchanged = Exchanged {
                 body_replayable: progress.received == 0,
                 response_retryable: true,
             };
-            ctx.attempt_failed(error, exchanged)
+            match sent {
+                Err(error) if reused && ctx.closed_while_idle(&error, exchanged) => {
+                    connection = Self::redial(stream, ctx, upstream, timeouts).await?;
+                }
+                sent => return sent.map_err(|error| ctx.attempt_failed(error, exchanged)),
+            }
+        }
+    }
+
+    async fn redial(
+        stream: &mut Stream,
+        ctx: &mut HttpRequestContext,
+        upstream: &Connector,
+        timeouts: AttemptTimeouts,
+    ) -> Result<(Box<HttpSession>, bool, ReusePeer), Box<Error>> {
+        ctx.reselect_attempted()
+            .await
+            .map_err(|error| ctx.connect_failed(error.into_up()))?;
+        unless_gone(Self::connect(ctx, upstream, timeouts), || {
+            client_left(stream)
         })
+        .await
     }
 
     /// An idle connection to the selected server, when its address is fixed: no peer is built to ask for one.

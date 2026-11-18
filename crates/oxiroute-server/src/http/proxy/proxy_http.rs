@@ -233,11 +233,11 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
-        let exchanged = Exchanged {
-            body_replayable: request_body_replayable(session),
-            response_retryable: response_is_retryable(session),
-        };
-        ctx.attempt_failed(error, exchanged)
+        ctx.attempt_failed(error, exchanged_by(session))
+    }
+
+    fn replaces_idle_upstream(&self, session: &Session, error: &Error, ctx: &Self::CTX) -> bool {
+        ctx.closed_while_idle(error, exchanged_by(session))
     }
 
     /// A cached response that was written in full ends the request through an error, and so does a client that left

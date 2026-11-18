@@ -199,9 +199,10 @@ impl<S: Service> Reactor<S> {
     }
 
     pub(crate) fn fail(&mut self, token: Token, client: &mut Client<S>, failure: Failure) -> Step {
+        let service = Rc::clone(&client.service);
         let flow = client.flow();
         let upstream = flow.upstream.take();
-        if let Some(stale) = upstream.filter(|_| flow.closed_while_idle(failure)) {
+        if let Some(stale) = upstream.filter(|_| flow.closed_while_idle(failure, &service)) {
             return self.redial(token, client, stale);
         }
         self.release_upstream(upstream, false);
@@ -279,11 +280,12 @@ impl<S: Service> Flow<S> {
             && !self.origin.forwarded()
     }
 
-    fn closed_while_idle(&self, failure: Failure) -> bool {
+    fn closed_while_idle(&self, failure: Failure, service: &S) -> bool {
         self.reused
             && self.first_byte_at.is_none()
             && matches!(failure, Failure::UpstreamClosed | Failure::UpstreamWrite)
             && self.replayable()
+            && service.replay_safe(self.exchange.as_ref().expect("an exchange is served once"))
     }
 
     fn begin_attempt(

@@ -90,6 +90,13 @@ pub(super) fn response_is_retryable(session: &Session) -> bool {
         })
 }
 
+pub(super) fn exchanged_by(session: &Session) -> Exchanged {
+    Exchanged {
+        body_replayable: request_body_replayable(session),
+        response_retryable: response_is_retryable(session),
+    }
+}
+
 pub(super) fn request_body_replayable(session: &Session) -> bool {
     session.body_bytes_read() == 0
         || (!session.retry_buffer_truncated() && session.get_retry_buffer().is_some())

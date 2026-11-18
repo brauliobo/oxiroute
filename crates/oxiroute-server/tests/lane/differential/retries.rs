@@ -150,8 +150,18 @@ async fn a_status_the_route_does_not_retry_on_is_relayed_at_once() {
 }
 
 #[tokio::test]
-async fn an_origin_that_closes_without_answering_is_retried_on_the_empty_response_trigger() {
+async fn a_pooled_connection_the_origin_closed_unseen_is_replaced_without_a_retry() {
     const STEPS: &[Step] = &[Step::Reply(OK), Step::Drop, Step::Reply(OK)];
+    let outcomes = scenario(STEPS, |_| {}, &[GET]).await;
+    let (response, attempts) = outcomes.identical("closed pooled connection");
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+    assert_eq!(attempts, 2);
+    assert!(outcomes.classic_lines[1].contains("\"attempts\":1,"));
+}
+
+#[tokio::test]
+async fn an_origin_that_closes_without_answering_is_retried_on_the_empty_response_trigger() {
+    const STEPS: &[Step] = &[Step::Reply(OK), Step::Drop, Step::Drop, Step::Reply(OK)];
     let outcomes = scenario(
         STEPS,
         with_retry(retry(1, &[], &[HttpRetryTrigger::EmptyResponse])),
@@ -160,7 +170,8 @@ async fn an_origin_that_closes_without_answering_is_retried_on_the_empty_respons
     .await;
     let (response, attempts) = outcomes.identical("empty response");
     assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
-    assert_eq!(attempts, 2);
+    assert_eq!(attempts, 3);
+    assert!(outcomes.classic_lines[1].contains("\"attempts\":2,"));
     let outcomes = scenario(
         STEPS,
         with_retry(retry(1, &[], &[HttpRetryTrigger::ConnectFailure])),
@@ -169,7 +180,7 @@ async fn an_origin_that_closes_without_answering_is_retried_on_the_empty_respons
     .await;
     let (response, attempts) = outcomes.identical("empty response without the trigger");
     assert!(response.starts_with("HTTP/1.1 502 "), "{response}");
-    assert_eq!(attempts, 1);
+    assert_eq!(attempts, 2);
 }
 
 #[tokio::test]

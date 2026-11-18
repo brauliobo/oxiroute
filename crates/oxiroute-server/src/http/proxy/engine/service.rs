@@ -76,6 +76,10 @@ impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
         exchange.recover(failure)
     }
 
+    fn replay_safe(&self, exchange: &Exchange) -> bool {
+        exchange.replay_safe()
+    }
+
     fn answer(
         &self,
         exchange: &mut Exchange,

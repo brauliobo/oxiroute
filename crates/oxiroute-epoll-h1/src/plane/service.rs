@@ -261,6 +261,8 @@ pub trait Service: Send + Sync + 'static {
 
     fn recover(&self, exchange: &mut Self::Exchange, failure: Failure, now: Instant) -> Recovery;
 
+    fn replay_safe(&self, exchange: &Self::Exchange) -> bool;
+
     fn answer(
         &self,
         exchange: &mut Self::Exchange,

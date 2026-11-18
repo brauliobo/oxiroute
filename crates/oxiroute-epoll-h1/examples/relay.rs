@@ -118,6 +118,10 @@ impl Service for Relay {
         self.inner.recover(exchange, failure, now)
     }
 
+    fn replay_safe(&self, exchange: &Self::Exchange) -> bool {
+        self.inner.replay_safe(exchange)
+    }
+
     fn answer(
         &self,
         exchange: &mut Self::Exchange,

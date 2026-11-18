@@ -110,6 +110,10 @@ impl Exchange {
         })
     }
 
+    pub(super) fn replay_safe(&self) -> bool {
+        self.ctx.replay_safe
+    }
+
     pub(super) fn cancelled(&self) -> bool {
         self.ctx
             .evacuation()

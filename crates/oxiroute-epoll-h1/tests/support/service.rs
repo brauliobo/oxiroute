@@ -349,6 +349,10 @@ impl Service for Reference {
         Some(status)
     }
 
+    fn replay_safe(&self, _exchange: &Exchange) -> bool {
+        true
+    }
+
     fn cancelled(&self, _exchange: &Exchange) -> bool {
         self.cancel.load(Ordering::SeqCst) != 0
     }

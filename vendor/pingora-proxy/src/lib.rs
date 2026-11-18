@@ -453,13 +453,29 @@ where
         ended
     }
 
-    // One attempt on the selected peer: connect, proxy and release the upstream session
     async fn proxy_attempt(
         &self,
         session: &mut Session,
         ctx: &mut SV::CTX,
         peer: &HttpPeer,
     ) -> (bool, Option<Box<Error>>)
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
+        loop {
+            if let Some(ended) = self.proxy_connection(session, ctx, peer).await {
+                return ended;
+            }
+        }
+    }
+
+    async fn proxy_connection(
+        &self,
+        session: &mut Session,
+        ctx: &mut SV::CTX,
+        peer: &HttpPeer,
+    ) -> Option<(bool, Option<Box<Error>>)>
     where
         SV: ProxyHttp + Send + Sync,
         SV::CTX: Send + Sync,
@@ -471,7 +487,7 @@ where
             Some(connected) => connected,
             None => tokio::select! {
                 biased;
-                gone = session.downstream_session.closed() => return (false, Some(gone)),
+                gone = session.downstream_session.closed() => return Some((false, Some(gone))),
                 connected = connecting => connected,
             },
         };
@@ -543,18 +559,25 @@ where
                         (server_reused, error)
                     }
                 };
-                (
+                if client_reused
+                    && error
+                        .as_deref()
+                        .is_some_and(|e| self.inner.replaces_idle_upstream(session, e, ctx))
+                {
+                    return None;
+                }
+                Some((
                     server_reused,
                     error.map(|e| {
                         self.inner
                             .error_while_proxy(peer, session, e, ctx, client_reused)
                     }),
-                )
+                ))
             }
             Err(mut e) => {
                 e.as_up();
                 let new_err = self.inner.fail_to_connect(session, peer, ctx, e);
-                (false, Some(new_err.into_up()))
+                Some((false, Some(new_err.into_up())))
             }
         }
     }

@@ -32,7 +32,8 @@ pub(super) async fn execute_route_action(
                     body_is_empty,
                     route.policy.request_buffering,
                 );
-                ctx.replay_retryable = proxy.policy.max_retries > 0 && replay_safe && !upgrade;
+                ctx.replay_safe = replay_safe && !upgrade;
+                ctx.replay_retryable = proxy.policy.max_retries > 0 && ctx.replay_safe;
                 ctx.evacuation_pin = LeftRunning::unmovable(upgrade, replay_safe);
                 ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
                 if let Some(budget) = &proxy.policy.retry_budget {
