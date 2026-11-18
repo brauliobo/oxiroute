@@ -1,5 +1,5 @@
-import type { MonitoringSnapshot, RtmpCatalog, RtmpStats, TopologySnapshot } from '../api'
-import type { ConfigSnapshot } from '../config'
+import type { ConfigValidationResponse, MonitoringSnapshot, RtmpCatalog, RtmpStats, TopologySnapshot } from '../api'
+import type { CanonicalConfig, ConfigSaveResponse, ConfigSnapshot } from '../config'
 
 export const STREAM_ID = '2a130dea-5db7-43e0-afb8-f07c4bcb1814'
 export const RECORDER_ID = 'c76ad8c2-e575-4989-8fae-1a95566ff598'
@@ -818,6 +818,40 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     audit_mode: 'metadata',
   }]
   return snapshot
+}
+
+export function contractConfigValidation(config: CanonicalConfig): ConfigValidationResponse {
+  return {
+    candidateRevision: 'candidate-revision',
+    normalizedConfig: structuredClone(config),
+    configFormat: 'kdl',
+    compositional: false,
+    dependencyCount: 0,
+    configPreview: `version ${config.version}\n`,
+    diagnostics: [],
+    restartRequired: false,
+    restartReasons: [],
+    topology: {
+      schemaVersion: 1,
+      state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1_750_000_000_000 },
+      nodes: [],
+      edges: [],
+      overlays: [],
+    },
+  }
+}
+
+export function contractConfigSave(): ConfigSaveResponse {
+  return {
+    diskRevision: 'saved-disk-revision',
+    candidateRevision: 'saved-candidate-revision',
+    activeRevision: 'active-revision',
+    outcome: 'saved_pending_activation',
+    activationState: 'pending',
+    restartRequired: false,
+    restartReasons: [],
+    diagnostics: [],
+  }
 }
 
 export function jsonResponse(payload: unknown, status = 200): Response {

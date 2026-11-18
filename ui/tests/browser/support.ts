@@ -11,6 +11,10 @@ import {
   emptyConfigSnapshot,
 } from '../../src/test/contractFixtures'
 
+export {
+  contractConfigSave as configSaveResponse,
+  contractConfigValidation as configValidation,
+} from '../../src/test/contractFixtures'
 export { shutdownStream, sse, type SseMockResponse } from './support/sse'
 
 export const MANAGEMENT_TOKEN = 'browser-test-management-token'
@@ -117,38 +121,6 @@ export function managedAcmeConfigSnapshot(): ConfigSnapshot {
     },
   }]
   return snapshot
-}
-
-export function configValidation(config: CanonicalConfig): Record<string, unknown> {
-  return {
-    candidateRevision: 'candidate-revision',
-    normalizedConfig: structuredClone(config),
-    configFormat: 'kdl',
-    compositional: false,
-    dependencyCount: 0,
-    configPreview: `version ${config.version}\n`,
-    diagnostics: [],
-    restartRequired: false,
-    topology: {
-      schemaVersion: 1,
-      state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1_750_000_000_000 },
-      nodes: [],
-      edges: [],
-      overlays: [],
-    },
-  }
-}
-
-export function configSaveResponse(): Record<string, unknown> {
-  return {
-    diskRevision: 'saved-disk-revision',
-    candidateRevision: 'saved-candidate-revision',
-    activeRevision: 'active-revision',
-    outcome: 'saved_pending_activation',
-    activationState: 'pending',
-    restartRequired: false,
-    diagnostics: [],
-  }
 }
 
 export function managementEventPage() {
