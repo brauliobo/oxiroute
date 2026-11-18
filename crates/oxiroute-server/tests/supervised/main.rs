@@ -53,12 +53,14 @@ use rustix::fs::OFlags;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::time::{sleep, timeout};
 
+mod acme;
 mod configs;
 mod h3_flows;
 mod lifecycle;
 mod panic;
 mod reload;
 mod replacement;
+mod stores;
 mod udp;
 
 #[allow(clippy::wildcard_imports)]

@@ -229,6 +229,10 @@ name = "process_rtmp_runtime"
 path = "tests/process/rtmp_runtime/main.rs"
 
 [[test]]
+name = "process_store_reload"
+path = "tests/process/store_reload.rs"
+
+[[test]]
 name = "process_top"
 path = "tests/process/top.rs"
 
