@@ -158,7 +158,7 @@ this command only**; a monitoring system reads them as written:
 | --- | --- | --- |
 | `0` | OK | Every judged pool has all servers available and nothing below is wrong |
 | `1` | WARNING | A server is missing from a pool, a queued request waited longer than `--max-queue-wait`, a stuck request, a refused configuration file, a retired generation draining longer than `--max-retired-age`, a registry lease late for a heartbeat |
-| `2` | CRITICAL | A pool has fewer than `--crit-available-below` (default 1) available servers, the process is not ready, an overdue request (a request past its total deadline, which is a router bug), the registry store is degraded, a failed `--canary` |
+| `2` | CRITICAL | A pool has fewer than `--crit-available-below` (default 1; a pool with `registration` and no servers yet is OK with a note unless `--warn-available-below` or `--crit-available-below` is given) available servers, the process is not ready, an overdue request (a request past its total deadline, which is a router bug), the registry store is degraded, a failed `--canary` |
 | `3` | UNKNOWN | The endpoint cannot be reached or does not answer a status page, the answer is not understood, a `--pool` does not exist, or an option is wrong (a usage error is `3`, not `2`) |
 
 `check` reads the public `/status.json`, so it needs no token: use `--endpoint`, or `--socket PATH` for the
@@ -218,6 +218,17 @@ under the packaged unit's `ProtectSystem=strict`, or a directory its user may no
 on the host). `config diff --exit-code` and `config fmt --check|--diff` use exit `1`, "ran and found a
 difference"; the categories `2` to `9` are unchanged.
 
+## Import
+
+`oxiroute import nginx|haproxy|squid|apache|varnish CONFIG` reads the native file (a relative `CONFIG` is
+relative to the current directory; `nginx --root-prefix` only roots the absolute paths inside it). A
+`CONFIG` that cannot be read exits `3`. `--emit report` (the default) prints the evidence as JSON, always in
+JSON whatever `--format` says; `--emit preview` prints the finalized configuration in `--format`. Both exit
+`1` while blockers remain: the report is still printed, a preview is not, and `stderr` lists each blocker
+with its code, `FILE:LINE` and reason. For nginx it also names the overlay flags that can resolve blockers
+(`--default-access-log-file`, `--x-accel-controls-absent`, `--upstream-tls`, `--bearer-token-file`,
+`--recording-root`, `--default-error-server`, `--host-timezone`). Exit `0` means no blockers.
+
 ## Examples
 
 ```sh
@@ -229,6 +240,7 @@ oxiroute --output json server show --pool public-v4 --pool public-v6 origin-a
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 oxiroute generation rollback
 oxiroute import nginx /etc/nginx/nginx.conf --emit report
+oxiroute import nginx /etc/nginx/nginx.conf --emit preview --format kdl > candidate.kdl
 oxiroute import squid /etc/squid/squid.conf --emit report
 oxiroute import apache /etc/httpd/conf/httpd.conf --emit report
 oxiroute import apache /etc/httpd/conf/httpd.conf --shadow-port-offset 10000 --emit preview

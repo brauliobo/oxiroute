@@ -25,28 +25,32 @@ fragments use the notation of CONFIG_SPEC (the KDL file uses the same names).
 
 1. Start the worker and probe its health path from another host: `curl -si http://192.0.2.13:9000/__fit`
    must answer `200` (see [worker-side health](#worker-side-health-recipes)).
-2. Edit the active configuration as JSON, validate, apply:
+2. Edit the stored file in its own format, review the change, apply:
 
 ```sh
-oxiroute --output json config get > "$work/cfg.json"
-jq '(.config.upstream_pools[] | select(.name=="gpu-render") | .servers) +=
-    [{"name":"node-c","endpoint":{"type":"socket","address":"192.0.2.13:9000"},"max_connections":1}]' \
-  "$work/cfg.json" > "$work/new.json"
-oxiroute config diff "$work/new.json"        # only the new server may differ
-oxiroute config validate "$work/new.json"
-oxiroute config apply "$work/new.json"       # revision-checked, atomic write, live reload
+oxiroute config edit --wait                  # $EDITOR on the stored text; validates, shows the diff, applies
 oxiroute server show --pool gpu-render node-c
 ```
 
+Or from a prepared file, in any native format (comments and Lua logic are kept):
+
+```sh
+oxiroute config show > "$work/new.kdl" && "$EDITOR" "$work/new.kdl"
+oxiroute config diff --text "$work/new.kdl"  # only the new server may differ
+oxiroute config validate "$work/new.kdl"
+oxiroute config apply --wait "$work/new.kdl" # revision-checked, atomic write, live reload
+```
+
 The server starts `unknown` and turns `healthy` after its first successful probe. With `first`, order is
-priority: an appended server only receives overflow. `apply` writes through the daemon, so the service
-account needs write access to the configuration directory (else `write_failed`, nothing changes). A root
-with templates or native references answers `422 E_COMPOSITIONAL_ROOT`: use the file flow below. `config
-get` redacts RTMP token secrets and callback URL userinfo and query values as `<redacted>`; the daemon
-restores each placeholder from the stored configuration on `apply`, so a redacted body keeps the stored
-secrets (an unchanged body answers `unchanged_active`). A placeholder that matches nothing stored, for
-example under a renamed application, is refused with `422` and nothing is written; send the literal
-value to set or rotate a secret.
+priority: an appended server only receives overflow. `apply` and `edit` write through the daemon, so the
+service account needs write access to the configuration directory (else exit `8` with the fix named,
+nothing changes). They store the text you wrote, so a root with templates or native references is applied
+as written. The text `config show` prints replaces RTMP token secrets and callback URL credentials with
+`<redacted:...>` placeholders; the daemon restores each placeholder from the stored configuration on
+`apply`, `diff` and `validate`. A placeholder that matches nothing stored, for example under a renamed
+application, is refused with `422 redacted_secret_unresolved` and nothing is written; write the literal
+value to set or rotate a secret. A text the daemon cannot redact safely is withheld rather than printed.
+Applying text equal to the stored file writes nothing and says so.
 
 ## Let machines register themselves
 
@@ -89,10 +93,7 @@ by hand, and a dead machine simply leaves when its lease runs out. A machine in 
 ```sh
 oxiroute server drain --pool gpu-render node-c
 oxiroute server show --pool gpu-render node-c          # wait for 0 active leases
-oxiroute --output json config get > "$work/cfg.json"
-jq '.config.upstream_pools |= map(if .name=="gpu-render"
-      then .servers |= map(select(.name!="node-c")) else . end)' "$work/cfg.json" > "$work/new.json"
-oxiroute config validate "$work/new.json" && oxiroute config apply "$work/new.json"
+oxiroute config edit --wait        # delete the node-c server block
 ```
 
 A dead machine needs no drain. A pool cannot have zero servers (`422`) unless it has a `registration`
@@ -225,9 +226,10 @@ gpu-render --pool voice-tts node-a` returns the machine to the pools.
 
 ## Apply configuration safely
 
-Prefer the JSON flow (`config get`, `diff`, `validate`, `apply`): `validate` prepares the complete runtime
-against the running process and `apply` refuses a stale base (`409`). Use the file flow for a hand-written
-file with comments or templates:
+Prefer the daemon flow (`config edit`, or `config show`, `diff`, `validate`, `apply` on a file in the daemon's
+own format): `validate` prepares the complete runtime against the running process and `apply` refuses a stale
+base (`409`, exit `7`) and keeps comments and templates. Use the file flow when the daemon cannot write its
+file (`configWritable: false`):
 
 ```sh
 cfg=/etc/oxiroute/oxiroute.kdl
@@ -241,7 +243,8 @@ oxiroute status                                          # activeRevision follow
 - `config check` prints one `warning: <code>: <message>` line per setting that is valid but cannot take
   effect, such as status retries on a pool without `passive_health`; warnings do not change the exit code.
 - `config check` prepares a full generation, including binding listeners, so on the host that runs those
-  listeners it fails for that reason: check on a staging host, or use `config validate`.
+  listeners it fails for that reason: check on a staging host, or use `config validate`. A refused file
+  exits `3` with `FILE:LINE`, the failing setting and a hint.
 - Write by rename in the same directory with the original owner and mode; the watcher observes the parent
   directory. `systemctl reload oxiroute` or `oxiroute generation reload` forces an immediate reconcile.
 - In-flight requests finish on the retired worker. A listener address that cannot be bound rejects the
@@ -251,8 +254,8 @@ oxiroute status                                          # activeRevision follow
 silent: it is logged once at error level (`oxiroute::config`) with the failing setting and, for KDL syntax,
 the line; `events list` shows `configuration_reload` / `rejected`; `oxiroute_config_rejections_total` rises;
 `generation status` shows `lastRejection` and `degraded: true` until the next acceptable file; and
-`oxiroute check` exits `1` with `configuration refused N s ago`. `422` and `config check` print
-`<code>: <path>: <detail>`. (0.5.4 gave no signal: compare `activeRevision` with the disk revision about 5 s
+`oxiroute check` exits `1` with `configuration refused N s ago`. `422`, `config validate|apply|edit` and
+`config check` print `<code> <file>:<line> at <path>: <detail>` with a `hint:` line and exit `3`. (0.5.4 gave no signal: compare `activeRevision` with the disk revision about 5 s
 after every write.)
 
 ## Roll back a generation
@@ -556,7 +559,8 @@ oxiroute --socket /run/oxiroute/status.sock check --max-inflight-age 2h --json
 ```
 
 What it judges: the process is ready; every pool has enough available servers (`--warn-available-below`,
-default any missing; `--crit-available-below`, default 1); no queued request waited longer than
+default any missing; `--crit-available-below`, default 1, except that a pool that takes registrations and
+has no servers yet is OK with a note until you set a threshold); no queued request waited longer than
 `--max-queue-wait` (5 s); no request is older than `--max-inflight-age` (off by default; size it to the
 longest legitimate job); no overdue or stuck requests; the last configuration file was accepted; no
 replaced generation drains longer than `--max-retired-age` (1 h); registered leases are renewed and the

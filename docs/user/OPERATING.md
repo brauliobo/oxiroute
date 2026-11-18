@@ -107,8 +107,16 @@ oxiroute generation rollback
 ```
 
 `config check` reads a native file (kdl, lua, uci, hocon) without a daemon or a token. `config validate FILE`
-is the daemon-side check of a canonical JSON configuration, the document `config get --output json` prints
-under `config`; it does not read native files. `generation reload --wait` returns when the candidate
+is the daemon-side check of any native file (or a JSON document such as the `config` of `config get --output
+json`): it resolves it exactly as the daemon loads its own file, prepares the complete runtime and stores
+nothing. `config diff FILE` lists what the file changes against the running configuration by setting name
+(`--against disk` for the stored one, `--text` for the text diff, `--exit-code` to exit `1` on differences),
+and `config apply FILE` stores the file's own text (comments and Lua logic kept) with the revision of the
+stored file as a precondition. `config edit` does the same through `$EDITOR`, and `config show` prints the
+stored text (`--active` for the running configuration). A refused file exits `3` with each diagnostic's code,
+`FILE:LINE`, setting and a hint. When the daemon cannot write its file (`configWritable: false` in `status`,
+as under the packaged read-only sandbox) `apply` and `edit` stop with exit `8` and name the `ReadWritePaths`
+drop-in that allows it. `generation reload --wait` returns when the candidate
 revision is active, or fails with the first diagnostic when the file is refused; `--timeout` bounds the
 wait (30s by default).
 

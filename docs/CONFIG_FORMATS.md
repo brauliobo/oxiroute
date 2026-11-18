@@ -291,6 +291,12 @@ output, which remains evidence rather than a configuration source.
 - API drafts are typed JSON and are rendered in the root path's format. A typed save normalizes
   formatting and cannot preserve source constructs. For that reason the backend refuses to replace
   any root marked compositional by templates or native references (`E_COMPOSITIONAL_ROOT`).
+- Authored-text saves (`GET|PUT /api/v1/config/source`, `config apply|edit`) store the submitted bytes in
+  the format of the daemon's own file, so comments, formatting, Lua logic, templates and native references
+  survive; a text in another format is refused (`E_FORMAT_MISMATCH`). `config fmt` and `config compose`
+  render the typed result and do not preserve comments or the author's ordering. Inline RTMP token secrets
+  and callback URL credentials are shown as `<redacted:...>` placeholders in the stored text the API returns
+  and are restored when the text is submitted back; a text the daemon cannot redact safely is withheld.
 - The browser consumes format-preserving previews and can save a non-compositional root in any
   supported syntax. It disables typed editing/save controls for compositional roots while retaining
   inspection and server validation.
