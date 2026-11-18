@@ -26,6 +26,7 @@ export interface ActionPlan<Scope extends string, Context, Result> {
   scope: Scope
   failure: string
   confirm?: ConfirmRequest
+  reloadOnSuccess?: boolean
   run: (context: Context, token: string) => Promise<Result>
   succeeded: (result: Result) => Success
 }
@@ -64,7 +65,7 @@ export function useActionRunner<Scope extends string, Context>(options: RunnerOp
     try {
       const { tone, summary, details = [] } = plan.succeeded(await plan.run(context, options.token()))
       publish({ scope: plan.scope, tone, summary, details })
-      return true
+      return plan.reloadOnSuccess !== false
     } catch (error) {
       if (isStatus(error, 401)) options.onUnauthorized()
       publish(failureOutcome(plan.scope, plan.failure, error))

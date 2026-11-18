@@ -72,6 +72,16 @@ describe('useActionRunner', () => {
     expect(outcome.value).toBeNull()
   })
 
+  it('skips the reload after a success when the plan says nothing changed, but still reloads after a conflict', async () => {
+    const reload = vi.fn(async () => undefined)
+    const { outcome, perform } = runner({ reload })
+    await perform(plan({ reloadOnSuccess: false }))
+    expect(outcome.value?.tone).toBe('ok')
+    expect(reload).not.toHaveBeenCalled()
+    await perform(plan({ reloadOnSuccess: false, run: async () => { throw new ApiError(409, 'Changed.', {}) } }))
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
   it('names the failure, keeps it and does not reload', async () => {
     const reload = vi.fn(async () => undefined)
     const { outcome, perform } = runner({ reload })

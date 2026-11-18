@@ -51,6 +51,7 @@ export const deleteConfirmation = (recording: Recording): ConfirmRequest => ({
 export const downloadPlan = (recording: Recording, env: PlanEnvironment): RecordingPlan<void> => ({
   scope: RECORDINGS_SCOPE,
   failure: `download ${recording.name}`,
+  reloadOnSuccess: false,
   run: (_, token) => reloadWhenGone(async () => {
     env.supersede()
     const { path } = await createRecordingTicket(recording.id, token)

@@ -489,7 +489,7 @@ describe('delete', () => {
 
     const alert = wrapper.get('[data-feedback] [role="alert"]').text()
     expect(alert).toContain('Could not delete cam-front-2026-01-01T12-00-00.flv: recording is still being written.')
-    expect(alert).toContain('Wait until its recorder stops')
+    expect(alert).toContain('cannot be deleted until its recorder stops')
     expect(lists()).toHaveLength(2)
   })
 
