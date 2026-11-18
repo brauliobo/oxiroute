@@ -60,7 +60,7 @@
     padding-inline: var(--ox-space-5);
     border-radius: var(--ox-radius-pill);
     font-size: var(--ox-text-md);
-    letter-spacing: 0.02em;
+    letter-spacing: var(--ox-tracking-label);
   }
 
   .ox-chip[aria-pressed='true']::before {

@@ -15,7 +15,7 @@
     background: color-mix(in srgb, currentcolor 10%, transparent);
     font-size: var(--ox-text-xs);
     font-weight: var(--ox-weight-bold);
-    line-height: 1.5;
+    line-height: var(--ox-leading-body);
     white-space: nowrap;
   }
 
@@ -39,7 +39,7 @@
     background: currentcolor;
   }
 
-  .ox-dot.ox-tone-info { border-radius: 1px; }
+  .ox-dot.ox-tone-info { border-radius: var(--ox-radius-xs); }
 
   .ox-dot.ox-tone-warn {
     border-radius: 0;

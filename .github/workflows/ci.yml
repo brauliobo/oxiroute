@@ -322,6 +322,10 @@ jobs:
         run: pnpm verify:bundle
         working-directory: ui
 
+      - name: Lint the design system styles and hold the console to its colour and duplicate-class baselines
+        run: pnpm verify:css
+        working-directory: ui
+
   stats-ui:
     name: Stats page build, embedded assets and browser tests
     runs-on: ubuntu-24.04
@@ -375,8 +379,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
         working-directory: ui
 
-      - name: Run stats page browser tests with bounded workers
-        run: pnpm exec playwright test --project=stats-chromium --project=stats-mobile-chromium --workers=2
+      - name: Run stats page and design gallery browser tests with bounded workers
+        run: pnpm exec playwright test --project=stats-chromium --project=stats-mobile-chromium --project=gallery-chromium --workers=2
         working-directory: ui
 
       - name: Upload stats page browser diagnostics
