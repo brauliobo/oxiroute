@@ -109,27 +109,7 @@ impl<'a> StatusReporter<'a> {
         let events = event_page
             .events
             .iter()
-            .map(|event| WorkerEventRecord {
-                cursor: event.cursor,
-                timestamp_unix_ms: event.timestamp_unix_ms,
-                event: event.event.as_str().to_owned(),
-                outcome: event.outcome.as_str().to_owned(),
-                revision: event.revision.as_ref().map(ToString::to_string),
-                certificate: event.certificate.clone(),
-                correlation_id: event.correlation_id.clone(),
-                source: event.source.clone(),
-                operation: event.operation.clone(),
-                rtmp: event.rtmp.as_ref().map(|detail| WorkerRtmpDetail {
-                    service: detail.service.clone(),
-                    application: detail.application.clone(),
-                    stream: detail.stream.clone(),
-                    stream_id: detail.stream_id.clone(),
-                    session_id: detail.session_id.clone(),
-                    role: detail.role.clone(),
-                    reason: detail.reason.clone(),
-                    recorder: detail.recorder.clone(),
-                }),
-            })
+            .map(event_record)
             .collect::<Vec<_>>();
         let next_event_cursor = if event_page.has_more {
             event_page
@@ -195,6 +175,30 @@ impl<'a> StatusReporter<'a> {
             events,
         };
         (status, next_event_cursor)
+    }
+}
+
+fn event_record(event: &WorkerEventSnapshot) -> WorkerEventRecord {
+    WorkerEventRecord {
+        cursor: event.cursor,
+        timestamp_unix_ms: event.timestamp_unix_ms,
+        event: event.event.as_str().to_owned(),
+        outcome: event.outcome.as_str().to_owned(),
+        revision: event.revision.as_ref().map(ToString::to_string),
+        certificate: event.certificate.clone(),
+        correlation_id: event.correlation_id.clone(),
+        source: event.source.clone(),
+        operation: event.operation.clone(),
+        rtmp: event.rtmp.as_ref().map(|detail| WorkerRtmpDetail {
+            service: detail.service.clone(),
+            application: detail.application.clone(),
+            stream: detail.stream.clone(),
+            stream_id: detail.stream_id.clone(),
+            session_id: detail.session_id.clone(),
+            role: detail.role.clone(),
+            reason: detail.reason.clone(),
+            recorder: detail.recorder.clone(),
+        }),
     }
 }
 

@@ -16,7 +16,8 @@ use std::{
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, AdmissionClose, Doorbell, GenerationManager, GenerationStatus,
-    ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot, WorkerNotice,
+    ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot,
+    WorkerEventSnapshot, WorkerNotice,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
 };
