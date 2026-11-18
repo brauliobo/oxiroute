@@ -136,7 +136,7 @@ impl Ring {
             return;
         };
         if let Some(fd) = slot.fd.as_ref() {
-            let _ = rustix::net::sockopt::set_socket_linger(fd, Some(Duration::ZERO));
+            let _ = rustix::net::connect_unspec(fd);
         }
         let _ = self.queue.cancel(key);
     }
