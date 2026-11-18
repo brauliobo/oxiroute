@@ -1,17 +1,63 @@
-//! Response content checks of `r2tool load`: body fill, gzip integrity, header values, presence and absence.
+//! Response content checks of `r2tool load`: body fill, gzip, brotli and zstd integrity, header values, presence and
+//! absence.
 
 use std::io::Read as _;
 
 use hyper::header::HeaderMap;
 
+use crate::{Flags, flag};
+
+#[derive(Clone, Copy)]
+pub enum Coding {
+    Gzip,
+    Brotli,
+    Zstd,
+}
+
+impl Coding {
+    const ALL: [Self; 3] = [Self::Gzip, Self::Brotli, Self::Zstd];
+
+    fn token(self) -> &'static str {
+        match self {
+            Self::Gzip => "gzip",
+            Self::Brotli => "br",
+            Self::Zstd => "zstd",
+        }
+    }
+
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Gzip => "expect-gzip-bytes",
+            Self::Brotli => "expect-br-bytes",
+            Self::Zstd => "expect-zstd-bytes",
+        }
+    }
+
+    fn decode(self, bytes: &[u8], limit: u64) -> Option<Vec<u8>> {
+        let mut decoded = Vec::new();
+        let result = match self {
+            Self::Gzip => flate2::read::MultiGzDecoder::new(bytes).take(limit).read_to_end(&mut decoded),
+            Self::Brotli => brotli::Decompressor::new(bytes, 4096).take(limit).read_to_end(&mut decoded),
+            Self::Zstd => zstd::stream::read::Decoder::new(bytes).ok()?.take(limit).read_to_end(&mut decoded),
+        };
+        result.ok().map(|_| decoded)
+    }
+}
+
+/// `--expect-gzip-bytes N`, `--expect-br-bytes N` or `--expect-zstd-bytes N`: the coding the response must carry and
+/// the exact decoded length.
+pub fn expected_coding(flags: &Flags) -> Option<(Coding, usize)> {
+    Coding::ALL.into_iter().find_map(|coding| flags.get(coding.flag()).map(|_| (coding, flag(flags, coding.flag(), 0))))
+}
+
 /// Content checks beyond status and length: every body byte equals `fill`, a header has an exact value, a header is
-/// present with any value, a header is absent. `--expect-gzip-bytes N` validates gzip integrity and N decoded bytes
-/// before checking the fill byte. A proxy with the right size but wrong content, or incorrect header rules, counts as
-/// errors.
+/// present with any value, a header is absent. `--expect-gzip-bytes N` (or brotli, zstd) validates the coded body's
+/// integrity and N decoded bytes before checking the fill byte. A proxy with the right size but wrong content, or
+/// incorrect header rules, counts as errors.
 #[derive(Default)]
 pub struct Checks {
     pub fill: Option<u8>,
-    pub gzip_bytes: Option<usize>,
+    pub coded: Option<(Coding, usize)>,
     pub header: Option<(String, String)>,
     pub present: Option<String>,
     pub absent: Option<String>,
@@ -19,14 +65,13 @@ pub struct Checks {
 
 impl Checks {
     pub fn body(&self, bytes: &[u8], encoding: Option<&str>) -> bool {
-        if let Some(length) = self.gzip_bytes {
-            if !encoding.is_some_and(|encoding| encoding.eq_ignore_ascii_case("gzip")) {
+        if let Some((coding, length)) = self.coded {
+            if !encoding.is_some_and(|encoding| encoding.eq_ignore_ascii_case(coding.token())) {
                 return false;
             }
-            let mut decoded = Vec::new();
-            let result = flate2::read::MultiGzDecoder::new(bytes).take(length as u64 + 1).read_to_end(&mut decoded);
-            return result.is_ok() && decoded.len() == length
-                && self.fill.is_none_or(|byte| decoded.iter().all(|&found| found == byte));
+            return coding.decode(bytes, length as u64 + 1).is_some_and(|decoded| {
+                decoded.len() == length && self.fill.is_none_or(|byte| decoded.iter().all(|&found| found == byte))
+            });
         }
         self.fill.is_none_or(|byte| bytes.iter().all(|&found| found == byte))
     }
@@ -67,7 +112,7 @@ mod tests {
     fn checks(fill: Option<u8>, header: Option<(&str, &str)>, absent: Option<&str>) -> Checks {
         Checks {
             fill,
-            gzip_bytes: None,
+            coded: None,
             header: header.map(|(name, value)| (name.to_owned(), value.to_owned())),
             absent: absent.map(str::to_owned),
             ..Checks::default()
@@ -80,16 +125,37 @@ mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(b"xxxx").expect("encode fixture");
         let mut bytes = encoder.finish().expect("gzip fixture");
-        let valid = Checks { fill: Some(b'x'), gzip_bytes: Some(4), ..Checks::default() };
+        let valid = Checks { fill: Some(b'x'), coded: Some((Coding::Gzip, 4)), ..Checks::default() };
         assert!(valid.body(&bytes, Some("gzip")));
         assert!(!valid.body(&bytes, None));
         assert!(!valid.body(&bytes[..bytes.len() - 1], Some("gzip")));
-        assert!(!Checks { fill: Some(b'y'), gzip_bytes: Some(4), ..Checks::default() }.body(&bytes, Some("gzip")));
-        assert!(!Checks { fill: Some(b'x'), gzip_bytes: Some(3), ..Checks::default() }.body(&bytes, Some("gzip")));
+        let coded = |fill, length| Checks {
+            fill: Some(fill),
+            coded: Some((Coding::Gzip, length)),
+            ..Checks::default()
+        };
+        assert!(!coded(b'y', 4).body(&bytes, Some("gzip")));
+        assert!(!coded(b'x', 3).body(&bytes, Some("gzip")));
         let checksum = bytes.len() - 8;
         bytes[checksum] ^= 1;
         assert!(!valid.body(&bytes, Some("gzip")));
         assert!(!valid.body(b"invalid gzip", Some("gzip")));
+    }
+
+    #[test]
+    fn brotli_and_zstd_checks_require_the_coding_and_exact_decoded_bytes() {
+        use std::io::Write as _;
+        let mut brotli = Vec::new();
+        brotli::CompressorWriter::new(&mut brotli, 4096, 1, 22).write_all(b"xxxx").expect("brotli fixture");
+        let zstd = zstd::encode_all(&b"xxxx"[..], 1).expect("zstd fixture");
+        for (coding, token, bytes) in [(Coding::Brotli, "br", brotli), (Coding::Zstd, "zstd", zstd)] {
+            let valid = Checks { fill: Some(b'x'), coded: Some((coding, 4)), ..Checks::default() };
+            assert!(valid.body(&bytes, Some(token)));
+            assert!(!valid.body(&bytes, Some("gzip")));
+            assert!(!valid.body(&bytes, None));
+            assert!(!Checks { coded: Some((coding, 3)), ..Checks::default() }.body(&bytes, Some(token)));
+            assert!(!valid.body(b"invalid", Some(token)));
+        }
     }
 
     #[test]

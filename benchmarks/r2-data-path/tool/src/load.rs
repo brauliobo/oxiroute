@@ -38,7 +38,7 @@ use tokio::{
 };
 use tokio_rustls::TlsConnector;
 
-use crate::checks::{Checks, header_value};
+use crate::checks::{Checks, expected_coding, header_value};
 
 use crate::{Flags, flag, h3client};
 
@@ -369,7 +369,7 @@ fn spec_from(flags: &Flags) -> Spec {
         }),
         present: lower("expect-has-header"),
         absent: lower("expect-no-header"),
-        gzip_bytes: flags.get("expect-gzip-bytes").map(|value| value.parse().expect("--expect-gzip-bytes BYTES")),
+        coded: expected_coding(flags),
     };
     let scheme = if matches!(proto, Proto::H2Tls | Proto::H3) { "https" } else { "http" };
     Spec {

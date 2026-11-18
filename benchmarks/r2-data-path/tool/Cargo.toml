@@ -6,6 +6,7 @@ rust-version = "1.97"
 publish = false
 
 [dependencies]
+brotli = "9"
 bytes = "1.12"
 flate2 = "1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
@@ -19,6 +20,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["aws-lc-rs
 rustls-pki-types = { version = "1.15.1", features = ["std"] }
 tokio = { version = "1.54", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+zstd = "0.14"
 
 [workspace]
 
