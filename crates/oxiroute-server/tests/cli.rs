@@ -294,7 +294,8 @@ fn config_check_names_what_is_wrong_with_a_rejected_file() {
 
     let syntax = check("broken.kdl", "version 1\n(array)listeners {\n");
     assert!(syntax.contains("E_SYNTAX"), "{syntax}");
-    assert!(syntax.contains("(line "), "{syntax}");
+    assert!(syntax.contains("broken.kdl:2"), "{syntax}");
+    assert!(syntax.contains("broken.kdl is invalid"), "{syntax}");
 }
 
 #[test]
@@ -510,7 +511,7 @@ fn import_nginx_overlays_matching_nothing_are_reported_and_block_the_preview() {
         "other.example.org=/run/secrets/other.token",
     ];
     let report = import_nginx_overlays(&directory, &flags);
-    assert!(report.status.success(), "{}", output_text(&report));
+    assert_eq!(report.status.code(), Some(1), "{}", output_text(&report));
     assert!(
         String::from_utf8_lossy(&report.stdout).contains("matches no lowered authorization rule")
     );

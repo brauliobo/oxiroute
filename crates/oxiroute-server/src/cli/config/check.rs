@@ -1,9 +1,12 @@
 use std::{fmt::Write as _, path::Path};
 
+use super::report;
 use crate::{
     GenerationManager,
     cli::{error::CliError, fs::ensure_readable_config},
-    config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ResolvedConfigDocument},
+    config::coordinator::{
+        CanonicalConfigCoordinator, ConfigLoadOutcome, RejectionDiagnostic, ResolvedConfigDocument,
+    },
     rtmp::api::{management_token_file, preflight_management_token},
 };
 
@@ -13,7 +16,15 @@ pub(super) fn report(path: &Path) -> Result<String, CliError> {
     let mut document = match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
         ConfigLoadOutcome::Rejected(rejection) => {
-            return Err(CliError::local(rejection.message()));
+            let diagnostics = rejection
+                .diagnostics
+                .iter()
+                .map(RejectionDiagnostic::from)
+                .collect::<Vec<_>>();
+            return Err(CliError::local(report::invalid(
+                &path.display().to_string(),
+                &serde_json::json!({ "diagnostics": diagnostics }),
+            )));
         }
     };
     let mut notices = document

@@ -1,70 +1,68 @@
-use std::error::Error;
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use oxiroute_config::{ListenerBind, ValidatedConfig};
 use oxiroute_config_source::render_config;
-use oxiroute_import::{
-    ImportReportEnvelope, apache, haproxy,
-    nginx::{
-        self, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay, NginxHostTimezoneOverlay,
-        NginxImportOptions, NginxRecordingRootOverlay,
-    },
-    squid, varnish,
-};
+use oxiroute_import::{ImportReportEnvelope, apache, haproxy, nginx, squid, varnish};
 
-use super::args::{ImportCommand, ImportEmit, ImportOptions};
+use super::{
+    args::{ImportCommand, ImportEmit, ImportOptions},
+    blockers::{self, NGINX_REMEDIATION},
+};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
     render,
 };
 
+pub(super) struct Imported {
+    pub(super) text: String,
+    pub(super) blocked: Option<String>,
+}
+
 impl Execute for ImportCommand {
     fn run(&self, _: &Context<'_>) -> Result<(), CliError> {
-        render::emit(&self.render().map_err(CliError::local)?)
+        let imported = self.render().map_err(CliError::local)?;
+        if !imported.text.is_empty() {
+            render::emit(&imported.text)?;
+        }
+        imported
+            .blocked
+            .map_or(Ok(()), |summary| Err(CliError::Blocked(summary)))
     }
 }
 
+fn readable(config: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let absolute = std::path::absolute(config)?;
+    let metadata = fs::metadata(&absolute)
+        .map_err(|error| format!("cannot read {}: {error}", config.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("cannot read {}: not a file", config.display()).into());
+    }
+    Ok(absolute)
+}
+
 impl ImportCommand {
-    pub(super) fn render(&self) -> Result<String, Box<dyn Error>> {
+    pub(super) fn render(&self) -> Result<Imported, Box<dyn Error>> {
         match self {
             Self::Nginx {
                 config,
                 root_prefix,
-                host_timezone,
-                default_access_log_file,
-                bearer_token_file,
-                upstream_tls,
-                recording_root,
-                default_error_server,
-                x_accel_controls_absent,
+                overlays,
                 options,
             } => {
-                let overlays = NginxImportOptions {
-                    host_timezones: host_timezone
-                        .iter()
-                        .map(|timezone| NginxHostTimezoneOverlay {
-                            timezone: timezone.clone(),
-                        })
-                        .collect(),
-                    default_access_log: default_access_log_file
-                        .as_ref()
-                        .map(|path| NginxDefaultAccessLogOverlay { path: path.clone() }),
-                    recording_root: recording_root
-                        .as_ref()
-                        .map(|path| NginxRecordingRootOverlay { path: path.clone() }),
-                    default_error_page: default_error_server.as_ref().map(|server| {
-                        NginxDefaultErrorPageOverlay {
-                            server: server.clone(),
-                        }
-                    }),
-                    x_accel_controls_absent: *x_accel_controls_absent,
-                    bearer_tokens: bearer_token_file.clone(),
-                    upstream_tls: upstream_tls.clone(),
-                };
-                let report = nginx::import_root_with_options(config, root_prefix, &overlays);
-                options.finish(report.candidate.validated(), || {
-                    ImportReportEnvelope::from_nginx(&report).to_json_line()
-                })
+                let overlays = overlays.options();
+                let config = readable(config)?;
+                let report = nginx::import_root_with_options(&config, root_prefix, &overlays);
+                options.finish(
+                    &config.display().to_string(),
+                    report.candidate.validated(),
+                    &ImportReportEnvelope::from_nginx(&report),
+                    Some(NGINX_REMEDIATION),
+                )
             }
             Self::Haproxy {
                 configs,
@@ -72,6 +70,9 @@ impl ImportCommand {
                 gpu1_defined,
                 options,
             } => {
+                for config in configs {
+                    readable(config)?;
+                }
                 let report = node_ip.map_or_else(
                     || haproxy::import_roots(configs),
                     |node_ip| {
@@ -84,21 +85,37 @@ impl ImportCommand {
                         )
                     },
                 );
-                options.finish(report.value().validated(), || {
-                    ImportReportEnvelope::from_haproxy(&report, configs).to_json_line()
-                })
+                let sources = configs
+                    .iter()
+                    .map(|config| config.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                options.finish(
+                    &sources,
+                    report.value().validated(),
+                    &ImportReportEnvelope::from_haproxy(&report, configs),
+                    None,
+                )
             }
             Self::Squid { config, options } => {
+                readable(config)?;
                 let report = squid::import(config);
-                options.finish(report.candidate.validated(), || {
-                    ImportReportEnvelope::from_squid(&report).to_json_line()
-                })
+                options.finish(
+                    &config.display().to_string(),
+                    report.candidate.validated(),
+                    &ImportReportEnvelope::from_squid(&report),
+                    None,
+                )
             }
             Self::Apache { config, options } => {
+                readable(config)?;
                 let report = apache::import_root(config);
-                options.finish(report.candidate.validated(), || {
-                    ImportReportEnvelope::from_apache(&report).to_json_line()
-                })
+                options.finish(
+                    &config.display().to_string(),
+                    report.candidate.validated(),
+                    &ImportReportEnvelope::from_apache(&report),
+                    None,
+                )
             }
             Self::Varnish {
                 config,
@@ -106,10 +123,14 @@ impl ImportCommand {
                 options,
             } => {
                 let invocation = varnish::VarnishdInvocation::new(arguments.iter().cloned());
+                readable(config)?;
                 let report = varnish::import(config, &invocation);
-                options.finish(report.candidate.validated(), || {
-                    ImportReportEnvelope::from_varnish(&report).to_json_line()
-                })
+                options.finish(
+                    &config.display().to_string(),
+                    report.candidate.validated(),
+                    &ImportReportEnvelope::from_varnish(&report),
+                    None,
+                )
             }
         }
     }
@@ -118,21 +139,37 @@ impl ImportCommand {
 impl ImportOptions {
     pub(super) fn finish(
         &self,
+        source: &str,
         candidate: Option<&ValidatedConfig>,
-        report: impl FnOnce() -> Result<String, serde_json::Error>,
-    ) -> Result<String, Box<dyn Error>> {
-        match self.emit {
-            ImportEmit::Preview => self.preview(candidate),
-            ImportEmit::Report if self.shadow_port_offset.is_some() => {
+        report: &ImportReportEnvelope,
+        remediation: Option<&str>,
+    ) -> Result<Imported, Box<dyn Error>> {
+        let blocked = blockers::summary(source, report, remediation);
+        match (self.emit, candidate) {
+            (ImportEmit::Preview, Some(candidate)) => Ok(Imported {
+                text: self.preview(candidate)?,
+                blocked: None,
+            }),
+            (ImportEmit::Preview, None) => Ok(Imported {
+                text: String::new(),
+                blocked: Some(format!(
+                    "{}\nno preview was printed; run the import with --emit report for the full evidence",
+                    blocked.unwrap_or_else(|| format!(
+                        "{source}: the import did not produce an activatable candidate"
+                    ))
+                )),
+            }),
+            (ImportEmit::Report, _) if self.shadow_port_offset.is_some() => {
                 Err("--shadow-port-offset requires --emit preview".into())
             }
-            ImportEmit::Report => Ok(report()?),
+            (ImportEmit::Report, _) => Ok(Imported {
+                text: report.to_json_line()?,
+                blocked,
+            }),
         }
     }
 
-    fn preview(&self, candidate: Option<&ValidatedConfig>) -> Result<String, Box<dyn Error>> {
-        let candidate =
-            candidate.ok_or("native configuration did not produce an activatable candidate")?;
+    fn preview(&self, candidate: &ValidatedConfig) -> Result<String, Box<dyn Error>> {
         let Some(offset) = self.shadow_port_offset else {
             return Ok(render_config(self.format.into(), candidate)?);
         };

@@ -20,6 +20,7 @@ pub(crate) enum CliError {
     Remote(String),
     Unsupported(&'static str),
     Differs,
+    Blocked(String),
     OutputClosed,
 }
 
@@ -35,7 +36,7 @@ impl CliError {
     pub(super) const fn exit_code(&self) -> u8 {
         match self {
             Self::OutputClosed => 0,
-            Self::Startup(_) | Self::Differs => EXIT_FINDING,
+            Self::Startup(_) | Self::Differs | Self::Blocked(_) => EXIT_FINDING,
             Self::Local(_) => EXIT_LOCAL,
             Self::Connect(_) | Self::Timeout(_) | Self::Io(_) => EXIT_CONNECT,
             Self::Status(401 | 403, _) => EXIT_AUTH,
@@ -54,6 +55,7 @@ impl fmt::Display for CliError {
             | Self::Local(message)
             | Self::Connect(message)
             | Self::Timeout(message)
+            | Self::Blocked(message)
             | Self::Remote(message) => formatter.write_str(message),
             Self::Status(status, code) => {
                 write!(

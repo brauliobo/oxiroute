@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use oxiroute_config_source::ConfigFormat;
 
-use super::args::{ImportCommand, ImportEmit};
+use super::args::{ImportCommand, ImportEmit, NginxOverlays};
 use crate::cli::{Cli, Command, config::ComposeFormat};
 
 fn parse(arguments: &[&str]) -> Result<Cli, clap::Error> {
@@ -84,10 +84,14 @@ fn parses_nginx_timezone_and_shadow_inputs() {
         "preview",
     ]);
     let ImportCommand::Nginx {
-        host_timezone: Some(timezone),
-        default_access_log_file: Some(path),
-        recording_root: Some(recording_root),
-        default_error_server: Some(server),
+        overlays:
+            NginxOverlays {
+                host_timezone: Some(timezone),
+                default_access_log_file: Some(path),
+                recording_root: Some(recording_root),
+                default_error_server: Some(server),
+                ..
+            },
         options,
         ..
     } = import(&cli)
@@ -124,7 +128,7 @@ fn haproxy_shadow_preview_shifts_only_listener_ports() {
         "--emit",
         "preview",
     ]);
-    let output = import(&cli).render().expect("shadow preview");
+    let output = import(&cli).render().expect("shadow preview").text;
 
     for listener in ["192.0.2.15:21434", "192.0.2.15:21435", "192.0.2.15:21436"] {
         assert!(output.contains(listener), "missing {listener}");

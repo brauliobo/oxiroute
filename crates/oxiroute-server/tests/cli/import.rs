@@ -250,7 +250,7 @@ fn haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and
         .args(["import", "haproxy", blocked_path.to_str().unwrap()])
         .output()
         .expect("blocked HAProxy report");
-    assert!(blocked.status.success(), "{}", output_text(&blocked));
+    assert_eq!(blocked.status.code(), Some(1), "{}", output_text(&blocked));
     let blocked_json: Value = serde_json::from_slice(&blocked.stdout).expect("blocked report JSON");
     assert_eq!(blocked_json["candidate"]["finalized"], false);
     assert!(
@@ -391,4 +391,57 @@ fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat
         .expect("preview round trip")
         .config
         .to_draft()
+}
+
+#[test]
+fn a_blocked_import_exits_1_and_names_each_blocker_with_its_line_and_the_overlay_flags() {
+    let directory = TempDir::new().expect("directory");
+    let root = directory.path().join("nginx.conf");
+    fs::write(
+        &root,
+        "events {}\nhttp {\n  upstream backend { server 127.0.0.1:8080; }\n  server {\n    listen 127.0.0.1:8088;\n    location / { proxy_pass http://backend; }\n  }\n}\n",
+    )
+    .expect("nginx source");
+
+    let report = cli()
+        .current_dir(directory.path())
+        .args(["import", "nginx", "nginx.conf"])
+        .output()
+        .expect("relative report");
+    assert_eq!(report.status.code(), Some(1), "{}", output_text(&report));
+    let json: Value = serde_json::from_slice(&report.stdout).expect("report is still printed");
+    assert_eq!(json["sourceGraph"]["roots"][0]["outcome"], "loaded");
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(stderr.contains("blockers remain"), "{stderr}");
+    assert!(stderr.contains("nginx.conf:4"), "{stderr}");
+    assert!(stderr.contains("--default-access-log-file"), "{stderr}");
+
+    let preview = cli()
+        .current_dir(directory.path())
+        .args(["import", "nginx", "nginx.conf", "--emit", "preview"])
+        .output()
+        .expect("relative preview");
+    assert_eq!(preview.status.code(), Some(1), "{}", output_text(&preview));
+    assert!(preview.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&preview.stderr);
+    assert!(stderr.contains("--emit report"), "{stderr}");
+}
+
+#[test]
+fn a_missing_or_unreadable_source_is_a_local_input_error_for_every_product() {
+    let directory = TempDir::new().expect("directory");
+    for product in ["nginx", "haproxy", "squid", "apache", "varnish"] {
+        let output = cli()
+            .current_dir(directory.path())
+            .args(["import", product, "missing.conf"])
+            .output()
+            .expect("import of a missing file");
+        assert_eq!(output.status.code(), Some(3), "{product}");
+        assert!(output.stdout.is_empty(), "{product}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("oxiroute: cannot read missing.conf"),
+            "{product}: {stderr}"
+        );
+    }
 }

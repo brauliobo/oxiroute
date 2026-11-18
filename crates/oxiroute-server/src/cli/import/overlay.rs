@@ -1,7 +1,43 @@
 use std::path::PathBuf;
 
 use oxiroute_config::{UpstreamTls, UpstreamTlsVerify};
-use oxiroute_import::nginx::{NginxBearerTokenOverlay, NginxUpstreamTlsOverlay};
+use oxiroute_import::nginx::{
+    NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
+    NginxHostTimezoneOverlay, NginxImportOptions, NginxRecordingRootOverlay,
+    NginxUpstreamTlsOverlay,
+};
+
+use super::args::NginxOverlays;
+
+impl NginxOverlays {
+    pub(super) fn options(&self) -> NginxImportOptions {
+        NginxImportOptions {
+            host_timezones: self
+                .host_timezone
+                .iter()
+                .map(|timezone| NginxHostTimezoneOverlay {
+                    timezone: timezone.clone(),
+                })
+                .collect(),
+            default_access_log: self
+                .default_access_log_file
+                .as_ref()
+                .map(|path| NginxDefaultAccessLogOverlay { path: path.clone() }),
+            recording_root: self
+                .recording_root
+                .as_ref()
+                .map(|path| NginxRecordingRootOverlay { path: path.clone() }),
+            default_error_page: self.default_error_server.as_ref().map(|server| {
+                NginxDefaultErrorPageOverlay {
+                    server: server.clone(),
+                }
+            }),
+            x_accel_controls_absent: self.x_accel_controls_absent,
+            bearer_tokens: self.bearer_token_file.clone(),
+            upstream_tls: self.upstream_tls.clone(),
+        }
+    }
+}
 
 fn nonempty<'a>(value: &'a str, what: &str) -> Result<&'a str, String> {
     if value.is_empty() {

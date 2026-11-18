@@ -10,41 +10,14 @@ use crate::cli::config::ComposeFormat;
 pub(crate) enum ImportCommand {
     /// Import an nginx configuration.
     Nginx {
-        /// Main nginx configuration file.
+        /// Main nginx configuration file, relative to the current directory.
         #[arg(value_name = "CONFIG")]
         config: PathBuf,
-        /// Directory the configuration's absolute paths are resolved under.
+        /// Directory under which the absolute paths inside the configuration (includes) are resolved.
         #[arg(long, value_name = "DIRECTORY", default_value = "/")]
         root_prefix: PathBuf,
-        /// Preserve native local-time recording suffixes with this IANA timezone.
-        #[arg(long, value_name = "IANA_TIMEZONE")]
-        host_timezone: Option<String>,
-        /// Explicitly migrate omitted AND formatted nginx access logs to `OxiRoute` structured JSONL.
-        #[arg(long, value_name = "FILE")]
-        default_access_log_file: Option<PathBuf>,
-        /// Serve a literal-bearer `if` gate from this 0400/0600 token file (repeatable).
-        #[arg(
-            long,
-            value_name = "SERVER_NAME=ABS_PATH",
-            value_parser = parse_bearer_token_file
-        )]
-        bearer_token_file: Vec<NginxBearerTokenOverlay>,
-        /// Verify one https upstream authority with this SNI, optional CA, and optional activation (repeatable).
-        #[arg(
-            long,
-            value_name = "AUTHORITY=SNI[,ca=PATH][,activate]",
-            value_parser = parse_upstream_tls
-        )]
-        upstream_tls: Vec<NginxUpstreamTlsOverlay>,
-        /// Replace one unique native recording root with this no-symlink canonical path.
-        #[arg(long, value_name = "DIRECTORY")]
-        recording_root: Option<PathBuf>,
-        /// Preserve nginx's branded default static 404 body and response header.
-        #[arg(long, value_name = "SERVER_TOKEN")]
-        default_error_server: Option<String>,
-        /// Assert that audited upstreams do not emit nginx X-Accel response controls.
-        #[arg(long)]
-        x_accel_controls_absent: bool,
+        #[command(flatten)]
+        overlays: NginxOverlays,
         #[command(flatten)]
         options: ImportOptions,
     },
@@ -97,14 +70,48 @@ pub(crate) enum ImportCommand {
 }
 
 #[derive(Args)]
+pub(crate) struct NginxOverlays {
+    /// Preserve native local-time recording suffixes with this IANA timezone.
+    #[arg(long, value_name = "IANA_TIMEZONE")]
+    pub(super) host_timezone: Option<String>,
+    /// Explicitly migrate omitted AND formatted nginx access logs to `OxiRoute` structured JSONL.
+    #[arg(long, value_name = "FILE")]
+    pub(super) default_access_log_file: Option<PathBuf>,
+    /// Serve a literal-bearer `if` gate from this 0400/0600 token file (repeatable).
+    #[arg(
+        long,
+        value_name = "SERVER_NAME=ABS_PATH",
+        value_parser = parse_bearer_token_file
+    )]
+    pub(super) bearer_token_file: Vec<NginxBearerTokenOverlay>,
+    /// Verify one https upstream authority with this SNI, optional CA, and optional activation (repeatable).
+    #[arg(
+        long,
+        value_name = "AUTHORITY=SNI[,ca=PATH][,activate]",
+        value_parser = parse_upstream_tls
+    )]
+    pub(super) upstream_tls: Vec<NginxUpstreamTlsOverlay>,
+    /// Replace one unique native recording root with this no-symlink canonical path.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub(super) recording_root: Option<PathBuf>,
+    /// Preserve nginx's branded default static 404 body and response header.
+    #[arg(long, value_name = "SERVER_TOKEN")]
+    pub(super) default_error_server: Option<String>,
+    /// Assert that audited upstreams do not emit nginx X-Accel response controls.
+    #[arg(long)]
+    pub(super) x_accel_controls_absent: bool,
+}
+
+#[derive(Args)]
 pub(crate) struct ImportOptions {
     /// Shift imported IP socket listener ports for side-by-side validation.
     #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
     pub(super) shadow_port_offset: Option<u16>,
-    /// Render preview output in this canonical configuration format.
+    /// Canonical configuration format of `--emit preview`; the report is always JSON.
     #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
     pub(super) format: ComposeFormat,
-    /// Print the importer's evidence report, or a finalized canonical configuration preview.
+    /// `report` prints the evidence as JSON and exits 1 while blockers remain; `preview` prints the
+    /// canonical configuration (in `--format`) and exits 1 without printing it when blockers remain.
     #[arg(long, value_enum, default_value_t = ImportEmit::Report)]
     pub(super) emit: ImportEmit,
 }
