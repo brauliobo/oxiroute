@@ -169,7 +169,6 @@ impl<S: Service> Reactor<S> {
             upload_done: false,
             upload_failed: false,
             contacted: false,
-            fresh: false,
             splice: SpliceUse::Unused,
         }
     }

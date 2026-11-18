@@ -224,7 +224,6 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) upload_done: bool,
     pub(crate) upload_failed: bool,
     pub(crate) contacted: bool,
-    pub(crate) fresh: bool,
     pub(crate) splice: SpliceUse,
 }
 

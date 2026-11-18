@@ -53,7 +53,7 @@ impl<S: Service> Reactor<S> {
         let flow = client.flow.as_mut().expect("a serving client has a flow");
         let total = timeouts.deadline.map(|at| self.clock.moment(at));
         flow.begin_attempt(self.moment, total, key, reuse, timeouts);
-        let pooled = matches!(reuse, Reuse::Pooled { .. }) && !std::mem::take(&mut flow.fresh);
+        let pooled = matches!(reuse, Reuse::Pooled { .. });
         if let Some(upstream) = pooled.then(|| self.checkout(key)).flatten() {
             drop(lease);
             self.bind_idle(token, client, upstream);
@@ -116,6 +116,7 @@ impl<S: Service> Reactor<S> {
         };
         let upstream = Upstream {
             link,
+            address,
             key: flow.key,
             phase,
             client: Some(token),
@@ -198,13 +199,27 @@ impl<S: Service> Reactor<S> {
     }
 
     pub(crate) fn fail(&mut self, token: Token, client: &mut Client<S>, failure: Failure) -> Step {
-        let upstream = client.flow().upstream.take();
+        let flow = client.flow();
+        let upstream = flow.upstream.take();
+        if let Some(stale) = upstream.filter(|_| flow.closed_while_idle(failure)) {
+            return self.redial(token, client, stale);
+        }
         self.release_upstream(upstream, false);
         if self.retries(client, failure) {
             client.flow().down = Down::Awaiting;
             return Step::Again;
         }
         self.give_up(token, client, failure)
+    }
+
+    fn redial(&mut self, token: Token, client: &mut Client<S>, stale: Token) -> Step {
+        self.wheel.cancel(stale.index);
+        let Body::Upstream(Upstream { address, lease, .. }) = self.slab.remove(stale) else {
+            unreachable!("a reused attempt holds an upstream");
+        };
+        client.resp_len = 0;
+        client.flow().restart(self.moment);
+        self.connect(token, client, address, lease)
     }
 
     fn retries(&mut self, client: &mut Client<S>, failure: Failure) -> bool {
@@ -217,22 +232,12 @@ impl<S: Service> Reactor<S> {
                 | Failure::Shutdown
                 | Failure::TotalTimeout
         );
-        let replayable = flow.replayable
-            && flow.status.is_none()
-            && matches!(flow.down, Down::Awaiting)
-            && !flow.origin.forwarded()
-            && flow.attempts < self.config.max_attempts;
-        if client_side || !replayable {
+        if client_side || !flow.replayable() || flow.attempts >= self.config.max_attempts {
             return false;
         }
-        let closed_unused = flow.reused
-            && flow.first_byte_at.is_none()
-            && matches!(failure, Failure::UpstreamClosed | Failure::UpstreamWrite);
         let exchange = flow.exchange.as_mut().expect("an exchange is served once");
-        let retry = failure == Failure::UnexpectedStatus
-            || service.recover(exchange, failure, self.now) == Recovery::Retry;
-        flow.fresh = retry && closed_unused;
-        retry
+        failure == Failure::UnexpectedStatus
+            || service.recover(exchange, failure, self.now) == Recovery::Retry
     }
 
     fn give_up(&mut self, token: Token, client: &mut Client<S>, failure: Failure) -> Step {
@@ -267,6 +272,20 @@ impl<S: Service> Reactor<S> {
 }
 
 impl<S: Service> Flow<S> {
+    fn replayable(&self) -> bool {
+        self.replayable
+            && self.status.is_none()
+            && matches!(self.down, Down::Awaiting)
+            && !self.origin.forwarded()
+    }
+
+    fn closed_while_idle(&self, failure: Failure) -> bool {
+        self.reused
+            && self.first_byte_at.is_none()
+            && matches!(failure, Failure::UpstreamClosed | Failure::UpstreamWrite)
+            && self.replayable()
+    }
+
     fn begin_attempt(
         &mut self,
         now: Moment,
@@ -276,11 +295,15 @@ impl<S: Service> Flow<S> {
         timeouts: super::service::AttemptTimeouts,
     ) {
         self.contacted = true;
-        self.origin.restart();
         self.total = total;
         self.key = key;
         self.reuse = reuse;
         self.timeouts = Some(timeouts);
+        self.restart(now);
+    }
+
+    fn restart(&mut self, now: Moment) {
+        self.origin.restart();
         self.attempt_started = now;
         self.connected_at = None;
         self.first_byte_at = None;

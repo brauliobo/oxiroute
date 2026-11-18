@@ -14,6 +14,7 @@ pub(crate) enum Phase {
 
 pub(crate) struct Upstream<S: Service> {
     pub(crate) link: Link,
+    pub(crate) address: std::net::SocketAddr,
     pub(crate) key: u64,
     pub(crate) phase: Phase,
     pub(crate) client: Option<Token>,
