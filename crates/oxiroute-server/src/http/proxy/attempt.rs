@@ -435,6 +435,7 @@ pub(super) struct Exchanged {
     pub(super) body_replayable: bool,
     /// The client has seen no final response.
     pub(super) response_retryable: bool,
+    pub(super) response_begun: bool,
 }
 
 impl Exchanged {
@@ -442,6 +443,7 @@ impl Exchanged {
     pub(super) const UNANSWERED: Self = Self {
         body_replayable: true,
         response_retryable: true,
+        response_begun: false,
     };
 }
 
@@ -449,7 +451,7 @@ impl HttpRequestContext {
     pub(super) fn closed_while_idle(&self, error: &Error, exchanged: Exchanged) -> bool {
         self.replay_safe
             && exchanged.body_replayable
-            && exchanged.response_retryable
+            && !exchanged.response_begun
             && error.esource() == &pingora::ErrorSource::Upstream
             && (matches!(error.retry, pingora::RetryType::ReusedOnly)
                 || error.etype() == &ErrorType::WriteError)

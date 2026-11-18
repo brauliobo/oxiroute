@@ -180,6 +180,7 @@ impl Exchange {
         Exchanged {
             body_replayable: false,
             response_retryable: status.is_none(),
+            response_begun: status.is_some(),
         }
     }
 
@@ -199,6 +200,7 @@ impl Exchange {
             received: usize::try_from(outcome.received).unwrap_or(usize::MAX),
             sent: usize::try_from(outcome.sent).unwrap_or(usize::MAX) + self.answered_body,
             status: outcome.status,
+            interim: false,
         };
         let request = Proxied {
             idempotency: self.idempotency.as_deref(),

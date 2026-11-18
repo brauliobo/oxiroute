@@ -94,6 +94,7 @@ pub(super) fn exchanged_by(session: &Session) -> Exchanged {
     Exchanged {
         body_replayable: request_body_replayable(session),
         response_retryable: response_is_retryable(session),
+        response_begun: session.response_written().is_some(),
     }
 }
 

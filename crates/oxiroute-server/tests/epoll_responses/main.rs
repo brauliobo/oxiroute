@@ -432,6 +432,31 @@ async fn interim_responses_are_forwarded_and_the_final_one_is_awaited_like_on_th
 }
 
 #[tokio::test]
+async fn a_request_is_not_replayed_after_an_interim_response_on_a_reused_connection() {
+    agree(&[
+        case(
+            "warm-up",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\n",
+        ),
+        case(
+            "interim-then-the-origin-closes-the-reused-connection",
+            b"HTTP/1.1 100 Continue\r\n\r\n",
+            "HTTP/1.1 100 Continue\r\n",
+        )
+        .closing()
+        .with(&["502 bad gateway"])
+        .without(&["200 ok"]),
+        case(
+            "replacement-answer",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\n",
+        ),
+    ])
+    .await;
+}
+
+#[tokio::test]
 async fn framing_the_tokio_plane_accepts_is_relayed_like_on_the_tokio_plane() {
     agree(&[
         case(

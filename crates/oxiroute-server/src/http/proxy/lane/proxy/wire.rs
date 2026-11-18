@@ -105,7 +105,7 @@ pub(super) async fn read_final_head(
     stream: &mut Stream,
     ctx: &HttpRequestContext,
     session: &mut HttpSession,
-    forward: &Forward<'_>,
+    (forward, progress): (&Forward<'_>, &mut Progress),
 ) -> Result<pingora::http::ResponseHeader, Box<Error>> {
     loop {
         let mut header = *session
@@ -123,6 +123,7 @@ pub(super) async fn read_final_head(
         let mut head = BytesMut::new();
         render_informational_head(&header, &mut head).map_err(Error::into_up)?;
         write(stream, &head).await?;
+        progress.interim = true;
         flush(stream).await?;
     }
 }

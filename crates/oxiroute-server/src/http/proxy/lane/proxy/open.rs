@@ -85,7 +85,7 @@ impl super::super::LaneFront {
             stream,
             ctx,
             (session, release),
-            forward,
+            (forward, progress),
             (raw, upload),
             *timeouts,
         )
@@ -151,7 +151,7 @@ impl super::super::LaneFront {
         stream: &mut Stream,
         ctx: &mut HttpRequestContext,
         (mut session, release): (Box<HttpSession>, ReusePeer),
-        forward: &Forward<'_>,
+        (forward, progress): (&Forward<'_>, &mut Progress),
         (raw, upload): (Bytes, Upload),
         timeouts: AttemptTimeouts,
     ) -> Result<Opened, Box<Error>> {
@@ -174,7 +174,8 @@ impl super::super::LaneFront {
             } else {
                 timeouts.apply_reads(&mut session);
                 session.reparse_raw_head();
-                let mut response = read_final_head(stream, ctx, &mut session, forward).await?;
+                let mut response =
+                    read_final_head(stream, ctx, &mut session, (forward, progress)).await?;
                 let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
                     && response.headers.contains_key(&POOL_UNAVAILABLE_HEADER);
                 let (framing, close_delimited) =

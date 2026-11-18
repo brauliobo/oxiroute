@@ -51,6 +51,7 @@ impl super::super::LaneFront {
             received: 0,
             sent: 0,
             status: None,
+            interim: false,
         };
         let outcome = self
             .exchange(
@@ -190,6 +191,7 @@ impl super::super::LaneFront {
                 let exchanged = Exchanged {
                     body_replayable: progress.received == 0,
                     response_retryable: false,
+                    response_begun: true,
                 };
                 ctx.attempt_failed(error, exchanged)
             })
@@ -266,6 +268,7 @@ impl super::super::LaneFront {
             let exchanged = Exchanged {
                 body_replayable: progress.received == 0,
                 response_retryable: true,
+                response_begun: progress.interim,
             };
             match sent {
                 Err(error) if reused && ctx.closed_while_idle(&error, exchanged) => {

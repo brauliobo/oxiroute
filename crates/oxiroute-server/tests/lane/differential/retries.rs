@@ -160,6 +160,26 @@ async fn a_pooled_connection_the_origin_closed_unseen_is_replaced_without_a_retr
 }
 
 #[tokio::test]
+async fn a_pooled_connection_the_origin_closed_after_an_interim_response_is_not_replaced() {
+    const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+    const STEPS: &[Step] = &[
+        Step::Reply(OK),
+        Step::ReplyThenClose(CONTINUE),
+        Step::Reply(OK),
+    ];
+    let outcomes = scenario(STEPS, |_| {}, &[GET]).await;
+    let (response, attempts) = outcomes.identical("interim then closed pooled connection");
+    assert!(
+        response.starts_with("HTTP/1.1 100 Continue\r\n"),
+        "{response}"
+    );
+    assert!(response.contains("HTTP/1.1 502 "), "{response}");
+    assert!(!response.contains("HTTP/1.1 200 "), "{response}");
+    assert_eq!(attempts, 1);
+    assert!(outcomes.classic_lines[1].contains("\"attempts\":1,"));
+}
+
+#[tokio::test]
 async fn an_origin_that_closes_without_answering_is_retried_on_the_empty_response_trigger() {
     const STEPS: &[Step] = &[Step::Reply(OK), Step::Drop, Step::Drop, Step::Reply(OK)];
     let outcomes = scenario(

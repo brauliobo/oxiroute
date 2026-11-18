@@ -70,6 +70,7 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
         received: 0,
         sent: 0,
         status: None,
+        interim: false,
     };
     let outcome = exchange(front, &mut stream, &mut ctx, &plan, &mut progress).await;
     let error = outcome.err();
@@ -128,6 +129,7 @@ fn exchanged(progress: &Progress) -> Exchanged {
     Exchanged {
         body_replayable: progress.received == 0,
         response_retryable: true,
+        response_begun: progress.interim,
     }
 }
 
@@ -150,6 +152,7 @@ async fn exchange(
     let answered = Exchanged {
         body_replayable: true,
         response_retryable: false,
+        response_begun: true,
     };
     relay_response(front, stream, ctx, upstream, (opened, upload), progress)
         .await

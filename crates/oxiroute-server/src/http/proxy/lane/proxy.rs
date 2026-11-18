@@ -70,6 +70,7 @@ pub(in crate::http::proxy) struct Progress {
     pub(in crate::http::proxy) sent: usize,
     /// The status that went out.
     pub(in crate::http::proxy) status: Option<u16>,
+    pub(in crate::http::proxy) interim: bool,
 }
 
 pub(in crate::http::proxy) struct Forward<'a> {
