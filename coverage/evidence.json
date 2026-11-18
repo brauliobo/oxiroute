@@ -335,7 +335,7 @@
         "crates/oxiroute-server/tests/http/proxy_routing/retries.rs#final_redispatch_retries_same_server_then_selects_an_available_server",
         "crates/oxiroute-server/tests/http/proxy_routing/retries.rs#pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_each",
         "crates/oxiroute-server/tests/process/management/stats.rs#page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin",
-        "crates/oxiroute-server/tests/process/management/unix.rs#unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket",
+        "crates/oxiroute-server/tests/process/management/unix.rs#unix_listener_mode_change_is_applied_in_place_by_the_saved_configuration",
         "crates/oxiroute-server/tests/service_plan/rtmp.rs#rtmp_listeners_share_one_service_identity_catalog_and_hub"
       ]
     },
