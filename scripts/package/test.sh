@@ -29,16 +29,17 @@ version=$(file_version "${family}" "${package}")
 
 scratch=$(mktemp -d)
 trap 'rm -rf -- "${scratch}"' EXIT
-mkdir "${scratch}/out"
+mkdir "${scratch}/out" "${scratch}/previous"
 cp -- "${package}" "${package}.build.json" "${scratch}/out/"
-[[ -z ${previous} ]] || cp -- "${previous}" "${scratch}/out/"
+[[ -z ${previous} ]] || cp -- "${previous}" "${scratch}/previous/"
 
 test_image() {
   local image=$1
   container_run "${arch}" "${image}" -e FAMILY="${family}" -e ARCH="${arch}" -e RELEASE_VERSION="${version}" \
     -e PACKAGE="$(basename -- "${package}")" ${previous:+-e PREVIOUS="$(basename -- "${previous}")"} \
     -e REQUIRE_PGO="${PGO:-1}" \
-    -v "${scratch}/out:/out:ro" -v "${package_scripts}:/package:ro" -v "${package_repo}/packaging:/packaging:ro" \
+    -v "${scratch}/out:/out:ro" -v "${scratch}/previous:/previous:ro" \
+    -v "${package_scripts}:/package:ro" -v "${package_repo}/packaging:/packaging:ro" \
     -- /package/container/test.sh
 }
 

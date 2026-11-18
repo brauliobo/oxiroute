@@ -2,9 +2,10 @@
 # Runs inside a fresh container of an image of the family (scripts/package/test.sh): installs the package, checks what
 # it installed and that the program works, then upgrades, removes and purges it.
 #
-# Environment: FAMILY, ARCH, RELEASE_VERSION, PACKAGE (file name in /out), PREVIOUS (optional file name in /out: an older
-# release package that is installed first and upgraded), REQUIRE_PGO (1: the build record must say profile-guided).
-# Mounts: /out (packages), /package (scripts/package), /packaging (the packaging directory of the source).
+# Environment: FAMILY, ARCH, RELEASE_VERSION, PACKAGE (file name in /out), PREVIOUS (optional file name in /previous: an older
+# release package that is installed first and upgraded; its own directory because it can have the name of PACKAGE),
+# REQUIRE_PGO (1: the build record must say profile-guided).
+# Mounts: /out (the package), /previous (the older package), /package (scripts/package), /packaging (the packaging directory of the source).
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -36,10 +37,11 @@ trap stop_daemons EXIT
 prepare_image() {
   install_documentation
   refresh_index
-  mkdir -p /tmp/install
+  install_test_tools
+  mkdir -p /tmp/install /tmp/previous
   cp -- "/out/${PACKAGE}" /tmp/install/
-  [[ -z ${PREVIOUS:-} ]] || cp -- "/out/${PREVIOUS}" /tmp/install/
-  chmod -R a+rX /tmp/install
+  [[ -z ${PREVIOUS:-} ]] || cp -- "/previous/${PREVIOUS}" /tmp/previous/
+  chmod -R a+rX /tmp/install /tmp/previous
 }
 
 install_new() { install_packages "/tmp/install/${PACKAGE}"; }
@@ -50,9 +52,10 @@ installed_version() {
 
 install_initial() {
   if [[ -z ${PREVIOUS:-} ]]; then install_new; return; fi
-  install_packages "/tmp/install/${PREVIOUS}"
+  install_packages "/tmp/previous/${PREVIOUS}"
   printf '# edited before the upgrade\n' >> /etc/oxiroute/oxiroute.env
   upgrade_package "/tmp/install/${PACKAGE}"
+  cmp -s /usr/share/doc/oxiroute/BUILD-INFO.json "/out/${PACKAGE}.build.json" || fail "the upgrade did not install ${PACKAGE}"
   grep -qx '# edited before the upgrade' /etc/oxiroute/oxiroute.env || fail 'the upgrade overwrote a modified configuration'
   sed -i '/^# edited before the upgrade$/d' /etc/oxiroute/oxiroute.env
   pass "upgraded from ${PREVIOUS}, the modified configuration is kept"
@@ -224,7 +227,6 @@ check_purge() {
 
 prepare_image
 install_initial
-install_test_tools
 check_files
 check_config_marking
 check_account_and_state
