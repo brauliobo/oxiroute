@@ -4,12 +4,13 @@ use serde_json::{Value, json};
 
 use super::{
     args::{AcmeCommand, TlsOperation},
-    expiry::{Expiry, now_unix_seconds},
+    expiry::Expiry,
     served,
 };
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
+    units::now_unix_seconds,
     view::View,
 };
 

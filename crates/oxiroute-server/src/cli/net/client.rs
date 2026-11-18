@@ -1,12 +1,13 @@
 use std::{
     fmt::Write as _,
     io::{BufReader, Write as _},
+    time::Duration,
 };
 
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use super::{Endpoint, Response, Timeouts};
+use super::{Endpoint, Response, Timeouts, endpoint::Stream, stream::BodyStream};
 use crate::cli::error::CliError;
 
 pub(crate) struct Client {
@@ -123,6 +124,43 @@ impl Client {
         headers: &[(&str, &str)],
         authenticated: bool,
     ) -> Result<Response, CliError> {
+        let stream = self.send(
+            method,
+            path,
+            body,
+            headers,
+            authenticated,
+            "application/json",
+        )?;
+        Response::read(BufReader::new(stream))
+            .map_err(|error| self.endpoint.transport(error, self.timeouts))
+    }
+
+    /// A GET whose answer is read as it arrives; a silence longer than `silence` ends the read with a timeout.
+    pub(crate) fn stream(
+        &self,
+        path: &str,
+        accept: &str,
+        headers: &[(&str, &str)],
+        silence: Duration,
+    ) -> Result<BodyStream, CliError> {
+        let stream = self.send("GET", path, &[], headers, true, accept)?;
+        stream
+            .set_read_timeout(silence)
+            .map_err(|error| self.endpoint.transport(CliError::Io(error), self.timeouts))?;
+        BodyStream::open(BufReader::new(stream))
+            .map_err(|error| self.endpoint.transport(error, self.timeouts))
+    }
+
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        headers: &[(&str, &str)],
+        authenticated: bool,
+        accept: &str,
+    ) -> Result<Stream, CliError> {
         if !path.starts_with('/') || path.contains(['\r', '\n']) {
             return Err(CliError::Local("request path is invalid".into()));
         }
@@ -138,7 +176,7 @@ impl Client {
             None
         };
         let mut head = Zeroizing::new(format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: {accept}\r\nConnection: close\r\nContent-Length: {}\r\n",
             self.endpoint.host(),
             body.len()
         ));
@@ -160,7 +198,6 @@ impl Client {
             .write_all(head.as_bytes())
             .and_then(|()| stream.write_all(body))
             .map_err(|error| self.endpoint.transport(CliError::Io(error), self.timeouts))?;
-        Response::read(BufReader::new(stream))
-            .map_err(|error| self.endpoint.transport(error, self.timeouts))
+        Ok(stream)
     }
 }

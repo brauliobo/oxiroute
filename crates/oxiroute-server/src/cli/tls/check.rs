@@ -4,7 +4,7 @@ use clap::Args;
 use serde_json::{Value, json};
 
 use super::{
-    expiry::{Expiry, now_unix_seconds},
+    expiry::Expiry,
     served::{self, Served, Target},
 };
 use crate::{
@@ -12,6 +12,7 @@ use crate::{
         context::Context,
         parse::{nonempty_target, parse_duration},
         plugin::{self, Report},
+        units::now_unix_seconds,
     },
     observability::status::{
         check::{Finding, Verdict},

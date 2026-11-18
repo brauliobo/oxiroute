@@ -4,6 +4,7 @@ use std::{
     net::{TcpStream, ToSocketAddrs as _},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use super::{Response, Timeouts, span};
@@ -160,6 +161,15 @@ impl Endpoint {
 pub(super) enum Stream {
     Tcp(TcpStream),
     Unix(UnixStream),
+}
+
+impl Stream {
+    pub(super) fn set_read_timeout(&self, limit: Duration) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.set_read_timeout(Some(limit)),
+            Self::Unix(stream) => stream.set_read_timeout(Some(limit)),
+        }
+    }
 }
 
 impl io::Read for Stream {

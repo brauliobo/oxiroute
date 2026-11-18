@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use clap::Subcommand;
 
 use super::{
+    audit::AuditCommand,
     check::{self, CheckArgs},
     completions::CompletionsArgs,
     config::ConfigCommand,
@@ -39,6 +40,12 @@ pub(crate) enum Command {
     Events {
         #[command(subcommand)]
         command: EventsCommand,
+    },
+    /// Read the audit log of administrative actions: who did what and how it ended.
+    #[command(after_help = help::AUDIT_EXAMPLES)]
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
     },
     /// Print one monitoring line and exit with a Nagios status.
     ///
@@ -145,6 +152,7 @@ impl Command {
             Self::Serve(args) => args.run(context),
             Self::Process(command) => command.run(context),
             Self::Events { command } => command.run(context),
+            Self::Audit { command } => command.run(context),
             Self::Top(args) => args.run(context),
             Self::Requests { command } => command.run(context),
             Self::Server { command } => command.run(context),

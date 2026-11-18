@@ -181,7 +181,17 @@ pub(crate) const TLS_EXAMPLES: &str = "Examples:
 
 pub(crate) const EVENTS_EXAMPLES: &str = "Examples:
   oxiroute events list --limit 20
-  oxiroute events follow";
+  oxiroute events follow
+  oxiroute events follow --since 10m --count 50
+  oxiroute --output json events follow --after 0
+
+`events follow` reads the event stream, reconnects from the last event it printed, and ends with status 130 on Ctrl-C.";
+
+pub(crate) const AUDIT_EXAMPLES: &str = "Examples:
+  oxiroute audit list --since 1h --category control
+  oxiroute audit list --result rejected --limit 20
+  oxiroute audit status
+  oxiroute audit tail --interval 2s";
 
 pub(crate) const REQUESTS_EXAMPLES: &str = "Examples:
   oxiroute requests list --older-than 30s

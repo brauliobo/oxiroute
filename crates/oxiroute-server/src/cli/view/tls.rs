@@ -3,7 +3,8 @@ use serde_json::Value;
 use super::read::{flag, items, joined, number, text};
 use crate::cli::{
     render::{Block, Document, Field, Record},
-    tls::{Expiry, now_unix_seconds},
+    tls::Expiry,
+    units::now_unix_seconds,
 };
 
 const DETAIL_TEXT: [(&str, &str); 10] = [

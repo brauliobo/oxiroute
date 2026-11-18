@@ -152,7 +152,8 @@ body through, where `changed` counts the targets of the request.
 | Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt|history|rollback` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |
-| Events | `events list|follow` | Poll the bounded in-memory event ring |
+| Events | `events list|follow` | Page through the bounded in-memory event ring, or follow its server-sent event stream with reconnect |
+| Audit | `audit list|status|tail` | Query and tail the redacted audit log of administrative actions |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
 | TLS | `tls list|show|inspect|check|reconcile|renew|revoke|delete|acme` | Certificate inventory with UTC expiry and time left, live handshake inspection, an expiry check with monitoring exit codes, renewal and ACME control |
@@ -271,6 +272,9 @@ Stable exit categories are designed for scripts (every command except `check` an
 
 Use JSON output for automation and treat `409`/exit `7` as a reconcile decision, not as permission to
 retry an old mutation.
+
+The commands that run until they are stopped (`events follow`, `audit tail`) end with status `130` on
+SIGINT and `143` on SIGTERM, after flushing what they printed, unless `--count` ends them first with `0`.
 
 ## Configuration commands
 

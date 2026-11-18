@@ -7,8 +7,8 @@ use std::{
 use openssl::{
     asn1::{Asn1Time, Asn1TimeRef},
     hash::MessageDigest,
-    stack::StackRef,
     ssl::{SslConnector, SslMethod, SslVerifyMode},
+    stack::StackRef,
     x509::{X509, X509NameRef},
 };
 use serde_json::{Value, json};

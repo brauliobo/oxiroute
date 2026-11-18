@@ -1,3 +1,4 @@
+mod audit;
 mod config;
 mod contexts;
 mod events;
@@ -48,6 +49,8 @@ pub(crate) enum View {
     TlsCertificate,
     TlsServed,
     Events,
+    Audit,
+    AuditStatus,
     Requests,
     Request,
     RtmpStreams,
@@ -77,6 +80,8 @@ impl View {
             Self::TlsCertificate => tls::detail(value),
             Self::TlsServed => tls::served(value),
             Self::Events => events::list(value),
+            Self::Audit => audit::list(value),
+            Self::AuditStatus => audit::status(value),
             Self::Requests => requests::list(value),
             Self::Request => requests::detail(value),
             Self::RtmpStreams => rtmp::list(value),

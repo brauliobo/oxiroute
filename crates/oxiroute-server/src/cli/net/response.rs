@@ -9,21 +9,21 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_REPORTED_DIAGNOSTICS: usize = 5;
 
 #[derive(Clone, Copy)]
-enum BodyFraming {
+pub(super) enum BodyFraming {
     None,
     Length(usize),
     Chunked,
     Close,
 }
 
-struct ParsedHead {
-    status: u16,
-    content_type: String,
-    framing: BodyFraming,
+pub(super) struct ParsedHead {
+    pub(super) status: u16,
+    pub(super) content_type: String,
+    pub(super) framing: BodyFraming,
 }
 
 impl ParsedHead {
-    fn parse(bytes: &[u8]) -> Result<Self, CliError> {
+    pub(super) fn parse(bytes: &[u8]) -> Result<Self, CliError> {
         let headers = std::str::from_utf8(bytes)
             .map_err(|_| CliError::Remote("invalid HTTP response headers".into()))?;
         let mut lines = headers.split("\r\n");
@@ -91,11 +91,6 @@ impl ParsedHead {
             }
             BodyFraming::Chunked
         } else if let Some(length) = content_lengths.first().copied() {
-            if length > MAX_RESPONSE_BYTES {
-                return Err(CliError::Remote(
-                    "response exceeded the client limit".into(),
-                ));
-            }
             BodyFraming::Length(length)
         } else {
             BodyFraming::Close
@@ -108,7 +103,7 @@ impl ParsedHead {
     }
 }
 
-fn read_http_head(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
+pub(super) fn read_http_head(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
     let mut head = Vec::new();
     loop {
         let mut line = Vec::new();
@@ -132,6 +127,11 @@ fn read_http_body(reader: &mut impl BufRead, framing: BodyFraming) -> Result<Vec
     match framing {
         BodyFraming::None => Ok(Vec::new()),
         BodyFraming::Length(length) => {
+            if length > MAX_RESPONSE_BYTES {
+                return Err(CliError::Remote(
+                    "response exceeded the client limit".into(),
+                ));
+            }
             let mut body = vec![0; length];
             reader
                 .read_exact(&mut body)
@@ -203,7 +203,7 @@ fn read_chunked_body(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
     }
 }
 
-fn read_http_line(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
+pub(super) fn read_http_line(reader: &mut impl BufRead) -> Result<Vec<u8>, CliError> {
     let mut line = Vec::new();
     reader.read_until(b'\n', &mut line).map_err(CliError::Io)?;
     if !line.ends_with(b"\r\n") || line.len() > MAX_HEADER_BYTES {
@@ -233,22 +233,31 @@ impl Response {
             if (100..200).contains(&parsed.status) && parsed.status != 101 {
                 continue;
             }
-            let body = read_http_body(&mut reader, parsed.framing)?;
-            return Ok(Self {
-                status: parsed.status,
-                content_type: parsed.content_type,
-                body,
-            });
+            return Self::complete(parsed, &mut reader);
         }
         Err(CliError::Remote(
             "endpoint returned too many interim responses".into(),
         ))
     }
 
+    pub(super) fn complete(head: ParsedHead, reader: &mut impl BufRead) -> Result<Self, CliError> {
+        let body = read_http_body(reader, head.framing)?;
+        Ok(Self {
+            status: head.status,
+            content_type: head.content_type,
+            body,
+        })
+    }
+
     pub(crate) fn into_result(self) -> Result<Self, CliError> {
         if self.is_success() {
-            return Ok(self);
+            Ok(self)
+        } else {
+            Err(self.failure())
         }
+    }
+
+    pub(super) fn failure(&self) -> CliError {
         let value = serde_json::from_slice::<Value>(&self.body).ok();
         let pointer = |path| value.as_ref().and_then(|value| value.pointer(path));
         let mut reasons = pointer("/diagnostics")
@@ -279,7 +288,7 @@ impl Response {
                 }
             }
         }
-        Err(CliError::Status(self.status, text))
+        CliError::Status(self.status, text)
     }
 
     pub(crate) fn json(&self) -> Result<Value, CliError> {

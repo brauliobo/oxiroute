@@ -197,18 +197,26 @@ before treating a partial result as a successful rollout.
 
 ## Events And Shutdown
 
-The CLI exposes bounded cursor polling over the in-memory event ring:
+The CLI pages through the in-memory event ring and follows its event stream:
 
 ```sh
 oxiroute events list --after 0 --limit 100
-oxiroute events follow --after 0 --limit 100 --interval-ms 1000
+oxiroute events follow --since 10m
+oxiroute events follow --after 0 --count 20
 oxiroute shutdown
 ```
 
+`events follow` prints the retained events after the cursor (or of the last `--since` window) and then the
+new ones. It reconnects from the last event it printed when the connection drops, stops after `--count`
+events, and ends with status 130 on Ctrl-C.
+
 Events are live bounded operational delivery and are not durable audit history. Query durable,
-redacted control history separately with the authenticated API:
+redacted control history separately with `oxiroute audit` or the authenticated API:
 
 ```sh
+oxiroute audit list --since 1h --category control
+oxiroute audit status
+oxiroute audit tail
 curl -s -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9900/api/v1/audit?after=0&limit=100' | jq '.records'
 curl -s -H "Authorization: Bearer $TOKEN" \

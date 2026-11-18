@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use time::{OffsetDateTime, format_description::BorrowedFormatItem, macros::format_description};
 
 const TIMESTAMP: &[BorrowedFormatItem<'static>] =
@@ -68,6 +70,18 @@ pub(crate) fn duration(value_ms: u64) -> String {
 
 pub(crate) fn percent(numerator: u64, denominator: u64) -> Option<f64> {
     (denominator > 0).then(|| as_f64(numerator) * 100.0 / as_f64(denominator))
+}
+
+pub(crate) fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+pub(crate) fn now_unix_seconds() -> i64 {
+    i64::try_from(now_unix_ms() / 1_000).unwrap_or(i64::MAX)
 }
 
 pub(crate) fn timestamp(unix_ms: u64) -> String {

@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::Value;
 use time::{Date, Month, PrimitiveDateTime, Time};
 
@@ -13,14 +11,6 @@ const FIELDS: [&str; 3] = ["notAfterUnixSeconds", "expiresAt", "notAfter"];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Expiry {
     unix_seconds: i64,
-}
-
-pub(crate) fn now_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 impl Expiry {

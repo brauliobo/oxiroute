@@ -58,6 +58,7 @@ fn every_command_family_ends_its_help_with_examples() {
     let command = Cli::command();
     for family in [
         "events",
+        "audit",
         "requests",
         "server",
         "pool",
