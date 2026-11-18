@@ -695,11 +695,18 @@ Current constraints:
   admitted. The runtime uses bounded QUIC admission, field sections, streams, request bodies (at most
   64 MiB), response bodies, safe response framing, and graceful GOAWAY drain; migration and 0-RTT are
   disabled.
-- With `listener_workers` above 1 a reverse `http3` listener binds that many UDP sockets to its
-  address with `SO_REUSEPORT` and runs one QUIC endpoint and one serving thread on each; the kernel
-  steers a client's datagrams to the same socket for the life of the connection (migration is
-  disabled). Where the descriptor was handed over without `SO_REUSEPORT` the listener runs one
-  endpoint and logs a warning.
+- A `http3` or `forward_http3` listener always binds its UDP socket with `SO_REUSEPORT`, whatever
+  `listener_workers` is (a `udp` relay listener keeps an exclusive socket). With `listener_workers`
+  above 1 a reverse `http3` listener runs that many QUIC endpoints on sockets bound to its address
+  and one serving thread on each; the kernel steers a client's datagrams to the same socket for the
+  life of the connection (migration is disabled). A reload that raises `listener_workers` adds the
+  sibling sockets to the kept address, so the number of UDP sockets on the port equals the new
+  count. A lower count removes no socket that already serves connections: the direct runtime keeps
+  them while the address is kept, and under the supervising master they close with the retired
+  worker. Because of `SO_REUSEPORT`, another process of the same user can bind the same
+  UDP port without an address-in-use error. A reload is refused (`E_LISTENER_BIND`, and a failed
+  validation) when `listener_workers` is above 1 on an address whose kept socket belongs to a `udp`
+  relay listener, because that socket was bound without `SO_REUSEPORT` and cannot be shared.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.

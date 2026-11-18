@@ -303,6 +303,7 @@ fn validated_test_config(
 ) -> Result<ValidatedConfig, oxiroute_config::ConfigError> {
     let mut complete = differential_config().to_draft();
     complete.listeners = config.listeners.clone();
+    complete.listener_workers = config.listener_workers;
     complete.management.clone_from(&config.management);
     complete.stats.clone_from(&config.stats);
     for listener in &mut complete.listeners {

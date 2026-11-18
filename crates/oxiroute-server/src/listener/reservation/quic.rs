@@ -33,12 +33,25 @@ impl QuicHost {
             endpoints: Vec::with_capacity(sockets.len()),
             members: Vec::with_capacity(sockets.len()),
         };
+        host.grow(sockets, config)?;
+        Ok(host)
+    }
+
+    pub(super) fn grow(
+        &mut self,
+        sockets: Vec<std::net::UdpSocket>,
+        config: &ServerConfig,
+    ) -> io::Result<()> {
         for socket in sockets {
             let (endpoint, member) = Member::start(socket, config.clone())?;
-            host.endpoints.push(endpoint);
-            host.members.push(member);
+            self.endpoints.push(endpoint);
+            self.members.push(member);
         }
-        Ok(host)
+        Ok(())
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.endpoints.len()
     }
 
     pub(super) fn endpoints(&self) -> Vec<Endpoint> {

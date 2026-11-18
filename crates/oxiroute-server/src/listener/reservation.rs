@@ -1,6 +1,5 @@
 use std::{collections::HashMap, io, sync::Arc};
 
-use log::warn;
 use oxiroute_config::{ListenerBind, ValidatedConfig};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::{
@@ -11,8 +10,8 @@ use oxiroute_supervision_unix::{
 use oxiroute_supervisor_master::StableListeners;
 
 use crate::listener::inventory::{
-    ListenerChangeSummary, ListenerDescriptorKind, ListenerDescriptorRole, ListenerId,
-    ListenerInventory,
+    ListenerChangeSummary, ListenerDescriptorKind, ListenerDescriptorRole, ListenerEntry,
+    ListenerId, ListenerInventory,
 };
 
 #[cfg(unix)]
@@ -47,13 +46,11 @@ enum ReservedSocket {
     Unix(std::os::unix::net::UnixListener),
 }
 
-/// Whether the UDP sockets of a configuration join a `SO_REUSEPORT` group: its listeners have several workers, so an
-/// HTTP/3 listener runs several QUIC endpoints.
-fn shares_udp(config: &ValidatedConfig) -> bool {
+fn listener_workers(config: &ValidatedConfig) -> usize {
     config
         .as_draft()
         .listener_workers
-        .is_some_and(|workers| workers > 1)
+        .map_or(1, |workers| usize::try_from(workers).unwrap_or(usize::MAX))
 }
 
 /// A non-blocking listening TCP socket on `address`. `[::]` is dual-stack, or IPv6-only with `ipv6_only`, whatever the
@@ -126,7 +123,8 @@ impl ListenerReservation {
     }
 
     /// [`ListenerReservation::bind`]; with `share_udp` a UDP socket joins a `SO_REUSEPORT` group, so that
-    /// [`ListenerReservation::quic_endpoints`] can bind siblings to it. Other transports ignore it.
+    /// [`ListenerReservation::quic_endpoints`] can bind siblings to it, now or after a later reload. Reservations of HTTP/3
+    /// listeners are always bound shared. Other transports ignore it.
     ///
     /// # Errors
     ///
@@ -261,17 +259,19 @@ impl ListenerReservation {
         Ok(std::net::UdpSocket::from(self.duplicate_owned_fd()?))
     }
 
-    /// Returns the QUIC endpoints that read this UDP reservation, starting them on first use: `count` of them when
-    /// the socket joined a `SO_REUSEPORT` group at bind (see [`ListenerReservation::bind_with`]), else one.
+    /// Returns the QUIC endpoints that read this UDP reservation, starting them on first use and adding endpoints
+    /// when a later call asks for more than the host runs: at least `count` of them when the socket joined a
+    /// `SO_REUSEPORT` group at bind (see [`ListenerReservation::bind_with`]), else one.
     ///
     /// Every generation that reuses the reservation shares the endpoints, so a socket never has
     /// two readers. `config` is only used to start the endpoints; connections are accepted with
-    /// their generation's own configuration. The endpoints of a host are the ones it started with:
-    /// a later call with another `count` gets those.
+    /// their generation's own configuration. A host never drops an endpoint, because the kernel keeps
+    /// giving it the peers it was given: a later call with a smaller `count` gets every endpoint.
     ///
     /// # Errors
     ///
-    /// Returns an error when this reservation is not a UDP socket or an endpoint cannot start.
+    /// Returns an error when this reservation is not a UDP socket, an endpoint cannot start, or more than one
+    /// endpoint is asked of a socket that was not bound for sharing.
     #[cfg(unix)]
     pub fn quic_endpoints(
         &self,
@@ -283,13 +283,15 @@ impl ListenerReservation {
             .quic
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let started = match host.take() {
-            Some(started) => started,
-            None => quic::QuicHost::start(self.udp_group(count)?, config)?,
+        let started = match &mut *host {
+            Some(started) => {
+                let missing = count.saturating_sub(started.len());
+                started.grow(self.udp_siblings(missing)?, config)?;
+                started
+            }
+            None => host.insert(quic::QuicHost::start(self.udp_group(count)?, config)?),
         };
-        let endpoints = started.endpoints();
-        *host = Some(started);
-        Ok(endpoints)
+        Ok(started.endpoints())
     }
 
     #[cfg(not(unix))]
@@ -304,27 +306,53 @@ impl ListenerReservation {
         ))
     }
 
-    /// The reservation's socket and, when it is in a `SO_REUSEPORT` group, `count - 1` siblings bound to the same
-    /// address.
+    /// The reservation's socket and `count - 1` siblings bound to the same address.
     #[cfg(unix)]
     fn udp_group(&self, count: usize) -> io::Result<Vec<std::net::UdpSocket>> {
-        let first = self.duplicate_udp_socket()?;
-        if count <= 1 {
-            return Ok(vec![first]);
+        let mut group = vec![self.duplicate_udp_socket()?];
+        group.extend(self.udp_siblings(count.saturating_sub(1))?);
+        Ok(group)
+    }
+
+    /// `count` sockets bound to the address of the reservation's socket, which must be in a `SO_REUSEPORT` group.
+    #[cfg(unix)]
+    fn udp_siblings(&self, count: usize) -> io::Result<Vec<std::net::UdpSocket>> {
+        if count == 0 {
+            return Ok(Vec::new());
         }
-        if !rustix::net::sockopt::socket_reuseport(&first)? {
-            warn!(
-                "listener `{}` has {count} workers but its UDP socket was not bound for sharing: one QUIC endpoint serves it",
-                self.inner.bind_text
-            );
-            return Ok(vec![first]);
+        let first = self.duplicate_udp_socket()?;
+        if !self.shares_udp_port()? {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "listener `{}` needs {} UDP sockets on one address, but its socket was not bound with SO_REUSEPORT",
+                    self.inner.bind_text,
+                    count + 1
+                ),
+            ));
         }
         let address = first.local_addr()?;
-        let mut group = vec![first];
-        for _ in 1..count {
-            group.push(bind_udp(address, true)?);
+        (0..count).map(|_| bind_udp(address, true)).collect()
+    }
+
+    #[cfg(unix)]
+    fn require_shared_udp(&self, listener_name: &str, workers: usize) -> io::Result<()> {
+        if self.shares_udp_port()? {
+            return Ok(());
         }
-        Ok(group)
+        Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "listener `{listener_name}` runs {workers} workers on UDP address `{}`, but the socket it would keep was bound without SO_REUSEPORT by a udp relay listener and cannot be shared; bind the listener to another address or set listener_workers to 1",
+                self.inner.bind_text
+            ),
+        ))
+    }
+
+    #[cfg(unix)]
+    fn shares_udp_port(&self) -> io::Result<bool> {
+        let socket = self.duplicate_udp_socket()?;
+        Ok(rustix::net::sockopt::socket_reuseport(&socket)?)
     }
 
     #[cfg(not(unix))]
@@ -364,7 +392,7 @@ type ReservationKey = ListenerId;
 #[derive(Clone, Copy)]
 struct PrepareOptions {
     apply_unix_modes: bool,
-    share_udp: bool,
+    workers: usize,
 }
 
 #[derive(Clone, Default)]
@@ -394,7 +422,7 @@ impl ListenerReservations {
             previous,
             PrepareOptions {
                 apply_unix_modes: true,
-                share_udp: shares_udp(config),
+                workers: listener_workers(config),
             },
         )
     }
@@ -408,7 +436,7 @@ impl ListenerReservations {
             previous,
             PrepareOptions {
                 apply_unix_modes: false,
-                share_udp: shares_udp(config),
+                workers: listener_workers(config),
             },
         )
     }
@@ -425,12 +453,14 @@ impl ListenerReservations {
         for entry in inventory.entries() {
             let reservation = match previous.and_then(|kept| kept.by_bind(&entry.bind)) {
                 Some(kept) => {
-                    prepared.retarget(kept, &entry.bind, options)?;
+                    prepared.reuse(kept, entry, options)?;
                     kept.clone()
                 }
-                None => {
-                    ListenerReservation::bind_with(&entry.name, &entry.bind, options.share_udp)?
-                }
+                None => ListenerReservation::bind_with(
+                    &entry.name,
+                    &entry.bind,
+                    entry.descriptor_kind == ListenerDescriptorKind::Quic,
+                )?,
             };
             prepared.by_key.insert(entry.id.clone(), reservation);
         }
@@ -441,24 +471,27 @@ impl ListenerReservations {
     }
 
     #[cfg(unix)]
-    fn retarget(
+    fn reuse(
         &mut self,
         kept: &ListenerReservation,
-        bind: &ListenerBind,
+        entry: &ListenerEntry,
         options: PrepareOptions,
     ) -> io::Result<()> {
-        if let (true, ListenerBind::Unix { mode, .. }) = (options.apply_unix_modes, bind) {
+        if let (true, ListenerBind::Unix { mode, .. }) = (options.apply_unix_modes, &entry.bind) {
             self.unix_mode_changes
                 .extend(UnixModeChange::apply(kept, *mode)?);
+        }
+        if entry.descriptor_kind == ListenerDescriptorKind::Quic && options.workers > 1 {
+            kept.require_shared_udp(&entry.name, options.workers)?;
         }
         Ok(())
     }
 
     #[cfg(not(unix))]
-    fn retarget(
+    fn reuse(
         &mut self,
         _kept: &ListenerReservation,
-        _bind: &ListenerBind,
+        _entry: &ListenerEntry,
         _options: PrepareOptions,
     ) -> io::Result<()> {
         Ok(())

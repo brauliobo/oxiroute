@@ -10,6 +10,7 @@ mod http_support;
 #[path = "../../support/process.rs"]
 mod process_support;
 
+mod udp_workers;
 mod unix_mode;
 
 use std::{
@@ -74,7 +75,11 @@ fn fixed_service(body: &str) -> HttpService {
             path: HttpPathSelector::SegmentPrefix { value: "/".into() },
             methods: Vec::new(),
             access_policy: None,
-            policy: HttpRoutePolicy::default(),
+            policy: HttpRoutePolicy {
+                max_request_body_bytes: Some(64 * 1024),
+                request_buffering: true,
+                ..HttpRoutePolicy::default()
+            },
             action: HttpRouteAction::FixedResponse {
                 status: 200,
                 body: body.into(),

@@ -228,3 +228,102 @@ fn ipv6_only_wildcard_shares_its_port_with_an_ipv4_wildcard() {
             .expect("accepted by the socket of its family");
     }
 }
+
+#[cfg(unix)]
+fn udp_listener_config(
+    address: SocketAddr,
+    protocol: oxiroute_config::Protocol,
+    workers: Option<u64>,
+) -> ConfigDraft {
+    let mut config = config("udp", address);
+    config.listeners[0].bind = ListenerBind::Udp { address };
+    config.listeners[0].protocol = protocol;
+    config.listener_workers = workers;
+    config
+}
+
+#[cfg(unix)]
+fn shares_port(reservations: &ListenerReservations, name: &str) -> bool {
+    rustix::net::sockopt::socket_reuseport(
+        reservations
+            .get(name)
+            .expect("reservation")
+            .duplicate_udp_socket()
+            .expect("duplicate"),
+    )
+    .expect("SO_REUSEPORT")
+}
+
+#[cfg(unix)]
+#[test]
+fn http3_reservations_are_shared_whatever_the_worker_count_and_relays_are_not() {
+    let address = crate::test_ports::unused_tcp_address();
+    let h3 = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Http3, None),
+        None,
+    )
+    .expect("HTTP/3 reservation");
+    assert!(shares_port(&h3, "udp"));
+    drop(h3);
+    let relay = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Udp, Some(4)),
+        None,
+    )
+    .expect("UDP relay reservation");
+    assert!(!shares_port(&relay, "udp"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_kept_http3_socket_takes_more_workers_as_siblings_on_its_address() {
+    let address = crate::test_ports::unused_tcp_address();
+    let one = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Http3, Some(1)),
+        None,
+    )
+    .expect("single worker reservation");
+    let three = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Http3, Some(3)),
+        Some(&one),
+    )
+    .expect("three workers on the kept socket");
+    let kept = three.get("udp").expect("kept reservation");
+    assert!(Arc::ptr_eq(
+        &one.get("udp").expect("first").inner,
+        &kept.inner
+    ));
+
+    let group = kept.udp_group(3).expect("a group of three sockets");
+    assert_eq!(group.len(), 3);
+    assert!(
+        group
+            .iter()
+            .all(|socket| socket.local_addr().expect("address") == address)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_kept_udp_relay_socket_cannot_take_more_http3_workers() {
+    let address = crate::test_ports::unused_tcp_address();
+    let relay = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Udp, None),
+        None,
+    )
+    .expect("UDP relay reservation");
+
+    let error = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Http3, Some(3)),
+        Some(&relay),
+    )
+    .err()
+    .expect("a socket without SO_REUSEPORT cannot be shared");
+    assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    assert!(error.to_string().contains("SO_REUSEPORT"), "{error}");
+    let kept = prepare_reservations(
+        &udp_listener_config(address, oxiroute_config::Protocol::Http3, Some(1)),
+        Some(&relay),
+    )
+    .expect("one worker needs no sharing");
+    assert!(kept.get("udp").expect("kept").udp_group(2).is_err());
+}
