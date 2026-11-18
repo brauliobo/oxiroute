@@ -5,7 +5,7 @@ import { dashboardResponse, installApiMock, requestPath, unlock } from './suppor
 // `vite preview` serves the build with a strict policy (vite.config.ts). Static and string style attributes are
 // blocked by it; Vapor applies object bindings through the CSSOM, so geometry comes from custom properties.
 test.describe('strict content security policy', () => {
-  test('renders runtime-sized bars and the topology layout without style-src violations', async ({ page }) => {
+  test('renders runtime-sized meters and the topology layout without style-src violations', async ({ page }) => {
     const violations: string[] = []
     await page.exposeFunction('reportViolation', (directive: string) => violations.push(directive))
     await page.addInitScript(() => {
@@ -18,15 +18,18 @@ test.describe('strict content security policy', () => {
     const response = await page.goto('/#/overview')
     expect(response?.headers()['content-security-policy']).toContain("style-src 'self'")
     await unlock(page)
-    await expect(page.locator('.topology-node').first()).toBeVisible()
+    await expect(page.locator('.ox-node').first()).toBeVisible()
 
-    const loadWidth = await page.locator('.load-track span').first().evaluate((bar) => bar.getBoundingClientRect().width)
-    const memoryWidth = await page.locator('.memory-track span').evaluate((bar) => bar.getBoundingClientRect().width)
-    const memoryTrackWidth = await page.locator('.memory-track').evaluate((track) => track.getBoundingClientRect().width)
+    const loadWidth = await page.locator('.ox-loads .ox-meter-fill').first().evaluate((bar) => bar.getBoundingClientRect().width)
+    const memory = page.getByRole('meter', { name: 'Host memory used' })
+    const memoryWidth = await memory.locator('.ox-meter-fill').evaluate((bar) => bar.getBoundingClientRect().width)
+    const memoryTrackWidth = await memory.evaluate((track) => track.getBoundingClientRect().width)
     expect(loadWidth).toBeGreaterThan(0)
     expect(memoryWidth / memoryTrackWidth).toBeCloseTo(0.75, 1)
-    const nodeLeft = await page.locator('.topology-node').first().evaluate((node) => getComputedStyle(node).left)
+    const nodeLeft = await page.locator('.ox-node-slot').first().evaluate((node) => getComputedStyle(node).left)
     expect(nodeLeft).toMatch(/^\d+(\.\d+)?px$/)
+    await page.locator('[data-node-id^="upstream_pool"]').click()
+    await expect(page.getByLabel('Topology node inspector')).toBeVisible()
     expect(violations).toEqual([])
   })
 })
