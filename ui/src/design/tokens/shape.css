@@ -1,0 +1,14 @@
+@layer ox.tokens {
+  :root {
+    --ox-radius-xs: 2px;
+    --ox-radius-sm: 4px;
+    --ox-radius: 6px;
+    --ox-radius-pill: 999px;
+    --ox-focus-width: 3px;
+    --ox-z-sticky: 2;
+    --ox-z-skip: 10;
+    --ox-z-dialog: 100;
+    --ox-z-toast: 200;
+    --ox-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 30%);
+  }
+}

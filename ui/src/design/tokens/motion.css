@@ -1,0 +1,7 @@
+@layer ox.tokens {
+  :root {
+    --ox-duration-fast: 0.12s;
+    --ox-duration: 0.2s;
+    --ox-ease: ease-out;
+  }
+}

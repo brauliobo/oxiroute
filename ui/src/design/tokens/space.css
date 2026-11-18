@@ -1,0 +1,15 @@
+@layer ox.tokens {
+  :root {
+    --ox-space-1: 0.125rem;
+    --ox-space-2: 0.25rem;
+    --ox-space-3: 0.375rem;
+    --ox-space-4: 0.5rem;
+    --ox-space-5: 0.75rem;
+    --ox-space-6: 1rem;
+    --ox-space-7: 1.5rem;
+    --ox-space-8: 2rem;
+    --ox-space-9: 3rem;
+    --ox-page-max: 120rem;
+    --ox-border-width: 1px;
+  }
+}

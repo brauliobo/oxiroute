@@ -1,0 +1,21 @@
+@layer ox.tokens {
+  :root {
+    color-scheme: light dark;
+    --ox-bg: light-dark(#f4f5f7, #0d1117);
+    --ox-surface: light-dark(#ffffff, #161b22);
+    --ox-fg: light-dark(#1b1f24, #e6edf3);
+    --ox-muted: light-dark(#57606a, #9da7b3);
+    --ox-border: light-dark(#c3c9d1, #333b45);
+    --ox-control: light-dark(#6e7781, #8b949e);
+    --ox-ok: light-dark(#13692c, #3fb950);
+    --ox-warn: light-dark(#8a5a00, #d29922);
+    --ox-bad: light-dark(#bc1c28, #ff7b72);
+    --ox-info: light-dark(#0a58c2, #58a6ff);
+    --ox-brand: light-dark(#456f0c, #b6ff51);
+    --ox-on-brand: light-dark(#ffffff, #0d1117);
+    --ox-scrim: rgb(0 0 0 / 55%);
+  }
+
+  :root[data-theme='light'] { color-scheme: light; }
+  :root[data-theme='dark'] { color-scheme: dark; }
+}

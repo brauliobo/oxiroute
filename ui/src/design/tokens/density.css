@@ -1,0 +1,27 @@
+@layer ox.tokens {
+  :root,
+  :root[data-density='compact'] {
+    --ox-gap: var(--ox-space-5);
+    --ox-pad: var(--ox-space-4);
+    --ox-control-h: 2rem;
+    --ox-control-px: 0.625rem;
+    --ox-cell-py: var(--ox-space-3);
+    --ox-cell-px: var(--ox-space-4);
+  }
+
+  :root[data-density='comfortable'] {
+    --ox-gap: var(--ox-space-6);
+    --ox-pad: var(--ox-space-5);
+    --ox-control-h: 2.75rem;
+    --ox-control-px: 0.875rem;
+    --ox-cell-py: var(--ox-space-4);
+    --ox-cell-px: var(--ox-space-5);
+  }
+
+  @media (max-width: 45rem) {
+    :root,
+    :root[data-density='compact'] {
+      --ox-control-h: 2.5rem;
+    }
+  }
+}

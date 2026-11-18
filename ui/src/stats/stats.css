@@ -1,27 +1,6 @@
 /* Global tokens and the page chrome (header, toolbar, banner, dialogs, footer). The data views bring their own layout
    and read the --ox-* tokens. `light-dark()` picks the value for the colour scheme: the system's by default, or the
    one forced by <html data-theme> (the store's view.theme). */
-:root {
-  color-scheme: light dark;
-  --ox-bg: light-dark(#f4f5f7, #0d1117);
-  --ox-surface: light-dark(#ffffff, #161b22);
-  --ox-fg: light-dark(#1b1f24, #e6edf3);
-  --ox-muted: light-dark(#57606a, #9da7b3);
-  --ox-border: light-dark(#c3c9d1, #333b45);
-  --ox-control: light-dark(#6e7781, #8b949e);
-  --ox-ok: light-dark(#1a7f37, #3fb950);
-  --ox-warn: light-dark(#8a5a00, #d29922);
-  --ox-bad: light-dark(#cf222e, #ff7b72);
-  --ox-info: light-dark(#0969da, #58a6ff);
-  --ox-radius: 6px;
-  --ox-gap: 0.75rem;
-  --ox-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --ox-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-:root[data-theme='light'] { color-scheme: light; }
-:root[data-theme='dark'] { color-scheme: dark; }
-
 *, *::before, *::after { box-sizing: border-box; }
 
 body {

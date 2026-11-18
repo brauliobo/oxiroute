@@ -1,0 +1,20 @@
+@layer ox.tokens {
+  :root {
+    --ox-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --ox-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --ox-text-2xs: 0.7rem;
+    --ox-text-xs: 0.75rem;
+    --ox-text-sm: 0.8rem;
+    --ox-text-md: 0.85rem;
+    --ox-text-base: 0.875rem;
+    --ox-text-lg: 1.05rem;
+    --ox-text-xl: 1.35rem;
+    --ox-text-2xl: 1.75rem;
+    --ox-weight-normal: 400;
+    --ox-weight-strong: 600;
+    --ox-weight-bold: 700;
+    --ox-leading-tight: 1.2;
+    --ox-leading-body: 1.45;
+    --ox-tracking-label: 0.03em;
+  }
+}
