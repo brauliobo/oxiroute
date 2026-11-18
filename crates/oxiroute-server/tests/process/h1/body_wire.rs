@@ -332,10 +332,7 @@ async fn a_failed_upload_logs_no_request_body_bytes_at_any_verbosity() {
 
     let output = server.shutdown_output();
 
-    assert!(
-        output.contains("502") || output.contains("upstream"),
-        "{output}"
-    );
+    assert!(output.contains("HTTP request failed with"), "{output}");
     assert!(!output.contains(MARKER), "{output}");
 }
 
