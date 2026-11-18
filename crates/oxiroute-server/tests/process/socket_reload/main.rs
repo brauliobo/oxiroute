@@ -10,6 +10,7 @@ mod http_support;
 #[path = "../../support/process.rs"]
 mod process_support;
 
+mod descriptor_limit;
 mod udp_workers;
 mod unix_mode;
 

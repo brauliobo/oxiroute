@@ -155,7 +155,7 @@ fn descriptor_export_rejects_extra_keys_and_bind_mismatch() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn worker_descriptor_limit_is_explicitly_sixty_four() {
+fn worker_descriptor_limit_is_the_scm_rights_maximum() {
     let mut config = empty_config();
     config.listeners = (0..=MAX_DESCRIPTOR_COUNT)
         .map(|index| oxiroute_config::Listener {
@@ -180,9 +180,13 @@ fn worker_descriptor_limit_is_explicitly_sixty_four() {
 
     let config = validated_test_config(&config).expect("valid oversized config");
     let error = descriptor_slots(&ListenerInventory::compile(&config))
-        .expect_err("65 descriptors must be rejected");
+        .expect_err("one descriptor over the limit must be rejected");
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("maximum is 64"));
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("maximum is {MAX_DESCRIPTOR_COUNT}"))
+    );
 }
 
 #[cfg(target_os = "linux")]

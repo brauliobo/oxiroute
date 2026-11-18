@@ -678,6 +678,12 @@ metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`
 `oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
 them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.
 
+Listener count. The supervising master hands the listener sockets (traffic, management, statistics and
+statistics-page listeners together) to a worker in one `SCM_RIGHTS` message, so a configuration may have at
+most 253 of them, the kernel's limit for one message. A start or a reload above that fails with an error naming
+the limit: with the packaged launcher installed the service never falls back to the direct runtime on its own
+(without the launcher, as in a development build, it runs the direct runtime, which has no such limit).
+
 One case still needs a process restart: a TCP socket that keeps its address and changes `ipv6_only`.
 `IPV6_V6ONLY` cannot change once a socket is bound, so a reload would have to bind a second `[::]`
 socket beside the running one. Linux refuses that unless every socket on the port was bound with

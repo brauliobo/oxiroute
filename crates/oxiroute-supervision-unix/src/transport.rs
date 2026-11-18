@@ -19,8 +19,9 @@ use crate::PeerIdentity;
 
 /// Maximum wire-frame size, including the fixed header.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
-/// Maximum number of descriptors carried by one frame.
-pub const MAX_DESCRIPTOR_COUNT: usize = 64;
+/// Maximum number of descriptors carried by one frame: the kernel's `SCM_MAX_FD`, the most one `SCM_RIGHTS` message
+/// can pass.
+pub const MAX_DESCRIPTOR_COUNT: usize = 253;
 /// Fixed wire-header size.
 pub const FRAME_HEADER_SIZE: usize = 52;
 /// Maximum payload size after the fixed header.

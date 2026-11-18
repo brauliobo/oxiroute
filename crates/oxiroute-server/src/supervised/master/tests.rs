@@ -130,8 +130,7 @@ fn eligibility_accepts_stream_listener_configuration() {
     );
 }
 
-#[test]
-fn eligibility_uses_the_worker_descriptor_limit() {
+fn config_over_the_descriptor_limit() -> oxiroute_config::ConfigDraft {
     let mut config = config();
     config.listeners = (0..=oxiroute_supervision_unix::MAX_DESCRIPTOR_COUNT)
         .map(|index| {
@@ -146,12 +145,36 @@ fn eligibility_uses_the_worker_descriptor_limit() {
             listener
         })
         .collect();
+    config
+}
+
+#[test]
+fn eligibility_uses_the_worker_descriptor_limit() {
     assert!(matches!(
-        supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+        supervised_eligibility(
+            &validated(&config_over_the_descriptor_limit()),
+            CgroupV2ProbeStatus::Ready
+        ),
         Err(UnsupportedConfig {
-            reason: "Stage 2 worker listener descriptor limit is 64",
+            reason: "the supervising master hands a worker at most 253 listener descriptors",
         })
     ));
+}
+
+#[test]
+fn a_configuration_over_the_descriptor_limit_never_falls_back_to_the_direct_runtime() {
+    let config = validated(&config_over_the_descriptor_limit());
+
+    assert_eq!(
+        config_plan(&config, true, CgroupV2ProbeStatus::Ready),
+        Err(UnsupportedConfig {
+            reason: "the supervising master hands a worker at most 253 listener descriptors",
+        })
+    );
+    assert_eq!(
+        config_plan(&config, false, CgroupV2ProbeStatus::Ready),
+        Ok(ConfigPlan::Direct)
+    );
 }
 
 #[test]

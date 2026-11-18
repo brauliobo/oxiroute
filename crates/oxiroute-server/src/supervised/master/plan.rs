@@ -18,23 +18,17 @@ pub(super) fn config_plan(
     launcher_available: bool,
     containment_status: CgroupV2ProbeStatus,
 ) -> Result<ConfigPlan, UnsupportedConfig> {
-    let contains_exec = contains_rtmp_exec_profiles(config);
-    if let Err(error) = supervised_eligibility(config, containment_status) {
-        return if contains_exec {
-            Err(error)
+    if !launcher_available {
+        return if contains_rtmp_exec_profiles(config) {
+            supervised_eligibility(config, containment_status).and(Err(UnsupportedConfig {
+                reason: "RTMP exec profiles require the supervised launcher",
+            }))
         } else {
             Ok(ConfigPlan::Direct)
         };
     }
-    if launcher_available {
-        Ok(ConfigPlan::Supervised)
-    } else if contains_exec {
-        Err(UnsupportedConfig {
-            reason: "RTMP exec profiles require the supervised launcher",
-        })
-    } else {
-        Ok(ConfigPlan::Direct)
-    }
+    supervised_eligibility(config, containment_status)?;
+    Ok(ConfigPlan::Supervised)
 }
 
 pub(super) fn supervised_eligibility(

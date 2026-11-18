@@ -730,7 +730,7 @@ impl ListenerReservations {
         config: &ValidatedConfig,
     ) -> Result<(), &'static str> {
         if ListenerInventory::compile(config).len() > MAX_DESCRIPTOR_COUNT {
-            return Err("Stage 2 worker listener descriptor limit is 64");
+            return Err("the supervising master hands a worker at most 253 listener descriptors");
         }
         Ok(())
     }

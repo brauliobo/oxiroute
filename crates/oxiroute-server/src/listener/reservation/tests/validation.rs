@@ -53,9 +53,9 @@ fn validation_source_preserves_direct_capacity_and_unix_path_reuse() {
     let direct = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
     assert_eq!(
         ListenerReservations::prepare_for_validation(&direct, None)
-            .expect("direct validation accepts 65 listeners")
+            .expect("direct validation accepts listeners over the supervised limit")
             .len(),
-        65
+        MAX_DESCRIPTOR_COUNT + 1
     );
 
     let directory = tempfile::tempdir().expect("validation source directory");

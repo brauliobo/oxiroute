@@ -15,7 +15,7 @@ pub(crate) const STATE_MESSAGE: MessageType = MessageType(0x182);
 /// Maximum encoded worker status bytes accepted by either endpoint.
 pub const MAX_STATUS_BYTES: usize = 60 * 1024;
 /// Maximum listener observations carried by one worker status.
-pub const MAX_STATUS_LISTENERS: usize = 64;
+pub const MAX_STATUS_LISTENERS: usize = oxiroute_supervision_unix::MAX_DESCRIPTOR_COUNT;
 /// Maximum event observations carried by one worker status.
 pub const MAX_STATUS_EVENTS: usize = 64;
 /// Maximum worker-originated events retained by the master.

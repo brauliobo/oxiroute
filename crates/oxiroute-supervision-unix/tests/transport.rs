@@ -435,27 +435,51 @@ fn malformed_headers_length_and_count_mismatches_are_rejected_without_fd_leaks()
 }
 
 #[test]
-fn data_and_ancillary_truncation_are_rejected_and_close_received_fds() {
+fn payload_truncation_is_rejected() {
     let (sender, mut receiver) = SeqpacketEndpoint::pair().unwrap();
     send_raw(&sender, &vec![0_u8; MAX_FRAME_SIZE + 1], &[]);
     assert!(matches!(
         receiver.receive(),
         Err(TransportError::PayloadTruncated { .. })
     ));
+}
 
+#[test]
+fn the_descriptor_limit_is_what_the_kernel_passes_in_one_message() {
+    let (mut sender, mut receiver) = SeqpacketEndpoint::pair().unwrap();
     let (reader, writer) = UnixStream::pair().unwrap();
-    let descriptors = vec![writer.as_fd(); MAX_DESCRIPTOR_COUNT + 1];
-    send_raw(
-        &sender,
-        &wire_frame(2, 0, u16::try_from(descriptors.len()).unwrap(), b""),
-        &descriptors,
-    );
-    drop(descriptors);
+
+    let descriptors = vec![writer.as_fd(); MAX_DESCRIPTOR_COUNT];
+    sender
+        .send(
+            MessageType(7),
+            FrameFlags::default(),
+            INSTANCE,
+            GenerationId(1),
+            b"",
+            &descriptors,
+        )
+        .unwrap();
+    let frame = receiver.receive().unwrap();
+    assert_eq!(frame.descriptors().len(), MAX_DESCRIPTOR_COUNT);
+    drop((frame, descriptors));
+
+    {
+        let too_many = vec![writer.as_fd(); MAX_DESCRIPTOR_COUNT + 1];
+        let mut space = vec![MaybeUninit::uninit(); cmsg_space!(ScmRights(too_many.len()))];
+        let mut ancillary = SendAncillaryBuffer::new(&mut space);
+        assert!(ancillary.push(SendAncillaryMessage::ScmRights(&too_many)));
+        assert!(
+            sendmsg(
+                &sender,
+                &[IoSlice::new(b"")],
+                &mut ancillary,
+                SendFlags::NOSIGNAL,
+            )
+            .is_err()
+        );
+    }
     drop(writer);
-    assert!(matches!(
-        receiver.receive(),
-        Err(TransportError::AncillaryTruncated { .. })
-    ));
     assert_stream_eof(&reader);
 }
 

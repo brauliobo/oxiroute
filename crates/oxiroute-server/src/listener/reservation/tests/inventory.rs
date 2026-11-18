@@ -540,29 +540,32 @@ fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
 #[cfg(target_os = "linux")]
 #[test]
 fn inventory_has_no_supervised_descriptor_limit() {
-    let sixty_four = many_listener_config(MAX_DESCRIPTOR_COUNT);
-    assert_eq!(ListenerInventory::compile(&sixty_four).entries().len(), 64);
+    let at_limit = many_listener_config(MAX_DESCRIPTOR_COUNT);
     assert_eq!(
-        descriptor_slots(&ListenerInventory::compile(&sixty_four))
-            .expect("64 descriptors are accepted")
-            .len(),
-        64
+        ListenerInventory::compile(&at_limit).entries().len(),
+        MAX_DESCRIPTOR_COUNT
     );
     assert_eq!(
-        historical_descriptor_plan(&sixty_four)
-            .expect("historical plan accepts 64 descriptors")
+        descriptor_slots(&ListenerInventory::compile(&at_limit))
+            .expect("descriptors up to the limit are accepted")
             .len(),
-        64
+        MAX_DESCRIPTOR_COUNT
+    );
+    assert_eq!(
+        historical_descriptor_plan(&at_limit)
+            .expect("historical plan accepts descriptors up to the limit")
+            .len(),
+        MAX_DESCRIPTOR_COUNT
     );
 
-    let sixty_five = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
-    assert_eq!(ListenerInventory::compile(&sixty_five).entries().len(), 65);
-    let error = descriptor_slots(&ListenerInventory::compile(&sixty_five))
-        .expect_err("existing supervised oracle rejects 65 descriptors");
+    let over_limit = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
+    let expected = format!("maximum is {MAX_DESCRIPTOR_COUNT}");
+    let error = descriptor_slots(&ListenerInventory::compile(&over_limit))
+        .expect_err("existing supervised oracle rejects descriptors over the limit");
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("maximum is 64"));
-    let historical_error = historical_descriptor_plan(&sixty_five)
-        .expect_err("historical descriptor plan rejects 65 descriptors");
+    assert!(error.to_string().contains(&expected));
+    let historical_error = historical_descriptor_plan(&over_limit)
+        .expect_err("historical descriptor plan rejects descriptors over the limit");
     assert_eq!(historical_error.kind(), io::ErrorKind::InvalidInput);
-    assert!(historical_error.to_string().contains("maximum is 64"));
+    assert!(historical_error.to_string().contains(&expected));
 }

@@ -47,9 +47,6 @@ use thiserror::Error;
 
 use super::worker;
 
-// The package installs this fixed path. Unsupported descriptor topologies continue through the
-// existing generation runtime, and development installations without the package use the same
-// fallback.
 const PRODUCTION_LAUNCHER: &str = "/usr/lib/oxiroute/oxiroute-worker-launcher";
 const MASTER_INSTANCE_ID: &str = "oxiroute-stage-3";
 const INITIAL_GENERATION: GenerationId = GenerationId(1);
@@ -72,31 +69,29 @@ pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
     MasterRunner::production()?.run_loaded(&coordinator, &document)
 }
 
-/// Runs the master when the configuration is eligible and otherwise preserves the current server.
+/// Runs the master under the packaged launcher and the direct generation runtime without it.
 ///
-/// The fixed packaged launcher is the activation gate. An eligible configuration without that
-/// launcher preserves the direct generation runtime for development installations.
+/// With the launcher installed a configuration the master cannot run is an error, never a silent
+/// downgrade to the direct runtime.
 pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
-    let launcher_available = MasterRunner::launcher_available();
-    let plan = config_plan(
-        &document.validated_config,
-        launcher_available,
-        probe_cgroup_v2().status,
-    )?;
     if std::env::var_os("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME").is_some()
         && !contains_rtmp_exec_profiles(&document.validated_config)
     {
         return crate::run(config_path);
     }
+    let plan = config_plan(
+        &document.validated_config,
+        MasterRunner::launcher_available(),
+        probe_cgroup_v2().status,
+    )?;
     match plan {
         ConfigPlan::Supervised => MasterRunner::production()?.run_loaded(&coordinator, &document),
-        ConfigPlan::Direct if !launcher_available => {
+        ConfigPlan::Direct => {
             info!("supervised launcher is unavailable; using the direct generation runtime");
             crate::run(config_path)
         }
-        ConfigPlan::Direct => crate::run(config_path),
     }
 }
 
