@@ -121,6 +121,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     oxiroute_server::apply_log_filter(document.validated_config.as_draft().log_filter.as_deref());
     let startup_deadline = Instant::now() + LIFECYCLE_PHASE_TIMEOUT;
     let manager = GenerationManager::new_supervised();
+    manager.set_overlay_beside(coordinator.canonical_path());
     let candidate =
         match manager.prepare_adopted_with_deadline(*document, listeners, startup_deadline) {
             Ok(candidate) => candidate,

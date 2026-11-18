@@ -259,6 +259,7 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
             }
         })?;
     let config_coordinator = CanonicalConfigCoordinator::new(config_path)?;
+    generation_manager.set_overlay_beside(config_coordinator.canonical_path());
     let config_document = match config_coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
         ConfigLoadOutcome::Rejected(rejection) => {

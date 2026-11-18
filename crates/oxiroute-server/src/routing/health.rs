@@ -290,6 +290,18 @@ const fn checks_enabled_by_default() -> bool {
 }
 
 impl ServerAdminState {
+    pub(crate) fn unset(pool: &str, server: &str) -> Self {
+        Self {
+            pool: pool.to_owned(),
+            server: server.to_owned(),
+            administrative: AdministrativeState::Ready,
+            health: HealthOverride::Auto,
+            checks_enabled: true,
+            max_connections: None,
+            weight: None,
+        }
+    }
+
     pub(super) fn is_default(&self) -> bool {
         self.administrative == AdministrativeState::Ready
             && self.health == HealthOverride::Auto

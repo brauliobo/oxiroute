@@ -94,6 +94,22 @@ impl RuntimeGeneration {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = states.to_vec();
     }
 
+    /// Fills the servers and listeners the overlay keeps with its settings, wherever the carried
+    /// runtime state still holds the default.
+    pub(crate) fn restore_overlay(&self, overlay: &crate::overlay::Overlay) {
+        let carried = self
+            .carried_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.restore_administrative_states(&overlay.merged_with(&carried));
+        for entry in &overlay.listeners {
+            let _ = self
+                .metrics()
+                .set_listener_administrative_state(&entry.listener, entry.state);
+        }
+    }
+
     /// Applies the carried states again, to servers that joined the pools after the first pass.
     pub(crate) fn restore_carried_states(&self) {
         let states = self

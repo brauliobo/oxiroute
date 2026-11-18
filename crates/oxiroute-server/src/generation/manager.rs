@@ -10,6 +10,7 @@ pub struct GenerationManager {
     next_candidate_id: Arc<AtomicU64>,
     next_reservation_token: Arc<AtomicU64>,
     mode: RuntimeMode,
+    overlay: Arc<std::sync::OnceLock<crate::overlay::OverlayStore>>,
     pub(super) operations: Arc<OperationGate>,
     pub(super) process: ProcessRuntime,
     pub(super) registry: Arc<crate::registry::host::RegistryHost>,
@@ -43,6 +44,7 @@ impl GenerationManager {
             next_candidate_id: Arc::new(AtomicU64::new(0)),
             next_reservation_token: Arc::new(AtomicU64::new(0)),
             mode: RuntimeMode::Direct,
+            overlay: Arc::default(),
             operations: Arc::new(OperationGate::default()),
             process: ProcessRuntime::new(None),
             registry: Arc::new(crate::registry::host::RegistryHost::new(true)),
@@ -84,6 +86,17 @@ impl GenerationManager {
             registry: Arc::new(crate::registry::host::RegistryHost::new(false)),
             ..self.clone()
         }
+    }
+
+    /// Makes the persisted runtime overlay of the configuration known to every later activation.
+    pub fn set_overlay_beside(&self, config_path: &std::path::Path) {
+        let _ = self
+            .overlay
+            .set(crate::overlay::OverlayStore::beside(config_path));
+    }
+
+    pub(crate) fn overlay(&self) -> Option<&crate::overlay::OverlayStore> {
+        self.overlay.get()
     }
 
     /// Lets this process persist and expire registrations, or only follow them.

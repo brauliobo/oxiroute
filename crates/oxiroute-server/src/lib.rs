@@ -16,6 +16,7 @@ mod label;
 mod lifecycle_control;
 mod listener;
 mod observability;
+mod overlay;
 mod registry;
 mod routing;
 mod rtmp;

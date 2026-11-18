@@ -267,6 +267,7 @@ impl GenerationManager {
                 retirements.retire(evicted.rtmp_retirement());
             }
         }
+        self.apply_overlay(&active);
         self.registry.on_activate(&active, self);
         active.start_accepting();
         state.last_failure = None;
@@ -279,6 +280,16 @@ impl GenerationManager {
         drop(state);
         drop(operation);
         Ok(active)
+    }
+
+    fn apply_overlay(&self, active: &RuntimeGeneration) {
+        let Some(store) = self.overlay() else {
+            return;
+        };
+        match store.load() {
+            Ok(overlay) => active.restore_overlay(&overlay),
+            Err(error) => log::warn!("the overlay was not applied: {error}"),
+        }
     }
 
     fn claim_runtime_start(
