@@ -1,8 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -21,53 +17,21 @@ import {
   setListenerAdministrativeState,
   validateConfig,
 } from './api'
+import { MANAGEMENT_TOKEN, startManagement } from './test/managementProcess'
+import type { ManagementProcess } from './test/managementProcess'
 
-const token = '4d56dcfbb90f5666c794cc8f23c6758e7bb388c7b1847ea385a75ce53647bbac'
-const workspaceRoot = resolve(process.cwd(), '..')
-const targetDirectory = process.env.CARGO_TARGET_DIR
-  ? (isAbsolute(process.env.CARGO_TARGET_DIR)
-      ? process.env.CARGO_TARGET_DIR
-      : resolve(workspaceRoot, process.env.CARGO_TARGET_DIR))
-  : join(workspaceRoot, 'target')
-const serverBinary = join(targetDirectory, 'debug', 'oxiroute')
+const token = MANAGEMENT_TOKEN
 
-let child: ChildProcessWithoutNullStreams | undefined
-let directory = ''
+let management: ManagementProcess
 let listenerPath = ''
 let origin = ''
-let stderr = ''
 
 beforeAll(async () => {
-  const port = await reservePort()
-  directory = await mkdtemp(join(tmpdir(), 'oxiroute-ui-process-'))
-  const configPath = join(directory, 'oxiroute.lua')
-  const tokenPath = join(directory, 'management.token')
-  const auditPath = join(directory, 'audit')
-  listenerPath = join(directory, 'live.sock')
-  await writeFile(configPath, managementConfig(port, listenerPath), 'utf8')
-  await writeFile(tokenPath, `${token}\n`, 'utf8')
-  await chmod(tokenPath, 0o600)
-
-  child = spawn(serverBinary, [configPath], {
-    cwd: workspaceRoot,
-    env: {
-      ...process.env,
-      OXIROUTE_AUDIT_DIR: auditPath,
-      OXIROUTE_AUDIT_MAX_FILE_BYTES: '1048576',
-      OXIROUTE_AUDIT_MAX_RECORD_BYTES: '16384',
-      OXIROUTE_AUDIT_MAX_RECORDS: '10000',
-      OXIROUTE_AUDIT_MAX_ROTATED_FILES: '7',
-      OXIROUTE_AUDIT_MAX_TOTAL_BYTES: '8388608',
-      OXIROUTE_MANAGEMENT_TOKEN_FILE: tokenPath,
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
+  management = await startManagement(({ directory, port }) => {
+    listenerPath = join(directory, 'live.sock')
+    return managementConfig(port, listenerPath)
   })
-  child.stderr.setEncoding('utf8')
-  child.stderr.on('data', (chunk: string) => {
-    stderr += chunk
-  })
-  origin = `http://127.0.0.1:${port}`
-  await waitForServer(`${origin}/ready`)
+  origin = management.origin
 
   const nativeFetch = globalThis.fetch
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
@@ -77,19 +41,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   vi.unstubAllGlobals()
-  if (child && child.exitCode === null) {
-    child.kill('SIGTERM')
-    await new Promise<void>((resolveExit) => {
-      const force = setTimeout(() => {
-        child?.kill('SIGKILL')
-      }, 2_000)
-      child?.once('exit', () => {
-        clearTimeout(force)
-        resolveExit()
-      })
-    })
-  }
-  if (directory) await rm(directory, { force: true, recursive: true })
+  await management?.stop()
 })
 
 describe('production API client against the built management process', () => {
@@ -441,37 +393,6 @@ describe('production API client against the built management process', () => {
     }
   })
 })
-
-async function reservePort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolveListen)
-  })
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('could not reserve management port')
-  await new Promise<void>((resolveClose, reject) => {
-    server.close((error) => error ? reject(error) : resolveClose())
-  })
-  return address.port
-}
-
-async function waitForServer(url: string): Promise<void> {
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    if (child?.exitCode !== null) {
-      throw new Error(`server exited before binding the management socket:\n${stderr}`)
-    }
-    try {
-      const response = await fetch(url)
-      if (response.ok) return
-    } catch {
-      // The built process has not bound its management listener yet.
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10))
-  }
-  throw new Error(`server did not bind the management socket:\n${stderr}`)
-}
 
 function managementConfig(port: number, listenerPath: string): string {
   return `return {
