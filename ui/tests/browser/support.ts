@@ -34,7 +34,15 @@ export type JsonMockResponse = {
   body: unknown
 }
 
-export type ApiMockResponse = JsonMockResponse | SseMockResponse
+export type RawMockResponse = {
+  kind: 'raw'
+  status?: number
+  contentType: string
+  body: string | Buffer
+  headers?: Record<string, string>
+}
+
+export type ApiMockResponse = JsonMockResponse | SseMockResponse | RawMockResponse
 export type ApiMockHandler = (request: Request) => ApiMockResponse | Promise<ApiMockResponse | undefined> | undefined
 
 export async function installApiMock(page: Page, handler: ApiMockHandler): Promise<void> {
@@ -64,6 +72,15 @@ export async function installApiMock(page: Page, handler: ApiMockHandler): Promi
           'Cache-Control': 'no-cache',
           'Content-Type': 'text/event-stream; charset=utf-8',
         },
+        body: response.body,
+      })
+      return
+    }
+    if (response.kind === 'raw') {
+      await route.fulfill({
+        status: response.status ?? 200,
+        contentType: response.contentType,
+        headers: response.headers,
         body: response.body,
       })
       return

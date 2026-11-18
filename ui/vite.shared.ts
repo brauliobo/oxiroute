@@ -17,7 +17,7 @@ const STRICT_DIRECTIVES = {
   'frame-ancestors': ["'none'"],
 } satisfies Directives
 
-export const consoleContentSecurityPolicy = serialize(STRICT_DIRECTIVES)
+export const consoleContentSecurityPolicy = serialize({ ...STRICT_DIRECTIVES, 'media-src': ["'self'"] })
 
 export const statsContentSecurityPolicy = serialize({
   ...STRICT_DIRECTIVES,

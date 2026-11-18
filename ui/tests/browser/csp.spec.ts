@@ -16,7 +16,10 @@ test.describe('strict content security policy', () => {
     await installApiMock(page, (request) => dashboardResponse(requestPath(request)))
 
     const response = await page.goto('/#/overview')
-    expect(response?.headers()['content-security-policy']).toContain("style-src 'self'")
+    const policy = response?.headers()['content-security-policy'] ?? ''
+    expect(policy).toContain("style-src 'self'")
+    expect(policy).toContain("media-src 'self'")
+    expect(policy).not.toMatch(/blob:|data:|unsafe-/)
     await unlock(page)
     await expect(page.locator('.ox-node').first()).toBeVisible()
 
