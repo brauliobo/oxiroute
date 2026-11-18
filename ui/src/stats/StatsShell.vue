@@ -1,5 +1,7 @@
 <script setup vapor lang="ts">
-import { computed, onMounted, onScopeDispose, ref, watchEffect } from 'vue'
+import { computed, ref } from 'vue'
+import { nextTheme, useTheme } from '#design/composables/useTheme'
+import { useShortcuts } from '#design/composables/useShortcuts'
 import AdminActions from './components/AdminActions.vue'
 import Footer from './components/Footer.vue'
 import ShortcutsDialog from './components/ShortcutsDialog.vue'
@@ -8,10 +10,9 @@ import StatsToolbar from './components/StatsToolbar.vue'
 import StatusBanner from './components/StatusBanner.vue'
 import { statusBanner } from './banner'
 import { csvUrl, jsonUrl } from './links'
-import { SEARCH_ID, shortcutAction } from './shortcuts'
+import { KEYMAP, SEARCH_ID } from './shortcuts'
 import type { ShortcutAction } from './shortcuts'
 import StatsStatus from './StatsStatus.vue'
-import { applyTheme, nextTheme } from './theme'
 import { provideStatsStore } from './useStatsStore'
 
 const { view, status, failure, model, snapshot, setView, togglePause, refresh } = provideStatsStore()
@@ -21,7 +22,7 @@ const helpOpen = ref(false)
 const banner = computed(() => statusBanner(status.value, failure.value))
 const revision = computed(() => model.value?.generation.wire.activeRevision)
 
-watchEffect(() => applyTheme(view.value.theme))
+useTheme(computed(() => view.value.theme))
 
 function onBannerAction(action: 'retry' | 'reload'): void {
   if (action === 'retry') refresh()
@@ -36,14 +37,7 @@ const SHORTCUT_HANDLERS: Readonly<Record<ShortcutAction, () => void>> = {
   theme: () => setView({ theme: nextTheme(view.value.theme) }),
   problems: () => setView({ problemsOnly: !view.value.problemsOnly }),
 }
-function onKeydown(event: KeyboardEvent) {
-  const action = shortcutAction(event)
-  if (!action) return
-  event.preventDefault()
-  SHORTCUT_HANDLERS[action]()
-}
-onMounted(() => document.addEventListener('keydown', onKeydown))
-onScopeDispose(() => document.removeEventListener('keydown', onKeydown))
+useShortcuts(KEYMAP, SHORTCUT_HANDLERS)
 </script>
 
 <template lang="pug">

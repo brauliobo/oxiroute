@@ -128,7 +128,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
 import { computed, nextTick, ref } from 'vue'
 
 import { formatCount } from './formatters'
-import { vCssVars } from './cssVars'
+import { vCssVars } from '#design/directives/cssVars'
 import { listenerStateLabels, topologyRuntimeStatusLabels } from './runtimeStates'
 import type {
   TopologyEdgeKind,

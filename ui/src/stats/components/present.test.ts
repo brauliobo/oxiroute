@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UNKNOWN } from '../format'
+import { UNKNOWN } from '#design/format'
 import { ICON_PATHS, toneOf } from './status'
 import { SPARK_SAMPLES, sparkShape } from './spark'
 import { histogramBars } from './histogram'

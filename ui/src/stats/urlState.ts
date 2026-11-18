@@ -1,4 +1,8 @@
+import { THEMES } from '#design/composables/useTheme'
+import type { Theme } from '#design/composables/useTheme'
 import type { ServerStatus } from './generated/statsPage'
+
+export type { Theme }
 
 // Everything the viewer can change lives in the query string, so a link restores the view. Nothing in it is secret.
 // The defaults are never written. Input from the URL is untrusted: invalid values are dropped, not repaired.
@@ -14,8 +18,6 @@ export const MAX_INTERVAL_MS = 86_400_000
 export const SERVER_STATUSES = ['up', 'down', 'drain', 'maint', 'ejected', 'unchecked', 'unknown'] as const satisfies
   readonly ServerStatus[]
 export type StatusFilter = (typeof SERVER_STATUSES)[number]
-export const THEMES = ['auto', 'light', 'dark'] as const
-export type Theme = (typeof THEMES)[number]
 export interface SortSpec {
   column: string
   direction: 'asc' | 'desc'

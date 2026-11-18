@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatClockTime, formatTime, presentApiError, shortRevision } from './formatters'
+import {
+  formatBytes, formatClockTime, formatCount, formatTelemetryAge, formatTelemetryDuration, formatTime, presentApiError,
+  shortRevision,
+} from './formatters'
 
 describe('shared presentation formatters', () => {
   it('preserves date-time and clock-only presentation contracts', () => {
@@ -14,6 +17,14 @@ describe('shared presentation formatters', () => {
       minute: '2-digit',
       second: '2-digit',
     }).format(timestamp))
+  })
+
+  it('shares locale-independent counts, IEC sizes, durations and ages with the stats page', () => {
+    expect(formatCount('12345')).toBe('12,345')
+    expect(formatBytes('1572864')).toBe('1.5 MiB')
+    expect(formatTelemetryDuration(90_061_000)).toBe('1d 1h')
+    expect(formatTelemetryAge(10_000, 15_000)).toBe('5 s ago')
+    expect(formatTelemetryAge(20_000, 15_000)).toBe('just now')
   })
 
   it('shortens revisions and preserves the absent revision label', () => {

@@ -1,4 +1,4 @@
-import { formatDuration } from '../format'
+import { formatDuration } from '#design/format'
 import type { HistogramCounts } from '../percentiles'
 
 export interface Bar {

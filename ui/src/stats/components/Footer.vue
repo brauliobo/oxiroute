@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatTimestamp } from '../format'
+import { formatTimestamp } from '#design/format'
 
 const props = defineProps<{ version?: string; generation?: number; sampledAtUnixMs?: number }>()
 const emit = defineEmits<{ help: [] }>()

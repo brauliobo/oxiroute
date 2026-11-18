@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatCount } from '../format'
+import { formatCount } from '#design/format'
 import { SPARK_HEIGHT, SPARK_WIDTH, sparkShape } from './spark'
 import './widgets.css'
 

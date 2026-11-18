@@ -12,13 +12,13 @@ describe('HaproxyStatsDashboard', () => {
 
     expect(wrapper.get('#stats-heading').text()).toBe('Statistics')
     expect(wrapper.findAll('.stats-kpi')).toHaveLength(4)
-    expect(wrapper.get('.stats-panel').text()).toContain(new Intl.NumberFormat().format(10_000))
+    expect(wrapper.get('.stats-panel').text()).toContain('10,000')
     expect(wrapper.get('.stats-panel').text()).toContain('Retry attempts')
     expect(wrapper.get('.stats-panel').text()).toContain('1d 1h')
     expect(wrapper.get('.stats-section').text()).toContain('HTTP ingress')
     expect(wrapper.get('.stats-section').text()).toContain('Forward H3')
     expect(wrapper.get('.stats-section').text()).toContain(
-      `14 / ${new Intl.NumberFormat().format(1_000)}`,
+      `14 / 1,000`,
     )
 
     const poolSection = wrapper.findAll('.stats-section')[1]

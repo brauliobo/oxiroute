@@ -16,6 +16,11 @@ describe('formatBytes', () => {
   })
 
   it('keeps the sign', () => expect(formatBytes(-1536)).toBe('-1.5 KiB'))
+
+  it('reads the decimal strings the management API sends for u64 values, in IEC units', () => {
+    expect(formatBytes('402653184')).toBe('384 MiB')
+    expect(formatBytes('1048576')).toBe('1 MiB')
+  })
 })
 
 describe('formatCount', () => {
@@ -33,6 +38,13 @@ describe('formatExact', () => {
   })
 
   it('keeps every digit of a u64', () => expect(formatExact(18446744073709551615n)).toBe('18,446,744,073,709,551,615'))
+})
+
+describe('formatExact on every machine', () => {
+  it('groups with commas, also for the decimal strings of the management API', () => {
+    expect(formatExact(12345)).toBe('12,345')
+    expect(formatExact('18446744073709551615')).toBe('18,446,744,073,709,551,615')
+  })
 })
 
 describe('formatRate', () => {

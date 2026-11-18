@@ -7,13 +7,14 @@ export const UNKNOWN = '—'
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
 const COUNT_UNITS = ['', 'k', 'M', 'G', 'T', 'P', 'E']
 
-type Numeric = number | bigint
+type Numeric = number | bigint | string
 
 /** One decimal below 10, none above; a trailing `.0` is dropped. */
 const digits = (value: number) => (value < 10 ? value.toFixed(1).replace(/\.0$/, '') : value.toFixed(0))
 
 function scaled(value: Numeric, base: number, units: readonly string[]): [text: string, unit: string] {
-  const magnitude = Math.abs(Number(value))
+  const signed = Number(value)
+  const magnitude = Math.abs(signed)
   let index = 0
   let scale = magnitude
   while (scale >= base && index < units.length - 1) {
@@ -25,7 +26,7 @@ function scaled(value: Numeric, base: number, units: readonly string[]): [text: 
     index++
     text = digits(scale / base)
   }
-  return [`${value < 0 ? '-' : ''}${text}`, units[index]!]
+  return [`${signed < 0 ? '-' : ''}${text}`, units[index]!]
 }
 
 export function formatBytes(value: Numeric): string {

@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { vCssVars } from '../../cssVars'
+import { vCssVars } from '#design/directives/cssVars'
 import type { HistogramCounts } from '../percentiles'
 import { histogramBars } from './histogram'
 import { count, exact } from './present'

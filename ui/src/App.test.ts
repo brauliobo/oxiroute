@@ -88,18 +88,18 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.topology-section').text()).toContain('Network topology')
     expect(wrapper.get('.topology-section').text()).toContain('127.0.0.1:3000')
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
-    expect(wrapper.get('.traffic-panel').text()).toContain(new Intl.NumberFormat().format(12_345))
+    expect(wrapper.get('.traffic-panel').text()).toContain('12,345')
     expect(wrapper.get('.host-panel').text()).toContain('0.42')
     expect(wrapper.findAll('.load-track span').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
     expect(fill(wrapper.get('.memory-track span').element)).toBe('75')
     expect(wrapper.get('.process-panel').text()).toContain('12.5%')
     expect(wrapper.get('.readout-bar').text()).toContain('75%')
     expect(wrapper.get('.readout-bar').text()).toContain('1d 1h')
-    expect(wrapper.get('.rtmp-panel').text()).toContain('768 MB')
+    expect(wrapper.get('.rtmp-panel').text()).toContain('768 MiB')
     expect(wrapper.get('.listener-section').text()).toContain('HTTP ingress')
     expect(wrapper.get('.listener-section').text()).toContain('127.0.0.1:8080')
     expect(wrapper.get('.listener-section').text()).toContain(
-      `14 / ${new Intl.NumberFormat().format(1_000)}`,
+      `14 / 1,000`,
     )
     expect(wrapper.get('.listener-section').text()).toContain('28 / Unbounded')
     expect(wrapper.get('.pool-section').text()).toContain('web-backends')
@@ -108,10 +108,10 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.pool-section').text()).toContain('Degraded')
     expect(wrapper.get('.pool-section').text()).toContain('1 / 2 endpoints available')
     expect(wrapper.get('.pool-summary').text()).toContain(
-      `${new Intl.NumberFormat().format(BigInt(exactHealthCounter))} unavailable selections`,
+      '18,446,744,073,709,551,615 unavailable selections',
     )
     expect(wrapper.get('.endpoint-checks').text()).toContain(
-      `${new Intl.NumberFormat().format(BigInt(exactHealthCounter))} passed / 1 failed`,
+      '18,446,744,073,709,551,615 passed / 1 failed',
     )
     expect(wrapper.get('.endpoint-streak').text()).toContain('4 passed / 0 failed')
     expect(wrapper.get('.endpoint-failure').text()).toContain('Last failure: Connection failed')
@@ -123,7 +123,7 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.recorder-panel').text()).toContain('Recording supported')
     expect(wrapper.get('.recorder-panel').text()).toContain('Manual')
     expect(wrapper.get('.recorder-panel').text()).toContain('Continuous')
-    expect(wrapper.get('.recorder-panel').text()).toContain('1.0 MB written')
+    expect(wrapper.get('.recorder-panel').text()).toContain('1 MiB written')
     expect(wrapper.get('.recorder-panel').text()).toContain('2 segments')
     expect(wrapper.get('.recorder-panel').text()).toContain('1 discontinuity')
     expect(wrapper.get('.recorder-panel').text()).toContain('live/camera-001.flv')

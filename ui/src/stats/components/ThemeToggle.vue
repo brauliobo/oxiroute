@@ -1,5 +1,5 @@
 <script setup vapor lang="ts">
-import { THEMES } from '../urlState'
+import { THEMES } from '#design/composables/useTheme'
 import type { Theme } from '../urlState'
 
 defineProps<{ modelValue: Theme }>()

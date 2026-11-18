@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatAge } from './format'
+import { formatAge } from '#design/format'
 import { useStatsStore } from './useStatsStore'
 
 // The status word is the live region; the age ticks every second and stays outside it.

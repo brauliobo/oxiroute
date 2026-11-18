@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatDuration } from '../format'
+import { formatDuration } from '#design/format'
 import { useStatsStore } from '../useStatsStore'
 import DetailList from './DetailList.vue'
 import type { Detail } from './present'

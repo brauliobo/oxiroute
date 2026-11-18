@@ -1,6 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { vCssVars } from '../../cssVars'
+import { vCssVars } from '#design/directives/cssVars'
 import { count, exact, responseShares } from './present'
 import type { ResponseClass } from './present'
 import './widgets.css'

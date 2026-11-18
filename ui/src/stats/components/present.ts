@@ -1,7 +1,7 @@
 import {
   UNKNOWN, formatAge, formatByteRate, formatBytes, formatCount, formatDuration, formatExact, formatPercent, formatRate,
   formatTimestamp,
-} from '../format'
+} from '#design/format'
 import type { CertificateRow } from '../model'
 import type { Quantile } from '../percentiles'
 
