@@ -1,6 +1,6 @@
 <template lang="pug">
-Card.capability-panel
-  span.capability-index {{ code }}
+Card.cfg-capability-panel
+  span.cfg-capability-index {{ code }}
   div
     h3 {{ title }}
     p {{ message }}

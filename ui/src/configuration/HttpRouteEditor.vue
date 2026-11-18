@@ -1,6 +1,6 @@
 <template lang="pug">
 ItemScope.route-card.http-route-card(:index="index")
-  header.route-card-heading
+  header.cfg-route-card-heading
     div
       strong Route {{ index + 1 }}
       span.route-summary {{ routeSummary }}

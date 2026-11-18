@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow HTTP dispatch
+    p.cfg-eyebrow HTTP dispatch
     h3 {{ service.name || 'Unnamed HTTP service' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove service
 .field-grid
@@ -19,7 +19,7 @@ NullableLimitField(
 )
 ConfigGroup.route-list(path="http_services[].routes")
   template(#legend)
-    .route-heading
+    .cfg-route-heading
       legend Routes
       Button.add-row(@click="addRoute") + Add route
   p.empty-list(v-if="service.routes.length === 0") At least one route is required.

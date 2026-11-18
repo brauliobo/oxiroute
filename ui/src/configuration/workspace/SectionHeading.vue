@@ -1,9 +1,9 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow {{ eyebrow }}
+    p.cfg-eyebrow {{ eyebrow }}
     h3 {{ title }}
-  span.object-path {{ path }}
+  span.cfg-object-path {{ path }}
 </template>
 
 <script setup lang="ts" vapor>

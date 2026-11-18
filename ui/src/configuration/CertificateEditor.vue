@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Certificate identity
+    p.cfg-eyebrow Certificate identity
     h3 {{ certificate.name || 'Unnamed certificate' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove certificate
 .field-grid

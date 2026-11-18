@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Canonical forward proxy
+    p.cfg-eyebrow Canonical forward proxy
     h3 {{ service.name || 'Unnamed forward proxy' }}
     p.route-summary Configuration and validation are available even when runtime preflight reports this service as unsupported.
   Button.danger-button(variant="danger" @click="emit('remove')") Remove forward proxy
@@ -61,12 +61,12 @@ ConfigGroup.object-block(path="forward_proxy_services[].peer_policy" legend="Sta
       NumberInput(min="0" max="15" step="1" v-model="service.peer_policy.max_retries")
   ConfigGroup.route-list(path="forward_proxy_services[].peer_policy.peers")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend Peer endpoints
         Button.add-row(:disabled="service.peer_policy.peers.length >= 16" @click="addPeer") + Add peer
     p.empty-list(v-if="service.peer_policy.peers.length === 0") No static peers configured.
     ItemScope.route-card(v-for="(peer, peerIndex) in service.peer_policy.peers" :key="peerIndex" :index="peerIndex")
-      header.route-card-heading
+      header.cfg-route-card-heading
         strong Peer {{ peerIndex + 1 }}
         Button.danger-link(variant="danger" small :aria-label="`Remove forward peer ${peerIndex + 1}`" @click="removePeer(peerIndex)") Remove
       .field-grid
@@ -166,7 +166,7 @@ ConfigGroup.object-block(path="forward_proxy_services[].destination_policy" lege
     StringListField(v-model="service.destination_policy.deny_cidrs" label="Denied CIDRs" item-label="CIDR" field-path="forward_proxy_services[].destination_policy.deny_cidrs" :max-items="256")
   ConfigGroup.time-range-list(path="forward_proxy_services[].destination_policy.allow_times")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend Allow windows
         Button.secondary-button(@click="addTimeRange('allow_times')") Add window
     ItemScope.object-block(v-for="(range, rangeIndex) in service.destination_policy.allow_times" :key="`allow-${rangeIndex}`" :index="rangeIndex")
@@ -181,7 +181,7 @@ ConfigGroup.object-block(path="forward_proxy_services[].destination_policy" lege
         Button.danger-button(variant="danger" @click="removeTimeRange('allow_times', rangeIndex)") Remove window
   ConfigGroup.time-range-list(path="forward_proxy_services[].destination_policy.deny_times")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend Deny windows
         Button.secondary-button(@click="addTimeRange('deny_times')") Add window
     ItemScope.object-block(v-for="(range, rangeIndex) in service.destination_policy.deny_times" :key="`deny-${rangeIndex}`" :index="rangeIndex")

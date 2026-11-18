@@ -41,11 +41,11 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
 
     ConfigGroup.route-list(:path="`${fieldPath}.key_components`")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Cache key components
           Button.add-row(:disabled="cache.key_components.length >= 32" @click="cache.key_components.push({ type: 'scheme' })") + Add component
       ItemScope.route-card(v-for="(component, index) in cache.key_components" :key="index" :index="index")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Key component {{ index + 1 }}
           Button.danger-link(variant="danger" small :disabled="cache.key_components.length === 1" :aria-label="`Remove cache key component ${index + 1}`" @click="cache.key_components.splice(index, 1)") Remove
         .field-grid
@@ -59,11 +59,11 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
 
     ConfigGroup.route-list(:path="`${fieldPath}.status_ttls`")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Status TTL overrides
           Button.add-row(:disabled="cache.status_ttls.length >= 64" @click="cache.status_ttls.push({ status: 200, ttl_ms: 60000 })") + Add status TTL
       ItemScope.route-card(v-for="(entry, index) in cache.status_ttls" :key="index" :index="index")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Status TTL {{ index + 1 }}
           Button.danger-link(variant="danger" small :aria-label="`Remove status TTL ${index + 1}`" @click="cache.status_ttls.splice(index, 1)") Remove
         .field-grid
@@ -79,21 +79,21 @@ ConfigGroup.object-block(:path="fieldPath" :legend="fieldPath.startsWith('forwar
 
     ConfigGroup.route-list(:path="`${fieldPath}.bypass_request`")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Bypass request predicates
           Button.add-row(:disabled="cache.bypass_request.length >= 32" @click="addPredicate(cache.bypass_request)") + Add predicate
       CachePredicateRows(v-model="cache.bypass_request" :type-field="`${fieldPath}.bypass_request[].type`" :name-field="`${fieldPath}.bypass_request[].name`")
 
     ConfigGroup.route-list(:path="`${fieldPath}.no_store_request`")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend No-store request predicates
           Button.add-row(:disabled="cache.no_store_request.length >= 32" @click="addPredicate(cache.no_store_request)") + Add predicate
       CachePredicateRows(v-model="cache.no_store_request" :type-field="`${fieldPath}.no_store_request[].type`" :name-field="`${fieldPath}.no_store_request[].name`")
 
     ConfigGroup.route-list(:path="`${fieldPath}.no_store_response`")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend No-store response predicates
           Button.add-row(:disabled="cache.no_store_response.length >= 32" @click="addPredicate(cache.no_store_response)") + Add predicate
       CachePredicateRows(v-model="cache.no_store_response" :type-field="`${fieldPath}.no_store_response[].type`" :name-field="`${fieldPath}.no_store_response[].name`")

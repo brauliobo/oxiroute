@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Plural SNI policy
+    p.cfg-eyebrow Plural SNI policy
     h3 {{ profile.name || 'Unnamed SNI profile' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove profile
 .field-grid

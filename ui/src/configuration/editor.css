@@ -1,28 +1,48 @@
 @layer ox.page {
-  .editor-form .form-heading {
+  .cfg-editor-form {
+    flex: 1;
+    padding: var(--ox-space-7);
+  }
+
+  .cfg-form-heading,
+  .cfg-route-heading,
+  .cfg-route-card-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-6);
+  }
+
+  .cfg-object-path {
+    margin: 0;
+    color: var(--ox-muted);
+    font-family: var(--ox-mono);
+    font-size: var(--ox-text-2xs);
+    font-weight: var(--ox-weight-bold);
+    letter-spacing: var(--ox-tracking-label);
+  }
+
+  .cfg-editor-form .cfg-form-heading {
     align-items: flex-start;
     margin-bottom: var(--ox-space-7);
     padding-bottom: var(--ox-space-5);
     border-bottom: var(--ox-border-width) solid var(--ox-border);
   }
 
-  .editor-form h3 {
+  .cfg-editor-form h3 {
     margin-top: var(--ox-space-2);
     font-size: var(--ox-text-xl);
   }
 
-  .editor-form .object-path {
-    text-transform: none;
-  }
-
-  .editor-form .field-grid {
+  .cfg-editor-form .field-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--ox-gap);
     margin-bottom: var(--ox-space-6);
   }
 
-  .editor-form .field {
+  .cfg-editor-form .field {
     display: grid;
     min-width: 0;
     align-content: start;
@@ -31,19 +51,19 @@
     font-weight: var(--ox-weight-strong);
   }
 
-  .editor-form .field small,
-  .editor-form .field-hint {
+  .cfg-editor-form .field small,
+  .cfg-editor-form .field-hint {
     color: var(--ox-muted);
     font-size: var(--ox-text-xs);
     font-weight: var(--ox-weight-normal);
     line-height: var(--ox-leading-body);
   }
 
-  .editor-form .field-wide {
+  .cfg-editor-form .field-wide {
     grid-column: 1 / -1;
   }
 
-  .editor-form .ox-input {
+  .cfg-editor-form .ox-input {
     width: 100%;
     min-width: 0;
     font-family: var(--ox-mono);
@@ -51,26 +71,26 @@
     font-weight: var(--ox-weight-normal);
   }
 
-  .editor-form textarea.ox-input {
+  .cfg-editor-form textarea.ox-input {
     min-height: 7.5rem;
     resize: vertical;
   }
 
-  .editor-form .field output {
+  .cfg-editor-form .field output {
     display: block;
     font-family: var(--ox-mono);
   }
 
-  .editor-form input[type='checkbox'] {
+  .cfg-editor-form input[type='checkbox'] {
     width: 1.1rem;
     height: 1.1rem;
     margin: 0;
     accent-color: var(--ox-brand);
   }
 
-  .editor-form .object-block,
-  .editor-form .route-list,
-  .editor-form .retry-triggers {
+  .cfg-editor-form .object-block,
+  .cfg-editor-form .route-list,
+  .cfg-editor-form .retry-triggers {
     min-width: 0;
     margin: var(--ox-space-7) 0 0;
     padding: var(--ox-space-6);
@@ -78,17 +98,17 @@
     border-radius: var(--ox-radius);
   }
 
-  .editor-form .route-list {
+  .cfg-editor-form .route-list {
     padding-top: var(--ox-space-3);
   }
 
-  .editor-form .retry-triggers {
+  .cfg-editor-form .retry-triggers {
     display: grid;
     gap: var(--ox-space-4);
     margin: 0;
   }
 
-  .editor-form legend {
+  .cfg-editor-form legend {
     padding: 0 var(--ox-space-4);
     color: var(--ox-fg);
     font-family: var(--ox-mono);
@@ -98,7 +118,7 @@
     text-transform: uppercase;
   }
 
-  .editor-form .enable-row {
+  .cfg-editor-form .enable-row {
     display: flex;
     align-items: center;
     gap: var(--ox-space-4);
@@ -107,31 +127,31 @@
     font-size: var(--ox-text-md);
   }
 
-  .editor-form .compact-enable .enable-row {
+  .cfg-editor-form .compact-enable .enable-row {
     min-height: var(--ox-control-h);
     margin: 0;
   }
 
-  .editor-form .route-heading {
+  .cfg-editor-form .cfg-route-heading {
     margin-bottom: var(--ox-space-5);
   }
 
-  .editor-form .route-card {
+  .cfg-editor-form .route-card {
     padding: var(--ox-space-6);
     border: var(--ox-border-width) solid var(--ox-border);
     border-radius: var(--ox-radius);
     background: var(--ox-bg);
   }
 
-  .editor-form .route-card + .route-card {
+  .cfg-editor-form .route-card + .route-card {
     margin-top: var(--ox-space-5);
   }
 
-  .editor-form .route-card-heading {
+  .cfg-editor-form .cfg-route-card-heading {
     margin-bottom: var(--ox-space-5);
   }
 
-  .editor-form .route-summary {
+  .cfg-editor-form .route-summary {
     display: block;
     margin-top: var(--ox-space-2);
     color: var(--ox-muted);
@@ -139,17 +159,17 @@
     font-weight: var(--ox-weight-normal);
   }
 
-  .editor-form .empty-list {
+  .cfg-editor-form .empty-list {
     color: var(--ox-muted);
     font-size: var(--ox-text-sm);
   }
 
-  .editor-form .action-editor {
+  .cfg-editor-form .action-editor {
     min-width: 0;
     margin-top: var(--ox-space-6);
   }
 
-  .editor-form .tls-alpn-deployment {
+  .cfg-editor-form .tls-alpn-deployment {
     display: grid;
     grid-column: 1 / -1;
     gap: var(--ox-space-4);
@@ -158,7 +178,7 @@
     border-left: var(--ox-space-3) solid var(--ox-info);
   }
 
-  .editor-form .tls-alpn-deployment p {
+  .cfg-editor-form .tls-alpn-deployment p {
     margin: 0;
     color: var(--ox-muted);
     font-size: var(--ox-text-xs);
@@ -166,43 +186,47 @@
     text-transform: none;
   }
 
-  .editor-form .list-field {
+  .cfg-editor-form .list-field {
     min-width: 0;
     margin: 0;
     padding: 0;
     border: 0;
   }
 
-  .editor-form .list-field legend {
+  .cfg-editor-form .list-field legend {
     margin-bottom: var(--ox-space-4);
     padding: 0;
   }
 
-  .editor-form .list-row {
+  .cfg-editor-form .list-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: var(--ox-space-4);
     margin-bottom: var(--ox-space-4);
   }
 
-  .editor-form .weight-field {
+  .cfg-editor-form .weight-field {
     margin-top: var(--ox-space-6);
   }
 
   @media (max-width: 64rem) {
-    .editor-form .field-grid {
+    .cfg-editor-form .field-grid {
       grid-template-columns: 1fr;
     }
   }
 
   @media (max-width: 45rem) {
-    .editor-form .form-heading {
+    .cfg-editor-form {
+      padding: var(--ox-space-5);
+    }
+
+    .cfg-editor-form .cfg-form-heading {
       align-items: flex-start;
       flex-direction: column;
     }
 
-    .editor-form .object-block,
-    .editor-form .route-card {
+    .cfg-editor-form .object-block,
+    .cfg-editor-form .route-card {
       padding-inline: var(--ox-space-5);
     }
   }

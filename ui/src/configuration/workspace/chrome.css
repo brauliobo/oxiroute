@@ -11,10 +11,9 @@
     margin: 0;
   }
 
-  .config-workspace .eyebrow,
+  .config-workspace .cfg-eyebrow,
   .config-workspace .revision-label,
   .config-workspace .nav-section-label,
-  .config-workspace .object-path,
   .config-workspace dt {
     margin: 0;
     color: var(--ox-muted);
@@ -25,11 +24,8 @@
     text-transform: uppercase;
   }
 
-  .workspace-heading,
-  .output-heading,
-  .form-heading,
-  .route-heading,
-  .route-card-heading {
+  .cfg-workspace-heading,
+  .output-heading {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -37,11 +33,11 @@
     gap: var(--ox-space-6);
   }
 
-  .workspace-heading h2 {
+  .cfg-workspace-heading h2 {
     font-size: var(--ox-text-2xl);
   }
 
-  .workspace-deck {
+  .cfg-workspace-deck {
     max-width: 42rem;
     margin: var(--ox-space-4) 0 0;
     color: var(--ox-muted);
@@ -94,11 +90,6 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-  }
-
-  .editor-form {
-    flex: 1;
-    padding: var(--ox-space-7);
   }
 
   .editor-actions {
@@ -191,12 +182,12 @@
     gap: var(--ox-space-6);
   }
 
-  .preview-panel,
+  .cfg-preview-panel,
   .candidate-topology {
     min-width: 0;
   }
 
-  .preview-panel pre {
+  .cfg-preview-panel pre {
     max-height: 32rem;
     margin: var(--ox-space-5) 0 0;
     padding: var(--ox-space-5);
@@ -233,21 +224,21 @@
     text-transform: uppercase;
   }
 
-  .loading-panel,
-  .capability-panel {
+  .cfg-loading-panel,
+  .cfg-capability-panel {
     display: flex;
     align-items: center;
     gap: var(--ox-space-7);
     min-height: 14rem;
   }
 
-  .capability-panel p,
-  .loading-panel p {
+  .cfg-capability-panel p,
+  .cfg-loading-panel p {
     margin: var(--ox-space-3) 0 0;
     color: var(--ox-muted);
   }
 
-  .capability-index {
+  .cfg-capability-index {
     color: var(--ox-warn);
     font-size: var(--ox-text-2xl);
     font-weight: var(--ox-weight-bold);
@@ -337,10 +328,6 @@
       display: block;
     }
 
-    .editor-form {
-      padding: var(--ox-space-5);
-    }
-
     .editor-actions {
       position: static;
       flex-direction: column;
@@ -357,8 +344,8 @@
       gap: var(--ox-space-4);
     }
 
-    .loading-panel,
-    .capability-panel {
+    .cfg-loading-panel,
+    .cfg-capability-panel {
       align-items: flex-start;
       flex-direction: column;
     }

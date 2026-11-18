@@ -1,5 +1,5 @@
 <template lang="pug">
-Card.loading-panel
+Card.cfg-loading-panel
   Loading(:label="title")
   p {{ detail }}
 </template>

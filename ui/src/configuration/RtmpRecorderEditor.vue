@@ -1,6 +1,6 @@
 <template lang="pug">
 ItemScope.route-card.recorder-card(:index="index")
-  header.route-card-heading
+  header.cfg-route-card-heading
     strong Recorder {{ index + 1 }}
     Button.danger-link(variant="danger" small :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
   .field-grid

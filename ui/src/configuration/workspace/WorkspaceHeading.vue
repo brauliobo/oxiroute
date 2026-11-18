@@ -1,9 +1,9 @@
 <template lang="pug">
-header.workspace-heading
+header.cfg-workspace-heading
   div
-    p.eyebrow Canonical control plane
+    p.cfg-eyebrow Canonical control plane
     h2#configuration-heading Configuration workspace
-    p.workspace-deck Edit typed objects, validate on the server, then review the source-format preview before writing.
+    p.cfg-workspace-deck Edit typed objects, validate on the server, then review the source-format preview before writing.
   Button.secondary-button(
     v-if="canCheck"
     :disabled="loading"

@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Ingress object
+    p.cfg-eyebrow Ingress object
     h3 {{ listener.name || 'Unnamed listener' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove listener
 .field-grid

@@ -237,9 +237,9 @@ describe('ConfigurationWorkspace', () => {
 
     const wrapper = await mountUnlocked()
 
-    expect(wrapper.get('.capability-panel').text()).toContain('Configuration capability unavailable')
-    expect(wrapper.get('.capability-panel').text()).toContain('No placeholder configuration')
-    expect(wrapper.find('.editor-form').exists()).toBe(false)
+    expect(wrapper.get('.cfg-capability-panel').text()).toContain('Configuration capability unavailable')
+    expect(wrapper.get('.cfg-capability-panel').text()).toContain('No placeholder configuration')
+    expect(wrapper.find('.cfg-editor-form').exists()).toBe(false)
     expect(wrapper.find('[data-field="version"]').exists()).toBe(false)
   })
 
@@ -262,11 +262,11 @@ describe('ConfigurationWorkspace', () => {
 
     const wrapper = await mountUnlocked()
 
-    expect(wrapper.find('.capability-panel:not(.canonical-unavailable-panel)').exists()).toBe(false)
+    expect(wrapper.find('.cfg-capability-panel:not(.canonical-unavailable-panel)').exists()).toBe(false)
     expect(wrapper.get('.canonical-unavailable-panel').text()).toContain('Disk revisionUnknown')
     expect(wrapper.get('.canonical-unavailable-panel').text()).toContain('E_CONFIG_READ')
     expect(wrapper.get('.canonical-unavailable-panel').text()).toContain('revision is uncertain')
-    expect(wrapper.find('.editor-form').exists()).toBe(false)
+    expect(wrapper.find('.cfg-editor-form').exists()).toBe(false)
   })
 
   it('does not call an unrelated 503 a missing configuration route', async () => {
@@ -276,7 +276,7 @@ describe('ConfigurationWorkspace', () => {
 
     const wrapper = await mountUnlocked()
 
-    expect(wrapper.find('.capability-panel:not(.load-error-panel)').exists()).toBe(false)
+    expect(wrapper.find('.cfg-capability-panel:not(.load-error-panel)').exists()).toBe(false)
     expect(wrapper.get('.load-error-panel').text()).toContain('temporary gateway failure')
   })
 
@@ -332,7 +332,7 @@ describe('ConfigurationWorkspace', () => {
     expect(document.activeElement).toBe(links[1]!.element)
 
     await wrapper.get('#mobile-object-navigation').setValue('tls_profiles:1')
-    expect(wrapper.get('.form-heading').text()).toContain('internal-sni')
+    expect(wrapper.get('.cfg-form-heading').text()).toContain('internal-sni')
 
     for (const control of wrapper.findAll('input, select')) {
       const element = control.element as HTMLInputElement | HTMLSelectElement

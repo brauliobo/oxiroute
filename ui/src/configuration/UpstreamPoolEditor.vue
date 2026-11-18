@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Origin group
+    p.cfg-eyebrow Origin group
     h3 {{ pool.name || 'Unnamed pool' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove pool
 .field-grid
@@ -14,12 +14,12 @@ header.form-heading
     )
 ConfigGroup.route-list.endpoint-editor(path="upstream_pools[].servers")
   template(#legend)
-    .route-heading
+    .cfg-route-heading
       legend Servers
       Button.add-row(@click="addServer") + Add server
   p.empty-list(v-if="pool.servers.length === 0") At least one server is required.
   ItemScope.route-card(v-for="(server, serverIndex) in pool.servers" :key="serverIndex" :index="serverIndex")
-    header.route-card-heading
+    header.cfg-route-card-heading
       strong Server {{ serverIndex + 1 }}
       Button.danger-link(variant="danger" small :aria-label="`Remove upstream server ${serverIndex + 1}`" @click="removeServer(serverIndex)") Remove
     ConfigField(path="upstream_pools[].servers[].name" label="Stable server name")

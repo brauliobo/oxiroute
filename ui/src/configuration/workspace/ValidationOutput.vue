@@ -1,16 +1,16 @@
 <template lang="pug">
 section.validation-output(aria-label="Validated candidate output")
-  Card.preview-panel
+  Card.cfg-preview-panel
     header.output-heading
       div
-        p.eyebrow Backend rendered
+        p.cfg-eyebrow Backend rendered
         h3 {{ formatLabel(result.configFormat) }} configuration preview
       code {{ shortRevision(result.candidateRevision) }}
     pre(tabindex="0") {{ result.configPreview }}
   Card.candidate-topology
     header.output-heading
       div
-        p.eyebrow Candidate graph
+        p.cfg-eyebrow Candidate graph
         h3 Validation topology
       span.output-count {{ result.topology.nodes.length }} nodes / {{ result.topology.edges.length }} edges
     p.candidate-state Candidate only / not active

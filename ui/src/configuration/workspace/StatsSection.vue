@@ -10,7 +10,7 @@ ConfigField(path="stats" label="Enable observability binds and/or standalone sta
     small Optional; without it, administration remains disabled.
 ConfigGroup.route-list(v-if="config.stats" path="stats.pages")
   template(#legend)
-    .route-heading
+    .cfg-route-heading
       legend HAProxy-compatible pages
       Button.add-row(
         :disabled="config.stats.binds.length + config.stats.pages.length >= MAX_BINDS_AND_PAGES"
@@ -19,7 +19,7 @@ ConfigGroup.route-list(v-if="config.stats" path="stats.pages")
       ) + Add statistics page
   p.empty-list(v-if="config.stats.pages.length === 0") No standalone statistics pages configured.
   ItemScope.route-card(v-for="(page, pageIndex) in config.stats.pages" :key="pageIndex" :index="pageIndex")
-    header.route-card-heading
+    header.cfg-route-card-heading
       strong Statistics page {{ pageIndex + 1 }}
       Button.danger-link(variant="danger" small :aria-label="`Remove statistics page ${pageIndex + 1}`" @click="removePage(pageIndex)") Remove
     .field-grid

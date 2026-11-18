@@ -15,11 +15,11 @@
       small.field-warning(v-if="bodyForbiddenWithContent" role="alert") Clear the body for status {{ action.status }}.
   ConfigGroup.route-list(path="http_services[].routes[].action.headers")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend Response headers
         Button.add-row(:disabled="action.headers.length >= 32" :title="action.headers.length >= 32 ? 'The server allows at most 32 fixed response headers.' : undefined" @click="addHeader") + Add header
     ItemScope.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex" :index="headerIndex")
-      header.route-card-heading
+      header.cfg-route-card-heading
         strong Header {{ headerIndex + 1 }}
         Button.danger-link(variant="danger" small :aria-label="`Remove fixed response header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
       .field-grid

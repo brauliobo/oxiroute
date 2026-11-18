@@ -21,11 +21,11 @@
         Input(:model-value="action.location.nginx_host_fallback ?? ''" placeholder="localhost" @input="setNginxHostFallback")
   ConfigGroup.route-list(path="http_services[].routes[].action.headers")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend Response headers
         Button.add-row(:disabled="action.headers.length >= 32" @click="addHeader") + Add header
     ItemScope.route-card(v-for="(header, headerIndex) in action.headers" :key="headerIndex" :index="headerIndex")
-      header.route-card-heading
+      header.cfg-route-card-heading
         strong Header {{ headerIndex + 1 }}
         Button.danger-link(variant="danger" small :aria-label="`Remove redirect header ${headerIndex + 1}`" @click="removeHeader(headerIndex)") Remove
       .field-grid

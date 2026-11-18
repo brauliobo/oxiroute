@@ -1,6 +1,6 @@
 <template lang="pug">
 ItemScope.route-card(v-for="(predicate, index) in modelValue" :key="index" :index="index")
-  header.route-card-heading
+  header.cfg-route-card-heading
     strong Predicate {{ index + 1 }}
     Button.danger-link(variant="danger" small :aria-label="`Remove cache predicate ${index + 1}`" @click="remove(index)") Remove
   .field-grid

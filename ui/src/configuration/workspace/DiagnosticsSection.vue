@@ -2,7 +2,7 @@
 section.diagnostics-section(aria-labelledby="diagnostics-heading")
   header.output-heading
     div
-      p.eyebrow Server analysis
+      p.cfg-eyebrow Server analysis
       h3#diagnostics-heading(tabindex="-1") Validation diagnostics
     span.output-count {{ summary }}
   EmptyState.output-empty(v-if="placed.length === 0") No diagnostics reported for the current {{ context }}.

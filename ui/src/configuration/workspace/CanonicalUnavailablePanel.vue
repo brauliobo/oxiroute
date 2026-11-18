@@ -1,6 +1,6 @@
 <template lang="pug">
-Card.capability-panel.canonical-unavailable-panel(role="alert")
-  span.capability-index 503
+Card.cfg-capability-panel.canonical-unavailable-panel(role="alert")
+  span.cfg-capability-index 503
   div
     h3 Canonical configuration unavailable
     p The route is available, but the persisted canonical file could not be loaded.

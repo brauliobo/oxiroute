@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow RTMP dispatch
+    p.cfg-eyebrow RTMP dispatch
     h3 {{ service.name || 'Unnamed RTMP service' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove service
 RtmpServicePolicyEditor(:service="service" @set-access-log="setAccessLog")
@@ -13,7 +13,7 @@ RtmpExecProfilesEditor(
 )
 ConfigGroup.route-list(path="rtmp_services[].applications")
   template(#legend)
-    .route-heading
+    .cfg-route-heading
       legend Applications
       Button.add-row(
         :disabled="service.applications.length >= 256"
@@ -22,7 +22,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
       ) + Add application
   p.empty-list(v-if="service.applications.length === 0") At least one application is required.
   ItemScope.route-card(v-for="(application, applicationIndex) in service.applications" :key="applicationIndex" :index="applicationIndex")
-    header.route-card-heading
+    header.cfg-route-card-heading
       strong Application {{ applicationIndex + 1 }}
       Button.danger-link(variant="danger" small :aria-label="`Remove RTMP application ${applicationIndex + 1}`" @click="removeApplication(applicationIndex)") Remove
     .field-grid
@@ -85,11 +85,11 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
                 Input(v-model="application.hls.keys.url_prefix" placeholder="/media/keys/")
           ConfigGroup.route-list(path="rtmp_services[].applications[].hls.variants")
             template(#legend)
-              .route-heading
+              .cfg-route-heading
                 legend HLS variants
                 Button.add-row(:disabled="application.hls.variants.length >= 16" @click="application.hls.variants.push({ name: '', bandwidth: 1000000, codecs: null, width: null, height: null })") + Add variant
             ItemScope.route-card(v-for="(variant, variantIndex) in application.hls.variants" :key="variantIndex" :index="variantIndex")
-              header.route-card-heading
+              header.cfg-route-card-heading
                 strong Variant {{ variantIndex + 1 }}
                 Button.danger-link(variant="danger" small @click="application.hls.variants.splice(variantIndex, 1)") Remove
               .field-grid
@@ -164,12 +164,12 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
           NumberInput(min="1" max="1073741824" step="1" v-model="application.fanout.max_queue_bytes_per_subscriber")
     ConfigGroup.route-list(path="rtmp_services[].applications[].pull_targets")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Pull relays
           Button.add-row(:disabled="application.pull_targets.length >= 16" @click="addPullTarget(applicationIndex)") + Add pull target
       p.empty-list(v-if="application.pull_targets.length === 0") No inbound relay is configured.
       ItemScope.route-card(v-for="(target, targetIndex) in application.pull_targets" :key="targetIndex" :index="targetIndex")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Pull target {{ targetIndex + 1 }}
           Button.danger-link(variant="danger" small @click="removePullTarget(applicationIndex, targetIndex)") Remove
         .field-grid
@@ -198,12 +198,12 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
               Input(v-model="target.credentials.secret_file" autocomplete="off")
     ConfigGroup.route-list(path="rtmp_services[].applications[].push_targets")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Push relays
           Button.add-row(:disabled="!application.live || application.push_targets.length >= 16" @click="addPushTarget(applicationIndex)") + Add push target
       p.empty-list(v-if="application.push_targets.length === 0") No outbound relay is configured.
       ItemScope.route-card(v-for="(target, targetIndex) in application.push_targets" :key="targetIndex" :index="targetIndex")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Push target {{ targetIndex + 1 }}
           Button.danger-link(variant="danger" small @click="removePushTarget(applicationIndex, targetIndex)") Remove
         .field-grid
@@ -259,7 +259,7 @@ ConfigGroup.route-list(path="rtmp_services[].applications")
         Button.secondary-button(@click="application.vod.sources.push({ type: 'local', name: '', root_directory: '' })") Add source
     ConfigGroup.route-list.recorder-list(path="rtmp_services[].applications[].recorders")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Recorders
           Button.add-row(
             :disabled="!application.live || application.recorders.length >= 8"

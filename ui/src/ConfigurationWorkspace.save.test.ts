@@ -36,8 +36,8 @@ describe('ConfigurationWorkspace', () => {
       headers: expect.objectContaining({ Authorization: `Bearer ${bearerToken}` }),
     }))
     expect(JSON.parse(String(validationCall?.[1]?.body)).config.listeners[0].name).toBe('public-https')
-    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
-    expect(wrapper.get('.preview-panel pre').text()).toContain('version 1')
+    expect(wrapper.get('.cfg-preview-panel').text()).toContain('KDL configuration preview')
+    expect(wrapper.get('.cfg-preview-panel pre').text()).toContain('version 1')
     expect(wrapper.get('.candidate-topology').text()).toContain('public-https')
     expect(wrapper.get('.candidate-state').text()).toContain('Candidate only / not active')
 
@@ -326,7 +326,7 @@ describe('ConfigurationWorkspace', () => {
     firstValidation.resolve(jsonResponse({ diagnostics: [invalidDiagnostic] }, 422))
     await flushPromises()
 
-    expect(wrapper.get('.preview-panel pre').text()).toContain('version 3')
+    expect(wrapper.get('.cfg-preview-panel pre').text()).toContain('version 3')
     expect(wrapper.text()).not.toContain('Candidate is invalid')
     expect(wrapper.find('.diagnostic-list').exists()).toBe(false)
   })

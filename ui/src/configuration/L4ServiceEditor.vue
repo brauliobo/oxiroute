@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Opaque relay
+    p.cfg-eyebrow Opaque relay
     h3 {{ service.name || 'Unnamed L4 service' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove service
 .field-grid

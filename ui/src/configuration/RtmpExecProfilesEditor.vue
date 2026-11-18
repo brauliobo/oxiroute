@@ -1,7 +1,7 @@
 <template lang="pug">
 ConfigGroup.route-list(path="rtmp_services[].exec_profiles")
   template(#legend)
-    .route-heading
+    .cfg-route-heading
       legend Exec profiles
       Button.add-row(
         :disabled="(service.exec_profiles?.length ?? 0) >= 64"
@@ -9,7 +9,7 @@ ConfigGroup.route-list(path="rtmp_services[].exec_profiles")
       ) + Add exec profile
   p.empty-list(v-if="!service.exec_profiles || service.exec_profiles.length === 0") No exec profile is configured for this service.
   ItemScope.route-card(v-for="(profile, profileIndex) in service.exec_profiles || []" :key="profileIndex" :index="profileIndex")
-    header.route-card-heading
+    header.cfg-route-card-heading
       strong Exec profile {{ profileIndex + 1 }}
       Button.danger-link(variant="danger" small @click="emit('remove', profileIndex)") Remove
     .field-grid

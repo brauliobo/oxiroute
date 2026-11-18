@@ -31,11 +31,11 @@
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.request_headers")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Request header mutations
           Button.add-row(:disabled="action.policy.request_headers.length >= 32" :title="action.policy.request_headers.length >= 32 ? 'The server allows at most 32 request header mutations.' : undefined" @click="addHeader(action.policy.request_headers)") + Add request mutation
       ItemScope.route-card(v-for="(mutation, mutationIndex) in action.policy.request_headers" :key="mutationIndex" :index="mutationIndex")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Request mutation {{ mutationIndex + 1 }}
           Button.danger-link(variant="danger" small :aria-label="`Remove request header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.request_headers, mutationIndex)") Remove
         .field-grid
@@ -61,11 +61,11 @@
                 NumberInput(min="1" step="1" v-model="mutation.value.max_bytes")
             ConfigGroup.route-list(v-if="mutation.value.type === 'appended_x_forwarded_for'" path="http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs")
               template(#legend)
-                .route-heading
+                .cfg-route-heading
                   legend Source CIDR exceptions
                   Button.add-row(:disabled="mutation.value.except_source_cidrs.length >= 16" :title="mutation.value.except_source_cidrs.length >= 16 ? 'The server allows at most 16 source CIDR exceptions.' : undefined" @click="addXffException(mutationIndex)") + Add source CIDR
               ItemScope.route-card(v-for="(cidr, cidrIndex) in mutation.value.except_source_cidrs" :key="cidrIndex" :index="cidrIndex")
-                header.route-card-heading
+                header.cfg-route-card-heading
                   strong Source CIDR {{ cidrIndex + 1 }}
                   Button.danger-link(variant="danger" small :aria-label="`Remove source CIDR ${cidrIndex + 1}`" @click="removeXffException(mutationIndex, cidrIndex)") Remove
                 label.field
@@ -74,11 +74,11 @@
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.response_headers")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Response header mutations
           Button.add-row(:disabled="action.policy.response_headers.length >= 32" :title="action.policy.response_headers.length >= 32 ? 'The server allows at most 32 response header mutations.' : undefined" @click="addHeader(action.policy.response_headers)") + Add response mutation
       ItemScope.route-card(v-for="(mutation, mutationIndex) in action.policy.response_headers" :key="mutationIndex" :index="mutationIndex")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Response mutation {{ mutationIndex + 1 }}
           Button.danger-link(variant="danger" small :aria-label="`Remove response header mutation ${mutationIndex + 1}`" @click="removeHeader(action.policy.response_headers, mutationIndex)") Remove
         .field-grid
@@ -95,11 +95,11 @@
 
     ConfigGroup.route-list(path="http_services[].routes[].action.policy.response_cookie_path_rewrites")
       template(#legend)
-        .route-heading
+        .cfg-route-heading
           legend Response cookie path rewrites
           Button.add-row(:disabled="action.policy.response_cookie_path_rewrites.length >= 16" :title="action.policy.response_cookie_path_rewrites.length >= 16 ? 'The server allows at most 16 cookie path rewrites.' : undefined" @click="addCookieRewrite") + Add cookie rewrite
       ItemScope.route-card(v-for="(rewrite, rewriteIndex) in action.policy.response_cookie_path_rewrites" :key="rewriteIndex" :index="rewriteIndex")
-        header.route-card-heading
+        header.cfg-route-card-heading
           strong Cookie rewrite {{ rewriteIndex + 1 }}
           Button.danger-link(variant="danger" small :aria-label="`Remove cookie path rewrite ${rewriteIndex + 1}`" @click="removeCookieRewrite(rewriteIndex)") Remove
         .field-grid

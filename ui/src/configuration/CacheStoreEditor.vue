@@ -1,7 +1,7 @@
 <template lang="pug">
-header.form-heading
+header.cfg-form-heading
   div
-    p.eyebrow Bounded cache storage
+    p.cfg-eyebrow Bounded cache storage
     h3 {{ store.name || 'Unnamed cache store' }}
   Button.danger-button(variant="danger" @click="emit('remove')") Remove cache store
 .field-grid

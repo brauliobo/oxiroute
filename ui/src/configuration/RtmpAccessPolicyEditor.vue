@@ -2,12 +2,12 @@
 ConfigGroup.object-block(:path="basePath" :legend="`${operation === 'publish' ? 'Publish' : 'Play'} access policy`")
   ConfigGroup.route-list(:path="`${basePath}.rules`")
     template(#legend)
-      .route-heading
+      .cfg-route-heading
         legend ACL rules
         Button.add-row(:disabled="policy.rules.length >= 64" @click="addRule") + Add rule
     p.empty-list(v-if="policy.rules.length === 0") No network rule is configured.
     ItemScope.route-card(v-for="(rule, ruleIndex) in policy.rules" :key="ruleIndex" :index="ruleIndex")
-      header.route-card-heading
+      header.cfg-route-card-heading
         strong Rule {{ ruleIndex + 1 }}
         Button.danger-link(variant="danger" small :aria-label="`Remove ${operation} rule ${ruleIndex + 1}`" @click="removeRule(ruleIndex)") Remove
       .field-grid

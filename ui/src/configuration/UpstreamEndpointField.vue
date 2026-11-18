@@ -1,6 +1,6 @@
 <template lang="pug">
 article.route-card
-  header.route-card-heading
+  header.cfg-route-card-heading
     strong Endpoint {{ index + 1 }}
     Button.danger-link(variant="danger" small :aria-label="`Remove endpoint ${index + 1}`" @click="emit('remove')") Remove
   .field-grid

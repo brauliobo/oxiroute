@@ -81,15 +81,15 @@ describe('ConfigurationWorkspace', () => {
     ])
     expect(mobileAdds.every((button) => button.attributes('type') === 'button')).toBe(true)
     await mobileAdds[0]!.trigger('click')
-    expect(wrapper.get('.form-heading').text()).toContain('Unnamed certificate')
+    expect(wrapper.get('.cfg-form-heading').text()).toContain('Unnamed certificate')
     await findButton(wrapper, 'Remove certificate').trigger('click')
 
     await mobileAdds[3]!.trigger('click')
-    expect(wrapper.get('.form-heading').text()).toContain('Unnamed cache store')
+    expect(wrapper.get('.cfg-form-heading').text()).toContain('Unnamed cache store')
     await findButton(wrapper, 'Remove cache store').trigger('click')
 
     await mobileAdds[6]!.trigger('click')
-    expect(wrapper.get('.form-heading').text()).toContain('Unnamed forward proxy')
+    expect(wrapper.get('.cfg-form-heading').text()).toContain('Unnamed forward proxy')
     await findButton(wrapper, 'Remove forward proxy').trigger('click')
 
     await wrapper.get('#mobile-object-navigation').setValue('upstream_pools:0')
@@ -125,7 +125,7 @@ describe('ConfigurationWorkspace', () => {
         recorders: [expect.objectContaining({ name: 'mobile-manual', start: 'manual' })],
       }),
     ])
-    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
+    expect(wrapper.get('.cfg-preview-panel').text()).toContain('KDL configuration preview')
   })
 
   it('edits fixed, redirect, and static actions through the authenticated mobile workspace', async () => {
@@ -168,7 +168,7 @@ describe('ConfigurationWorkspace', () => {
       headers: [],
       error_responses: [],
     })
-    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
+    expect(wrapper.get('.cfg-preview-panel').text()).toContain('KDL configuration preview')
   })
 
   it('guards browser unload and explicit draft reset', async () => {
@@ -222,15 +222,15 @@ describe('ConfigurationWorkspace', () => {
 
     expect(wrapper.get('.revision-banner.compositional').text()).toContain('Compositional root is read-only')
     expect(wrapper.get('.revision-banner.compositional').text()).toContain('2 dependencies')
-    expect(wrapper.get('.editor-form').attributes()).toHaveProperty('inert')
+    expect(wrapper.get('.cfg-editor-form').attributes()).toHaveProperty('inert')
     expect(wrapper.findAll('.mobile-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.findAll('.nav-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 
     await findButton(wrapper, 'Validate candidate').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.preview-panel').text()).toContain('HOCON configuration preview')
-    expect(wrapper.get('.preview-panel pre').text()).toContain('{ version: 1 }')
+    expect(wrapper.get('.cfg-preview-panel').text()).toContain('HOCON configuration preview')
+    expect(wrapper.get('.cfg-preview-panel pre').text()).toContain('{ version: 1 }')
     const reviewButton = findButton(wrapper, 'Review save')
     expect((reviewButton.element as HTMLButtonElement).disabled).toBe(true)
     expect(reviewButton.attributes('title')).toContain('cannot replace a compositional configuration root')
