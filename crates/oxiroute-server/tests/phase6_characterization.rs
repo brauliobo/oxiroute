@@ -159,6 +159,98 @@ async fn management_rejects_malformed_control_payloads_without_reflecting_secret
     server.shutdown();
 }
 
+#[tokio::test]
+async fn runtime_mutations_state_that_they_do_not_outlive_the_process() {
+    let management_address = reserve_tcp_address();
+    let listener_address = reserve_tcp_address();
+    let config = characterization_config(management_address, listener_address)
+        .validate()
+        .expect("valid characterization config");
+    let mut server = ServerProcess::start(&config, Some(MANAGEMENT_TOKEN));
+    server.wait_for_tcp(management_address).await;
+    let revision =
+        wait_for_generation(management_address).await.json()["generation"]["activeRevision"]
+            .clone();
+    let target = serde_json::json!([{"pool": "phase6-origin", "server": "origin-a"}]);
+    let authorization = format!("Bearer {MANAGEMENT_TOKEN}");
+    let send = |method: &'static str, path: &'static str, mut body: Value| {
+        let authorization = authorization.clone();
+        let revision = revision.clone();
+        async move {
+            body["expectedActiveRevision"] = revision;
+            let response = http_request(
+                management_address,
+                method,
+                path,
+                &[
+                    ("Authorization", &authorization),
+                    ("Content-Type", "application/json"),
+                ],
+                &serde_json::to_vec(&body).expect("body"),
+            )
+            .await;
+            assert!(response.status < 300, "{path}: {}", response.text());
+            response.json()
+        }
+    };
+    let runtime = serde_json::json!("runtime");
+
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/v1/listeners/administrative-state",
+            serde_json::json!({"listeners": ["phase6-edge"], "state": "drain"}),
+        ),
+        (
+            "POST",
+            "/api/v1/pools/administrative-state",
+            serde_json::json!({"pools": ["phase6-origin"], "state": "drain"}),
+        ),
+        (
+            "POST",
+            "/api/v1/servers/administrative-state",
+            serde_json::json!({"targets": target, "state": "maintenance"}),
+        ),
+        (
+            "POST",
+            "/api/v1/servers/health-override",
+            serde_json::json!({"targets": target, "health": "down"}),
+        ),
+        (
+            "POST",
+            "/api/v1/servers/checks",
+            serde_json::json!({"targets": target, "enabled": false}),
+        ),
+        (
+            "PUT",
+            "/api/v1/servers/max-connections",
+            serde_json::json!({"targets": target, "maxConnections": 3}),
+        ),
+        (
+            "PUT",
+            "/api/v1/servers/weight",
+            serde_json::json!({"targets": target, "weight": 2}),
+        ),
+        (
+            "POST",
+            "/api/v1/servers/evacuate",
+            serde_json::json!({"targets": target}),
+        ),
+        (
+            "POST",
+            "/api/v1/pools/evacuate",
+            serde_json::json!({"pools": ["phase6-origin"]}),
+        ),
+        ("POST", "/api/v1/process/drain", serde_json::json!({})),
+        ("POST", "/api/v1/generations/drain", serde_json::json!({})),
+    ] {
+        let response = send(method, path, body).await;
+        assert_eq!(response["persistence"], runtime, "{path}: {response}");
+    }
+
+    server.shutdown();
+}
+
 async fn wait_for_generation(address: SocketAddr) -> HttpResponse {
     let deadline = Instant::now() + process_support::PROCESS_TIMEOUT;
     loop {

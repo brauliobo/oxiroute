@@ -338,11 +338,30 @@ Delete removes only persisted managed ACME state and returns `409 certificate_in
 TLS profile still references the certificate. Every mutation returns `X-Correlation-ID`, and the same
 safe correlation is persisted on the bounded job record and audit event.
 
+## Persistence Scope
+
+Every runtime mutation response names where its change lives in `persistence`:
+
+| Value | Meaning |
+| --- | --- |
+| `runtime` | Held by this process. It follows its listener, pool or server by name through reloads, `config apply` and rollbacks and is lost when the process restarts. Nothing is written to the configuration file |
+| `registry` | Stored with the registration of a dynamic server in the registry store (operator drain or maintenance), so it also survives a restart |
+| `mixed` | A batch whose targets differ: static servers (`runtime`) and registered servers (`registry`) |
+
+Listener, pool and server administrative state, health override, check switch, max-connections, weight,
+`refresh-dns`, evacuate, `generations/drain`, `generations/rollback` and `process/drain` answer `runtime`,
+except that the administrative state and the evacuation of a registered server are `registry`. A pool-wide
+state or pool evacuation is applied server by server, so a pool made of registered servers answers
+`registry`, a pool of configured servers `runtime`, and a pool of both `mixed`; the registered servers keep
+the drain across a restart exactly as when drained one by one. `generations/reload` and `config` saves are
+changes to the file and carry no `persistence`; `process/shutdown` neither. A change that must outlive a
+restart of a configured server is made in the configuration file.
+
 ## Evacuate
 
 `POST /api/v1/servers/evacuate` and `POST /api/v1/pools/evacuate` drain servers like the administrative-state
 routes (same persistence across generations by pool and server name, dynamic servers through the registry
-operator state; `ready` through `/servers/administrative-state` un-drains). The servers route also cancels the
+operator state, reported as `persistence: registry`; `ready` through `/servers/administrative-state` un-drains). The servers route also cancels the
 in-flight HTTP requests of each server that can be served again by another server of its pool. The pools route
 drains every server of each pool first, so no server is left to take a moved request: by default it only drains
 and reports the running requests as `no_destination`, and `force` cuts them. Both use the management bearer

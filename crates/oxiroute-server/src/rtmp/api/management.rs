@@ -11,12 +11,13 @@ use super::{
         AuditPageResponse, AuditStatusResponse, ConfigRejectedResponse, DnsRefreshResponse,
         DnsRefreshServer, DrainRequest, DrainResponse, EvacuationResponse, EventPageV1Response,
         EventPageV2Response, GenerationActionResponse, GenerationResponse,
-        ListenerInventoryResponse, ListenerStateRequest, MutationResponse, PoolEvacuateRequest,
-        PoolStateRequest, ProcessMutationResponse, RevisionRequest, ServerCapacityRequest,
-        ServerChange, ServerChecksRequest, ServerEvacuateRequest, ServerHealthRequest,
-        ServerStateRequest, ServerWeightRequest, TlsActionResponse, TlsCertificateDto,
-        TlsInventoryResponse, TlsJobControlResponse, TlsReconcileOutcome, TlsReconcileResponse,
-        TlsRenewResponse, TlsRequest, TlsRevokeRequest, pools_body, servers_body,
+        ListenerInventoryResponse, ListenerStateRequest, MutationResponse, Persistence,
+        PoolEvacuateRequest, PoolStateRequest, ProcessMutationResponse, RevisionRequest,
+        ServerCapacityRequest, ServerChange, ServerChecksRequest, ServerEvacuateRequest,
+        ServerHealthRequest, ServerStateRequest, ServerWeightRequest, TlsActionResponse,
+        TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse, TlsReconcileOutcome,
+        TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest, pools_body,
+        servers_body,
     },
 };
 use crate::{
@@ -165,13 +166,25 @@ fn select_pools(
         .collect()
 }
 
-fn mutation_response(operation: &str, changed: usize) -> ApiResponse {
+fn mutation_response(operation: &str, changed: usize, persistence: Persistence) -> ApiResponse {
     crate::observability::operational_event::emit(operation, "applied", None);
-    dto_response(200, &MutationResponse::applied(changed))
+    dto_response(200, &MutationResponse::applied(changed, persistence))
 }
 
 fn dto_response<T: schemars::JsonSchema + Serialize>(status: u16, response: &T) -> ApiResponse {
     ApiResponse::dto(status, response)
+}
+
+fn server_update_failed() -> ApiResponse {
+    ApiResponse::error(
+        500,
+        "server_update_failed",
+        "server state could not be changed",
+    )
+}
+
+fn pool_update_failed() -> ApiResponse {
+    ApiResponse::error(500, "pool_update_failed", "pool state could not be changed")
 }
 
 fn invalid_batch() -> ApiResponse {

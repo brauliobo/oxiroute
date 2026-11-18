@@ -6,6 +6,7 @@ mod import;
 mod management;
 mod mutation;
 mod observability;
+mod persistence;
 mod recordings;
 mod rtmp;
 mod ticket;
@@ -41,6 +42,7 @@ pub(crate) use observability::{
     CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,
     StatusResponse,
 };
+pub(crate) use persistence::Persistence;
 pub(crate) use recordings::{RecordingDeleteResponse, RecordingDto, RecordingListResponse};
 pub(crate) use rtmp::{
     RtmpCatalogResponse, RtmpClientStatsResponse, RtmpGlobalStatsResponse, RtmpLiveStatsResponse,

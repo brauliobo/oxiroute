@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, net::SocketAddr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Persistence;
 use crate::{
     AdministrativeState, EvacuationReport, HealthOverride,
     config::coordinator::{
@@ -140,13 +141,15 @@ enum HealthOverrideSchema {
 pub(crate) struct MutationResponse {
     outcome: &'static str,
     changed: usize,
+    persistence: Persistence,
 }
 
 impl MutationResponse {
-    pub(crate) const fn applied(changed: usize) -> Self {
+    pub(crate) const fn applied(changed: usize, persistence: Persistence) -> Self {
         Self {
             outcome: "applied",
             changed,
+            persistence,
         }
     }
 }
@@ -159,12 +162,18 @@ pub(crate) struct EvacuationResponse {
     cancelled_and_redispatched: u64,
     forced: u64,
     left_running: BTreeMap<&'static str, u64>,
+    persistence: Persistence,
 }
 
 impl EvacuationResponse {
-    pub(crate) fn evacuated(force: bool, report: &EvacuationReport) -> Self {
+    pub(crate) fn evacuated(
+        force: bool,
+        report: &EvacuationReport,
+        persistence: Persistence,
+    ) -> Self {
         Self {
             outcome: "evacuated",
+            persistence,
             force,
             cancelled_and_redispatched: report.redispatched,
             forced: report.forced,
@@ -186,6 +195,7 @@ pub(super) fn left_running_by_reason(report: &EvacuationReport) -> BTreeMap<&'st
 pub(crate) struct DnsRefreshResponse {
     outcome: DnsRefreshOutcome,
     atomic: bool,
+    persistence: Persistence,
     servers: Vec<DnsRefreshServer>,
 }
 
@@ -198,6 +208,7 @@ impl DnsRefreshResponse {
                 DnsRefreshOutcome::Refreshed
             },
             atomic: false,
+            persistence: Persistence::Runtime,
             servers,
         }
     }
@@ -378,6 +389,8 @@ pub(crate) struct GenerationActionResponse {
     outcome: &'static str,
     candidate_revision: String,
     restart_required: RestartRequired,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persistence: Option<Persistence>,
 }
 
 impl GenerationActionResponse {
@@ -389,6 +402,7 @@ impl GenerationActionResponse {
             outcome: "startup_requested",
             candidate_revision: candidate_revision.as_str().to_owned(),
             restart_required,
+            persistence: None,
         }
     }
 
@@ -400,6 +414,7 @@ impl GenerationActionResponse {
             outcome: "rollback_startup_requested",
             candidate_revision: candidate_revision.as_str().to_owned(),
             restart_required,
+            persistence: Some(Persistence::Runtime),
         }
     }
 }
@@ -409,6 +424,7 @@ impl GenerationActionResponse {
 pub(crate) struct DrainResponse {
     outcome: DrainOutcome,
     active_references: u64,
+    persistence: Persistence,
 }
 
 impl DrainResponse {
@@ -420,6 +436,7 @@ impl DrainResponse {
                 DrainOutcome::Draining
             },
             active_references,
+            persistence: Persistence::Runtime,
         }
     }
 }
@@ -434,18 +451,22 @@ enum DrainOutcome {
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct ProcessMutationResponse {
     outcome: ProcessMutationOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persistence: Option<Persistence>,
 }
 
 impl ProcessMutationResponse {
     pub(crate) const fn draining() -> Self {
         Self {
             outcome: ProcessMutationOutcome::Draining,
+            persistence: Some(Persistence::Runtime),
         }
     }
 
     pub(crate) const fn shutdown_requested() -> Self {
         Self {
             outcome: ProcessMutationOutcome::ShutdownRequested,
+            persistence: None,
         }
     }
 }
@@ -506,11 +527,37 @@ mod tests {
             json!({
                 "outcome": "partially_refreshed",
                 "atomic": false,
+                "persistence": "runtime",
                 "servers": [
                     { "pool": "pool", "server": "server", "outcome": "refreshed", "addresses": ["127.0.0.1:443"] },
                     { "pool": "pool", "server": "missing", "outcome": "failed", "error": { "code": "dns_refresh_failed" } },
                 ],
             })
+        );
+    }
+
+    #[test]
+    fn only_runtime_state_changes_of_generations_and_the_process_name_their_persistence() {
+        let revision = crate::config::coordinator::EffectiveRevision::from_bytes(b"a");
+        let rollback = serde_json::to_value(GenerationActionResponse::rollback(
+            &revision,
+            RestartRequired::default(),
+        ))
+        .expect("rollback");
+        let reload = serde_json::to_value(GenerationActionResponse::startup(
+            &revision,
+            RestartRequired::default(),
+        ))
+        .expect("reload");
+        assert_eq!(rollback["persistence"], "runtime");
+        assert!(reload.get("persistence").is_none());
+        assert_eq!(
+            serde_json::to_value(ProcessMutationResponse::draining()).expect("drain"),
+            json!({ "outcome": "draining", "persistence": "runtime" })
+        );
+        assert_eq!(
+            serde_json::to_value(ProcessMutationResponse::shutdown_requested()).expect("stop"),
+            json!({ "outcome": "shutdown_requested" })
         );
     }
 
@@ -555,13 +602,19 @@ mod tests {
             .insert(crate::LeftRunning::NoDestination, 4);
 
         assert_eq!(
-            serde_json::to_value(EvacuationResponse::evacuated(true, &report)).expect("response"),
+            serde_json::to_value(EvacuationResponse::evacuated(
+                true,
+                &report,
+                Persistence::Registry
+            ))
+            .expect("response"),
             json!({
                 "outcome": "evacuated",
                 "force": true,
                 "cancelledAndRedispatched": 2,
                 "forced": 1,
                 "leftRunning": { "no_destination": 4 },
+                "persistence": "registry",
             })
         );
     }

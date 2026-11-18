@@ -168,7 +168,10 @@ oxiroute server refresh-dns --pool web endpoint-1
 These settings are runtime state, not configuration. They stay on the server (matched by pool and
 server name) when the configuration file changes or you reload, apply or roll back a generation, so
 a drained server stays drained. A server removed from the file loses its state, and a server added
-to it starts ready. A restart of the process resets them.
+to it starts ready. A restart of the process resets them, except the drain and maintenance of a registered
+server (and of a pool made of them), which are stored with the registration. Each command prints
+`persistence=runtime`, `registry` or `mixed` so the scope is not a guess; to keep a change on a configured
+server across a restart, edit the configuration file (`config edit`).
 
 DNS refresh is explicitly non-atomic because resolution is external. Inspect every returned outcome
 before treating a partial result as a successful rollout.

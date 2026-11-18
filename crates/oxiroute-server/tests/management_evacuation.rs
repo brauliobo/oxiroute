@@ -440,6 +440,7 @@ fn assert_report(response: &HttpResponse, force: bool, moved: u64, forced: u64, 
         response.json(),
         json!({
             "outcome": "evacuated",
+            "persistence": "runtime",
             "force": force,
             "cancelledAndRedispatched": moved,
             "forced": forced,
@@ -704,8 +705,8 @@ async fn the_cli_evacuates_a_server_and_a_pool_against_the_real_api() {
     assert_eq!(
         serde_json::from_slice::<Value>(&server.stdout).expect("report JSON"),
         json!({
-            "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 1,
-            "forced": 0, "leftRunning": {},
+            "outcome": "evacuated", "persistence": "runtime", "force": false,
+            "cancelledAndRedispatched": 1, "forced": 0, "leftRunning": {},
         })
     );
     assert_eq!(

@@ -42,7 +42,11 @@ impl ManagementState {
                 );
             }
         }
-        mutation_response("listener_administrative_state", request.listeners.len())
+        mutation_response(
+            "listener_administrative_state",
+            request.listeners.len(),
+            Persistence::Runtime,
+        )
     }
 
     pub(super) async fn pool_state(&self, session: &mut ServerSession) -> ApiResponse {
@@ -58,10 +62,18 @@ impl ManagementState {
             Ok(selected) => selected,
             Err(response) => return response,
         };
-        for pool in selected {
-            pool.set_administrative_state(request.state);
+        let mut scopes = Vec::with_capacity(selected.len());
+        for pool in &selected {
+            match self.set_pool_state(pool, request.state) {
+                Ok(scope) => scopes.push(scope),
+                Err(_) => return pool_update_failed(),
+            }
         }
-        mutation_response("pool_administrative_state", request.pools.len())
+        mutation_response(
+            "pool_administrative_state",
+            request.pools.len(),
+            Persistence::all(scopes),
+        )
     }
 
     pub(super) async fn server_state(&self, session: &mut ServerSession) -> ApiResponse {
@@ -88,18 +100,19 @@ impl ManagementState {
             Err(response) => return response,
         };
         let mut total = EvacuationReport::default();
+        let mut scopes = Vec::with_capacity(selected.len());
         for (pool, server) in &selected {
-            let Ok(report) = self.evacuate_server(pool, server, request.force) else {
-                return ApiResponse::error(
-                    500,
-                    "server_update_failed",
-                    "server state could not be changed",
-                );
+            let Ok((report, scope)) = self.evacuate_server(pool, server, request.force) else {
+                return server_update_failed();
             };
             emit_server_evacuation(context, pool.name(), Some(server), request.force, &report);
             total.merge(report);
+            scopes.push(scope);
         }
-        dto_response(200, &EvacuationResponse::evacuated(request.force, &total))
+        dto_response(
+            200,
+            &EvacuationResponse::evacuated(request.force, &total, Persistence::all(scopes)),
+        )
     }
 
     pub(super) async fn pool_evacuate(
@@ -120,12 +133,20 @@ impl ManagementState {
             Err(response) => return response,
         };
         let mut total = EvacuationReport::default();
+        let mut scopes = Vec::with_capacity(pools.len());
         for pool in pools {
+            let Ok(scope) = self.set_pool_state(&pool, AdministrativeState::Drain) else {
+                return pool_update_failed();
+            };
             let report = pool.evacuate_all_servers(request.force);
             emit_server_evacuation(context, pool.name(), None, request.force, &report);
             total.merge(report);
+            scopes.push(scope);
         }
-        dto_response(200, &EvacuationResponse::evacuated(request.force, &total))
+        dto_response(
+            200,
+            &EvacuationResponse::evacuated(request.force, &total, Persistence::all(scopes)),
+        )
     }
 
     /// Drains through the registry operator state for a dynamic server, so the state is stored with
@@ -135,7 +156,7 @@ impl ManagementState {
         pool: &Arc<crate::RoundRobinPool>,
         server: &str,
         state: AdministrativeState,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Persistence, Box<dyn std::error::Error>> {
         match (pool.member(server), self.generations.registry()) {
             (Some((crate::ServerOrigin::Dynamic, _)), Some(registry)) => registry
                 .set_operator_state(
@@ -144,12 +165,28 @@ impl ManagementState {
                     server,
                     state,
                 )
-                .map(drop)
+                .map(|_| Persistence::Registry)
                 .map_err(Box::<dyn std::error::Error>::from),
             _ => pool
                 .set_server_administrative_state(server, state)
+                .map(|()| Persistence::Runtime)
                 .map_err(Box::<dyn std::error::Error>::from),
         }
+    }
+
+    /// Applies a pool-wide state server by server, so the registered servers of the pool keep it
+    /// through their registry operator state exactly as a per-server change does.
+    fn set_pool_state(
+        &self,
+        pool: &Arc<crate::RoundRobinPool>,
+        state: AdministrativeState,
+    ) -> Result<Persistence, Box<dyn std::error::Error>> {
+        let scopes = pool
+            .server_names()
+            .iter()
+            .map(|server| self.set_server_state(pool, server, state))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Persistence::all(scopes))
     }
 
     fn evacuate_server(
@@ -157,9 +194,9 @@ impl ManagementState {
         pool: &Arc<crate::RoundRobinPool>,
         server: &str,
         force: bool,
-    ) -> Result<EvacuationReport, Box<dyn std::error::Error>> {
-        self.set_server_state(pool, server, AdministrativeState::Drain)?;
-        Ok(pool.cancel_server_requests(server, force)?)
+    ) -> Result<(EvacuationReport, Persistence), Box<dyn std::error::Error>> {
+        let scope = self.set_server_state(pool, server, AdministrativeState::Drain)?;
+        Ok((pool.cancel_server_requests(server, force)?, scope))
     }
 
     pub(super) async fn server_health(&self, session: &mut ServerSession) -> ApiResponse {
@@ -169,6 +206,7 @@ impl ManagementState {
         };
         self.apply_servers(&request.change, |pool, server| {
             pool.set_server_health_override(server, request.health)
+                .map(|()| Persistence::Runtime)
         })
     }
 
@@ -179,6 +217,7 @@ impl ManagementState {
         };
         self.apply_servers(&request.change, |pool, server| {
             pool.set_server_checks_enabled(server, request.enabled)
+                .map(|()| Persistence::Runtime)
         })
     }
 
@@ -189,6 +228,7 @@ impl ManagementState {
         };
         self.apply_servers(&request.change, |pool, server| {
             pool.set_server_max_connections(server, request.max_connections)
+                .map(|()| Persistence::Runtime)
         })
     }
 
@@ -205,6 +245,7 @@ impl ManagementState {
         }
         self.apply_servers(&request.change, |pool, server| {
             pool.set_server_weight(server, request.weight)
+                .map(|()| Persistence::Runtime)
         })
     }
 
@@ -268,22 +309,20 @@ impl ManagementState {
     fn apply_servers<E>(
         &self,
         change: &ServerChange,
-        apply: impl Fn(&Arc<crate::RoundRobinPool>, &str) -> Result<(), E>,
+        apply: impl Fn(&Arc<crate::RoundRobinPool>, &str) -> Result<Persistence, E>,
     ) -> ApiResponse {
         let (_mutation, selected) = match self.select_servers(change) {
             Ok(selected) => selected,
             Err(response) => return response,
         };
+        let mut scopes = Vec::with_capacity(selected.len());
         for (pool, server) in &selected {
-            if apply(pool, server).is_err() {
-                return ApiResponse::error(
-                    500,
-                    "server_update_failed",
-                    "server state could not be changed",
-                );
+            match apply(pool, server) {
+                Ok(scope) => scopes.push(scope),
+                Err(_) => return server_update_failed(),
             }
         }
-        mutation_response("server_update", selected.len())
+        mutation_response("server_update", selected.len(), Persistence::all(scopes))
     }
 
     fn select_servers(&self, change: &ServerChange) -> Result<SelectedServers, ApiResponse> {

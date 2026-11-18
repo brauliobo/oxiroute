@@ -407,7 +407,7 @@ pub(super) async fn draining_a_registered_server_through_the_server_api_survives
     let (_, generations) = farm
         .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
         .await;
-    let (status, _) = farm
+    let (status, drained) = farm
         .api(
             "POST",
             "/api/v1/servers/administrative-state",
@@ -420,6 +420,7 @@ pub(super) async fn draining_a_registered_server_through_the_server_api_survives
         )
         .await;
     assert_eq!(status, 200);
+    assert_eq!(drained["persistence"], "registry");
     assert_eq!(
         farm.served_by("/", 8).await,
         ["alpha"].map(String::from).into()
@@ -475,6 +476,7 @@ pub(super) async fn evacuating_a_registered_server_drains_it_through_the_registr
         .await;
     assert_eq!(status, 200, "{report}");
     assert_eq!(report["cancelledAndRedispatched"], 0);
+    assert_eq!(report["persistence"], "registry");
     assert_eq!(
         farm.served_by("/", 8).await,
         ["alpha"].map(String::from).into()
@@ -758,4 +760,65 @@ pub(super) async fn the_cli_registers_over_the_lan_with_a_scoped_token_file() {
     );
 
     server.shutdown();
+}
+
+#[tokio::test]
+pub(super) async fn draining_a_pool_drains_its_registered_servers_through_the_registry() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (alpha, _a) = stub("alpha").await;
+    let (beta, _b) = stub("beta").await;
+    farm.register("render", "alpha", alpha, 60_000).await;
+    farm.register("render", "beta", beta, 60_000).await;
+    let pool_state = async |state: &str| {
+        let (_, generations) = farm
+            .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+            .await;
+        farm.api(
+            "POST",
+            "/api/v1/pools/administrative-state",
+            TOKEN,
+            &json!({
+                "pools": ["render"],
+                "expectedActiveRevision": generations["generation"]["activeRevision"],
+                "state": state,
+            }),
+        )
+        .await
+    };
+    let operator_states = async || {
+        let (_, listing) = farm
+            .over_socket("read", "GET", "/api/v1/registrations", &Value::Null)
+            .await;
+        listing["registrations"]
+            .as_array()
+            .expect("registrations")
+            .iter()
+            .map(|entry| entry["registration"]["operatorState"].clone())
+            .collect::<Vec<_>>()
+    };
+
+    let (status, drained) = pool_state("drain").await;
+    assert_eq!(status, 200, "{drained}");
+    assert_eq!(drained["persistence"], "registry");
+    assert_eq!(operator_states().await, [json!("drain"), json!("drain")]);
+    assert!(farm.served_by("/", 8).await.is_empty());
+
+    server.shutdown_gracefully();
+    let restarted = farm.start().await;
+    assert_eq!(
+        operator_states().await,
+        [json!("drain"), json!("drain")],
+        "the pool drain outlives a restart"
+    );
+    assert!(farm.served_by("/", 8).await.is_empty());
+
+    let (status, ready) = pool_state("ready").await;
+    assert_eq!(status, 200, "{ready}");
+    assert_eq!(ready["persistence"], "registry");
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha", "beta"].map(String::from).into()
+    );
+    restarted.shutdown();
 }

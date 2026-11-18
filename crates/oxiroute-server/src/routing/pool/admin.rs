@@ -215,6 +215,14 @@ impl EndpointPool {
         self.queue.notify_capacity_waiters();
     }
 
+    pub(crate) fn server_names(&self) -> Vec<String> {
+        self.members()
+            .endpoints
+            .iter()
+            .map(|server| server.name.clone())
+            .collect()
+    }
+
     #[must_use]
     pub fn has_server(&self, name: &str) -> bool {
         self.server_endpoint(name).is_some()

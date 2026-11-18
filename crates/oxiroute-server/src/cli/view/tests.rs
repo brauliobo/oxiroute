@@ -339,3 +339,20 @@ fn empty_collections_name_what_is_missing() {
         ["no streams"]
     );
 }
+
+#[test]
+fn mutation_responses_show_where_the_change_lives() {
+    let applied = json!({ "outcome": "applied", "changed": 2, "persistence": "mixed" });
+    assert_eq!(
+        plain(View::Generic, &applied),
+        "changed=2 outcome=applied persistence=mixed\n"
+    );
+    let evacuated = json!({
+        "outcome": "evacuated", "persistence": "registry", "force": false,
+        "cancelledAndRedispatched": 1, "forced": 0, "leftRunning": {},
+    });
+    assert!(plain(View::Evacuation, &evacuated).contains("persistence=registry"));
+    let refreshed =
+        json!({ "outcome": "refreshed", "persistence": "runtime", "atomic": false, "servers": [] });
+    assert!(plain(View::DnsRefresh, &refreshed).contains("persistence=runtime"));
+}

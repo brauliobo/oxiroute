@@ -17,6 +17,7 @@ pub(super) fn evacuation(value: &Value) -> Document {
         "evacuation",
         vec![
             Field::text("outcome", text(value, "outcome")),
+            Field::text("persistence", text(value, "persistence")),
             Field::flag("force", flag(value, "force")),
             Field::number("redispatched", number(value, "cancelledAndRedispatched")),
             Field::number("forced", number(value, "forced")),
@@ -28,6 +29,7 @@ pub(super) fn evacuation(value: &Value) -> Document {
 pub(super) fn dns_refresh(value: &Value) -> Document {
     let summary = vec![
         Field::text("outcome", text(value, "outcome")),
+        Field::text("persistence", text(value, "persistence")),
         Field::flag("atomic", flag(value, "atomic")),
     ];
     Document::new(vec![

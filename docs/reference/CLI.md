@@ -69,6 +69,12 @@ listeners; `monitoring` adds process, host and traffic figures, listeners and po
 prints the configuration format, revisions and the number of entries per section instead of the
 document (use `--output json` for the document).
 
+Commands that change runtime state (`listener`/`pool`/`server` `ready`, `drain`, `maintenance`, `set-health`,
+`check`, `max-connections`, `weight`, `evacuate`, `refresh-dns`, `generation rollback|drain`, `process drain`)
+print `persistence`: `runtime` (this process only: it survives reloads but not a restart), `registry`
+(a registered server's drain or maintenance, stored with its registration) or `mixed`. To keep a change on a
+configured server across a restart, edit the configuration file (`config edit`).
+
 `--output plain` prints one `key=value` record per line with raw numbers and no padding, for `grep`,
 `awk` and `read`. Keys carry their unit as a suffix (`age_ms`, `received_bytes`); values with spaces
 are double-quoted; an unknown value is left out. A command that prints more than one kind of record
