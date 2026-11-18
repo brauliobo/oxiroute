@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use oxiroute_config::ConfigDraft;
+use oxiroute_config::{ConfigDraft, ValidatedConfig};
 use oxiroute_config_source::{ConfigFormat, render_config};
 use pingora::protocols::http::ServerSession;
 use serde::Deserialize;
@@ -13,11 +13,16 @@ use super::{
 };
 use crate::{
     GenerationManager, RuntimeGeneration,
-    config::coordinator::{AuthoredRevision, ConfigLoadRejection, ResolvedConfigDocument},
+    config::{
+        coordinator::{AuthoredRevision, ConfigLoadRejection, ResolvedConfigDocument},
+        diff::unified,
+    },
     rtmp::api::response::system_time_ms,
 };
+use comparison::comparison;
 use redaction::SourceSecrets;
 
+mod comparison;
 mod redaction;
 
 const REDACTION_POLICY: &str = "rtmp_inline_secrets";
@@ -49,6 +54,8 @@ struct SourceRequest {
     #[serde(default)]
     format: Option<SourceFormat>,
     text: String,
+    #[serde(default)]
+    text_diff: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -78,6 +85,12 @@ impl Authority {
 
     fn secrets(&self) -> SourceSecrets {
         SourceSecrets::of(&self.drafts())
+    }
+
+    fn secrets_with(&self, candidate: &ConfigDraft) -> SourceSecrets {
+        let mut drafts = self.drafts();
+        drafts.push(candidate);
+        SourceSecrets::of(&drafts)
     }
 
     fn restored(&self, text: &str) -> Result<String, ApiResponse> {
@@ -237,7 +250,8 @@ impl ConfigApiState {
             Ok(now) => now,
             Err(response) => return response,
         };
-        let text = match self.authority().restored(&request.text) {
+        let authority = self.authority();
+        let text = match authority.restored(&request.text) {
             Ok(text) => text,
             Err(response) => return response,
         };
@@ -249,10 +263,17 @@ impl ConfigApiState {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
-        ApiResponse::json(200, &self.validation_body(&prepared))
+        let body = self.validation_body(&authority, &prepared, &text, request.text_diff);
+        ApiResponse::json(200, &body)
     }
 
-    fn validation_body(&self, prepared: &PreparedCandidate) -> Value {
+    fn validation_body(
+        &self,
+        authority: &Authority,
+        prepared: &PreparedCandidate,
+        text: &str,
+        text_diff: bool,
+    ) -> Value {
         let mut diagnostics = diagnostics_json(prepared.draft.diagnostics(), false);
         if !prepared.startup_only.is_empty() {
             diagnostics.extend(
@@ -264,11 +285,12 @@ impl ConfigApiState {
         } else if let Some(changes) = &prepared.listener_changes {
             diagnostics.push(listener_changes_diagnostic(self.mode, changes));
         }
+        let matches_disk = prepared.draft.format() == self.coordinator.format();
         json!({
             "schemaVersion": 1,
             "valid": true,
             "format": prepared.draft.format(),
-            "matchesDiskFormat": prepared.draft.format() == self.coordinator.format(),
+            "matchesDiskFormat": matches_disk,
             "candidateRevision": prepared.draft.effective_revision(),
             "activeRevision": self.active_revision(),
             "compositional": prepared.draft.compositional(),
@@ -277,10 +299,53 @@ impl ConfigApiState {
             "restartRequired": !prepared.startup_only.is_empty(),
             "restartReasons": prepared.startup_only,
             "topology": prepared.topology,
+            "diff": comparisons(authority, prepared.draft.validated_config()),
+            "textDiff": (text_diff && matches_disk)
+                .then(|| self.text_diff(authority, prepared.draft.validated_config(), text))
+                .flatten(),
             "configWritable": self.coordinator.write_block().is_none(),
             "writeBlock": self.coordinator.write_block(),
         })
     }
+
+    fn text_diff(
+        &self,
+        authority: &Authority,
+        candidate: &ValidatedConfig,
+        text: &str,
+    ) -> Option<String> {
+        let disk = self.coordinator.read_source().ok()?;
+        let secrets = authority.secrets_with(candidate.as_draft());
+        let old = secrets.redact(&disk.text).text;
+        let new = secrets.redact(text).text;
+        Some(unified(&old, &new, "disk", "candidate"))
+    }
+}
+
+fn comparisons(authority: &Authority, candidate: &ValidatedConfig) -> Value {
+    let candidate = config_value(candidate);
+    let disk = authority
+        .disk
+        .as_ref()
+        .ok()
+        .map(|document| (document, config_value(&document.validated_config)));
+    let active = authority
+        .active
+        .as_ref()
+        .map(|generation| config_value(generation.config()));
+    json!({
+        "disk": disk.as_ref().map(|(document, disk)| {
+            comparison(Some(document.authored_revision.as_str()), disk, &candidate)
+        }),
+        "active": active.as_ref().map(|active| comparison(None, active, &candidate)),
+        "pending": disk.as_ref().zip(active.as_ref()).map(|((_, disk), active)| {
+            comparison(None, active, disk)
+        }),
+    })
+}
+
+fn config_value(config: &ValidatedConfig) -> Value {
+    serde_json::to_value(config).expect("validated configuration serializes")
 }
 
 fn source_view(query: Option<&str>) -> Result<SourceView, ApiResponse> {
@@ -306,7 +371,7 @@ async fn read_source_request(session: &mut ServerSession) -> Result<SourceReques
         ApiResponse::error(
             400,
             "invalid_source_request",
-            "body must be a JSON object with a text field and an optional format",
+            "body must be a JSON object with a text field and an optional format and textDiff",
         )
     })
 }

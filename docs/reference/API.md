@@ -105,9 +105,24 @@ format of the file; `kdl`, `lua`, `hocon`, `uci` and `json` are accepted, `json`
 superset of it. Native references inside the text resolve against the directory of the configuration
 file. A valid text answers `200` with `valid`, `format`, `matchesDiskFormat`, `candidateRevision`,
 `compositional`, `dependencyCount`, `diagnostics`, `restartRequired`, `restartReasons`, `topology`,
-`configWritable` and `writeBlock`. An invalid text answers `422` with `diagnostics`: each has `code`,
+`diff`, `textDiff`, `configWritable` and `writeBlock`. An invalid text answers `422` with `diagnostics`: each has `code`,
 `severity`, `stage`, `message` and, when the parser reports one, `path`, `detail` and `line` (KDL, HOCON
 and UCI syntax errors carry a one-based line; there is no column).
+
+The `diff` object compares the validated text with the configuration on disk (`diff.disk`) and with the
+running one (`diff.active`), and the disk with the running one (`diff.pending`: what a reload would
+change). Each comparison is `{ revision, equal, changes, truncated }` (`null` when a side does not exist,
+for example `disk` while the file no longer validates), and each change is
+`{ path, kind, old, new }`: `kind` is `added`, `removed`, `changed` or `reordered`, `old` and `new` are the
+JSON values (absent on the side that has none), and `path` is a JSON pointer into the normalized
+configuration (not the text) in which list items are addressed by their `name`, for example
+`/upstream_pools/web/servers/origin-1/max_connections`, when every item of both lists has a unique name,
+and by index otherwise. A list of scalars changes as a whole, a reordered named list is one `reordered`
+change at the list (the order of routes matters) with the old and new names, and at most 500 changes are
+returned (`truncated`). Values of secret settings are always `<redacted>` in both directions, so a
+changed secret shows as `changed` without either value. With `"textDiff": true` and a text in the
+format of the file, `textDiff` is a unified diff (`--- disk`, `+++ candidate`, three lines of context)
+of the redacted stored text against the redacted submitted text; it is `null` otherwise.
 
 `PUT /api/v1/config/source` takes the same body and requires one `If-Config-Revision` header (`428`
 without it, `409` for a stale revision, `400` for a malformed one). It validates exactly like the validate

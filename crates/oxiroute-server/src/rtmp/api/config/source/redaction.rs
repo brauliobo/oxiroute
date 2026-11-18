@@ -31,7 +31,10 @@ impl SourceSecrets {
         for config in configs {
             for (pointer, secret) in rtmp_token_secrets(config) {
                 let placeholder = format!("{PLACEHOLDER_PREFIX}{pointer}>");
-                if !tokens.iter().any(|(known, _)| *known == placeholder) {
+                if !tokens
+                    .iter()
+                    .any(|entry| *entry == (placeholder.clone(), secret.clone()))
+                {
                     tokens.push((placeholder, secret));
                 }
             }

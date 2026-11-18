@@ -431,3 +431,127 @@ async fn status_reports_a_writable_configuration() {
     );
     daemon.server.shutdown();
 }
+
+fn change<'a>(comparison: &'a Value, path: &str) -> &'a Value {
+    comparison["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .find(|change| change["path"] == path)
+        .unwrap_or_else(|| panic!("no change at {path}: {comparison}"))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn validation_returns_the_path_aware_changes_against_disk_and_active() {
+    let daemon = Daemon::start("oxiroute.kdl", ConfigFormat::Kdl, BANNER).await;
+    let edited = daemon
+        .text
+        .replace("max_connections #null", "max_connections 77");
+    let same = daemon
+        .validate(&json!({ "text": daemon.text }))
+        .await
+        .json();
+
+    let checked = daemon.validate(&json!({ "text": edited })).await;
+
+    assert_eq!(checked.status, 200, "{}", checked.text());
+    let diff = &checked.json()["diff"];
+    for base in ["disk", "active"] {
+        assert_eq!(diff[base]["equal"], false);
+        let server = change(
+            &diff[base],
+            "/upstream_pools/public/servers/origin-a/max_connections",
+        );
+        assert_eq!(server["kind"], "changed");
+        assert_eq!(server["old"], Value::Null);
+        assert_eq!(server["new"], 77);
+        assert_eq!(change(&diff[base], "/max_connections")["new"], 77);
+    }
+    assert_eq!(diff["pending"]["equal"], true);
+    assert_eq!(same["diff"]["disk"]["equal"], true);
+    assert_eq!(same["diff"]["active"]["equal"], true);
+    assert_eq!(same["textDiff"], Value::Null);
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn added_and_removed_list_items_are_named() {
+    let daemon = Daemon::start("oxiroute.kdl", ConfigFormat::Kdl, BANNER).await;
+    let edited = daemon.text.replace("origin-a", "origin-b");
+
+    let checked = daemon.validate(&json!({ "text": edited })).await.json();
+
+    let diff = &checked["diff"]["active"];
+    assert_eq!(
+        change(diff, "/upstream_pools/public/servers/origin-a")["kind"],
+        "removed"
+    );
+    assert_eq!(
+        change(diff, "/upstream_pools/public/servers/origin-b")["kind"],
+        "added"
+    );
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_text_diff_is_unified_and_only_present_when_asked_for() {
+    let daemon = Daemon::start("oxiroute.kdl", ConfigFormat::Kdl, BANNER).await;
+    let edited = format!("{}// appended\n", daemon.text);
+
+    let asked = daemon
+        .validate(&json!({ "text": edited, "textDiff": true }))
+        .await
+        .json();
+    let not_asked = daemon.validate(&json!({ "text": edited })).await.json();
+
+    let text_diff = asked["textDiff"].as_str().expect("text diff");
+    assert!(
+        text_diff.starts_with("--- disk\n+++ candidate\n@@ "),
+        "{text_diff}"
+    );
+    assert!(text_diff.contains("+// appended\n"), "{text_diff}");
+    assert_eq!(asked["diff"]["disk"]["equal"], true);
+    assert_eq!(not_asked["textDiff"], Value::Null);
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_changed_secret_shows_as_changed_without_either_value() {
+    let root = TempDir::new().expect("recording root");
+    let address = reserve_tcp_address();
+    let config = with_rtmp_secrets(address, root.path());
+    let daemon =
+        Daemon::start_with("oxiroute.kdl", ConfigFormat::Kdl, BANNER, config, address).await;
+    let text = daemon.get("/api/v1/config/source").await.json()["text"]
+        .as_str()
+        .expect("text")
+        .to_owned();
+    let placeholder =
+        "<redacted:/rtmp_services/recording-wire/applications/live/publish/token/secret>";
+    assert!(text.contains(placeholder), "{text}");
+    let rotated = text.replace(placeholder, "rotated-secret-not-real");
+
+    let checked = daemon
+        .validate(&json!({ "text": rotated, "textDiff": true }))
+        .await;
+
+    assert_eq!(checked.status, 200, "{}", checked.text());
+    for secret in [
+        "publish-secret-not-real",
+        "rotated-secret-not-real",
+        "callback-key-not-real",
+    ] {
+        let text = checked.text();
+        let at = text.find(secret);
+        assert!(at.is_none(), "{secret} leaked near {:?}", at.map(|at| &text[at.saturating_sub(200)..(at + 100).min(text.len())]));
+    }
+    let body = checked.json();
+    let secret = change(
+        &body["diff"]["disk"],
+        "/rtmp_services/recording-wire/applications/live/publish/token/secret",
+    );
+    assert_eq!(secret["kind"], "changed");
+    assert_eq!(secret["old"], "<redacted>");
+    assert_eq!(secret["new"], "<redacted>");
+    daemon.server.shutdown();
+}
