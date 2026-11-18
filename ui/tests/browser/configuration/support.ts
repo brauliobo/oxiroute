@@ -37,8 +37,10 @@ export async function openConfiguration(page: Page, theme: (typeof themes)[numbe
   await expect(page.locator('.revision-board')).toBeVisible()
 }
 
-export async function selectObject(page: Page, label: string): Promise<void> {
+export async function selectObject(page: Page, label: string, detail?: string): Promise<void> {
   const mobile = page.locator('#mobile-object-navigation')
-  if (await mobile.isVisible()) await mobile.selectOption({ label })
-  else await page.getByRole('navigation', { name: 'Configuration objects' }).getByRole('button', { name: new RegExp(`^${label.split(' / ').at(-1)} `) }).click()
+  if (await mobile.isVisible()) return void (await mobile.selectOption({ label }))
+  const rail = page.getByRole('navigation', { name: 'Configuration objects' })
+  const name = label.split(' / ').at(-1)!
+  await rail.getByRole('button', { name: new RegExp(`^${name} ${detail ?? ''}`) }).click()
 }
