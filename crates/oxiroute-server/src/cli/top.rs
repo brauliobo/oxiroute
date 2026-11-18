@@ -38,7 +38,12 @@ pub struct TopArgs {
     #[arg(long, value_enum)]
     view: Option<View>,
     /// Show only rows whose names contain this text, ignoring case.
-    #[arg(long, value_name = "TEXT", default_value = "")]
+    #[arg(
+        long,
+        value_name = "TEXT",
+        default_value = "",
+        hide_default_value = true
+    )]
     filter: String,
     /// Sort the starting view by this column title, for example `REQ/s`.
     #[arg(long, value_name = "COLUMN")]
