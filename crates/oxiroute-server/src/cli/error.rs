@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-pub(super) const EXIT_STARTUP: u8 = 1;
+pub(super) const EXIT_FINDING: u8 = 1;
 pub(super) const EXIT_LOCAL: u8 = 3;
 pub(super) const EXIT_CONNECT: u8 = 4;
 pub(super) const EXIT_AUTH: u8 = 5;
@@ -19,6 +19,7 @@ pub(crate) enum CliError {
     Status(u16, String),
     Remote(String),
     Unsupported(&'static str),
+    Differs,
     OutputClosed,
 }
 
@@ -34,7 +35,7 @@ impl CliError {
     pub(super) const fn exit_code(&self) -> u8 {
         match self {
             Self::OutputClosed => 0,
-            Self::Startup(_) => EXIT_STARTUP,
+            Self::Startup(_) | Self::Differs => EXIT_FINDING,
             Self::Local(_) => EXIT_LOCAL,
             Self::Connect(_) | Self::Timeout(_) | Self::Io(_) => EXIT_CONNECT,
             Self::Status(401 | 403, _) => EXIT_AUTH,
@@ -72,6 +73,7 @@ impl fmt::Display for CliError {
             }
             Self::Io(error) => error.fmt(formatter),
             Self::Unsupported(message) => write!(formatter, "unsupported: {message}"),
+            Self::Differs => formatter.write_str("differences found"),
             Self::OutputClosed => formatter.write_str("output closed"),
         }
     }

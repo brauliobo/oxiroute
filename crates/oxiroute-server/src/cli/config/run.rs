@@ -1,13 +1,9 @@
-use std::path::Path;
-
-use serde_json::{Value, json};
-
-use super::{ConfigCommand, check, compose::compose};
+use super::{
+    ConfigCommand, apply::apply, check, compare, compose::compose, edit::edit, fmt::fmt, show::show,
+};
 use crate::cli::{
     context::{Context, Execute},
     error::CliError,
-    fs::{MAX_FILE_BYTES, read_regular_file, unreadable_config},
-    net::Client,
     render,
     view::View,
 };
@@ -18,67 +14,12 @@ impl Execute for ConfigCommand {
             Self::Check { config } => render::emit(&check::report(config)?),
             Self::Compose { format, configs } => render::emit(&compose(configs, (*format).into())?),
             Self::Get => context.show("/api/v1/config", View::Config),
-            Self::Validate { file } => validate(context, file),
-            Self::Apply { file } => apply(context, file),
-            Self::Diff { file } => diff(context, file),
+            Self::Show(args) => show(context, args),
+            Self::Validate(args) => compare::validate(context, args),
+            Self::Diff(args) => compare::diff(context, args),
+            Self::Apply(args) => apply(context, args),
+            Self::Edit(args) => edit(context, args),
+            Self::Fmt(args) => fmt(context, args),
         }
     }
-}
-
-fn validate(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
-    let response = context.client()?.json(
-        "POST",
-        "/api/v1/config/validate",
-        &json!({ "config": config_file(file)? }),
-        &[],
-    )?;
-    context.print_response(&response, View::Generic)
-}
-
-fn apply(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
-    let client = context.client()?;
-    let current = current_config(&client)?;
-    let revision = current
-        .get("diskRevision")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::Local("configuration response has no disk revision".into()))?;
-    let response = client.json(
-        "PUT",
-        "/api/v1/config",
-        &json!({ "config": config_file(file)? }),
-        &[("If-Config-Revision", revision)],
-    )?;
-    context.print_response(&response, View::Generic)
-}
-
-fn diff(context: &Context<'_>, file: &Path) -> Result<(), CliError> {
-    let active = current_config(&context.client()?)?
-        .get("config")
-        .cloned()
-        .ok_or_else(|| CliError::Local("configuration response has no config field".into()))?;
-    let candidate = config_file(file)?;
-    context.print(
-        &json!({
-            "different": active != candidate,
-            "active": active,
-            "candidate": candidate,
-        }),
-        View::ConfigDiff,
-    )
-}
-
-fn current_config(client: &Client) -> Result<Value, CliError> {
-    client.get("/api/v1/config", true)?.json()
-}
-
-fn config_file(path: &Path) -> Result<Value, CliError> {
-    let bytes = read_regular_file(path, MAX_FILE_BYTES, false)
-        .map_err(|error| unreadable_config(path, &error))?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        CliError::Local(format!(
-            "configuration {} must contain JSON: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(value.get("config").cloned().unwrap_or(value))
 }

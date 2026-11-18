@@ -97,7 +97,7 @@ impl Cli {
         match self.subcommand().run(&context) {
             Ok(code) => code,
             Err(error) => {
-                if !matches!(error, CliError::OutputClosed) {
+                if !matches!(error, CliError::OutputClosed | CliError::Differs) {
                     render::diagnose(&format!("oxiroute: {error}"));
                 }
                 ExitCode::from(error.exit_code())

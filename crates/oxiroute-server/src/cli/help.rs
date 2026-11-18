@@ -121,12 +121,16 @@ pub(crate) const GENERATION_EXAMPLES: &str = "Examples:
 
 pub(crate) const CONFIG_EXAMPLES: &str = "Examples:
   oxiroute config check /etc/oxiroute/oxiroute.kdl
-  oxiroute config get
-  oxiroute --output json config get > active.json
-  oxiroute config diff active.json
+  oxiroute config show > oxiroute.kdl
+  oxiroute config diff --text oxiroute.kdl
+  oxiroute config apply --wait oxiroute.kdl
+  oxiroute config edit
 
-`config validate`, `config apply` and `config diff` read canonical JSON, not a native kdl, lua or hocon file; \
-`config check` reads any native format.";
+`config validate`, `config diff` and `config apply` take a file in any native format (kdl, lua, hocon, uci, or a JSON \
+document), chosen by its extension or `--format`, and ask the daemon, so they check what `config check` checks offline \
+plus the running state. `config apply` stores the file's own text, with its comments and Lua logic, when it is in the \
+format of the daemon's file. Exit codes: 3 for an invalid file, 7 when the file changed on disk meanwhile, and 1 for \
+differences with `config diff --exit-code` or `config fmt --check`.";
 
 pub(crate) const TLS_EXAMPLES: &str = "Examples:
   oxiroute tls list

@@ -49,16 +49,19 @@ Status meanings:
 | Process | drain admissions | Supported | `oxiroute drain` |
 | Process | completions, manual page | Supported | `oxiroute completions bash|zsh|fish [--name oxr]` and `oxiroute man [--name oxr]`; installed by the packages for `oxiroute` and `oxr`. |
 | Process | graceful shutdown | Supported | `oxiroute shutdown`; authenticated loopback request enters the daemon's existing shutdown path. |
-| Generation | validate/prepare | Supported | `oxiroute config validate FILE`; FILE is canonical JSON (the `config` of `config get --output json`), not a native file; performs complete runtime preparation without publication. `oxiroute config check FILE` checks a native file offline. |
+| Generation | validate/prepare | Supported | `oxiroute config validate FILE`; FILE is any native format (KDL, Lua, HOCON, UCI) or a JSON document, by extension or `--format`; performs complete runtime preparation without publication, through `POST /api/v1/config/source/validate`. `oxiroute config check FILE` checks a native file offline. |
 | Generation | reload/activate | Supported | `oxiroute generation reload [--wait]`; `--wait` polls `generation status` until the candidate revision is active or the file is refused, up to `--timeout`. Loads and fully prepares persisted canonical config, then queues an opaque candidate. The supervisor publishes it only after the replacement runtime reports ready. |
 | Generation | rollback | Supported | `oxiroute generation rollback`; prepares the retained previous configuration as a new candidate and uses the same readiness-before-publication path. |
 | Generation | drain | Supported | `oxiroute generation drain --timeout-ms N`; stops the active generation from admitting new connections on its traffic listeners and immediately reports the traffic references that remain (`drained` when none do). The management and statistics listeners keep serving, `ready` answers `503` while the generation is drained, and `generation reload` ends the drain by activating a fresh generation. The request does not block a Pingora worker for the timeout. |
 | Generation | status | Supported | `oxiroute generation status` |
 | Generation | events | Supported | `oxiroute events list` and `events follow`; bounded cursor polling over a 2,048-event in-memory ring. A partial page advances only to its last returned event and reports `hasMore`, so backlog pages are not skipped. |
 | Config | get | Supported | `oxiroute config get` |
-| Config | diff | Supported | `oxiroute config diff FILE`; local structural JSON comparison against normalized active config. |
-| Config | validate | Supported | `oxiroute config validate FILE` |
-| Config | apply | Supported | `oxiroute config apply FILE`; uses the current disk revision as a precondition. |
+| Config | diff | Supported | `oxiroute config diff FILE [--against active\|disk] [--text] [--exit-code]`; path-aware changes (list items by name, secrets redacted) of any native file against the running or stored configuration, plus the unified text diff with `--text`; `--exit-code` exits `1` on differences. |
+| Config | validate | Supported | `oxiroute config validate FILE`; a refusal exits `3` with each diagnostic's code, `FILE:LINE`, path, rule and a hint. |
+| Config | show | Supported | `oxiroute config show [FILE] [--active\|--disk]`; the authored text stored on disk (inline RTMP secrets as `<redacted:...>` placeholders), the running configuration rendered canonically, or a local file. |
+| Config | edit | Supported | `oxiroute config edit [--yes] [--wait]`; `$VISUAL`/`$EDITOR` on a private copy of the stored text, validate, review the diff, confirm, apply with the revision precondition; an empty edit cancels. |
+| Config | fmt | Supported | `oxiroute config fmt FILE [--check\|--write\|--diff]`; canonical form of the typed configuration (comments are not preserved). |
+| Config | apply | Supported | `oxiroute config apply FILE [--dry-run] [--wait] [--convert]`; stores the file's own text (comments, formatting and Lua logic kept) using the current disk revision as a precondition (`PUT /api/v1/config/source`); `--wait` returns when the revision is active or fails with the rejection reason; identical text is a no-op; a daemon that cannot write its file (`configWritable: false`) is refused up front with the fix. |
 | Config | native import | Config generation | `oxiroute import nginx|haproxy|squid|apache|varnish ...`; the CLI remains an offline evidence-producing operation, while retained redacted reports are available through the authenticated management API/UI. Varnish accepts repeated `--arg` options for explicit varnishd facts. |
 | Listener | list/show | Supported | `oxiroute listener list|show NAME` |
 | Listener | ready/drain/maintenance | Supported | Admission state; existing connections are not revoked. |
@@ -216,7 +219,7 @@ operations and calls out cases that must use canonical generations or external o
 | `clear counters`, `clear counters all` | Intentionally unsupported. Counters are monotonic process/generation evidence; scrape deltas or activate a new generation. |
 | `show map`, `set map`, ACL commands | Config generation. Routes and access policy compile into immutable generation tables; there is no detached mutable map store. |
 | certificate show/set/commit commands | Status and Certbot reconcile are supported. Certificate material transactions are externally written and atomically activated by configured reconcilers; raw key/certificate upload is intentionally absent. |
-| HAProxy transaction commands | Canonical `config validate` plus revision-preconditioned `config apply`, followed by `generation reload`. OxiRoute does not expose arbitrary command transactions. |
+| HAProxy transaction commands | `config validate` plus revision-preconditioned `config apply` (or `config edit`) of the native file; `--wait` replaces a separate `generation reload`. OxiRoute does not expose arbitrary command transactions. |
 
 ## Generation and shutdown guarantees
 
@@ -249,7 +252,8 @@ it is set, and `/ready` is not affected.
 
 `422` responses of `config validate`, `config apply` and `generation reload`, and `config check`,
 name each failing setting: `path` is a JSON pointer, `detail` the failed rule and `line` the KDL
-syntax-error line when known. The CLI prints the first one as `<code>: <path>: <detail>`.
+syntax-error line when known. `config validate`, `config diff`, `config apply` and `config edit` print each
+diagnostic as `<code> <file>:<line> at <path>: <detail>` with a `hint:` line and exit `3`.
 
 SIGTERM, SIGINT, and authenticated shutdown use one five-second process deadline. Startup waits and
 drain polling are cancellation-aware; after the deadline the daemon stops waiting rather than

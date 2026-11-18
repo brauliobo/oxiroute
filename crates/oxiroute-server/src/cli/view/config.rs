@@ -50,10 +50,3 @@ fn diagnostic(diagnostic: &Value) -> Record {
         Field::text("message", text(diagnostic, "message")),
     ]
 }
-
-pub(super) fn diff(value: &Value) -> Document {
-    Document::record(
-        "diff",
-        vec![Field::flag("different", flag(value, "different"))],
-    )
-}

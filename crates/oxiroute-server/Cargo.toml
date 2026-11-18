@@ -109,6 +109,10 @@ test = false
 bench = false
 
 [[test]]
+name = "cli_config"
+path = "tests/cli/config.rs"
+
+[[test]]
 name = "cli_evacuate"
 path = "tests/cli/evacuate.rs"
 

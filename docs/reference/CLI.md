@@ -93,7 +93,7 @@ body through, where `changed` counts the targets of the request.
 | Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
 | Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
-| Configuration | `config check|compose|get|diff|validate|apply` | Inspect and change canonical configuration |
+| Configuration | `config check|compose|get|show|validate|diff|apply|edit|fmt` | Check, compare and change the daemon's configuration in its own format (see "Configuration commands") |
 | Events | `events list|follow` | Poll the bounded in-memory event ring |
 | Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
@@ -181,10 +181,44 @@ Stable exit categories are designed for scripts (every command except `check`, s
 Use JSON output for automation and treat `409`/exit `7` as a reconcile decision, not as permission to
 retry an old mutation.
 
+## Configuration commands
+
+The configuration commands speak the native formats of the daemon: KDL, Lua, HOCON, UCI, and a JSON
+document (HOCON is a superset of JSON). A file's format comes from its extension (no extension is KDL)
+or from `--format kdl|lua|hocon|uci|json`.
+
+| Command | What it does |
+| --- | --- |
+| `config check FILE` | Offline: parse, validate and prepare a file without a daemon. Exit `3` and `oxiroute: ...` on stderr when it is refused |
+| `config show [FILE]` | Prints the authored text of the file the daemon runs, exactly as stored (`--disk`, the default), or the running configuration rendered canonically (`--active`; comments and Lua logic do not exist there). With `FILE` it prints that file and needs no daemon. Inline RTMP secrets in the daemon's text are shown as `<redacted:...>` placeholders that are restored when the text is applied |
+| `config get` | The typed JSON view of the stored configuration: format, revisions, entries per section (`--output json` for the document) |
+| `config validate FILE` | Asks the daemon to resolve the file exactly as it loads its own (parse, templates, native references, typed validation, runtime preparation) without storing it. Prints `valid` with the format, candidate and active revisions, whether a restart is required, and any warnings. A refused file exits `3` with one block per diagnostic: its code, `FILE:LINE` for a syntax error (there is no column), the failing setting's path and the rule it broke, and a `hint:` line |
+| `config diff FILE` | Lists the settings the file changes against the running configuration (`--against disk` for the stored one), one line each: `+` added, `-` removed, `~` changed with `old -> new`, `^` reordered; list items are addressed by name, as in `/upstream_pools/web/servers/origin-1/max_connections`. Secret values are `<redacted>`. `--text` adds the unified diff of the authored text against the stored file. Equal prints nothing on stdout. `--exit-code` exits `1` when there are differences (the text diff counts only with `--text`) and `0` when there are none; without it the exit code is `0` either way |
+| `config apply FILE` | Validates the file, replaces the daemon's configuration file with its text (comments, formatting and Lua logic are kept) using the stored revision as a precondition, and lets the daemon activate it. `--dry-run` validates and writes nothing. `--wait` returns once the new revision is active, up to `--timeout` (30s by default), and fails with the rejection reason when the daemon refuses the saved file. Applying text equal to the stored file writes nothing and says so |
+| `config edit` | Opens `$VISUAL`, else `$EDITOR`, else `vi` on a private copy of the stored text, validates it, prints the changes and the text diff, asks for confirmation on a terminal (`--yes` skips it and is required without one) and applies it with the revision precondition (`--wait` as for `apply`). An empty edit or no change cancels. A refused edit offers to reopen the editor on a terminal, and otherwise exits `3`; the edit is kept in a file whose path is printed on every refusal, conflict or declined confirmation |
+| `config fmt FILE` | Rewrites a KDL, Lua, HOCON or UCI file in the canonical form of the typed configuration: it prints it, or `--write` replaces the file, `--check` prints nothing and exits `1` when the file is not canonical, `--diff` prints the unified diff and exits `1` when there is one. Comments and the author's ordering are not preserved, defaults are written out, and a file with templates or native references is refused instead of expanded |
+| `config compose FILE...` | Prints the merge of finalized configurations in a format; like `fmt` it renders the typed result, so comments are not preserved |
+
+A file in another format than the daemon's own validates and diffs, but `config apply` stores text and
+refuses a text in a format the daemon's file is not in (`3`): `--convert` stores the equivalent text
+in the daemon's format instead, without the comments and logic of the file. A JSON document, such as the
+`config` of `config get --output json` (also accepted inside its envelope), always converts. Native
+references in a file resolve against the directory of the daemon's configuration file.
+
+When the daemon cannot write its file (its status reports `configWritable: false`: a read-only mount, as
+under the packaged unit's `ProtectSystem=strict`, or a directory its user may not write), `apply` and
+`edit` stop before writing with exit `8` and a message that names the cause and the fix (a
+`ReadWritePaths=/etc/oxiroute` drop-in and a directory the service group may write, or editing the file
+on the host). `config diff --exit-code` and `config fmt --check|--diff` use exit `1`, "ran and found a
+difference"; the categories `2` to `9` are unchanged.
+
 ## Examples
 
 ```sh
 oxiroute config check /etc/oxiroute/oxiroute.kdl
+oxiroute config diff --exit-code --text candidate.kdl
+oxiroute config apply --wait candidate.kdl
+oxiroute config edit
 oxiroute --output json server show --pool public-v4 --pool public-v6 origin-a
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 oxiroute generation rollback

@@ -322,14 +322,14 @@ async fn a_rejected_configuration_names_the_failing_setting() {
     )
     .expect("config");
     let output = daemon.run(&["config", "validate", rejected.to_str().unwrap()]);
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
     let message = stderr(&output);
     assert!(
-        message.starts_with("oxiroute: management endpoint returned HTTP 4"),
+        message.starts_with("oxiroute: ") && message.contains("rejected.json is invalid"),
         "{message}"
     );
     assert!(
-        message.contains("E_INVALID_FIELD") && message.contains("ListenerBind"),
+        message.contains("E_INVALID_VALUE") && message.contains("ListenerBind"),
         "{message}"
     );
 }

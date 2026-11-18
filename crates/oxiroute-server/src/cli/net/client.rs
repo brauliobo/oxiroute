@@ -47,6 +47,18 @@ impl Client {
         self.request(method, path, &body, headers, true)
     }
 
+    /// The answer whatever its status, for the requests whose refusals carry a body worth showing.
+    pub(crate) fn json_unchecked(
+        &self,
+        method: &str,
+        path: &str,
+        value: &Value,
+        headers: &[(&str, &str)],
+    ) -> Result<Response, CliError> {
+        let body = serde_json::to_vec(value).map_err(|error| CliError::Local(error.to_string()))?;
+        self.exchange(method, path, &body, headers, true)
+    }
+
     pub(crate) fn mutation_json(
         &self,
         method: &str,
