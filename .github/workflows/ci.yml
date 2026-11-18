@@ -345,74 +345,8 @@ jobs:
         run: pnpm exec vitest run src/api.process.test.ts
         working-directory: ui
 
-  stats-ui:
-    name: Stats page build, embedded assets and browser tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      NO_PROXY: 127.0.0.1,localhost
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.3.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install UI dependencies
-        run: pnpm install --frozen-lockfile --prefer-offline
-        working-directory: ui
-
-      - name: Verify the generated stats page types match the contract
-        run: pnpm verify:stats-page
-        working-directory: ui
-
-      - name: Build the stats page and check its bundle and size budget
-        run: pnpm build:stats
-        working-directory: ui
-
-      - name: Verify embedded stats page assets are what the UI builds
-        run: ./scripts/verify/stats/assets.sh
-
-      - name: Build the dashboard (Playwright starts its preview server too)
-        run: pnpm build
-        working-directory: ui
-
-      - name: Install Chromium and Linux dependencies
-        run: pnpm exec playwright install --with-deps chromium
-        working-directory: ui
-
-      - name: Run stats page and design gallery browser tests with bounded workers
-        run: pnpm exec playwright test --project=stats-chromium --project=stats-mobile-chromium --project=gallery-chromium --workers=2
-        working-directory: ui
-
-      - name: Upload stats page browser diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: stats-page-browser-diagnostics
-          path: |
-            ui/test-results
-            ui/playwright-report
-
   browser:
-    name: Deterministic dashboard browser tests
+    name: UI browser tests (dashboard, stats page and design gallery)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -449,7 +383,11 @@ jobs:
         run: pnpm typecheck:browser
         working-directory: ui
 
-      - name: Build UI
+      - name: Verify the generated stats page types match the contract
+        run: pnpm verify:stats-page
+        working-directory: ui
+
+      - name: Build the dashboard (Playwright starts its preview server too)
         run: pnpm build
         working-directory: ui
 
@@ -457,23 +395,26 @@ jobs:
         run: pnpm verify:bundle
         working-directory: ui
 
-      - name: Build the stats page (Playwright starts its preview server too)
+      - name: Build the stats page and check its bundle and size budget
         run: pnpm build:stats
         working-directory: ui
 
-      - name: Install Chromium and Linux dependencies
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Verify embedded stats page assets are what the UI builds
+        run: ./scripts/verify/stats/assets.sh
+
+      - name: Install Chromium (the runner image ships the system libraries it links)
+        run: pnpm exec playwright install chromium
         working-directory: ui
 
-      - name: Run dashboard browser tests with bounded workers
-        run: pnpm test:browser --project=desktop-chromium --project=mobile-chromium --workers=2
+      - name: Run the dashboard, stats page and design gallery browser tests with bounded workers
+        run: pnpm exec playwright test --workers=2
         working-directory: ui
 
       - name: Upload browser diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: dashboard-browser-diagnostics
+          name: browser-diagnostics
           path: |
             ui/test-results
             ui/playwright-report
