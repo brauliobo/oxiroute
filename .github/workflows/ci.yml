@@ -118,7 +118,24 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      - name: Run the documentation tests on the built workspace
+  doc:
+    name: Documentation tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Restore the Cargo dependencies the archive job built
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+          save-if: false
+
+      - name: Run the documentation tests
         run: ./scripts/test/doc.sh
 
   core:
