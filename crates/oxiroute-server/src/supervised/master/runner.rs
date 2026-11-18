@@ -242,8 +242,10 @@ impl MasterRunner {
                     log_master_events(&events);
                     reports.observe(master, catalog, &events, book)?;
                     reports.retired.report(master, now);
-                    let forced_reload = catalog.candidate().is_none()
-                        && signals.reload.swap(false, Ordering::AcqRel);
+                    let forced_reload = catalog.candidate().is_none() && {
+                        let signalled = signals.reload.swap(false, Ordering::AcqRel);
+                        reports.reload_requested(master) || signalled
+                    };
                     if catalog.candidate().is_none() {
                         if forced_reload || reload.next_trigger(now) {
                             self.reconcile(

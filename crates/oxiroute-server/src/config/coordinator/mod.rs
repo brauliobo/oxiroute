@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 mod cache;
 mod candidate;
+mod external;
 mod keeping;
 mod storage;
 
@@ -97,8 +98,17 @@ impl FromStr for AuthoredRevision {
 pub struct EffectiveRevision(String);
 
 impl EffectiveRevision {
+    #[cfg(test)]
     pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
-        Self(lower_hex(&sha256(bytes)))
+        Self::from_digest(sha256(bytes))
+    }
+
+    fn from_digest(digest: [u8; 32]) -> Self {
+        Self(lower_hex(&digest))
+    }
+
+    fn of(canonical_kdl: &str, config: &ValidatedConfig) -> Self {
+        external::revision(sha256(canonical_kdl.as_bytes()), external::digest(config))
     }
 
     #[must_use]
@@ -489,16 +499,19 @@ impl CanonicalConfigCoordinator {
                 rejection(Some(disk_revision.clone()), source_error_diagnostic(&error))
             })?
         };
-        Ok(cache.store(ResolvedConfigDocument {
+        let canonical_digest = sha256(resolved.canonical_kdl.as_bytes());
+        let external = external::digest(&resolved.config);
+        let document = ResolvedConfigDocument {
             authored_revision: disk_revision,
-            effective_revision: EffectiveRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
+            effective_revision: external::revision(canonical_digest, external),
             validated_config: resolved.config,
             format: resolved.format,
             compositional: resolved.compositional,
             dependencies: resolved.dependencies,
             config_preview,
             diagnostics: Vec::new(),
-        }))
+        };
+        Ok(cache.store(document, canonical_digest, external))
     }
 
     /// Reads the same stable source snapshot as [`Self::load`] while retaining native import evidence.
@@ -512,8 +525,9 @@ impl CanonicalConfigCoordinator {
             Ok((resolved, disk_revision)) => {
                 NativeImportSourceOutcome::Loaded(Box::new(NativeImportSourceDocument {
                     disk_revision,
-                    candidate_revision: EffectiveRevision::from_bytes(
-                        resolved.canonical_kdl.as_bytes(),
+                    candidate_revision: EffectiveRevision::of(
+                        &resolved.canonical_kdl,
+                        &resolved.config,
                     ),
                     format: resolved.format,
                     compositional: resolved.compositional,
@@ -721,7 +735,7 @@ fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidati
     };
 
     ConfigValidationOutcome::Valid(Box::new(PersistableConfigCandidate::new(
-        EffectiveRevision::from_bytes(canonical_kdl.as_bytes()),
+        EffectiveRevision::of(&canonical_kdl, &validated_config),
         validated_config,
         format,
         false,

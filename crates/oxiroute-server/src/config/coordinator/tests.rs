@@ -22,6 +22,7 @@ use super::{storage::StorageFailure, *};
 
 mod cache;
 mod concurrency;
+mod external_files;
 mod filesystem;
 mod load;
 mod save;

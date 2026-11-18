@@ -170,12 +170,10 @@ impl Harness {
             .as_draft()
             .management
             .as_ref()
+            .filter(|management| management.token_file.is_none())
             .map(|_| {
                 let directory = tempfile::tempdir().expect("management token directory");
-                let path = directory.path().join("management.token");
-                fs::write(&path, "11".repeat(32)).expect("management token");
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                    .expect("management token permissions");
+                let path = management_token(directory.path());
                 (directory, path)
             });
         if let Some((_, path)) = &token_directory {

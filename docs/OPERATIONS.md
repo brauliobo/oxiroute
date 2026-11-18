@@ -94,6 +94,19 @@ candidate revision while `diskRevision` remains unchanged. Native import failure
 the management boundary contain stable code counts, not source text, paths, or native diagnostic
 messages.
 
+A generation reads the files the configuration points to when it is prepared, so their content is part
+of the candidate revision: a digest of the management token file (`management.token_file` or
+`OXIROUTE_MANAGEMENT_TOKEN_FILE`), `stats.admin_token_file`, `registry.tokens_file`, the bearer token and
+htpasswd files of routes, forward proxies and cache purge, the client CA (`client_auth.ca_certificate_path`),
+`dh_parameters_path`, the upstream `ca_certificate_path`, RTMP secret files and the ACME DNS credential
+file is folded into it. A rewritten file therefore makes the next reconciliation, `SIGHUP` or
+`generation reload` replace the generation without any edit of the configuration, and `diskRevision`
+stays unchanged. A missing file digests differently from any content, so a file that is removed
+and written again passes through a refused candidate. Certificate chains and private keys are not
+part of it: they are reloaded in place. A configuration that points to none of these files has the
+revision of its normalized form alone. In supervised mode a `generation reload` request makes the
+master reconcile at once.
+
 Configuration sources are privileged administrator input. HOCON includes and process-environment
 fallbacks are disabled, UCI is parsed as data without shell execution, and Lua has no standard
 libraries. Native references are the deliberate exception to no-I/O parsing: they read the named

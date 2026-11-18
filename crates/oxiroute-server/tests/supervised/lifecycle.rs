@@ -110,6 +110,14 @@ pub(super) fn encode_token(token: [u8; 16]) -> String {
     encoded
 }
 
+pub(super) fn management_token(directory: &Path) -> PathBuf {
+    let path = directory.join("management.token");
+    fs::write(&path, "11".repeat(32)).expect("management token");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .expect("management token permissions");
+    path
+}
+
 pub(super) fn canonical_revision(path: &Path) -> String {
     let coordinator = CanonicalConfigCoordinator::new(path).expect("fixture coordinator");
     let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
@@ -255,7 +263,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         management: Some(Management {
             bind: management,
             ui_dir: None,
-            token_file: None,
+            token_file: Some(management_token(directory.path())),
         }),
         registry: None,
         stats: Some(Stats {
@@ -371,7 +379,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         management: Some(Management {
             bind: reserve_tcp_address(),
             ui_dir: None,
-            token_file: None,
+            token_file: Some(management_token(directory.path())),
         }),
         registry: None,
         stats: Some(Stats {

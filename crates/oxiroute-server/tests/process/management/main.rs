@@ -9,6 +9,7 @@ mod process_support;
 
 mod administrative_state;
 mod console;
+mod external;
 mod generation;
 mod management;
 mod restart;

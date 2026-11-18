@@ -1831,7 +1831,9 @@ restricted Lua, UCI, or HOCON.
 - `diskRevision` is the SHA-256 hash of the exact authored root-file bytes.
 - `candidateRevision` is the SHA-256 hash of deterministic normalized KDL after template expansion,
   native resolution, composition, defaults, and validation. `activeRevision` identifies the
-  compiled runtime generation using that effective revision.
+  compiled runtime generation using that effective revision. When the configuration points to files
+  that a generation reads when it is prepared (token files, the client CA, DH parameters, upstream CA
+  files, RTMP secret files; see `OPERATIONS.md`), a digest of their content is part of it.
 - The implemented API requires one raw 64-hex `If-Config-Revision` header on writes.
 - The backend MUST re-read and compare immediately before writing.
 - A mismatch returns a conflict and does not write.

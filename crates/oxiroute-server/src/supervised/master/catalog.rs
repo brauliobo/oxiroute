@@ -30,6 +30,7 @@ pub(super) struct ConfigReports {
     pub(super) candidate_file: Option<AuthoredRevision>,
     pub(super) retired: RetiredReports,
     restart: RestartRequired,
+    reload_cursor: u64,
 }
 
 impl ConfigReports {
@@ -49,6 +50,17 @@ impl ConfigReports {
         if self.forget() {
             send_notice(master, &WorkerNotice::Config { rejection: None });
         }
+    }
+
+    /// Whether the active worker served a `generation reload` request since this was last asked.
+    pub(super) fn reload_requested(&mut self, master: &Master) -> bool {
+        let events = master.worker_events(self.reload_cursor, MAX_AGGREGATED_EVENTS);
+        self.reload_cursor = events
+            .last()
+            .map_or(self.reload_cursor, |event| event.cursor);
+        events
+            .iter()
+            .any(|event| event.worker_event.operation.as_deref() == Some("generation_reload"))
     }
 
     /// Applies what the master reported to the catalog, tells the worker why a candidate failed, and
