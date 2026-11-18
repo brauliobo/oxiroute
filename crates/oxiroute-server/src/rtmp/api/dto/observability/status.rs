@@ -11,6 +11,7 @@ pub(crate) struct StatusResponse {
     active_revision: Option<String>,
     previous_revision: Option<String>,
     degraded: bool,
+    restart_required: RestartRequired,
     active_generation_age_ms: u64,
     components: StatusComponentsDto,
     certificates: StatusCertificatesDto,
@@ -53,6 +54,9 @@ impl StatusResponse {
                 .and_then(|status| status.previous_revision.as_ref())
                 .map(|revision| revision.as_str().to_owned()),
             degraded: generation.is_none_or(|status| status.degraded) || components.degraded(),
+            restart_required: generation
+                .map(|status| status.restart_required.clone())
+                .unwrap_or_default(),
             active_generation_age_ms: runtime.generation_age_ms,
             components,
             certificates: StatusCertificatesDto {

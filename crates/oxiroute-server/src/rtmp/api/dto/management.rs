@@ -3,6 +3,7 @@ use serde::Serialize;
 
 use super::DecimalCounter;
 use crate::config::coordinator::{ConfigRejection, RejectionDiagnostic};
+use crate::generation::restart::RestartRequired;
 use crate::{
     AdministrativeState, CacheSnapshot, EndpointHealthSnapshot, EndpointHealthState,
     GenerationStatus, HealthFailure, HealthOverride, HttpOperationCountSnapshot,
@@ -47,6 +48,7 @@ struct GenerationStatusDto {
     retired_generations: Vec<RetiredGenerationDto>,
     max_retired_generations: usize,
     pending_apply: Option<PendingApplyDto>,
+    restart_required: RestartRequired,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -111,6 +113,7 @@ impl From<GenerationStatus> for GenerationStatusDto {
                 .collect(),
             max_retired_generations: status.max_retired_generations,
             pending_apply: status.pending_apply.map(Into::into),
+            restart_required: status.restart_required,
         }
     }
 }

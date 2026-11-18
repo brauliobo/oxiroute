@@ -21,6 +21,9 @@ use serde::Serialize;
 
 use crate::Doorbell;
 use crate::generation::resources::GenerationResources;
+use crate::generation::restart::{
+    RestartRequired, StartupOnly, StartupOnlyChange, startup_only_changes,
+};
 use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
 };
@@ -30,7 +33,7 @@ use crate::rtmp::generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 use crate::service_plan::acquire_runtime_services;
 use crate::{
     ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
-    RuntimePlan, ServiceKind,
+    RuntimeMode, RuntimePlan, ServiceKind,
     config::coordinator::{
         AuthoredRevision, ConfigRejection, EffectiveRevision, ResolvedConfigDocument,
         RevisionParseError,
@@ -121,6 +124,7 @@ pub(crate) mod health;
 mod manager;
 mod prepared;
 pub(crate) mod resources;
+pub(crate) mod restart;
 pub(crate) mod retirement;
 mod runtime;
 mod transaction;

@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::config::coordinator::{
     AuthoredRevision, ConfigDiagnostic, EffectiveRevision, ResolvedConfigDocument,
 };
+use crate::generation::restart::StartupOnlyChange;
 
 mod callback_urls;
 
@@ -131,6 +132,7 @@ pub(crate) struct ConfigValidationResponse {
     diagnostics: Vec<Value>,
     topology: Value,
     restart_required: bool,
+    restart_reasons: Vec<StartupOnlyChange>,
 }
 
 impl ConfigValidationResponse {
@@ -146,7 +148,7 @@ impl ConfigValidationResponse {
         view: RedactedConfigView,
         diagnostics: Vec<Value>,
         topology: Value,
-        restart_required: bool,
+        restart_reasons: Vec<StartupOnlyChange>,
     ) -> Self {
         let (normalized_config, config_preview, lua_preview) = view.into_parts();
         Self {
@@ -159,7 +161,8 @@ impl ConfigValidationResponse {
             lua_preview,
             diagnostics,
             topology,
-            restart_required,
+            restart_required: !restart_reasons.is_empty(),
+            restart_reasons,
         }
     }
 }

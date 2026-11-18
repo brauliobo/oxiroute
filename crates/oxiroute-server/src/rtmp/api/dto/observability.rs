@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::management::{ListenerDto, PoolDto, pools_json};
 use super::{DecimalCounter, management::LatencyDto};
+use crate::generation::restart::RestartRequired;
 use crate::observability::operational_event::{AuditComponentState, AuditStatus};
 use crate::{
     AccessRecord, AcmeManagedCertificateSnapshot, AdministrativeState, CertbotCertificateSnapshot,

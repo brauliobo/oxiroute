@@ -319,9 +319,20 @@ impl ManagementState {
                 .request_reload(&request.expected_active_revision),
             None,
         ) {
-            Ok(LifecycleOutcome::Prepared(candidate_revision)) => {
-                dto_response(202, &GenerationActionResponse::startup(&candidate_revision))
-            }
+            Ok(LifecycleOutcome::Prepared(candidate_revision)) => dto_response(
+                202,
+                &GenerationActionResponse::startup(
+                    &candidate_revision,
+                    self.lifecycle.status().restart_required,
+                ),
+            ),
+            Ok(LifecycleOutcome::RestartRequired(candidate_revision)) => dto_response(
+                200,
+                &GenerationActionResponse::restart_required(
+                    &candidate_revision,
+                    self.lifecycle.status().restart_required,
+                ),
+            ),
             Err(LifecycleError::ConfigRejected {
                 rejection,
                 active_revision,
@@ -355,7 +366,10 @@ impl ManagementState {
         ) {
             Ok(LifecycleOutcome::Prepared(candidate_revision)) => dto_response(
                 202,
-                &GenerationActionResponse::rollback(&candidate_revision),
+                &GenerationActionResponse::rollback(
+                    &candidate_revision,
+                    self.lifecycle.status().restart_required,
+                ),
             ),
             Err(LifecycleError::Rollback(error)) => {
                 ApiResponse::error(409, error.code(), "no previous generation can be activated")

@@ -9,6 +9,7 @@ use crate::{
         AuthoredRevision, ConfigDiagnostic, ConfigDiagnosticSeverity, ConfigDiagnosticStage,
         EffectiveRevision,
     },
+    generation::restart::RestartRequired,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -376,20 +377,40 @@ impl From<ConfigDiagnosticStage> for ConfigDiagnosticStageDto {
 pub(crate) struct GenerationActionResponse {
     outcome: &'static str,
     candidate_revision: String,
+    restart_required: RestartRequired,
 }
 
 impl GenerationActionResponse {
-    pub(crate) fn startup(candidate_revision: &EffectiveRevision) -> Self {
+    pub(crate) fn startup(
+        candidate_revision: &EffectiveRevision,
+        restart_required: RestartRequired,
+    ) -> Self {
         Self {
             outcome: "startup_requested",
             candidate_revision: candidate_revision.as_str().to_owned(),
+            restart_required,
         }
     }
 
-    pub(crate) fn rollback(candidate_revision: &EffectiveRevision) -> Self {
+    pub(crate) fn restart_required(
+        candidate_revision: &EffectiveRevision,
+        restart_required: RestartRequired,
+    ) -> Self {
+        Self {
+            outcome: "restart_required",
+            candidate_revision: candidate_revision.as_str().to_owned(),
+            restart_required,
+        }
+    }
+
+    pub(crate) fn rollback(
+        candidate_revision: &EffectiveRevision,
+        restart_required: RestartRequired,
+    ) -> Self {
         Self {
             outcome: "rollback_startup_requested",
             candidate_revision: candidate_revision.as_str().to_owned(),
+            restart_required,
         }
     }
 }

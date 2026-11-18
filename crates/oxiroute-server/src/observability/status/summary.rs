@@ -45,6 +45,9 @@ pub(crate) struct GenerationSummary {
     pub(crate) retired_oldest_age_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_rejection: Option<RejectionSummary>,
+    /// The codes of the settings of the file that only a restart applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) restart_reasons: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -264,6 +267,14 @@ impl GenerationSummary {
             last_rejection: rejection.map(|rejection| RejectionSummary {
                 at_unix_ms: rejection.at_unix_ms,
                 age_seconds: now_unix_ms.saturating_sub(rejection.at_unix_ms) / 1_000,
+            }),
+            restart_reasons: status.map_or_else(Vec::new, |status| {
+                status
+                    .restart_required
+                    .reasons
+                    .iter()
+                    .map(|reason| reason.code.clone())
+                    .collect()
             }),
         }
     }

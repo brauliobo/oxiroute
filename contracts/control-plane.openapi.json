@@ -747,6 +747,9 @@
               "null"
             ]
           },
+          "restartRequired": {
+            "$ref": "#/components/schemas/RestartRequired"
+          },
           "retiredGenerations": {
             "items": {
               "$ref": "#/components/schemas/RetiredGenerationDto"
@@ -778,7 +781,8 @@
           "rollbacks",
           "retiredGenerations",
           "maxRetiredGenerations",
-          "pendingApply"
+          "pendingApply",
+          "restartRequired"
         ],
         "type": "object"
       },
@@ -1494,6 +1498,43 @@
         ],
         "type": "object"
       },
+      "RestartRequired": {
+        "description": "Whether the file on disk holds settings that wait for a restart, and which.",
+        "properties": {
+          "candidateRevision": {
+            "description": "The revision of the file on disk that carries the waiting settings.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/StartupOnlyChange"
+            },
+            "type": "array"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "since": {
+            "description": "Unix milliseconds at which the restart became required.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "required",
+          "candidateRevision",
+          "since",
+          "reasons"
+        ],
+        "type": "object"
+      },
       "RetiredGenerationDto": {
         "properties": {
           "ageSeconds": {
@@ -1579,6 +1620,26 @@
           "dynamic"
         ],
         "type": "string"
+      },
+      "StartupOnlyChange": {
+        "description": "One setting of a candidate configuration that a running process cannot take over.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "path",
+          "summary"
+        ],
+        "type": "object"
       },
       "StatusCertificatesDto": {
         "properties": {
@@ -1686,6 +1747,9 @@
               "null"
             ]
           },
+          "restartRequired": {
+            "$ref": "#/components/schemas/RestartRequired"
+          },
           "schemaVersion": {
             "format": "uint8",
             "maximum": 255,
@@ -1707,6 +1771,7 @@
           "activeRevision",
           "previousRevision",
           "degraded",
+          "restartRequired",
           "activeGenerationAgeMs",
           "components",
           "certificates",

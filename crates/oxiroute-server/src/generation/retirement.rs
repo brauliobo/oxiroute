@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::{
     RuntimeGeneration,
     config::coordinator::{ConfigRejection, EffectiveRevision},
+    generation::restart::RestartRequired,
     observability::operational_event,
 };
 
@@ -60,6 +61,8 @@ pub struct RetiredGenerationStatus {
 pub enum WorkerNotice {
     /// The newest configuration the master refused, or `None` once a file was accepted.
     Config { rejection: Option<ConfigRejection> },
+    /// The settings of the configuration file that only a restart applies.
+    RestartRequired { restart: RestartRequired },
     /// The retired workers still draining; an empty list once none is left.
     Retired { generations: Vec<RemoteRetired> },
 }

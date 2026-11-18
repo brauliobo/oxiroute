@@ -165,6 +165,7 @@ export interface GenerationStatusDto {
   prepares: number
   previousRevision: string | null
   quarantinedRevision: string | null
+  restartRequired: RestartRequired
   retiredGenerations: Array<RetiredGenerationDto>
   rollbacks: number
 }
@@ -331,6 +332,13 @@ export interface RequestListResponse {
   truncated: boolean
 }
 
+export interface RestartRequired {
+  candidateRevision: string | null
+  reasons: Array<StartupOnlyChange>
+  required: boolean
+  since: number | null
+}
+
 export interface RetiredGenerationDto {
   ageSeconds: number
   deadlineRemainingSeconds: number
@@ -352,6 +360,12 @@ export interface ServerInventoryResponse {
 }
 
 export type ServerOrigin = "static" | "dynamic"
+
+export interface StartupOnlyChange {
+  code: string
+  path: string
+  summary: string
+}
 
 export interface StatusCertificatesDto {
   acmeManaged: Array<AcmeManagedCertificateDto>
@@ -379,6 +393,7 @@ export interface StatusResponse {
   diskRevision: string | null
   listeners: Array<ListenerDto>
   previousRevision: string | null
+  restartRequired: RestartRequired
   schemaVersion: number
   tlsProfiles: Array<TlsProfileDto>
 }

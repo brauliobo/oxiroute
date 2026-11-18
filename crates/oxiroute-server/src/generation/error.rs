@@ -25,6 +25,7 @@ pub struct GenerationStatus {
     pub retired_generations: Vec<RetiredGenerationStatus>,
     pub max_retired_generations: usize,
     pub pending_apply: Option<PendingApply>,
+    pub restart_required: RestartRequired,
 }
 
 impl GenerationStatus {

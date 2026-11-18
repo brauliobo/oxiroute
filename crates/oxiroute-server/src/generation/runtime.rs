@@ -194,11 +194,6 @@ impl RuntimeGeneration {
         self.inventory.complete_listener_count()
     }
 
-    pub(crate) fn listener_restart_required(&self, candidate: &ValidatedConfig) -> bool {
-        self.inventory
-            .restart_required(&ListenerInventory::compile(candidate))
-    }
-
     /// Describes what activating `candidate` would do to the listener sockets this generation owns.
     pub(crate) fn listener_changes(
         &self,
@@ -217,14 +212,6 @@ impl RuntimeGeneration {
         !self
             .inventory
             .same_descriptor_topology(&ListenerInventory::compile(candidate))
-    }
-
-    pub(crate) fn listener_restart_reason(
-        &self,
-        candidate: &ValidatedConfig,
-    ) -> Option<crate::listener::inventory::ListenerRestartReason> {
-        self.inventory
-            .restart_reason(&ListenerInventory::compile(candidate))
     }
 
     #[must_use]

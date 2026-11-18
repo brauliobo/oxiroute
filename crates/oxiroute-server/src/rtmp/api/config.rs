@@ -26,7 +26,8 @@ use crate::{
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
     },
-    listener::inventory::{ListenerChangeSummary, ListenerRestartReason},
+    generation::restart::{StartupOnlyChange, startup_only_changes, startup_only_reasons},
+    listener::inventory::ListenerChangeSummary,
     service_plan::validation_plan,
 };
 
@@ -288,8 +289,13 @@ impl ConfigApiState {
             candidate.draft.config_preview(),
         );
         let mut diagnostics = diagnostics_json(candidate.draft.diagnostics(), false);
-        if let Some(reason) = candidate.restart_reason {
-            diagnostics.push(restart_required_diagnostic(reason));
+        if !candidate.startup_only.is_empty() {
+            diagnostics.extend(
+                candidate
+                    .startup_only
+                    .iter()
+                    .map(restart_required_diagnostic),
+            );
         } else if let Some(changes) = &candidate.listener_changes {
             diagnostics.push(listener_changes_diagnostic(self.mode, changes));
         }
@@ -303,7 +309,7 @@ impl ConfigApiState {
                 view,
                 diagnostics,
                 candidate.topology,
-                candidate.restart_reason.is_some(),
+                candidate.startup_only,
             ),
         )
     }
@@ -341,12 +347,12 @@ impl ConfigApiState {
         };
         let PreparedCandidate {
             draft: candidate,
-            restart_reason,
+            startup_only,
             listener_changes,
             ..
         } = candidate;
         let activation = Activation {
-            restart_reason,
+            startup_only,
             listener_changes,
         };
 
@@ -388,18 +394,22 @@ impl ConfigApiState {
         })?;
         let inspect = |generation: &crate::RuntimeGeneration| {
             (
-                generation.listener_restart_reason(candidate.validated_config()),
+                startup_only_reasons(&startup_only_changes(
+                    self.mode,
+                    generation.config(),
+                    candidate.validated_config(),
+                )),
                 generation
                     .listener_changes(candidate.validated_config())
                     .filter(ListenerChangeSummary::changes_listeners),
             )
         };
-        let (restart_reason, listener_changes) = mutation.map_or_else(
+        let (startup_only, listener_changes) = mutation.map_or_else(
             || {
                 self.generations
                     .as_ref()
                     .and_then(GenerationManager::active)
-                    .map_or((None, None), |active| inspect(&active))
+                    .map_or((Vec::new(), None), |active| inspect(&active))
             },
             |mutation| inspect(mutation.generation()),
         );
@@ -437,7 +447,7 @@ impl ConfigApiState {
         Ok(PreparedCandidate {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
-            restart_reason,
+            startup_only,
             listener_changes,
         })
     }
@@ -451,19 +461,22 @@ impl ConfigApiState {
     ) -> ApiResponse {
         let active_revision = self.active_revision();
         let unchanged_active = *candidate_revision == active_revision;
-        let restart_reason = activation.restart_reason;
+        let restart_required = !unchanged_active && !activation.startup_only.is_empty();
         if !unchanged_active {
             // The activation state stays the last diagnostic, as clients read it.
-            if restart_reason.is_none()
-                && let Some(changes) = &activation.listener_changes
-            {
+            if !restart_required && let Some(changes) = &activation.listener_changes {
                 diagnostics.push(listener_changes_diagnostic(self.mode, changes));
             }
-            diagnostics.push(if let Some(reason) = restart_reason {
-                restart_required_diagnostic(reason)
+            if restart_required {
+                diagnostics.extend(
+                    activation
+                        .startup_only
+                        .iter()
+                        .map(restart_required_diagnostic),
+                );
             } else {
-                activation_pending_diagnostic()
-            });
+                diagnostics.push(activation_pending_diagnostic());
+            }
         }
         ApiResponse::json(
             200,
@@ -473,19 +486,20 @@ impl ConfigApiState {
                 "activeRevision": active_revision,
                 "outcome": if unchanged_active {
                     "unchanged_active"
-                } else if restart_reason.is_some() {
+                } else if restart_required {
                     "saved_restart_required"
                 } else {
                     "saved_pending_activation"
                 },
                 "activationState": if unchanged_active {
                     "active"
-                } else if restart_reason.is_some() {
+                } else if restart_required {
                     "restart_required"
                 } else {
                     "pending"
                 },
-                "restartRequired": !unchanged_active && restart_reason.is_some(),
+                "restartRequired": restart_required,
+                "restartReasons": if restart_required { activation.startup_only.as_slice() } else { &[] },
                 "diagnostics": diagnostics,
             }),
         )
@@ -594,14 +608,14 @@ enum ConfigPreparationError {
 
 struct PreparedCandidate {
     draft: Box<PersistableConfigCandidate>,
-    restart_reason: Option<ListenerRestartReason>,
+    startup_only: Vec<StartupOnlyChange>,
     listener_changes: Option<ListenerChangeSummary>,
     topology: Value,
 }
 
 /// How a saved configuration reaches the running process.
 struct Activation {
-    restart_reason: Option<ListenerRestartReason>,
+    startup_only: Vec<StartupOnlyChange>,
     listener_changes: Option<ListenerChangeSummary>,
 }
 
@@ -697,18 +711,14 @@ fn activation_pending_diagnostic() -> Value {
     })
 }
 
-fn restart_required_diagnostic(reason: ListenerRestartReason) -> Value {
-    let message = match reason {
-        ListenerRestartReason::Ipv6OnlyChange => {
-            "an active listener changed ipv6_only; the saved configuration takes effect after a process restart"
-        }
-    };
+fn restart_required_diagnostic(change: &StartupOnlyChange) -> Value {
     json!({
         "code": "I_RESTART_REQUIRED",
         "severity": "warning",
         "stage": "activation",
-        "path": "/config/listeners",
-        "message": message,
+        "path": change.path,
+        "message": change.summary,
+        "reason": change.code,
     })
 }
 

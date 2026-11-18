@@ -8,7 +8,7 @@ use log::{Log, Metadata, Record};
 /// The target of the lines that say what a process started: they show under the default filter.
 pub const STARTUP_LOG_TARGET: &str = "oxiroute::startup";
 
-const DEFAULT_FILTER: &str = "error,oxiroute::startup=info";
+const DEFAULT_FILTER: &str = "error,oxiroute::startup=info,oxiroute::config=warn";
 
 fn environment_logger() -> Logger {
     Builder::from_env(Env::default().default_filter_or(DEFAULT_FILTER)).build()

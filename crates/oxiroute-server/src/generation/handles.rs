@@ -111,6 +111,7 @@ pub(super) struct GenerationState {
     pub(super) retired: RetiredGenerations,
     /// Retired workers of a supervising master, as it last reported them.
     pub(super) remote_retired: Vec<(EffectiveRevision, RemoteRetired, Instant)>,
+    pub(super) restart_required: RestartRequired,
     pub(super) supervised_lineage: Option<SupervisedLineage>,
     pub(super) quarantined_revision: Option<EffectiveRevision>,
     pub(super) shutdown_generations: Vec<Arc<RuntimeGeneration>>,

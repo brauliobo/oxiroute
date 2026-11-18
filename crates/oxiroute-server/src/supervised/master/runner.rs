@@ -229,9 +229,7 @@ impl MasterRunner {
                 MasterState::Running => {
                     let events = master.poll(now)?;
                     log_master_events(&events);
-                    if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
-                        reports.replacement_failed(master, detail);
-                    }
+                    reports.observe(master, catalog, &events, book)?;
                     reports.retired.report(master, now);
                     let forced_reload = catalog.candidate().is_none()
                         && signals.reload.swap(false, Ordering::AcqRel);
@@ -257,9 +255,7 @@ impl MasterRunner {
                 _ => {
                     let events = master.poll(now)?;
                     log_master_events(&events);
-                    if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
-                        reports.replacement_failed(master, detail);
-                    }
+                    reports.observe(master, catalog, &events, book)?;
                     reports.retired.report(master, now);
                     due = reports.retired.next_due();
                 }
@@ -294,6 +290,12 @@ impl MasterRunner {
         }
         let revision = document.effective_revision.clone();
         let file = &document.authored_revision;
+        let startup_only = startup_only_changes(
+            RuntimeMode::Supervised,
+            &catalog.active().payload().config,
+            &document.validated_config,
+        );
+        reports.restart_required(master, &revision, startup_only_reasons(&startup_only));
         if &revision == catalog.active().revision() {
             reports.accept(master);
             return Ok(());
@@ -308,26 +310,8 @@ impl MasterRunner {
             );
             return Ok(());
         }
-        if ListenerReservations::listener_restart_required(
-            RuntimeMode::Supervised,
-            &catalog.active().payload().config,
-            &document.validated_config,
-        ) {
+        if !startup_only.is_empty() {
             reports.accept(master);
-            if has_restart_required_revision(catalog, &revision) {
-                return Ok(());
-            }
-            let restart_required = self.next_launch_document(
-                catalog,
-                coordinator.canonical_path(),
-                document.validated_config.clone(),
-                revision,
-            )?;
-            catalog.record_restart_required(restart_required)?;
-            warn!(
-                "supervised master retained a configuration reload that changes ipv6_only of a \
-                 listener socket; restart the service to apply it"
-            );
             return Ok(());
         }
 

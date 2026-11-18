@@ -19,15 +19,6 @@ pub(super) fn worker_input(document: &LaunchDocument) -> WorkerInput<WorkerComma
     }
 }
 
-pub(super) fn has_restart_required_revision(
-    catalog: &GenerationCatalog,
-    revision: &EffectiveRevision,
-) -> bool {
-    catalog
-        .restart_required()
-        .is_some_and(|retained| retained.revision() == revision)
-}
-
 /// What the master has told the active worker about the configuration file.
 ///
 /// A refused file is tried again on every reconciliation, so only a refusal that differs from the
@@ -38,6 +29,7 @@ pub(super) struct ConfigReports {
     /// The file the replacement in progress was started from.
     pub(super) candidate_file: Option<AuthoredRevision>,
     pub(super) retired: RetiredReports,
+    restart: RestartRequired,
 }
 
 impl ConfigReports {
@@ -57,6 +49,52 @@ impl ConfigReports {
         if self.forget() {
             send_notice(master, &WorkerNotice::Config { rejection: None });
         }
+    }
+
+    /// Applies what the master reported to the catalog, tells the worker why a candidate failed, and
+    /// gives a committed replacement the reports it starts without.
+    pub(super) fn observe(
+        &mut self,
+        master: &mut Master,
+        catalog: &mut GenerationCatalog,
+        events: &[MasterEvent],
+        book: &mut ListenerBook,
+    ) -> Result<(), CatalogSyncError> {
+        if let Some(detail) = apply_catalog_events(catalog, events, book)? {
+            self.replacement_failed(master, detail);
+        }
+        if events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::ReplacementCommitted { .. }))
+        {
+            self.announce_restart(master);
+        }
+        Ok(())
+    }
+
+    /// Tells the active worker which settings of the file only a restart applies, when that changed.
+    pub(super) fn restart_required(
+        &mut self,
+        master: &mut Master,
+        candidate: &EffectiveRevision,
+        reasons: Vec<StartupOnlyChange>,
+    ) {
+        let report = self.restart.update(candidate.as_str(), reasons);
+        if report != self.restart {
+            report.log();
+            self.restart = report;
+            self.announce_restart(master);
+        }
+    }
+
+    /// Tells the active worker the current restart report; a replacement starts without one.
+    pub(super) fn announce_restart(&self, master: &mut Master) {
+        send_notice(
+            master,
+            &WorkerNotice::RestartRequired {
+                restart: self.restart.clone(),
+            },
+        );
     }
 
     /// The candidate was refused by its own worker, which logged why; the old worker keeps serving.

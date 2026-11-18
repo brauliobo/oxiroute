@@ -11,6 +11,7 @@ mod administrative_state;
 mod console;
 mod generation;
 mod management;
+mod restart;
 mod shared;
 mod shutdown;
 mod snapshot;

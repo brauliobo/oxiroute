@@ -198,6 +198,12 @@ impl GenerationSummary {
         } else if self.degraded {
             findings.push(warning("generation degraded".into()));
         }
+        if !self.restart_reasons.is_empty() {
+            findings.push(warning(format!(
+                "restart required to apply {}",
+                self.restart_reasons.join(", ")
+            )));
+        }
         if self.retired_oldest_age_seconds > limits.max_retired_age_seconds {
             findings.push(warning(format!(
                 "retired generation still draining after {} s",

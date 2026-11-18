@@ -234,3 +234,24 @@ fn busy_unavailable_and_pending_canaries_say_nothing_extra() {
         assert_eq!(verdict(&farm, &Thresholds::default()).0, 0, "{state}");
     }
 }
+
+#[test]
+fn settings_that_wait_for_a_restart_warn_without_degrading() {
+    let waiting = summary(
+        &[pool("farm", 4, 4)],
+        &json!({
+            "generation": {
+                "id": 3, "ageSeconds": 600, "degraded": false, "retired": 0,
+                "retiredOldestAgeSeconds": 0, "restartReasons": ["listener_ipv6_only"],
+            },
+        }),
+    );
+
+    let (code, line) = verdict(&waiting, &Thresholds::default());
+
+    assert_eq!(code, 1);
+    assert!(
+        line.contains("WARNING - restart required to apply listener_ipv6_only"),
+        "{line}"
+    );
+}

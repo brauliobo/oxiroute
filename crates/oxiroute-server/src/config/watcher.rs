@@ -20,6 +20,7 @@ use crate::{
     },
     config::events::ConfigEventFilter,
     generation::GENERATION_PREPARATION_TIMEOUT,
+    generation::restart::startup_only_reasons,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -285,14 +286,15 @@ fn reconcile_with_preparation_timeout(
             let disk_revision = document.authored_revision.clone();
             generations.observe_disk_revision(disk_revision.clone());
             let revision = &document.effective_revision;
+            let startup_only = generations.startup_only_changes(&document.validated_config);
+            generations.report_restart_required(revision, startup_only_reasons(&startup_only));
             // A supervised process only adopts sockets: the master applies a listener-set change,
-            // so this watcher leaves such a candidate alone there. Every process refuses a change
-            // that no reload can apply.
-            let restart_required = generations.active().is_some_and(|active| {
-                active.listener_restart_required(&document.validated_config)
-                    || (mode == RuntimeMode::Supervised
-                        && active.listener_set_changed(&document.validated_config))
-            });
+            // so this watcher leaves such a candidate alone there.
+            let restart_required = !startup_only.is_empty()
+                || (mode == RuntimeMode::Supervised
+                    && generations.active().is_some_and(|active| {
+                        active.listener_set_changed(&document.validated_config)
+                    }));
             let quarantined = status.quarantined_revision.as_ref() == Some(revision);
             let preparation = if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)

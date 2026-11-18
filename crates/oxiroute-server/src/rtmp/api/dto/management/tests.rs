@@ -198,6 +198,12 @@ fn management_dtos_match_the_version_one_golden_json() {
             "retiredGenerations": [],
             "maxRetiredGenerations": 4,
             "pendingApply": null,
+            "restartRequired": {
+                "required": false,
+                "candidateRevision": null,
+                "since": null,
+                "reasons": [],
+            },
         })
     );
     assert_eq!(
@@ -607,6 +613,7 @@ fn generation() -> GenerationStatus {
         retired_generations: Vec::new(),
         max_retired_generations: 4,
         pending_apply: None,
+        restart_required: crate::generation::restart::RestartRequired::default(),
     }
 }
 

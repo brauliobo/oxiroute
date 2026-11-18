@@ -19,12 +19,14 @@ use log::{error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    ConfigEventFilter, ListenerReservations, RemoteRetired, RuntimeMode, WorkerNotice,
+    ConfigEventFilter, ListenerReservations, RemoteRetired, RestartRequired, RuntimeMode,
+    StartupOnlyChange, WorkerNotice,
     config_coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
         ResolvedConfigDocument,
     },
+    startup_only_changes, startup_only_reasons,
 };
 use oxiroute_supervision::{
     CatalogError, GenerationId, GenerationLaunchDocument, GenerationRole, InstanceId,

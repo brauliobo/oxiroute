@@ -40,6 +40,9 @@ pub use forward_proxy::{
     ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,
     challenge_response,
 };
+pub use generation::restart::{
+    RestartRequired, StartupOnly, StartupOnlyChange, startup_only_changes, startup_only_reasons,
+};
 pub use generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredState, RetirementCounters,
     WorkerNotice,

@@ -9,6 +9,7 @@ pub struct GenerationManager {
     rtmp_retirements: Arc<Mutex<RtmpRetirementRegistry>>,
     next_candidate_id: Arc<AtomicU64>,
     next_reservation_token: Arc<AtomicU64>,
+    mode: RuntimeMode,
     pub(super) operations: Arc<OperationGate>,
     pub(super) process: ProcessRuntime,
     pub(super) registry: Arc<crate::registry::host::RegistryHost>,
@@ -41,6 +42,7 @@ impl GenerationManager {
             rtmp_retirements: Arc::new(Mutex::new(RtmpRetirementRegistry::default())),
             next_candidate_id: Arc::new(AtomicU64::new(0)),
             next_reservation_token: Arc::new(AtomicU64::new(0)),
+            mode: RuntimeMode::Direct,
             operations: Arc::new(OperationGate::default()),
             process: ProcessRuntime::new(None),
             registry: Arc::new(crate::registry::host::RegistryHost::new(true)),
@@ -52,9 +54,22 @@ impl GenerationManager {
     #[must_use]
     pub fn new_supervised() -> Self {
         let mut manager = Self::new();
+        manager.mode = RuntimeMode::Supervised;
         manager.process = ProcessRuntime::supervised(None);
         manager.registry = Arc::new(crate::registry::host::RegistryHost::new(false));
         manager
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> RuntimeMode {
+        self.mode
+    }
+
+    /// The settings of `wanted` that the active generation keeps until a restart.
+    pub(crate) fn startup_only_changes(&self, wanted: &ValidatedConfig) -> Vec<StartupOnly> {
+        self.active().map_or_else(Vec::new, |active| {
+            startup_only_changes(self.mode, active.config(), wanted)
+        })
     }
 
     /// The registration service, once a generation with a `registry` block has been activated.

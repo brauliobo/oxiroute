@@ -42,6 +42,38 @@ impl GenerationManager {
         true
     }
 
+    /// Records which settings of the file on disk only a restart applies, or none.
+    ///
+    /// Returns whether the report changed, so that the caller logs it once.
+    pub fn report_restart_required(
+        &self,
+        candidate_revision: &EffectiveRevision,
+        reasons: Vec<StartupOnlyChange>,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let report = state
+            .restart_required
+            .update(candidate_revision.as_str(), reasons);
+        let changed = report != state.restart_required;
+        state.restart_required = report.clone();
+        drop(state);
+        if changed {
+            report.log();
+        }
+        changed
+    }
+
+    /// Replaces the report a supervising master computed.
+    pub fn set_restart_required(&self, report: RestartRequired) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restart_required = report;
+    }
+
     /// Records the supervised generation number this worker serves and the revision it replaced,
     /// which a worker cannot observe itself because each one hosts a single generation.
     pub fn set_supervised_lineage(&self, generation: u64, replaced: Option<EffectiveRevision>) {
@@ -194,6 +226,7 @@ impl GenerationManager {
                         .is_some_and(|candidate| candidate.revision().candidate == pending.revision)
                 })
                 .cloned(),
+            restart_required: state.restart_required.clone(),
         }
     }
 

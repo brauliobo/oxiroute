@@ -463,38 +463,6 @@ fn catalog_quarantines_rollback_and_spawn_failure_candidates() {
 }
 
 #[test]
-fn catalog_retains_and_deduplicates_restart_required_revision() {
-    let (runner, mut catalog) = launch_catalog();
-    let generation = catalog.allocate_generation().expect("restart generation");
-    let (restart_id, identity) = replacement_worker_identity(InstanceToken([0x22; 16]), generation)
-        .expect("restart identity");
-    let restart = runner
-        .build_launch_document(
-            Path::new("/etc/oxiroute/oxiroute.kdl"),
-            validated(&config()),
-            EffectiveRevision::from_str(&"d".repeat(64)).expect("restart revision"),
-            restart_id.clone(),
-            identity,
-        )
-        .expect("restart launch document");
-    let revision = restart.revision().clone();
-    catalog
-        .record_restart_required(restart)
-        .expect("restart-required document");
-
-    assert_eq!(
-        catalog.restart_required().unwrap().instance_id(),
-        &restart_id
-    );
-    assert!(has_restart_required_revision(&catalog, &revision));
-    assert!(!has_restart_required_revision(
-        &catalog,
-        &EffectiveRevision::from_str(&"e".repeat(64)).expect("other revision")
-    ));
-    assert_eq!(catalog.allocate_generation(), Ok(GenerationId(3)));
-}
-
-#[test]
 fn a_repeated_rejection_is_reported_once_until_the_file_is_accepted() {
     let file = AuthoredRevision::from_str(&"a".repeat(64)).expect("revision");
     let other = AuthoredRevision::from_str(&"b".repeat(64)).expect("revision");

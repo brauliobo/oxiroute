@@ -440,6 +440,7 @@ fn apply_notice(manager: &GenerationManager, notice: &[u8]) -> Result<(), Box<dy
             manager.reject_configuration(rejection);
         }
         WorkerNotice::Config { rejection: None } => manager.accept_configuration(),
+        WorkerNotice::RestartRequired { restart } => manager.set_restart_required(restart),
         WorkerNotice::Retired { generations } => manager.set_remote_retired(generations)?,
     }
     Ok(())
