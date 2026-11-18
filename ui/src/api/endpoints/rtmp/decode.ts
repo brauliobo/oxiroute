@@ -1,5 +1,6 @@
 import { decimalString, isRecord, nullableString, safeInteger } from '../../../valueGuards'
 import { invalidPayload } from '../shared'
+import { isEndedStream, isProfile, projectEndedStream, projectMedia } from './profile'
 import type {
   RecorderPhase,
   RecorderSnapshot,
@@ -27,7 +28,8 @@ export function parseRtmpCatalog(value: unknown): RtmpCatalog {
   if (!isRecord(value) || !decimalString(value.revision) || !safeInteger(value.as_of_unix_ms) ||
     !isRecord(value.capabilities) || typeof value.capabilities.live_ingest !== 'boolean' ||
     typeof value.capabilities.manual_recording !== 'boolean' || !Array.isArray(value.streams) ||
-    !value.streams.every(isStream)
+    !value.streams.every(isStream) || !Array.isArray(value.recently_ended_streams) ||
+    !value.recently_ended_streams.every((ended) => isEndedStream(ended, isTrack))
   ) return invalidPayload('RTMP catalog')
   const manualRecording = value.capabilities.manual_recording
   if (value.streams.some((stream) =>
@@ -43,6 +45,7 @@ export function parseRtmpCatalog(value: unknown): RtmpCatalog {
       manual_recording: value.capabilities.manual_recording,
     },
     streams: value.streams.map(projectStreamSnapshot),
+    recently_ended_streams: value.recently_ended_streams.map((ended) => projectEndedStream(ended, projectTrackSnapshot)),
   }
 }
 
@@ -94,17 +97,14 @@ function projectStreamSnapshot(stream: StreamSnapshot): StreamSnapshot {
     server_id: stream.server_id,
     application: stream.application,
     name: stream.name,
+    state: stream.state,
     created_at_unix_ms: stream.created_at_unix_ms,
     publisher: stream.publisher === null ? null : {
       session_id: stream.publisher.session_id,
       attached_at_unix_ms: stream.publisher.attached_at_unix_ms,
     },
     subscriber_count: stream.subscriber_count,
-    media: {
-      audio: projectTrackSnapshot(stream.media.audio),
-      video: projectTrackSnapshot(stream.media.video),
-      fanout_payload_bytes: stream.media.fanout_payload_bytes,
-    },
+    media: projectMedia(stream.media, projectTrackSnapshot),
     relays: stream.relays.map(projectRelaySnapshot),
     recording_supported: stream.recording_supported,
     manual_recording: stream.manual_recording,
@@ -195,11 +195,12 @@ export function parseRecorder(value: unknown): RecorderSnapshot {
 function isStream(value: unknown): value is StreamSnapshot {
   return isRecord(value) && typeof value.id === 'string' && decimalString(value.revision) &&
     typeof value.server_id === 'string' && typeof value.application === 'string' &&
-    typeof value.name === 'string' && safeInteger(value.created_at_unix_ms) &&
+    typeof value.name === 'string' && (value.state === 'live' || value.state === 'idle') &&
+    safeInteger(value.created_at_unix_ms) &&
     (value.publisher === null || (isRecord(value.publisher) &&
       typeof value.publisher.session_id === 'string' && safeInteger(value.publisher.attached_at_unix_ms))) &&
     safeInteger(value.subscriber_count) && isRecord(value.media) && isTrack(value.media.audio) &&
-    isTrack(value.media.video) && decimalString(value.media.fanout_payload_bytes) &&
+    isTrack(value.media.video) && isProfile(value.media.profile) && decimalString(value.media.fanout_payload_bytes) &&
     Array.isArray(value.relays) && value.relays.every(isRelay) &&
     typeof value.recording_supported === 'boolean' && typeof value.manual_recording === 'boolean' &&
     Array.isArray(value.recorders) && value.recorders.every(isRecorder)
@@ -254,7 +255,7 @@ function recorderPhase(value: unknown): boolean {
   }
   if (value.state === 'failed') {
     return value.started_at_unix_ms === undefined && typeof value.code === 'string' && [
-      'open_failed', 'write_failed', 'close_failed', 'backend_unavailable', 'file_sync_failed',
+      'open_failed', 'quota_files', 'quota_bytes', 'write_failed', 'close_failed', 'backend_unavailable', 'file_sync_failed',
       'publish_failed', 'directory_sync_failed', 'queue_discontinuity', 'unsupported_codec',
       'shutdown_timed_out', 'worker_panicked', 'stale_publisher',
     ].includes(value.code)

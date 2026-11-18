@@ -31,10 +31,21 @@ function stream(recorders: RecorderSnapshot[] = [recorder()]): StreamSnapshot {
     server_id: 'edge',
     application: 'live',
     name: 'camera',
+    state: 'live',
     created_at_unix_ms: 1_750_000_000_000,
     publisher: { session_id: 'publisher-1', attached_at_unix_ms: 1_750_000_000_000 },
     subscriber_count: 0,
       media: {
+      profile: {
+        video_width: null,
+        video_height: null,
+        frame_rate_millihertz: null,
+        video_bitrate_bps: null,
+        audio_bitrate_bps: null,
+        keyframe_interval_ms: null,
+        audio_sample_rate_hz: null,
+        audio_channels: null,
+      },
       audio: {
         codec_id: 10,
         codec_fourcc: null,

@@ -158,6 +158,7 @@ describe('production API client against the built management process', () => {
       as_of_unix_ms: expect.any(Number),
       capabilities: { live_ingest: true, manual_recording: false },
       streams: [],
+      recently_ended_streams: [],
     })
     expect(topology).toEqual({
       schemaVersion: 1,

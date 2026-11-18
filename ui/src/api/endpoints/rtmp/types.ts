@@ -15,6 +15,8 @@ export interface TrackSnapshot {
 
 export type RecorderErrorCode =
   | 'open_failed'
+  | 'quota_files'
+  | 'quota_bytes'
   | 'write_failed'
   | 'close_failed'
   | 'backend_unavailable'
@@ -75,27 +77,60 @@ export interface RelaySnapshot {
   payload_bytes_sent: string
 }
 
+export type RtmpStreamState = 'live' | 'idle'
+export type RtmpEndReason = 'closed' | 'dropped' | 'stale' | 'shutdown' | 'failed'
+
+export interface StreamProfile {
+  video_width: number | null
+  video_height: number | null
+  frame_rate_millihertz: number | null
+  video_bitrate_bps: number | null
+  audio_bitrate_bps: number | null
+  keyframe_interval_ms: number | null
+  audio_sample_rate_hz: number | null
+  audio_channels: number | null
+}
+
+export interface StreamMedia {
+  audio: TrackSnapshot
+  video: TrackSnapshot
+  profile: StreamProfile
+  fanout_payload_bytes: string
+}
+
 export interface StreamSnapshot {
   id: string
   revision: string
   server_id: string
   application: string
   name: string
+  state: RtmpStreamState
   created_at_unix_ms: number
   publisher: {
     session_id: string
     attached_at_unix_ms: number
   } | null
   subscriber_count: number
-  media: {
-    audio: TrackSnapshot
-    video: TrackSnapshot
-    fanout_payload_bytes: string
-  }
+  media: StreamMedia
   relays: RelaySnapshot[]
   recording_supported: boolean
   manual_recording: boolean
   recorders: RecorderSnapshot[]
+}
+
+export interface EndedStreamSnapshot {
+  id: string
+  server_id: string
+  application: string
+  name: string
+  state: 'offline'
+  created_at_unix_ms: number
+  published_at_unix_ms: number
+  last_seen_at_unix_ms: number
+  ended_at_unix_ms: number
+  end_reason: RtmpEndReason
+  publisher_session_id: string
+  media: StreamMedia
 }
 
 export interface RtmpCatalog {
@@ -103,6 +138,7 @@ export interface RtmpCatalog {
   as_of_unix_ms: number
   capabilities: RtmpCapabilities
   streams: StreamSnapshot[]
+  recently_ended_streams: EndedStreamSnapshot[]
 }
 
 export type RtmpClientRole = 'client' | 'publisher' | 'subscriber'

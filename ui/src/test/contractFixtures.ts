@@ -15,6 +15,7 @@ export function contractCatalog(): RtmpCatalog {
       server_id: 'edge',
       application: 'live',
       name: 'camera',
+      state: 'live',
       created_at_unix_ms: 1_750_000_000_000,
       publisher: {
         session_id: '750a865d-1b72-4a5f-a54b-a1d8510d055c',
@@ -39,6 +40,16 @@ export function contractCatalog(): RtmpCatalog {
           payload_bytes: '4096',
           last_rtmp_timestamp_ms: 123,
           last_observed_at_unix_ms: 1_750_000_000_200,
+        },
+        profile: {
+          video_width: 1280,
+          video_height: 720,
+          frame_rate_millihertz: 30_000,
+          video_bitrate_bps: 2_500_000,
+          audio_bitrate_bps: 128_000,
+          keyframe_interval_ms: 2_000,
+          audio_sample_rate_hz: 44_100,
+          audio_channels: 2,
         },
         fanout_payload_bytes: '8192',
       },
@@ -99,6 +110,7 @@ export function contractCatalog(): RtmpCatalog {
         last_notification: 'started',
       }],
     }],
+    recently_ended_streams: [],
   }
 }
 
