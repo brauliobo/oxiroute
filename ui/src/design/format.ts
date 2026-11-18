@@ -52,6 +52,13 @@ export function formatRate(perSecond: number): string {
 
 export const formatByteRate = (bytesPerSecond: number) => `${formatBytes(bytesPerSecond)}/s`
 
+const BIT_RATE_UNITS = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s', 'Tbit/s']
+
+export function formatBitRate(bitsPerSecond: number): string {
+  const [text, unit] = scaled(bitsPerSecond, 1000, BIT_RATE_UNITS)
+  return `${text} ${unit}`
+}
+
 const MINUTE = 60
 const HOUR = 3600
 const DAY = 86_400

@@ -1,0 +1,132 @@
+@layer ox.page {
+  .ox-cams {
+    display: grid;
+    gap: var(--ox-gap);
+    align-content: start;
+  }
+
+  .ox-cams-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-4) var(--ox-space-5);
+  }
+
+  .ox-cams-summary p {
+    margin-inline-start: auto;
+  }
+
+  .ox-cams-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+    gap: var(--ox-gap);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ox-cams-tile {
+    display: grid;
+    gap: var(--ox-space-5);
+    align-content: start;
+    height: 100%;
+  }
+
+  .ox-cams-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-3) var(--ox-space-5);
+  }
+
+  .ox-cams-title {
+    min-width: 0;
+  }
+
+  .ox-cams-title h3 {
+    font-size: var(--ox-text-lg);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-cams-frame {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 16 / 9;
+    padding: var(--ox-space-5);
+    border: var(--ox-border-width) dashed var(--ox-border);
+    border-radius: var(--ox-radius-sm);
+    text-align: center;
+  }
+
+  .ox-cams-reasons {
+    display: grid;
+    gap: var(--ox-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ox-cams-reasons li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--ox-space-3) var(--ox-space-4);
+  }
+
+  .ox-cams-recorders,
+  .ox-cams-viewer-list {
+    display: grid;
+    gap: var(--ox-space-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ox-cams-recorder {
+    display: grid;
+    gap: var(--ox-space-3);
+    padding-top: var(--ox-space-4);
+    border-top: var(--ox-border-width) solid var(--ox-border);
+  }
+
+  .ox-cams-recorder-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-3) var(--ox-space-5);
+  }
+
+  .ox-cams-recorder .ox-btn {
+    justify-self: start;
+  }
+
+  .ox-cams-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-cams-viewers {
+    display: grid;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-cams-viewer-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ox-space-3) var(--ox-space-5);
+  }
+
+  @media (max-width: 45rem) {
+    .ox-cams-summary p {
+      flex-basis: 100%;
+      margin-inline-start: 0;
+    }
+
+    .ox-cams-actions .ox-btn {
+      flex: 1 1 100%;
+    }
+  }
+}

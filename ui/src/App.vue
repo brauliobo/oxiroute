@@ -54,6 +54,19 @@ Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme" @click
 
     HaproxyStatsDashboard(v-if="activeView === 'stats' && monitoring" :monitoring="monitoring")
 
+    CamerasWorkspace(
+      v-if="activeView === 'cameras'"
+      :token="token"
+      :catalog="catalog"
+      :stats="rtmpStats"
+      :catalog-error="catalogError"
+      :stats-error="rtmpStatsError"
+      :now-unix-ms="currentUnixMs"
+      :refreshing="refreshing"
+      :reload="feed.refreshAfterCommand"
+      @unauthorized="session.reject"
+    )
+
     OperationsWorkspace(v-if="activeView === 'operations'" :token="token" @unauthorized="session.reject")
 
     EventsWorkspace(v-if="activeView === 'events'" :token="token" @unauthorized="session.reject")
@@ -110,6 +123,7 @@ import Nav from '#design/nav/Nav.vue'
 import Region from '#design/toast/Region.vue'
 
 import AuditWorkspace from './AuditWorkspace.vue'
+import CamerasWorkspace from './CamerasWorkspace.vue'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'

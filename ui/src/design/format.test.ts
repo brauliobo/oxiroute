@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  UNKNOWN, formatAge, formatByteRate, formatBytes, formatCount, formatDuration, formatExact, formatPercent,
+  UNKNOWN, formatAge, formatBitRate, formatByteRate, formatBytes, formatCount, formatDuration, formatExact, formatPercent,
   formatRate, formatTimestamp, truncate,
 } from './format'
 
@@ -52,6 +52,12 @@ describe('formatRate', () => {
     '%s is %s', (value, text) => expect(formatRate(value)).toBe(text))
 
   it('formats byte rates', () => expect(formatByteRate(1.5 * 1024 ** 2)).toBe('1.5 MiB/s'))
+
+  it('formats bit rates in decimal units', () => {
+    expect([950, 128_000, 2_500_000, 4_000_000, 1_200_000_000].map(formatBitRate)).toEqual([
+      '950 bit/s', '128 kbit/s', '2.5 Mbit/s', '4 Mbit/s', '1.2 Gbit/s',
+    ])
+  })
 })
 
 describe('formatDuration', () => {

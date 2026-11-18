@@ -30,7 +30,8 @@ interface FeedOptions {
   onUnauthorized: () => void
 }
 
-const streamsEvents = (view: ViewId) => view === 'overview' || view === 'stats'
+const streamsEvents = (view: ViewId) => view === 'overview' || view === 'stats' || view === 'cameras'
+const readsRtmp = (view: ViewId) => view === 'overview' || view === 'cameras'
 
 export function useTelemetryFeed({ token, view, onUnauthorized }: FeedOptions) {
   const monitoring = ref<MonitoringSnapshot | null>(null)
@@ -92,12 +93,14 @@ export function useTelemetryFeed({ token, view, onUnauthorized }: FeedOptions) {
 
   async function refreshData(controller: AbortController): Promise<void> {
     const requests = [load(controller, fetchMonitoring, monitoring, monitoringError, 'Unable to load monitoring telemetry')]
-    if (view.value === 'overview') {
+    if (readsRtmp(view.value)) {
       requests.push(
         load(controller, fetchRtmpCatalog, catalog, catalogError, 'Unable to load RTMP state'),
         load(controller, fetchRtmpStats, rtmpStats, rtmpStatsError, 'Unable to load RTMP client state'),
-        load(controller, fetchTopology, topology, topologyError, 'Unable to load active topology'),
       )
+    }
+    if (view.value === 'overview') {
+      requests.push(load(controller, fetchTopology, topology, topologyError, 'Unable to load active topology'))
     }
     await Promise.all(requests)
   }
@@ -182,7 +185,9 @@ export function useTelemetryFeed({ token, view, onUnauthorized }: FeedOptions) {
       stopMonitoring()
       return
     }
+    const viewChanged = monitoringStarted
     startMonitoring()
+    if (viewChanged) void refresh()
     if (streamsEvents(nextView)) startEventStream()
     else stopEventStream()
   }, { immediate: true })

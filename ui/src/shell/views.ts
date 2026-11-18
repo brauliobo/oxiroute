@@ -1,5 +1,6 @@
 export const VIEWS = [
   { id: 'overview', label: 'Overview', title: 'Runtime observatory' },
+  { id: 'cameras', label: 'Cameras', title: 'Cameras and recordings' },
   { id: 'stats', label: 'Statistics', title: 'Statistics' },
   { id: 'operations', label: 'Operations', title: 'Operations' },
   { id: 'certificates', label: 'Certificates', title: 'Certificate inventory' },
