@@ -89,8 +89,67 @@ Status meanings:
 | Metrics | Prometheus exposition | Supported | `oxiroute metrics`; `/metrics` is intentionally public for local scraping. Other statistics reads require the configured statistics admin token. |
 | Metrics | monitoring/topology | Supported | `oxiroute monitoring`, `oxiroute topology` |
 | Monitoring | check | Supported | `oxiroute check [--pool P ...] [--warn-available-below N] [--crit-available-below N] [--max-queue-wait 5s] [--max-inflight-age 60s] [--max-retired-age 1h] [--json] [--canary --url URL [--host H] [--expect-status 200]]`. Prints one plugin line and exits `0`/`1`/`2`/`3` (OK/WARNING/CRITICAL/UNKNOWN); these replace the exit categories above for this command only. Reads the public `/status.json`, so it needs no token and also works with `--socket` on a read-only registry socket. |
+| Monitoring | live dashboard | Supported | `oxiroute top [--interval 1s] [--once] [--json] [--view listeners|pools|servers|requests] [--filter TEXT] [--sort COLUMN] [--reverse]`. Read-only terminal dashboard over `GET /api/v1/stats` and `GET /api/v1/requests` with the management token; one snapshot instead of a screen with `--once`, `--json` or without a terminal. See "Live dashboard" below. |
 | Events | bounded list/follow | Supported | Cursor and limit are validated; follow polls and never requests an unbounded stream. |
 | Cache | purge | Configured HTTP route or forward service | Configured reverse HTTP routes and forward HTTP/1 services accept bearer-protected `PURGE` for an exact request key or configured surrogate tag. No separate CLI/API cache purge command is exposed. |
+
+## Live dashboard
+
+`oxiroute top` is a read-only terminal dashboard in the spirit of htop and the HAProxy statistics page. It
+never mutates state and uses the management endpoint, `--token-file` and the global `--output` and
+`--quiet` options like the other management commands. Registry sockets (`--socket`) do not serve
+statistics, so `top` refuses them with exit `3`.
+
+```sh
+oxiroute top                                # the live screen on a terminal
+oxiroute top --view servers --sort 5XX      # start in the servers view, sorted by 5xx
+oxiroute top --once --filter web            # one text snapshot of rows whose names contain "web"
+oxiroute top --json | jq '.pools[].servers[].status'
+```
+
+Data source. `GET /api/v1/stats` returns the stats page snapshot ("Stats page API" in
+[OPERATIONS.md](OPERATIONS.md)): the same typed document, built per request, so no stats page listener is
+needed. The in-flight request list is `GET /api/v1/requests`, fetched only while the Requests view is
+shown. `--json` prints the snapshot document as the server wrote it, `--output json` does the same.
+
+Rates are computed by the client from two successive snapshots, over the server's `sampledAtUnixMs`
+clock: a rate is a counter delta divided by the time between the snapshots, and is `-` when a counter went
+backwards (a restart or a reset) or the row is new. Latency percentiles (`P50`, `P99`) are read from the
+cumulative histogram deltas of the same two snapshots, so they describe the last window and are histogram
+bucket upper bounds (`>5s` past the last bound); the first screen, and `--once`, show lifetime
+percentiles, rates are `-` there. A sample closer than 1 s to the previous one does not start a new
+window. The interval is not below 1 s, the rate the server rebuilds statistics at.
+
+| View | Rows | Columns |
+|---|---|---|
+| Listeners | one per listener | `NAME PROTO BIND STATE CONN ACC/s REQ/s IN/s OUT/s ERR/s P50 P99 CACHE` |
+| Pools | one per pool | `NAME ALGO STATUS UP QUEUE QWAIT INFL REQ/s IN/s OUT/s 2XX 3XX 4XX 5XX ERR/s P50 P99` |
+| Servers | one per pool server | `POOL SERVER STATUS ADDRESS CONN WGT REQ/s IN/s OUT/s 2XX 3XX 4XX 5XX ERR/s P50 P99 DOWN CHKFAIL` |
+| Requests | one per in-flight request, oldest first | `ID LISTENER CLIENT METHOD HOST PATH POOL SERVER PHASE AGE WAIT TRY` |
+
+- `STATE`/`STATUS` are `up`, `down`, `drain`, `maint`, `ejected`, `unchecked`, `unknown` for servers,
+  `up`, `degraded`, `down`, `empty` for pools and `up`, `drain`, `maint`, `conf`, `stopped`, `failed` for
+  listeners. `CONN` is current and maximum connections; `UP` is available and total servers.
+- `REQ/s` of a listener counts finished HTTP operations (or TCP relays); of a pool or server it counts
+  upstream attempts, including retries. `ERR/s` of a listener counts server errors, upstream errors,
+  timeouts and internal errors (for relays: connect, I/O, accounting and PROXY protocol failures); of a pool
+  or server it counts attempts that failed to connect, timed out or hit a protocol error. `IN/s` and
+  `OUT/s` follow the stats page CSV: bytes from and to the client for a listener, bytes to and from the
+  server for a pool or server. `2XX`..`5XX` are lifetime response totals. `CACHE` is the hit ratio of the
+  listener's HTTP cache. A column is `-` when the proxy does not export the value.
+- The header shows version, uptime, active generation and draining generations, worker scaling (with
+  `dynamic` scaling: active and total workers of every listener runtime), configuration warnings, CPU,
+  memory, threads, descriptors, host load, upstream in-flight requests, connections, accepted rate, bytes
+  rates and retries.
+- Not shown, because the proxy exports no counter for them: TLS handshakes, per-worker load, per-listener
+  status classes.
+
+Keys: `Tab` and `Shift-Tab` or `1`-`4` switch views, `<` `>` pick the sort column (each view keeps its
+own), `r` reverses the sort, `/` filters rows by name (`Enter` keeps it, `Esc` clears it), `p` or `Space`
+pauses and resumes sampling, `j` `k` and the arrow keys select, `g` `G` jump, `q`, `Esc` or `Ctrl-C` quit.
+Sorting is by the column's value, not its text; rows with no value sort last. A failed refresh shows the
+error under the last snapshot and the next interval tries again; a failure on the first request exits
+with the usual categories (`4` transport, `5` authentication).
 
 ## Registry endpoints
 

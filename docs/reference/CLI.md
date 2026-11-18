@@ -29,6 +29,7 @@ obsolete, or not planned. Only forms with both runtime integration and failure c
 | --- | --- | --- |
 | Process | `serve`, `status`, `ready`, `metrics`, `monitoring`, `topology`, `drain`, `shutdown` | Start and inspect the daemon |
 | Monitoring | `check` | One line and a Nagios exit code for cron and monitoring systems |
+| Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|diff|validate|apply` | Inspect and change canonical configuration |
 | Events | `events list|follow` | Poll the bounded in-memory event ring |
@@ -44,6 +45,19 @@ the requests currently inside the router, oldest first, and `oxiroute requests s
 shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming` and
 `retry_wait`. There is no command to cancel one request; `server evacuate` and `pool evacuate` move the
 replayable requests of a server (see below).
+
+## `top`
+
+```sh
+oxiroute top [--interval 1s] [--once] [--json] [--view listeners|pools|servers|requests]
+             [--filter TEXT] [--sort COLUMN] [--reverse]
+```
+
+A read-only live dashboard with a listeners, pools, servers and requests view, rates and latency
+percentiles computed from successive snapshots, sorting, name filtering and pause. It reads the management
+API with the management token (`--token-file`); registry sockets do not serve statistics. `--once`,
+`--json` (the snapshot document of `GET /api/v1/stats`) or a missing terminal print one snapshot and exit.
+Keys, columns and semantics: [Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
 
 ## `evacuate`
 

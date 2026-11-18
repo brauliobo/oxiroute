@@ -29,6 +29,10 @@ oxiroute --output json topology > /tmp/oxiroute-topology.json
 oxiroute metrics
 ```
 
+`oxiroute top` is a live, read-only terminal dashboard of listeners, pools, servers and in-flight
+requests with request and byte rates, status classes, errors, latency percentiles, queue depth and
+health state; `--once` prints one snapshot. See [Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
+
 ## Drain Before Maintenance
 
 Drain rejects new admissions while existing work retains its generation reference. It does not
