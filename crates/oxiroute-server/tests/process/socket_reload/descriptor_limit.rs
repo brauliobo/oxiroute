@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    net::{Ipv4Addr, SocketAddr, TcpListener},
-    path::Path,
-    sync::atomic::{AtomicU16, Ordering},
-};
+use std::{fs, net::SocketAddr, path::Path};
 
 use oxiroute_config::{ConfigDraft, HttpRouteAction, ListenerBind, Management};
 use tempfile::TempDir;
@@ -12,26 +7,6 @@ use super::{
     Instance, SUPERVISED_LAUNCHER, config_support::empty_config, fixed_service, listener,
     process_support, reserve_tcp_address, runtime_modes, web_body,
 };
-
-const FIRST_PORT: u16 = 38_000;
-const LAST_PORT: u16 = 38_999;
-
-static NEXT_PORT: AtomicU16 = AtomicU16::new(0);
-
-fn free_addresses(count: usize) -> Vec<SocketAddr> {
-    let span = LAST_PORT - FIRST_PORT + 1;
-    let start = NEXT_PORT.fetch_add(300, Ordering::Relaxed);
-    let offset = u16::try_from(std::process::id() % u32::from(span)).expect("bounded offset");
-    let held = (0..span)
-        .map(|step| FIRST_PORT + (offset + start + step) % span)
-        .filter_map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok())
-        .take(count)
-        .collect::<Vec<_>>();
-    assert_eq!(held.len(), count, "free loopback ports for the test");
-    held.iter()
-        .map(|socket| socket.local_addr().expect("held address"))
-        .collect()
-}
 
 fn many_listeners(addresses: &[SocketAddr], body: &str) -> (ConfigDraft, SocketAddr) {
     let management = reserve_tcp_address();
@@ -77,7 +52,7 @@ async fn assert_all_serve(addresses: &[SocketAddr], body: &str, label: &str) {
 async fn more_than_sixty_four_listeners_start_and_serve_in_both_runtimes() {
     for supervised in runtime_modes() {
         let label = if supervised { "supervised" } else { "direct" };
-        let addresses = free_addresses(70);
+        let addresses = process_support::ports::unused_addresses(70);
         let (config, management) = many_listeners(&addresses, "rev-0");
         let instance = Instance::start((config, management, addresses[0]), supervised).await;
         if supervised {
@@ -95,7 +70,7 @@ async fn more_than_sixty_four_listeners_start_and_serve_in_both_runtimes() {
 async fn a_reload_can_grow_past_sixty_four_listeners() {
     for supervised in runtime_modes() {
         let label = if supervised { "supervised" } else { "direct" };
-        let addresses = free_addresses(70);
+        let addresses = process_support::ports::unused_addresses(70);
         let (config, management) = many_listeners(&addresses[..2], "rev-0");
         let mut instance = Instance::start((config, management, addresses[0]), supervised).await;
 
@@ -124,7 +99,7 @@ fn more_listeners_than_a_worker_can_take_stop_the_service_instead_of_running_dir
         return;
     }
     let directory = TempDir::new().expect("oversized configuration directory");
-    let addresses = free_addresses(260);
+    let addresses = process_support::ports::unused_addresses(260);
     let (config, _) = many_listeners(&addresses, "rev-0");
     let path = directory.path().join("oxiroute.lua");
     process_support::write_config(&path, &config.validate().expect("valid oversized config"));
