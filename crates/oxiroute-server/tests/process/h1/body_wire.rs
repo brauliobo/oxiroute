@@ -299,6 +299,47 @@ async fn an_origin_that_closes_inside_the_request_body_gives_a_bad_gateway() {
 }
 
 #[tokio::test]
+async fn a_failed_upload_logs_no_request_body_bytes_at_any_verbosity() {
+    const MARKER: &str = "request-body-marker-7f3a9c";
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("origin accept");
+        let mut buffer = [0_u8; 4096];
+        let mut seen = 0;
+        while seen < 6000 {
+            seen += stream.read(&mut buffer).await.unwrap();
+        }
+    });
+    let wire = Wire::over(
+        Origin {
+            address,
+            requests: Captured::default(),
+        },
+        |config| {
+            big_bodies(config);
+            config.log_filter = Some("trace".into());
+        },
+    )
+    .await;
+    let body = MARKER.repeat(300_000 / MARKER.len());
+    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
+    client.write_all(post(body.len()).as_bytes()).await.unwrap();
+    let _ = client.write_all(body.as_bytes()).await;
+    let (head, _) = read_response(&mut client).await;
+    assert_eq!(status(&head), "HTTP/1.1 502 Bad Gateway");
+    let Wire { server, .. } = wire;
+
+    let output = server.shutdown_output();
+
+    assert!(
+        output.contains("502") || output.contains("upstream"),
+        "{output}"
+    );
+    assert!(!output.contains(MARKER), "{output}");
+}
+
+#[tokio::test]
 async fn an_answer_sent_before_the_origin_closed_inside_the_upload_still_reaches_the_client() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
     let address = listener.local_addr().unwrap();
