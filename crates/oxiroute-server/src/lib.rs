@@ -3,6 +3,7 @@ mod capsule;
 pub mod cli;
 mod clock;
 pub mod config;
+mod continuity;
 mod doorbell;
 mod encoding;
 mod forward_proxy;

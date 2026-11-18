@@ -7,7 +7,7 @@ use oxiroute_tls_rustls::{KernelTls, RustlsAcceptor};
 use pingora::listeners::{CustomTlsSettings, tls::cipher_list_names};
 use rustls::{
     ServerConfig, SupportedProtocolVersion,
-    crypto::{CryptoProvider, aws_lc_rs::Ticketer},
+    crypto::CryptoProvider,
     server::{NoServerSessionStorage, ProducesTickets, StoresServerSessions},
     version,
 };
@@ -18,7 +18,10 @@ use self::{
     session::{SessionCache, TimedTicketer},
 };
 use super::{ALPN, KtlsMode, TLS13_TICKETS, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
-use crate::tls::provider::{aws_lc_provider, with_cipher_list, with_key_exchange_groups};
+use crate::tls::{
+    provider::{aws_lc_provider, with_cipher_list, with_key_exchange_groups},
+    ticket_keys::TicketKeys,
+};
 
 mod resolver;
 mod router;
@@ -81,7 +84,7 @@ impl TlsProfilePlan {
         }
         let protocols = alpn_protocols(&self.alpn);
         let provider = self.rustls_provider()?;
-        let sessions = self.shared_sessions()?;
+        let sessions = self.shared_sessions();
         let strict = self.rustls_server_config(&provider, protocols.clone(), &sessions)?;
         // A client that offers protocols the profile does not speak is served without ALPN, as the OpenSSL backend
         // does, unless the profile speaks HTTP/2 only.
@@ -156,40 +159,43 @@ impl TlsProfilePlan {
     }
 
     /// Resumption as the profile declares it: a named cache keeps sessions in memory (TLS 1.2 ids and TLS 1.3 stateful
-    /// tickets), stateless tickets are encrypted by per-process keys, and a TLS 1.3 ticket nobody could redeem is not
+    /// tickets), stateless tickets are encrypted by the profile's ticket keys, and a TLS 1.3 ticket nobody could redeem is not
     /// sent. Every configuration of the profile shares the one state, so a session resumes whichever serves it and
-    /// whichever listener of the profile accepts the next connection.
-    fn shared_sessions(&self) -> Result<Arc<Sessions>, TlsBuildError> {
-        if let Some(sessions) = self.rustls_sessions.get() {
-            return Ok(Arc::clone(sessions));
-        }
-        let sessions = Arc::new(self.sessions()?);
-        Ok(Arc::clone(self.rustls_sessions.get_or_init(|| sessions)))
+    /// whichever listener of the profile accepts the next connection. The next generation of the profile in the
+    /// process shares the ticket keys and takes the cached sessions, so resumption survives a reload.
+    fn shared_sessions(&self) -> Arc<Sessions> {
+        Arc::clone(
+            self.rustls_sessions
+                .get_or_init(|| Arc::new(self.sessions())),
+        )
     }
 
-    fn sessions(&self) -> Result<Sessions, TlsBuildError> {
+    fn sessions(&self) -> Sessions {
         let timeout = self
             .session_timeout
             .map_or(DEFAULT_SESSION_TIMEOUT_SECONDS, i32::unsigned_abs);
         let storage: Arc<dyn StoresServerSessions> = match &self.session_cache {
-            Some(cache) => Arc::new(SessionCache::new(
+            Some(cache) => SessionCache::for_profile(
+                &self.name,
                 usize::try_from(cache.capacity).unwrap_or_default(),
                 timeout,
-            )),
+            ),
             None => Arc::new(NoServerSessionStorage {}),
         };
         let tickets: Option<Arc<dyn ProducesTickets>> = if self.session_tickets {
-            let keys = Ticketer::new().map_err(|error| self.rustls_error(error.to_string()))?;
-            Some(Arc::new(TimedTicketer::new(keys, timeout)))
+            Some(Arc::new(TimedTicketer::new(
+                TicketKeys::for_profile(&self.name),
+                timeout,
+            )))
         } else {
             None
         };
         let resumable = self.session_tickets || self.session_cache.is_some();
-        Ok(Sessions {
+        Sessions {
             storage,
             tickets,
             tls13_tickets: if resumable { TLS13_TICKETS } else { 0 },
-        })
+        }
     }
 
     fn rustls_error(&self, detail: String) -> TlsBuildError {

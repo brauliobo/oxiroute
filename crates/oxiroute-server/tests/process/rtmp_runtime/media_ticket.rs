@@ -247,3 +247,59 @@ async fn a_media_ticket_lets_a_player_fetch_the_playlist_and_segments_without_au
     drop(publisher);
     server.shutdown();
 }
+
+async fn a_media_ticket_survives_a_reload(supervised: bool) {
+    let media_root = TempDir::new().expect("HLS root");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let mut config = hls_config(management_address, rtmp_address, media_root.path());
+    let validated = config.clone().validate().unwrap();
+    let mut server = if supervised {
+        ServerProcess::start_supervised(&validated, TOKEN)
+    } else {
+        ServerProcess::start(&validated, Some(TOKEN))
+    };
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(rtmp_address).await;
+    let mint_path = format!("/api/v1/rtmp/media/timer-rtmp/live/{STREAM}/ticket");
+    let minted = request(management_address, "POST", &mint_path, true, b"").await;
+    assert_eq!(minted.status, 200);
+    let path = minted.json()["path"]
+        .as_str()
+        .expect("ticket path")
+        .to_owned();
+    let before = request(management_address, "GET", &path, false, &[])
+        .await
+        .status;
+    assert_ne!(before, 401);
+
+    let authorization = format!("Bearer {TOKEN}");
+    let original = active_revision(management_address, &authorization).await;
+    config.max_connections = Some(1_001);
+    write_config(&server.config_path, &config.clone().validate().unwrap());
+    wait_for_new_revision(management_address, &authorization, &original).await;
+
+    let after = request(management_address, "GET", &path, false, &[])
+        .await
+        .status;
+    assert_eq!(
+        after, before,
+        "the reload invalidated an outstanding ticket"
+    );
+    let forged = format!("{path}A");
+    let refused = request(management_address, "GET", &forged, false, &[])
+        .await
+        .status;
+    assert_eq!(refused, 401);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn a_media_ticket_minted_before_a_direct_reload_still_verifies() {
+    a_media_ticket_survives_a_reload(false).await;
+}
+
+#[tokio::test]
+async fn a_media_ticket_minted_before_a_supervised_reload_still_verifies() {
+    a_media_ticket_survives_a_reload(true).await;
+}

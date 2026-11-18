@@ -2,13 +2,16 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use rustls::server::{ProducesTickets, StoresServerSessions};
 
 const STAMP_BYTES: usize = 8;
+
+static CACHES: LazyLock<Mutex<HashMap<String, Weak<SessionCache>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn now() -> u64 {
     SystemTime::now()
@@ -84,6 +87,45 @@ impl SessionCache {
             entries: Mutex::default(),
             capacity,
             timeout,
+        }
+    }
+
+    pub(super) fn for_profile(profile: &str, capacity: usize, timeout: u32) -> Arc<Self> {
+        let mut caches = CACHES.lock().unwrap_or_else(PoisonError::into_inner);
+        caches.retain(|_, cache| cache.strong_count() > 0);
+        let running = caches.get(profile).and_then(Weak::upgrade);
+        if let Some(cache) = running
+            .as_ref()
+            .filter(|cache| cache.capacity == capacity && cache.timeout == timeout)
+        {
+            return Arc::clone(cache);
+        }
+        let cache = Arc::new(Self::new(capacity, timeout));
+        if let Some(replaced) = &running {
+            cache.adopt(replaced);
+        }
+        caches.insert(profile.to_owned(), Arc::downgrade(&cache));
+        cache
+    }
+
+    fn adopt(&self, replaced: &Self) {
+        let replaced = replaced.entries();
+        let mut entries = self.entries();
+        for key in &replaced.oldest {
+            let Some(stamped) = replaced.sessions.get(key) else {
+                continue;
+            };
+            if fresh(stamped, self.timeout).is_none() {
+                continue;
+            }
+            entries.sessions.insert(key.clone(), stamped.clone());
+            entries.oldest.push_back(key.clone());
+            while entries.sessions.len() > self.capacity {
+                let Some(oldest) = entries.oldest.pop_front() else {
+                    break;
+                };
+                entries.sessions.remove(&oldest);
+            }
         }
     }
 
@@ -183,6 +225,23 @@ mod tests {
         assert_eq!(cache.get(b"b").unwrap(), b"b");
         assert_eq!(cache.take(b"c").unwrap(), b"c");
         assert_eq!(cache.take(b"c"), None);
+    }
+
+    #[test]
+    fn a_profile_keeps_its_cache_across_generations_and_resizes_it_in_place() {
+        let first = SessionCache::for_profile("session-test", 4, 300);
+        for key in [b"a", b"b", b"c"] {
+            first.put(key.to_vec(), key.to_vec());
+        }
+
+        let same = SessionCache::for_profile("session-test", 4, 300);
+        assert!(Arc::ptr_eq(&first, &same));
+
+        let smaller = SessionCache::for_profile("session-test", 2, 300);
+        assert!(!Arc::ptr_eq(&first, &smaller));
+        assert_eq!(smaller.get(b"a"), None);
+        assert_eq!(smaller.get(b"b").unwrap(), b"b");
+        assert_eq!(smaller.get(b"c").unwrap(), b"c");
     }
 
     #[test]

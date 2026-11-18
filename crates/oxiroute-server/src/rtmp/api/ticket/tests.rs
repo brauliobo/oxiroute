@@ -140,3 +140,30 @@ fn a_recording_ticket_verifies_only_for_its_own_recording() {
         );
     }
 }
+
+#[test]
+fn a_key_that_imports_the_secret_of_another_verifies_its_tickets() {
+    let replaced = TicketKey::generate();
+    let ticket = replaced.mint(&SCOPE, NOW + 90_000);
+    let replacement = TicketKey::generate();
+    assert_eq!(
+        replacement.verify(&SCOPE, &ticket, NOW),
+        Err(TicketError::Invalid)
+    );
+
+    assert!(replacement.import_secret(&replaced.export_secret()));
+
+    assert_eq!(replacement.verify(&SCOPE, &ticket, NOW), Ok(()));
+    assert_eq!(replacement.mint(&SCOPE, NOW + 90_000), ticket);
+}
+
+#[test]
+fn a_malformed_secret_leaves_the_key_as_it_was() {
+    let key = TicketKey::generate();
+    let ticket = key.mint(&SCOPE, NOW + 90_000);
+
+    assert!(!key.import_secret("not base64 !"));
+    assert!(!key.import_secret("c2hvcnQ="));
+
+    assert_eq!(key.verify(&SCOPE, &ticket, NOW), Ok(()));
+}

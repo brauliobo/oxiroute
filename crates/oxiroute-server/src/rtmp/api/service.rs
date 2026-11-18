@@ -76,7 +76,7 @@ pub struct RtmpManagementApi {
     ui: Option<UiAssets>,
     audit: Arc<AuditStore>,
     process_shutdown: Option<Arc<AtomicBool>>,
-    tickets: TicketKey,
+    tickets: Arc<TicketKey>,
 }
 
 pub struct RtmpManagementHttpApp {
@@ -102,7 +102,7 @@ impl RtmpManagementApi {
             ui: None,
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             process_shutdown: None,
-            tickets: TicketKey::generate(),
+            tickets: TicketKey::process(),
         }
     }
 
@@ -129,7 +129,7 @@ impl RtmpManagementApi {
             ui: Some(UiAssets::load(directory.as_ref())?),
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             process_shutdown: None,
-            tickets: TicketKey::generate(),
+            tickets: TicketKey::process(),
         })
     }
 

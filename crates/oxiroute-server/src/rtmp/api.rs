@@ -26,6 +26,10 @@ pub use self::{
     response::ApiResponse,
     service::{RtmpManagementApi, RtmpManagementHttpApp},
 };
-pub(crate) use self::{auth::preflight_management_token, ui::UiAssets};
+pub(crate) use self::{
+    auth::preflight_management_token,
+    ticket::{export_media_ticket_secret, import_media_ticket_secret},
+    ui::UiAssets,
+};
 
 pub const MAX_CONFIG_REQUEST_BYTES: usize = crate::config::coordinator::MAX_CANONICAL_CONFIG_BYTES;

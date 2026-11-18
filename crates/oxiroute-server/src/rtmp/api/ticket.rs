@@ -1,4 +1,9 @@
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
+
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use openssl::{
     hash::MessageDigest,
     memcmp,
@@ -84,8 +89,22 @@ pub(super) enum TicketError {
     Expired,
 }
 
+static PROCESS_KEY: LazyLock<Arc<TicketKey>> = LazyLock::new(|| Arc::new(TicketKey::generate()));
+
 pub(super) struct TicketKey {
+    signing: RwLock<Signing>,
+}
+
+struct Signing {
+    secret: Zeroizing<[u8; SECRET_BYTES]>,
     key: PKey<Private>,
+}
+
+impl Signing {
+    fn new(secret: Zeroizing<[u8; SECRET_BYTES]>) -> Self {
+        let key = PKey::hmac(secret.as_slice()).expect("HMAC key from random bytes");
+        Self { secret, key }
+    }
 }
 
 impl TicketKey {
@@ -93,13 +112,36 @@ impl TicketKey {
         let mut secret = Zeroizing::new([0_u8; SECRET_BYTES]);
         rand_bytes(secret.as_mut_slice()).expect("OpenSSL random source");
         Self {
-            key: PKey::hmac(secret.as_slice()).expect("HMAC key from random bytes"),
+            signing: RwLock::new(Signing::new(secret)),
         }
     }
 
+    pub(super) fn process() -> Arc<Self> {
+        Arc::clone(&PROCESS_KEY)
+    }
+
+    fn export_secret(&self) -> String {
+        let signing = self.signing.read().unwrap_or_else(PoisonError::into_inner);
+        STANDARD.encode(signing.secret.as_slice())
+    }
+
+    fn import_secret(&self, secret: &str) -> bool {
+        let Some(secret) = STANDARD
+            .decode(secret)
+            .ok()
+            .and_then(|bytes| <[u8; SECRET_BYTES]>::try_from(bytes).ok())
+        else {
+            return false;
+        };
+        *self.signing.write().unwrap_or_else(PoisonError::into_inner) =
+            Signing::new(Zeroizing::new(secret));
+        true
+    }
+
     pub(super) fn mint(&self, scope: &Scope<'_>, expires_at_unix_ms: u64) -> String {
+        let signing = self.signing.read().unwrap_or_else(PoisonError::into_inner);
         let mut signer =
-            Signer::new(MessageDigest::sha256(), &self.key).expect("HMAC-SHA256 signer");
+            Signer::new(MessageDigest::sha256(), &signing.key).expect("HMAC-SHA256 signer");
         signer.update(MAC_DOMAIN).expect("HMAC input");
         signer
             .update(scope.canonical().as_bytes())
@@ -131,6 +173,14 @@ impl TicketKey {
         }
         Ok(())
     }
+}
+
+pub(crate) fn export_media_ticket_secret() -> String {
+    PROCESS_KEY.export_secret()
+}
+
+pub(crate) fn import_media_ticket_secret(secret: &str) -> bool {
+    PROCESS_KEY.import_secret(secret)
 }
 
 pub(super) fn query_ticket(query: Option<&str>) -> Result<Option<&str>, TicketError> {

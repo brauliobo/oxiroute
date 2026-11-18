@@ -17,6 +17,7 @@ mod acme;
 mod certbot;
 mod certificate;
 mod file;
+pub(crate) mod ticket_keys;
 mod tls_alpn;
 mod upstream;
 mod watcher_engine;
