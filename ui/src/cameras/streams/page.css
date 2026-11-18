@@ -85,20 +85,18 @@
 
   .ox-cams-recorder {
     display: grid;
+    justify-items: start;
     gap: var(--ox-space-3);
     padding-top: var(--ox-space-4);
     border-top: var(--ox-border-width) solid var(--ox-border);
   }
 
   .ox-cams-recorder-line {
+    justify-self: stretch;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--ox-space-3) var(--ox-space-5);
-  }
-
-  .ox-cams-recorder .ox-btn {
-    justify-self: start;
   }
 
   .ox-cams-actions {
@@ -125,8 +123,8 @@
       margin-inline-start: 0;
     }
 
-    .ox-cams-actions .ox-btn {
-      flex: 1 1 100%;
+    .ox-cams-actions {
+      flex-direction: column;
     }
   }
 }
