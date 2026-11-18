@@ -1,0 +1,10 @@
+@layer ox.page {
+  .ox-preview {
+    max-height: 28rem;
+  }
+
+  .ox-preview pre {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+}

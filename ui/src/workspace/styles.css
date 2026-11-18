@@ -45,7 +45,7 @@
   }
 
   .ox-scroll {
-    overflow-x: auto;
+    overflow: auto;
   }
 
   .ox-mono {
