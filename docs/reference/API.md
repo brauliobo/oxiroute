@@ -5,7 +5,7 @@ the corrected event-only contract under `/api/v2/events`. Exact errors, response
 [API_UI_SPEC.md](../API_UI_SPEC.md).
 
 The checked [OpenAPI 3.1 control-plane artifact](../../contracts/control-plane.openapi.json) currently
-covers the six protected read-only status, listener, pool, server, generation, and in-flight request operations and the RTMP media, VOD and recording ticket mint operations. Its
+covers the six protected read-only status, listener, pool, server, generation, and in-flight request operations, the RTMP media, VOD and recording ticket mint operations, and the RTMP secret fingerprint listing. Its
 freshness gate is `scripts/verify/control-plane-contract.sh`; routes outside that registry remain
 documented by this page and the normative API/UI specification until their DTO and endpoint metadata
 are migrated.
@@ -34,6 +34,7 @@ are migrated.
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
 | RTMP recordings | `GET /api/v1/rtmp/recordings`, `GET\|DELETE /api/v1/rtmp/recordings/{recordingId}`, `GET /api/v1/rtmp/recordings/{recordingId}/content` | Management bearer token; recording inventory, metadata, ranged download and audited delete |
+| RTMP secrets | `GET /api/v1/rtmp/secrets` | Management bearer token; read-only list of `{service, application, role, fingerprint}` for every publish and play key of the active generation; in the OpenAPI artifact as `listRtmpSecretFingerprints` |
 | RTMP VOD | `GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Management bearer token; one contiguous byte range and bounded source/session policy |
 | RTMP HLS/DASH media | `GET /api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Management bearer token; bounded HLS playlists/fragments or DASH `manifest.mpd`, `init.mp4`, and `.m4s` objects; one contiguous byte range |
 | RTMP media tickets | `POST /api/v1/rtmp/media/{service}/{application}/{stream}/ticket`, `POST /api/v1/rtmp/vod/{service}/{application}/{source}/ticket` | Management bearer token; mints `{ticket, path, expiresAtUnixMs, ttlSeconds}` (`ttlSeconds` 1-600, default 90). The ticket is accepted as `?ticket=` only on `GET` of the matching media/VOD object without an `Authorization` header; in the OpenAPI artifact as `createMediaTicket` and `createVodTicket` (see RTMP_SPEC.md) |
@@ -352,6 +353,20 @@ it survives restarts; a file deleted and recreated under the same name keeps its
 - `POST .../{recordingId}/ticket` mints a download ticket so a browser can fetch the content without
   a Bearer header (`{"ttlSeconds": 60}` is optional; see RTMP_SPEC.md). The returned `path` is
   `/api/v1/rtmp/recordings/{recordingId}/content?ticket=...`.
+
+`GET /api/v1/rtmp/secrets` lists the fingerprint of each publish and play key of the active
+generation, ordered by service, application and role (`play` before `publish`):
+
+```json
+{ "secrets": [
+  { "service": "live", "application": "cam", "role": "publish", "fingerprint": "fp-1a2b3c4d" }
+] }
+```
+
+Only applications with a token policy appear. The fingerprint is the `fp-` value the callbacks carry
+in `query`, so an operator can tell which key a publisher used. The secret itself is never returned,
+logged or audited. A 32-bit fingerprint lets a holder of the management token confirm a guessed weak
+secret, the same exposure as callbacks; use long random tokens.
 
 ### RTMP control audit
 

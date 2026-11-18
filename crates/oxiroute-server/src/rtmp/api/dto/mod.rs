@@ -10,6 +10,7 @@ mod overlay;
 mod persistence;
 mod recordings;
 mod rtmp;
+mod secrets;
 mod ticket;
 mod tls;
 mod topology;
@@ -51,6 +52,7 @@ pub(crate) use rtmp::{
     RtmpRecorderResponse, RtmpSessionControlResponse, RtmpSessionRevisionConflictResponse,
     RtmpSessionRoleConflictResponse, RtmpStatsResponse, RtmpStreamResponse,
 };
+pub(crate) use secrets::RtmpSecretsResponse;
 pub(crate) use ticket::{MediaTicketRequest, TicketResponse, VodTicketRequest};
 pub(crate) use tls::{
     TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,

@@ -14,8 +14,22 @@ const CONVENTIONAL_SECRET_PARAMETERS: [&str; 11] = [
     "api_key",
 ];
 
-pub(crate) fn secret_fingerprint(secret: &str) -> String {
-    let digest = Sha256::digest(secret.as_bytes());
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RtmpSecretRole {
+    Play,
+    Publish,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct RtmpSecretFingerprint {
+    pub service: String,
+    pub application: String,
+    pub role: RtmpSecretRole,
+    pub fingerprint: String,
+}
+
+pub(crate) fn secret_fingerprint(secret: impl AsRef<[u8]>) -> String {
+    let digest = Sha256::digest(secret.as_ref());
     format!(
         "fp-{:02x}{:02x}{:02x}{:02x}",
         digest[0], digest[1], digest[2], digest[3]

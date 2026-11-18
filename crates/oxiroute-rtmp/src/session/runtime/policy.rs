@@ -129,6 +129,10 @@ impl RtmpTokenPolicy {
         &self.parameter
     }
 
+    fn fingerprint(&self) -> String {
+        crate::secret_query::secret_fingerprint(&self.secret)
+    }
+
     fn authorize(&self, query: Option<&str>) -> Result<(), RtmpAuthorizationError> {
         let Some(query) = query else {
             return Err(RtmpAuthorizationError::TokenMissing);
@@ -186,6 +190,10 @@ impl RtmpAccessPolicy {
 
     pub(super) fn token_parameter(&self) -> Option<&str> {
         self.token.as_ref().map(RtmpTokenPolicy::parameter)
+    }
+
+    pub(super) fn secret_fingerprint(&self) -> Option<String> {
+        self.token.as_ref().map(RtmpTokenPolicy::fingerprint)
     }
 
     pub(super) fn authorize(

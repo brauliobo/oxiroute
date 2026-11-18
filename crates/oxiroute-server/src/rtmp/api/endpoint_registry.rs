@@ -9,6 +9,7 @@ pub(super) enum EndpointId {
     MediaTicket,
     VodTicket,
     RecordingTicket,
+    RtmpSecrets,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +31,7 @@ pub(super) enum SuccessSchema {
     Generations,
     Requests,
     Ticket,
+    RtmpSecrets,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,7 +87,7 @@ const RECORDING_TICKET_FAILURES: &[Failure] = &[
     },
 ];
 
-const ENDPOINTS: [EndpointSpec; 9] = [
+const ENDPOINTS: [EndpointSpec; 10] = [
     EndpointSpec {
         id: EndpointId::Status,
         operation_id: "getStatus",
@@ -194,6 +196,17 @@ const ENDPOINTS: [EndpointSpec; 9] = [
         failures: RECORDING_TICKET_FAILURES,
         success_schema: SuccessSchema::Ticket,
     },
+    EndpointSpec {
+        id: EndpointId::RtmpSecrets,
+        operation_id: "listRtmpSecretFingerprints",
+        path: "/api/v1/rtmp/secrets",
+        method: "GET",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: None,
+        failures: &[],
+        success_schema: SuccessSchema::RtmpSecrets,
+    },
 ];
 
 pub(super) fn all() -> &'static [EndpointSpec] {
@@ -239,7 +252,7 @@ mod tests {
 
     #[test]
     fn registry_owns_the_protected_read_only_management_endpoints() {
-        assert_eq!(all().len(), 9);
+        assert_eq!(all().len(), 10);
         for (endpoint, expected) in all().iter().take(6).zip([
             (
                 EndpointId::Status,
@@ -304,7 +317,7 @@ mod tests {
             match_path("/api/v1/rtmp/recordings/0123abcd/ticket"),
             Some(EndpointId::RecordingTicket)
         );
-        for (endpoint, placeholders) in all()[6..].iter().zip([3, 3, 1]) {
+        for (endpoint, placeholders) in all()[6..9].iter().zip([3, 3, 1]) {
             assert_eq!(endpoint.method, "POST");
             assert_eq!(endpoint.path.matches('{').count(), placeholders);
         }
@@ -318,9 +331,20 @@ mod tests {
             "/api/v1/rtmp/recordings//ticket",
             "/api/v1/rtmp/recordings/0123abcd/content",
             "/api/v1/rtmp/recordings/0123abcd/ticket/extra",
+            "/api/v1/rtmp/secrets/live",
         ] {
             assert_eq!(match_path(path), None, "unexpected endpoint match: {path}");
         }
+    }
+
+    #[test]
+    fn registry_owns_the_secret_fingerprint_listing() {
+        let endpoint = &all()[9];
+        assert_eq!(endpoint.id, EndpointId::RtmpSecrets);
+        assert_eq!(endpoint.operation_id, "listRtmpSecretFingerprints");
+        assert_eq!(endpoint.method, "GET");
+        assert_eq!(endpoint.auth, AuthPolicy::ManagementBearer);
+        assert_eq!(match_path(endpoint.path), Some(EndpointId::RtmpSecrets));
     }
 
     #[test]

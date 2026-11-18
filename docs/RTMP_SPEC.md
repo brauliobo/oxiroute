@@ -382,6 +382,13 @@ sent to a callback, so it cannot reach a callback URL (`notify_method get`) or i
 management API redacts callback URLs in typed configuration, validation, and conflict responses:
 userinfo becomes `<redacted>` and every query value becomes `<redacted>`.
 
+`GET /api/v1/rtmp/secrets` (management Bearer, read-only) returns `{"secrets":[{"service","application",
+"role","fingerprint"}]}` for every application of the active generation that has a publish (`publish`)
+or play (`play`) token policy, sorted by service, application and role. `fingerprint` is the same
+`fp-` value as in a callback `query`, so it can be matched against one; the secret is never returned,
+logged, audited or placed in events or errors. A 32-bit fingerprint lets a management-token holder
+confirm a guessed weak secret (the same exposure as callbacks), so use long random tokens.
+
 ### Logging, limits, and auto-push: 6
 
 | Directive | Context | Accepted value | Effective default/scope |

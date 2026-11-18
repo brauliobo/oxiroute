@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
     sync::{
         Arc, Mutex, Once, Weak,
@@ -12,7 +12,8 @@ use crate::{
     CatalogError, LiveHub, LiveHubError, MediaApplication, PublisherLease, RecorderDefinition,
     RtmpAutoPushConfig, RtmpAutoPushConfigError, RtmpAutoPushError, RtmpAutoPushStatus,
     RtmpCallbackPolicy, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
-    RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
+    RtmpRegistry, RtmpSecretFingerprint, RtmpSecretRole, SessionId, StreamKey, VodApplication,
+    VodError,
     auto_push::AutoPushCoordinator,
     exec::ExecProfile,
     exec::worker::ExecProfileSet,

@@ -585,6 +585,7 @@ impl RtmpManagementApi {
             }
             EndpointId::MediaTicket => self.mint_media_ticket(method, session).await,
             EndpointId::VodTicket => self.mint_vod_ticket(method, session).await,
+            EndpointId::RtmpSecrets => self.rtmp_secret_fingerprints(method),
             EndpointId::RecordingTicket => self.mint_recording_ticket(method, session).await,
         }
     }
@@ -639,6 +640,7 @@ mod http_app;
 mod media_access;
 mod recording_stream;
 mod request;
+mod secrets;
 mod vod_media;
 
 use events::{accepts_event_stream, last_event_id, parse_event_stream_cursor};

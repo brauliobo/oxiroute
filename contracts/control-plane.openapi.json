@@ -1586,6 +1586,50 @@
         ],
         "type": "object"
       },
+      "RtmpSecretFingerprintDto": {
+        "properties": {
+          "application": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/RtmpSecretRoleDto"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "application",
+          "role",
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "RtmpSecretRoleDto": {
+        "enum": [
+          "publish",
+          "play"
+        ],
+        "type": "string"
+      },
+      "RtmpSecretsResponse": {
+        "properties": {
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/RtmpSecretFingerprintDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "secrets"
+        ],
+        "type": "object"
+      },
       "RuntimeModeDto": {
         "enum": [
           "direct",
@@ -2593,6 +2637,87 @@
             },
             "description": "The recording does not exist.",
             "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/rtmp/secrets": {
+      "get": {
+        "operationId": "listRtmpSecretFingerprints",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RtmpSecretsResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
               "X-Correlation-Id": {
                 "description": "Request correlation identifier.",
                 "schema": {

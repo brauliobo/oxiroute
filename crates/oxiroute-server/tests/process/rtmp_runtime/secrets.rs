@@ -223,6 +223,124 @@ async fn callback_get_urls_and_management_surfaces_never_carry_the_stream_secret
     assert_stream_secret_absent_everywhere(RtmpNotifyMethod::Get).await;
 }
 
+fn callback_fingerprint(requests: &[String], call: &str, parameter: &str) -> String {
+    let marker = format!("query={parameter}%3D");
+    let request = requests
+        .iter()
+        .find(|request| {
+            request.contains(&format!("call={call}&"))
+                || request.contains(&format!("call={call}\r"))
+        })
+        .unwrap_or_else(|| panic!("{call} callback"));
+    let start = request.find(&marker).expect("fingerprinted query") + marker.len();
+    request[start..start + "fp-00000000".len()].to_owned()
+}
+
+#[tokio::test]
+async fn the_secret_listing_carries_the_fingerprints_the_callbacks_show_and_never_the_secrets() {
+    let log_directory = TempDir::new().expect("access log directory");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let (callback_address, captured) = callback_listener().await;
+    let config = secured_config(
+        management_address,
+        rtmp_address,
+        callback_address,
+        RtmpNotifyMethod::Post,
+        &log_directory.path().join("rtmp-access.jsonl"),
+    );
+    let mut server = ServerProcess::start(&config.validate().unwrap(), Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(rtmp_address).await;
+
+    let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    publisher
+        .publish(&format!("camera?token={PUBLISH_SECRET}"))
+        .await;
+    let mut viewer = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    viewer.play(&format!("camera?viewer={PLAY_SECRET}")).await;
+    viewer.close().await;
+    publisher.close().await;
+    let requests = wait_for_callbacks(&captured, 4).await;
+    let publish_fingerprint = callback_fingerprint(&requests, "publish", "token");
+    let play_fingerprint = callback_fingerprint(&requests, "play", "viewer");
+
+    let listing = management(
+        management_address,
+        "GET",
+        "/api/v1/rtmp/secrets",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(listing.status, 200, "{}", listing.text());
+    assert_eq!(listing.header("cache-control"), Some("no-store"));
+    assert_eq!(
+        listing.json(),
+        json!({ "secrets": [
+            {
+                "service": "wire-rtmp",
+                "application": "continuous",
+                "role": "play",
+                "fingerprint": play_fingerprint
+            },
+            {
+                "service": "wire-rtmp",
+                "application": "continuous",
+                "role": "publish",
+                "fingerprint": publish_fingerprint
+            },
+        ] })
+    );
+    assert_eq!(publish_fingerprint, PUBLISH_FINGERPRINT);
+    assert_eq!(play_fingerprint, PLAY_FINGERPRINT);
+
+    let unauthenticated =
+        http_request(management_address, "GET", "/api/v1/rtmp/secrets", &[], &[]).await;
+    assert_eq!(unauthenticated.status, 401);
+    let method = management(
+        management_address,
+        "POST",
+        "/api/v1/rtmp/secrets",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(method.status, 405);
+
+    let mut surfaces = vec![("secret listing", listing.text())];
+    for path in ["/api/v1/audit?limit=200", "/api/v2/events"] {
+        let response = management(management_address, "GET", path, None, None).await;
+        surfaces.push((path, response.text()));
+    }
+    surfaces.push(("standard error", server.shutdown_output()));
+    for (surface, text) in &surfaces {
+        for secret in SECRETS {
+            assert!(!text.contains(secret), "{surface} leaks {secret}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn applications_without_a_key_policy_list_no_fingerprints() {
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let config = idle_runtime_config(management_address, rtmp_address);
+    let mut server = ServerProcess::start(&config.validate().unwrap(), Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    let listing = management(
+        management_address,
+        "GET",
+        "/api/v1/rtmp/secrets",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(listing.status, 200);
+    assert_eq!(listing.json(), json!({ "secrets": [] }));
+    server.shutdown();
+}
+
 struct SecuredDaemon {
     server: ServerProcess,
     management_address: SocketAddr,

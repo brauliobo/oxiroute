@@ -114,6 +114,7 @@ pub use runtime_handles::{
     PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpRuntimeSet, RtmpRuntimeSetError,
     RtmpServiceHandle, RtmpShutdown,
 };
+pub use secret_query::{RtmpSecretFingerprint, RtmpSecretRole};
 pub use session::control::{
     MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
     RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,

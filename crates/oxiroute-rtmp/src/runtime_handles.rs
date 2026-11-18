@@ -12,9 +12,10 @@ use crate::{
     RtmpCallbackEventPlan, RtmpCallbackPlan, RtmpCallbackPolicy, RtmpCapabilities,
     RtmpCatalogSnapshot, RtmpClientOptions, RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan,
     RtmpMediaStoreRegistry, RtmpPrepareContext, RtmpPrepareMode, RtmpRecorderLifecycle,
-    RtmpRecorderStoreRegistry, RtmpRegistry, RtmpServicePlan, RtmpServicePreparation,
-    RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction, RtmpSessionControlError,
-    RtmpSessionControlOutcome, RtmpSessionPolicy, SessionId, StreamId, VodApplication, VodCatalog,
+    RtmpRecorderStoreRegistry, RtmpRegistry, RtmpSecretFingerprint, RtmpServicePlan,
+    RtmpServicePreparation, RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction,
+    RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionPolicy, SessionId, StreamId,
+    VodApplication, VodCatalog,
 };
 
 #[cfg(test)]
@@ -254,6 +255,18 @@ impl RtmpControlHandle {
         self.services
             .iter()
             .find(|service| service.service_id() == service_id)
+    }
+
+    /// Returns the fingerprint of every configured publish and play key, ordered by service,
+    /// application and role. Secrets never leave the runtime.
+    #[must_use]
+    pub fn secret_fingerprints(&self) -> Vec<RtmpSecretFingerprint> {
+        self.services
+            .iter()
+            .flat_map(|service| service.runtime.secret_fingerprints())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Closes new RTMP admission for the services represented by this handle while retaining

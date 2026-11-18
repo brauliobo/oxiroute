@@ -349,6 +349,19 @@ export interface RetiredGenerationDto {
   state: string
 }
 
+export interface RtmpSecretFingerprintDto {
+  application: string
+  fingerprint: string
+  role: RtmpSecretRoleDto
+  service: string
+}
+
+export type RtmpSecretRoleDto = "publish" | "play"
+
+export interface RtmpSecretsResponse {
+  secrets: Array<RtmpSecretFingerprintDto>
+}
+
 export type RuntimeModeDto = "direct" | "supervised"
 
 export interface ServerInventoryEntry {
@@ -460,6 +473,7 @@ export interface ControlPlaneResponses {
   getRequests: RequestListResponse
   getServers: ServerInventoryResponse
   getStatus: StatusResponse
+  listRtmpSecretFingerprints: RtmpSecretsResponse
 }
 
 export type ControlPlaneOperationId = keyof ControlPlaneResponses

@@ -208,6 +208,25 @@ impl RtmpApplication {
             .collect()
     }
 
+    pub(super) fn secret_fingerprints(
+        &self,
+        service: &str,
+    ) -> impl Iterator<Item = RtmpSecretFingerprint> {
+        [
+            (RtmpSecretRole::Publish, &self.publish_policy),
+            (RtmpSecretRole::Play, &self.play_policy),
+        ]
+        .into_iter()
+        .filter_map(|(role, policy)| {
+            Some(RtmpSecretFingerprint {
+                service: service.to_owned(),
+                application: self.name.clone(),
+                role,
+                fingerprint: policy.secret_fingerprint()?,
+            })
+        })
+    }
+
     pub(super) fn hub(&self) -> Option<LiveHub> {
         self.hub.clone()
     }

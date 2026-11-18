@@ -377,6 +377,14 @@ impl RtmpServiceRuntime {
         self.policy.application(name)
     }
 
+    pub(crate) fn secret_fingerprints(&self) -> BTreeSet<RtmpSecretFingerprint> {
+        self.policy
+            .applications
+            .values()
+            .flat_map(|application| application.secret_fingerprints(&self.service_id))
+            .collect()
+    }
+
     pub(in super::super) fn redact_query(&self, application: &str, query: &str) -> String {
         let parameters = self
             .application(application)

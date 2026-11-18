@@ -10,6 +10,8 @@ use crate::{
     MediaStoreLimits, RtmpAutoPushConfigError, RtmpCapabilities,
 };
 
+mod secrets;
+
 #[test]
 fn preparation_starts_no_runtime_owners_until_consumed() {
     PREPARATION_STARTS.set(0);
