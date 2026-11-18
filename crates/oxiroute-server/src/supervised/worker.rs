@@ -25,7 +25,8 @@ use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlRequest, MAX_STATUS_EVENTS,
     WorkerAdministrativeState, WorkerControl, WorkerEventRecord, WorkerGenerationStatus,
-    WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
+    WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerRtmpDetail,
+    WorkerStatus,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
 use serde::{Deserialize, Serialize};

@@ -19,6 +19,46 @@ pub(crate) struct OperationalEvent {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtmp: Option<RtmpEventDetail>,
+}
+
+/// Which stream, session and recorder an RTMP event is about, and why it happened.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RtmpEventDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorder: Option<String>,
+}
+
+impl RtmpEventDetail {
+    pub(crate) fn redacted(self) -> Self {
+        let redact = |value: Option<String>| value.map(|value| redact_identifier(&value));
+        Self {
+            service: redact(self.service),
+            application: redact(self.application),
+            stream: redact(self.stream),
+            stream_id: redact(self.stream_id),
+            session_id: redact(self.session_id),
+            role: redact(self.role),
+            reason: redact(self.reason),
+            recorder: redact(self.recorder),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +81,10 @@ pub(crate) enum EventName {
     RtmpPlay,
     RtmpDisconnect,
     RtmpAccess,
+    RtmpPublishEnd,
+    RtmpRecorderStarted,
+    RtmpRecorderStopped,
+    RtmpRecorderFailed,
     CertificateRenewal,
     CertificateActivation,
     CertificateRevocation,
@@ -84,6 +128,10 @@ impl EventName {
             "rtmp_play" => Self::RtmpPlay,
             "rtmp_disconnect" => Self::RtmpDisconnect,
             "rtmp_access" => Self::RtmpAccess,
+            "rtmp_publish_end" => Self::RtmpPublishEnd,
+            "rtmp_recorder_started" => Self::RtmpRecorderStarted,
+            "rtmp_recorder_stopped" => Self::RtmpRecorderStopped,
+            "rtmp_recorder_failed" => Self::RtmpRecorderFailed,
             "certificate_renewal" => Self::CertificateRenewal,
             "certificate_activated" => Self::CertificateActivation,
             "certificate_revocation" => Self::CertificateRevocation,
@@ -118,6 +166,10 @@ impl EventName {
             Self::RtmpPlay => "rtmp_play",
             Self::RtmpDisconnect => "rtmp_disconnect",
             Self::RtmpAccess => "rtmp_access",
+            Self::RtmpPublishEnd => "rtmp_publish_end",
+            Self::RtmpRecorderStarted => "rtmp_recorder_started",
+            Self::RtmpRecorderStopped => "rtmp_recorder_stopped",
+            Self::RtmpRecorderFailed => "rtmp_recorder_failed",
             Self::CertificateRenewal => "certificate_renewal",
             Self::CertificateActivation => "certificate_activated",
             Self::CertificateRevocation => "certificate_revocation",
@@ -142,7 +194,11 @@ pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
         | EventName::CertificateJobControl
         | EventName::GenerationRetire
         | EventName::UpstreamEndpointHealth
-        | EventName::ServerEvacuation => "unknown",
+        | EventName::ServerEvacuation
+        | EventName::RtmpPublishEnd
+        | EventName::RtmpRecorderStarted
+        | EventName::RtmpRecorderStopped
+        | EventName::RtmpRecorderFailed => "unknown",
         _ => event.as_str(),
     }
 }
@@ -154,7 +210,11 @@ pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
         | EventName::CertificateAccountRollover
         | EventName::CertificateJobControl
         | EventName::GenerationRetire
-        | EventName::ServerEvacuation => "unknown",
+        | EventName::ServerEvacuation
+        | EventName::RtmpPublishEnd
+        | EventName::RtmpRecorderStarted
+        | EventName::RtmpRecorderStopped
+        | EventName::RtmpRecorderFailed => "unknown",
         _ => event.as_str(),
     }
 }
@@ -377,6 +437,7 @@ impl OperationalEvent {
             actor: None,
             source: None,
             operation: None,
+            rtmp: None,
         }
     }
 }

@@ -143,6 +143,34 @@ media or metadata), `ended_at_unix_ms`, `media` as above (final values), and `en
 The ended list is memory-only: it is empty after a restart, and an entry disappears when the stream
 publishes again.
 
+### RTMP event details
+
+RTMP events in `/api/v2/events` and `/api/v2/events/stream` (and the version 1 shapes of the
+existing `rtmp_*` events) carry an optional `rtmp` object:
+
+```json
+{
+  "event": "rtmp_recorder_failed",
+  "outcome": "failed",
+  "rtmp": {
+    "service": "edge",
+    "application": "live",
+    "stream": "camera",
+    "streamId": "2a130dea-5db7-43e0-afb8-f07c4bcb1814",
+    "sessionId": "5b9c6a52-4f55-4d62-9d4c-3a1f7a4e5c10",
+    "role": "publisher",
+    "reason": "quota_files",
+    "recorder": "archive"
+  }
+}
+```
+
+`streamId` is the catalog stream id. `reason` is the failure code for `failed` outcomes. New v2
+events: `rtmp_publish_end` (`reason` is `closed`, `dropped`, `stale`, `shutdown` or `failed`),
+`rtmp_recorder_started` (`reason: "recovered"` after a failure), `rtmp_recorder_stopped` and
+`rtmp_recorder_failed`. Version 1 shows them as `unknown`. A publisher that ends normally is
+`rtmp_publish_end` with outcome `applied`; `rtmp_publish` with outcome `failed` is only a real error.
+
 ## RTMP Recordings
 
 The recording inventory covers every recorder `root_directory` of the active generation. A recording

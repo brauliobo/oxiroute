@@ -41,6 +41,7 @@ mod event;
 mod event_log;
 
 pub(crate) use audit::*;
+pub use event::RtmpEventDetail;
 pub(crate) use event::*;
 pub use event_log::*;
 

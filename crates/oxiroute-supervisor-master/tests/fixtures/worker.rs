@@ -204,6 +204,12 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     correlation_id: Some("fixture".into()),
                     source: Some("worker".into()),
                     operation: Some("generation_activate".into()),
+                    rtmp: Some(oxiroute_supervisor_master::WorkerRtmpDetail {
+                        stream: Some("camera".into()),
+                        session_id: Some("session".into()),
+                        reason: Some("closed".into()),
+                        ..Default::default()
+                    }),
                 }]
             } else {
                 Vec::new()

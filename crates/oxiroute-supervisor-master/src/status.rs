@@ -22,7 +22,7 @@ pub const MAX_STATUS_EVENTS: usize = 64;
 pub const MAX_AGGREGATED_EVENTS: usize = 2_048;
 
 const MAX_STATUS_STRING_BYTES: usize = 1_024;
-const STATUS_FORMAT_VERSION: u16 = 1;
+const STATUS_FORMAT_VERSION: u16 = 2;
 
 mod history;
 mod model;

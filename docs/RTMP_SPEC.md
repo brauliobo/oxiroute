@@ -308,7 +308,17 @@ cannot terminate a replacement publisher. Controls are polled at a bounded 100 m
 return `202` when queued.
 
 The operational event stream recognizes `rtmp_connect`, `rtmp_publish`, `rtmp_play`,
-`rtmp_disconnect`, and `rtmp_access`. Enabled RTMP access logging reuses the bounded asynchronous
+`rtmp_disconnect`, `rtmp_access`, `rtmp_publish_end`, `rtmp_recorder_started`,
+`rtmp_recorder_stopped`, and `rtmp_recorder_failed`. RTMP events carry an `rtmp` object (`service`,
+`application`, `stream`, `streamId`, `sessionId`, `role`, `reason`, `recorder`; absent members are
+omitted, client addresses are never included). `rtmp_publish_end` is emitted once when a publisher
+leaves and carries the same `reason` as the catalog `end_reason`; its outcome is `applied` for
+`closed`, `dropped` and `shutdown`, `failed` for `stale` and `failed`. Recorder events are derived
+from catalog transitions: a recorder that comes back after a failure is reported as
+`rtmp_recorder_started` with reason `recovered`; a failure carries the recorder error code
+(`quota_files`, `quota_bytes`, `open_failed`, ...). An FLV end-of-sequence video tag, which ffmpeg
+sends when it finishes, ends nothing and is not a failure. Version 1 clients see the new event
+names as `unknown`. Enabled RTMP access logging reuses the bounded asynchronous
 no-follow JSONL worker but has a distinct fixed schema: event, result, listener/service/application/
 stream/session identifiers, role, bytes/messages, timestamp/duration, bounded failure code, and
 correlation ID. Stream queries, URLs, tokens, credentials, recording roots, private paths, raw

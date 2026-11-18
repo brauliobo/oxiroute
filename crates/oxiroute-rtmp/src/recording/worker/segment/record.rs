@@ -42,7 +42,7 @@ impl SegmentRecord {
                 self.observe_video_codec(event);
                 self.observe_timestamp(event.timestamp_ms());
             }
-            MediaEventKind::Metadata => {}
+            MediaEventKind::Metadata | MediaEventKind::VideoMetadata => {}
         }
     }
 

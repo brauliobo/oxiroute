@@ -13,6 +13,7 @@ pub struct WorkerEventSnapshot {
     pub correlation_id: Option<String>,
     pub source: Option<String>,
     pub operation: Option<String>,
+    pub rtmp: Option<RtmpEventDetail>,
 }
 
 /// Bounded event page exposed to the supervised worker adapter.
@@ -108,25 +109,45 @@ pub(crate) fn audit_metrics() -> AuditMetricSnapshot {
     current_audit_store().metric_snapshot()
 }
 
+#[derive(Default)]
+struct Emission<'a> {
+    event: &'a str,
+    outcome: &'a str,
+    revision: Option<&'a EffectiveRevision>,
+    certificate: Option<&'a str>,
+    operation: Option<&'a str>,
+    category_result: Option<(AuditCategory, AuditResult)>,
+    rtmp: Option<RtmpEventDetail>,
+}
+
 pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&EffectiveRevision>) {
     emit_with_context(event, outcome, revision, &AuditContext::generated());
 }
 
 /// Emits a bounded, redacted RTMP lifecycle event without copying stream queries or credentials.
-pub fn emit_rtmp_access(event: &str, outcome: &str) {
-    crate::observability::monitoring::record_transport_event(
-        ObservedTransport::Rtmp,
-        match outcome {
-            "accepted" | "closed" => TransportOutcome::Success,
-            "rejected" => TransportOutcome::Rejected,
-            _ => TransportOutcome::InternalError,
-        },
-    );
+pub fn emit_rtmp_access(event: &str, outcome: &str, detail: RtmpEventDetail) {
+    if !matches!(
+        event,
+        "publish_end" | "recorder_started" | "recorder_stopped" | "recorder_failed"
+    ) {
+        crate::observability::monitoring::record_transport_event(
+            ObservedTransport::Rtmp,
+            match outcome {
+                "accepted" | "closed" => TransportOutcome::Success,
+                "rejected" => TransportOutcome::Rejected,
+                _ => TransportOutcome::InternalError,
+            },
+        );
+    }
     let event = match event {
         "connect" => "rtmp_connect",
         "publish" => "rtmp_publish",
         "play" => "rtmp_play",
         "disconnect" => "rtmp_disconnect",
+        "publish_end" => "rtmp_publish_end",
+        "recorder_started" => "rtmp_recorder_started",
+        "recorder_stopped" => "rtmp_recorder_stopped",
+        "recorder_failed" => "rtmp_recorder_failed",
         _ => "rtmp_access",
     };
     let outcome = match outcome {
@@ -135,13 +156,13 @@ pub fn emit_rtmp_access(event: &str, outcome: &str) {
         _ => "failed",
     };
     emit_inner(
-        event,
-        outcome,
-        None,
-        None,
+        Emission {
+            event,
+            outcome,
+            rtmp: Some(detail.redacted()),
+            ..Emission::default()
+        },
         &AuditContext::generated(),
-        None,
-        None,
     );
 }
 
@@ -164,7 +185,15 @@ pub(crate) fn emit_with_context(
     revision: Option<&EffectiveRevision>,
     context: &AuditContext,
 ) {
-    emit_inner(event, outcome, revision, None, context, None, None);
+    emit_inner(
+        Emission {
+            event,
+            outcome,
+            revision,
+            ..Emission::default()
+        },
+        context,
+    );
 }
 
 pub(crate) fn emit_certificate_with_context(
@@ -173,19 +202,28 @@ pub(crate) fn emit_certificate_with_context(
     certificate: &str,
     context: &AuditContext,
 ) {
-    emit_inner(event, outcome, None, Some(certificate), context, None, None);
+    emit_inner(
+        Emission {
+            event,
+            outcome,
+            certificate: Some(certificate),
+            ..Emission::default()
+        },
+        context,
+    );
 }
 
 /// A retired generation was closed before its work ended; `reason` is `drain_deadline` or `shutdown`.
 pub(crate) fn emit_retire_forced_close(revision: &EffectiveRevision, reason: &str) {
     emit_inner(
-        "generation_retire",
-        "forced_close",
-        Some(revision),
-        None,
+        Emission {
+            event: "generation_retire",
+            outcome: "forced_close",
+            revision: Some(revision),
+            operation: Some(reason),
+            ..Emission::default()
+        },
         &AuditContext::generated(),
-        Some(reason),
-        None,
     );
 }
 
@@ -219,13 +257,15 @@ pub(crate) fn emit_api_operation(
         AuditResult::Rejected | AuditResult::Conflict => "rejected",
     };
     emit_inner(
-        event,
-        outcome,
-        revision,
-        None,
+        Emission {
+            event,
+            outcome,
+            revision,
+            operation: Some(operation),
+            category_result: Some((category, result)),
+            ..Emission::default()
+        },
         context,
-        Some(operation),
-        Some((category, result)),
     );
 }
 
@@ -344,21 +384,23 @@ fn emit_typed(context: &AuditContext, event: EventName, outcome: EventOutcome) {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let audit_value = publish(&mut state, &mut value, context, None);
     drop(state);
     persist(audit_value, context, category, result);
 }
 
-fn emit_inner(
-    event: &str,
-    outcome: &str,
-    revision: Option<&EffectiveRevision>,
-    certificate: Option<&str>,
-    context: &AuditContext,
-    operation: Option<&str>,
-    category_result: Option<(AuditCategory, AuditResult)>,
-) {
+fn emit_inner(emission: Emission<'_>, context: &AuditContext) {
+    let Emission {
+        event,
+        outcome,
+        revision,
+        certificate,
+        operation,
+        category_result,
+        rtmp,
+    } = emission;
     let mut state = log()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -373,6 +415,7 @@ fn emit_inner(
         revision,
     );
     value.certificate = certificate.map(redact_identifier);
+    value.rtmp = rtmp;
     let event_category =
         category_result.map_or_else(|| category_for_event(value.event), |(category, _)| category);
     let event_result =
@@ -441,7 +484,11 @@ pub(super) const fn durability_for_event(event: EventName) -> AuditDurability {
         | EventName::RtmpPublish
         | EventName::RtmpPlay
         | EventName::RtmpDisconnect
-        | EventName::RtmpAccess => AuditDurability::Batched,
+        | EventName::RtmpAccess
+        | EventName::RtmpPublishEnd
+        | EventName::RtmpRecorderStarted
+        | EventName::RtmpRecorderStopped
+        | EventName::RtmpRecorderFailed => AuditDurability::Batched,
         _ => AuditDurability::Immediate,
     }
 }
@@ -479,6 +526,10 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::RtmpPlay
         | EventName::RtmpDisconnect
         | EventName::RtmpAccess
+        | EventName::RtmpPublishEnd
+        | EventName::RtmpRecorderStarted
+        | EventName::RtmpRecorderStopped
+        | EventName::RtmpRecorderFailed
         | EventName::UpstreamEndpointEjection
         | EventName::UpstreamEndpointRecovery
         | EventName::UpstreamEndpointHealth
@@ -538,6 +589,7 @@ pub fn worker_event_page(after: u64, limit: usize) -> WorkerEventPage {
                 correlation_id: event.correlation_id,
                 source: event.source,
                 operation: event.operation,
+                rtmp: event.rtmp,
             })
             .collect(),
         cursor,

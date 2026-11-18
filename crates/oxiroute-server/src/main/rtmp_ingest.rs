@@ -1,6 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use oxiroute_rtmp::PublisherEndReason;
+use oxiroute_rtmp::{
+    CatalogEvent, EndedStreamSnapshot, PublisherEndReason, RecorderTransition,
+    RecorderTransitionKind, StreamId, StreamKey,
+};
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -169,6 +172,9 @@ impl ServerApp for RtmpIngest {
                         break;
                     }
                     _ = control_poll.tick() => {
+                        if session.is_publisher_active() {
+                            emit_catalog_events(&self.control);
+                        }
                         if session.take_control_action().is_some() {
                             session.set_end_reason(PublisherEndReason::Dropped);
                             break;
@@ -337,7 +343,9 @@ impl ServerApp for RtmpIngest {
                     at_unix_ms,
                 );
             }
-            let close_failed = if let Err(error) = session.close(at_unix_ms) {
+            let close_result = session.close(at_unix_ms);
+            emit_catalog_events(&self.control);
+            let close_failed = if let Err(error) = close_result {
                 last_failure_code = Some("session_close_failed");
                 warn!("could not detach RTMP media role: {error}");
                 true
@@ -538,7 +546,20 @@ fn log_rtmp_access_event(
     at_unix_ms: u64,
     failure_code: Option<&str>,
 ) {
-    emit_rtmp_access(event.as_str(), result.as_str());
+    emit_rtmp_access(
+        event.as_str(),
+        result.as_str(),
+        RtmpEventDetail {
+            service: Some(service.service_id().to_owned()),
+            application: snapshot.application.clone(),
+            stream: snapshot.stream_name.clone(),
+            stream_id: snapshot_stream_id(service, snapshot),
+            session_id: Some(snapshot.session_id.to_string()),
+            role: Some(snapshot.role.as_str().to_owned()),
+            reason: failure_code.map(str::to_owned),
+            recorder: None,
+        },
+    );
     let duration_ms = u64::try_from(session_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     let value = serde_json::json!({
         "timestampUnixMs": at_unix_ms,
@@ -560,6 +581,75 @@ fn log_rtmp_access_event(
     if let Err(error) = service.write_rtmp_access_event(&value) {
         warn!("RTMP access log write failed: {error}");
     }
+}
+
+fn snapshot_stream_id(service: &RtmpServicePlan, snapshot: &RtmpClientSnapshot) -> Option<String> {
+    let key = StreamKey::new(
+        service.service_id(),
+        snapshot.application.as_deref()?,
+        snapshot.stream_name.as_deref()?,
+    );
+    Some(StreamId::for_key(&key).to_string())
+}
+
+fn emit_catalog_events(control: &RtmpControlHandle) {
+    for event in control.take_catalog_events() {
+        match event {
+            CatalogEvent::PublisherEnded(ended) => emit_publisher_ended(&ended),
+            CatalogEvent::Recorder(transition) => emit_recorder_transition(&transition),
+        }
+    }
+}
+
+fn emit_publisher_ended(ended: &EndedStreamSnapshot) {
+    let (reason, outcome) = match ended.end_reason {
+        PublisherEndReason::Closed => ("closed", "closed"),
+        PublisherEndReason::Dropped => ("dropped", "closed"),
+        PublisherEndReason::Shutdown => ("shutdown", "closed"),
+        PublisherEndReason::Stale => ("stale", "failed"),
+        PublisherEndReason::Failed => ("failed", "failed"),
+    };
+    emit_rtmp_access(
+        "publish_end",
+        outcome,
+        RtmpEventDetail {
+            service: Some(ended.key.server_id.clone()),
+            application: Some(ended.key.application.clone()),
+            stream: Some(ended.key.name.clone()),
+            stream_id: Some(ended.stream_id.to_string()),
+            session_id: Some(ended.publisher_session_id.to_string()),
+            role: Some("publisher".to_owned()),
+            reason: Some(reason.to_owned()),
+            recorder: None,
+        },
+    );
+}
+
+fn emit_recorder_transition(transition: &RecorderTransition) {
+    let (event, outcome, reason) = match transition.kind {
+        RecorderTransitionKind::Started => ("recorder_started", "accepted", None),
+        RecorderTransitionKind::Recovered => ("recorder_started", "accepted", Some("recovered")),
+        RecorderTransitionKind::Stopped => ("recorder_stopped", "closed", None),
+        RecorderTransitionKind::Failed(code) => (
+            "recorder_failed",
+            "failed",
+            Some(recorder_failure_code(code).trim_start_matches("record_")),
+        ),
+    };
+    emit_rtmp_access(
+        event,
+        outcome,
+        RtmpEventDetail {
+            service: Some(transition.key.server_id.clone()),
+            application: Some(transition.key.application.clone()),
+            stream: Some(transition.key.name.clone()),
+            stream_id: Some(transition.stream_id.to_string()),
+            session_id: transition.publisher_session_id.map(|id| id.to_string()),
+            role: Some("publisher".to_owned()),
+            reason: reason.map(str::to_owned),
+            recorder: transition.recorder_name.clone(),
+        },
+    );
 }
 
 fn event_for_role(role: RtmpSessionRole) -> RtmpAccessEvent {

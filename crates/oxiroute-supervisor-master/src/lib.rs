@@ -32,5 +32,5 @@ pub use status::{
     SupervisorGenerationSnapshot, SupervisorListenerObservation, SupervisorListenerSnapshot,
     SupervisorProcessSnapshot, SupervisorSnapshot, SupervisorSnapshotError,
     WorkerAdministrativeState, WorkerEventRecord, WorkerGenerationStatus, WorkerLifecycle,
-    WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
+    WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerRtmpDetail, WorkerStatus,
 };

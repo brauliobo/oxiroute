@@ -13,6 +13,7 @@ mod revision_support;
 mod rtmp_support;
 
 mod ended;
+mod events;
 mod hevc;
 mod inventory;
 mod media_ticket;

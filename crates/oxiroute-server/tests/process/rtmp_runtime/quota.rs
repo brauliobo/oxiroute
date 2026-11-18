@@ -75,6 +75,16 @@ async fn file_quota_without_retention_reports_quota_files_and_recovers_when_a_fi
         recorder_phase(&failed).expect("phase")["code"],
         "quota_files"
     );
+    let failure = events::wait_for_event(
+        management_address,
+        "rtmp_recorder_failed",
+        Some("quota_files"),
+    )
+    .await;
+    assert_eq!(failure["outcome"], "failed");
+    assert_eq!(failure["rtmp"]["stream"], "camera");
+    assert_eq!(failure["rtmp"]["recorder"], "archive");
+    assert!(failure["rtmp"]["sessionId"].is_string());
     let completed = recording_files(&root);
     assert_eq!(completed.len(), 1);
 
@@ -97,6 +107,12 @@ async fn file_quota_without_retention_reports_quota_files_and_recovers_when_a_fi
         recorder_phase(&recovered).expect("phase")["state"],
         "recording"
     );
+    events::wait_for_event(
+        management_address,
+        "rtmp_recorder_started",
+        Some("recovered"),
+    )
+    .await;
     publisher.close().await;
     server.shutdown();
 }

@@ -85,6 +85,20 @@ pub struct WorkerEventRecord {
     pub correlation_id: Option<String>,
     pub source: Option<String>,
     pub operation: Option<String>,
+    pub rtmp: Option<WorkerRtmpDetail>,
+}
+
+/// The stream, session and recorder an RTMP event is about, and why it happened.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkerRtmpDetail {
+    pub service: Option<String>,
+    pub application: Option<String>,
+    pub stream: Option<String>,
+    pub stream_id: Option<String>,
+    pub session_id: Option<String>,
+    pub role: Option<String>,
+    pub reason: Option<String>,
+    pub recorder: Option<String>,
 }
 
 /// Authenticated, bounded worker observation sent to the master.

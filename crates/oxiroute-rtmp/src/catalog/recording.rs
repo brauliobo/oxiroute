@@ -82,6 +82,7 @@ impl RtmpRegistry {
             (recorder.snapshot(), changed)
         };
         if changed {
+            note_recorder_transitions(&mut inner, stream_id, at_unix_ms);
             mark_mutation(&mut inner, at_unix_ms);
             publish_snapshot_if_dirty(&mut inner, self.capabilities);
         }
@@ -213,6 +214,7 @@ impl RtmpRegistry {
         if changed {
             recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(at_unix_ms);
             stream.revision = stream.revision.saturating_add(1);
+            note_recorder_transitions(&mut inner, stream_id, at_unix_ms);
             mark_mutation(&mut inner, at_unix_ms);
         }
     }
@@ -256,6 +258,7 @@ impl RtmpRegistry {
         };
         recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
         stream.revision = stream.revision.saturating_add(1);
+        note_recorder_transitions(&mut inner, context.stream_id, context.at_unix_ms);
         mark_mutation(&mut inner, context.at_unix_ms);
     }
 
@@ -382,6 +385,7 @@ impl RtmpRegistry {
         };
         recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
         stream.revision = stream.revision.saturating_add(1);
+        note_recorder_transitions(&mut inner, context.stream_id, context.at_unix_ms);
         mark_mutation(&mut inner, context.at_unix_ms);
     }
 
@@ -407,6 +411,7 @@ impl RtmpRegistry {
         };
         recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
         stream.revision = stream.revision.saturating_add(1);
+        note_recorder_transitions(&mut inner, context.stream_id, context.at_unix_ms);
         mark_mutation(&mut inner, context.at_unix_ms);
     }
 
@@ -511,6 +516,7 @@ fn active_operation(phase: RecorderPhase) -> Option<OperationId> {
 
 pub(super) fn refresh_recorder_statuses(inner: &mut RegistryInner) {
     let mut changed = false;
+    let mut changed_streams = Vec::new();
     let mut observed_at_unix_ms = inner.as_of_unix_ms;
     for stream in inner.streams.values_mut() {
         let mut stream_changed = false;
@@ -530,8 +536,12 @@ pub(super) fn refresh_recorder_statuses(inner: &mut RegistryInner) {
         }
         if stream_changed {
             stream.revision = stream.revision.saturating_add(1);
+            changed_streams.push(stream.id);
             changed = true;
         }
+    }
+    for stream_id in changed_streams {
+        note_recorder_transitions(inner, stream_id, observed_at_unix_ms);
     }
     if changed {
         mark_mutation(inner, observed_at_unix_ms);

@@ -113,6 +113,14 @@ impl RtmpSession {
             .any(|role| matches!(role, SessionRole::Playback(_) | SessionRole::VodPlayback(_)))
     }
 
+    /// Returns whether this connection currently owns a publisher role.
+    #[must_use]
+    pub fn is_publisher_active(&self) -> bool {
+        self.roles
+            .values()
+            .any(|role| matches!(role, SessionRole::Publisher(_)))
+    }
+
     /// Returns whether the active publisher has emitted no metadata or media for the stale
     /// publisher threshold.
     #[must_use]

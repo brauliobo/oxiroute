@@ -27,6 +27,7 @@ fn sse_frames_include_cursors_and_bounded_heartbeat() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let frame = operational_frame(&event);
 
@@ -50,6 +51,7 @@ fn redacted_typed_event_data_cannot_copy_raw_credentials_into_sse() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let frame = operational_frame(&event);
     let frame = String::from_utf8(frame).expect("SSE frame");
@@ -72,6 +74,7 @@ fn version_one_sse_keeps_the_shipped_certificate_activation_spellings() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let frame = String::from_utf8(operational_frame(&event)).expect("SSE frame");
 
@@ -100,6 +103,7 @@ fn version_two_sse_uses_the_complete_matching_event_vocabulary() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let frame = String::from_utf8(operational_frame_v2(&event)).expect("SSE frame");
 
@@ -141,4 +145,34 @@ fn evacuations_are_audited_as_control_operations() {
         ));
         assert!(audited_api_operation("GET", path).is_none());
     }
+}
+
+#[test]
+fn rtmp_recorder_events_carry_stream_session_and_reason_on_version_two_frames() {
+    let event = OperationalEvent {
+        cursor: 9,
+        timestamp_unix_ms: None,
+        event: crate::observability::operational_event::EventName::RtmpRecorderFailed,
+        outcome: crate::observability::operational_event::EventOutcome::Failed,
+        revision: None,
+        certificate: None,
+        correlation_id: None,
+        actor: None,
+        source: None,
+        operation: None,
+        rtmp: Some(crate::RtmpEventDetail {
+            stream: Some("camera".to_owned()),
+            session_id: Some("session-1".to_owned()),
+            reason: Some("quota_files".to_owned()),
+            ..crate::RtmpEventDetail::default()
+        }),
+    };
+
+    let frame = String::from_utf8_lossy(&operational_frame_v2(&event)).into_owned();
+
+    assert!(frame.contains("event: rtmp_recorder_failed"));
+    assert!(frame.contains("\"stream\":\"camera\""));
+    assert!(frame.contains("\"sessionId\":\"session-1\""));
+    assert!(frame.contains("\"reason\":\"quota_files\""));
+    assert!(String::from_utf8_lossy(&operational_frame(&event)).contains("event: unknown"));
 }

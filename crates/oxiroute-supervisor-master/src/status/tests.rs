@@ -59,6 +59,7 @@ fn status() -> WorkerStatus {
             correlation_id: Some("op-1".into()),
             source: Some("runtime".into()),
             operation: Some("generation_activate".into()),
+            rtmp: None,
         }],
     }
 }
@@ -85,6 +86,7 @@ fn status_encoding_rejects_unbounded_event_batches() {
             correlation_id: None,
             source: None,
             operation: None,
+            rtmp: None,
         })
         .collect();
     assert!(matches!(
@@ -99,7 +101,7 @@ fn status_prefix_and_tags_stay_byte_exact() {
     assert_eq!(
         &payload[..23],
         &[
-            0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 0
+            0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 0
         ]
     );
 }

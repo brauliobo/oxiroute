@@ -389,8 +389,35 @@ fn continuous_recorder_returns_from_failed_to_recording_in_one_publisher() {
     registry.start_continuous_recording(stream_id, session_id, recorder_id, 1_000);
 
     assert_continuous_catalog_recovery(&registry, &controller, stream_id, session_id, recorder_id);
+    let kinds = recorder_event_kinds(&registry);
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [
+                RecorderTransitionKind::Started,
+                RecorderTransitionKind::Failed(_),
+                RecorderTransitionKind::Recovered
+            ]
+        ),
+        "{kinds:?}"
+    );
     drop(registration);
+    assert_eq!(
+        recorder_event_kinds(&registry),
+        [RecorderTransitionKind::Stopped]
+    );
     drop(reaper_owner);
+}
+
+fn recorder_event_kinds(registry: &RtmpRegistry) -> Vec<RecorderTransitionKind> {
+    registry
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            CatalogEvent::Recorder(transition) => Some(transition.kind),
+            CatalogEvent::PublisherEnded(_) => None,
+        })
+        .collect()
 }
 
 #[test]

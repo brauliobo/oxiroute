@@ -56,7 +56,10 @@ async fn a_closed_publisher_stays_listed_offline_and_the_stream_id_survives_a_re
     let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
     publish_audio_frames(&mut publisher, "lobby").await;
     let live = wait_for_catalog(management_address, |catalog| {
-        stream_for(catalog, "continuous").is_some_and(|stream| stream["state"] == "live")
+        stream_for(catalog, "continuous").is_some_and(|stream| {
+            stream["state"] == "live"
+                && stream["media"]["profile"]["audio_sample_rate_hz"] == 44_100
+        })
     })
     .await;
     let live_stream = stream_for(&live, "continuous").expect("live stream");

@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    CatalogError, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog, RecorderId,
+    CatalogError, CatalogEvent, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog, RecorderId,
     RecorderSnapshot, RecorderSource, RecordingCatalog, RecordingStore, RtmpAutoPushStatus,
     RtmpCallbackEventPlan, RtmpCallbackPlan, RtmpCallbackPolicy, RtmpCapabilities,
     RtmpCatalogSnapshot, RtmpClientOptions, RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan,
@@ -134,6 +134,12 @@ impl RtmpControlHandle {
                 total.last_failure = total.last_failure.or(status.last_failure);
                 total
             })
+    }
+
+    /// Drains the publisher-ended and recorder events that happened since the previous call.
+    #[must_use]
+    pub fn take_catalog_events(&self) -> Vec<CatalogEvent> {
+        self.registry.take_events()
     }
 
     /// Returns the current immutable stream catalog snapshot.

@@ -20,6 +20,7 @@ impl RtmpRegistry {
                     ended_streams: Vec::new(),
                 }),
                 ended_streams: VecDeque::new(),
+                pending_events: VecDeque::new(),
                 snapshot_dirty: false,
                 work_stats: RtmpRegistryWorkStats::default(),
             }),
@@ -324,6 +325,7 @@ impl RtmpRegistry {
                         discontinuities: 0,
                         last_notification: None,
                         worker_generation: 0,
+                        reported: RecorderReport::Idle,
                         control: control.into_recorder_control(),
                     },
                 )
@@ -494,7 +496,7 @@ fn detach_publisher_inner(
     reason: PublisherEndReason,
     capabilities: RtmpCapabilities,
 ) -> Result<PublisherShutdown, CatalogError> {
-    let (remove, recorder_controls, relay_controls, ended) = {
+    let (remove, recorder_controls, relay_controls, ended, stopped) = {
         let stream = inner
             .streams
             .get_mut(&stream_id)
@@ -505,6 +507,7 @@ fn detach_publisher_inner(
                 session_id,
             });
         }
+        let stopped = stopped_recorder_events(stream, at_unix_ms);
         let ended = EndedStreamSnapshot {
             stream_id,
             key: stream.key.clone(),
@@ -540,8 +543,13 @@ fn detach_publisher_inner(
             recorder_controls,
             relay_controls,
             ended,
+            stopped,
         )
     };
+    for event in stopped {
+        inner.push_event(event);
+    }
+    inner.push_event(CatalogEvent::PublisherEnded(ended.clone()));
     record_ended_stream(inner, ended);
     if remove {
         remove_stream(inner, stream_id);

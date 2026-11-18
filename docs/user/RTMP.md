@@ -290,6 +290,10 @@ observations, byte and fanout totals, recorder phase, relative current/completed
 segment counters, discontinuities, relay state, and bounded client `messageStreams` snapshots. They
 do not expose recording roots, stream query arguments, or private material.
 
+`/api/v2/events` reports each publisher end (`rtmp_publish_end`, with the reason) and recorder
+start, stop, failure and recovery (`rtmp_recorder_started|stopped|failed`), each with the stream,
+session and reason; a publisher that finishes normally is never reported as failed.
+
 A stream whose publisher left stays listed as `offline` in `recently_ended_streams` for one hour (at
 most 64 streams, cleared on restart), with `last_seen_at_unix_ms` and an `end_reason` (`closed`,
 `dropped`, `stale`, `shutdown`, `failed`). `media.profile` shows resolution, frame rate, bitrates,

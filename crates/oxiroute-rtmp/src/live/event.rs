@@ -7,6 +7,8 @@ const ENHANCED_VIDEO_HEADER: u8 = 0x80;
 const VIDEO_COMMAND_FRAME: u8 = 5;
 const PACKET_SEQUENCE_START: u8 = 0;
 const PACKET_CODED_FRAMES: u8 = 1;
+const PACKET_SEQUENCE_END: u8 = 2;
+const LEGACY_AVC_END_OF_SEQUENCE: u8 = 2;
 const PACKET_CODED_FRAMES_X: u8 = 3;
 const PACKET_METADATA: u8 = 4;
 
@@ -144,6 +146,19 @@ impl MediaEvent {
             MediaEventKind::Audio
         };
         Self::new(kind, timestamp_ms, payload)
+    }
+
+    /// Whether an FLV video payload is an end-of-sequence marker, which carries no frame.
+    #[must_use]
+    pub fn is_video_end_of_sequence(payload: &[u8]) -> bool {
+        let Some(&header) = payload.first() else {
+            return false;
+        };
+        if header & ENHANCED_VIDEO_HEADER == 0 {
+            header & 0x0f == AVC_CODEC_ID && payload.get(1) == Some(&LEGACY_AVC_END_OF_SEQUENCE)
+        } else {
+            (header >> 4) & 0x07 != VIDEO_COMMAND_FRAME && header & 0x0f == PACKET_SEQUENCE_END
+        }
     }
 
     /// Classifies an FLV video-message payload.

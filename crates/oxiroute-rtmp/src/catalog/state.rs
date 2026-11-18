@@ -22,6 +22,7 @@ pub(super) struct MutableRecorder {
     pub(super) discontinuities: u64,
     pub(super) last_notification: Option<RecorderNotification>,
     pub(super) worker_generation: u64,
+    pub(super) reported: RecorderReport,
     pub(super) control: Option<Arc<RecorderController>>,
 }
 
@@ -147,6 +148,7 @@ pub(super) struct RegistryInner {
     pub(super) streams: HashMap<StreamId, MutableStream>,
     pub(super) streams_by_key: HashMap<StreamKey, StreamId>,
     pub(super) ended_streams: VecDeque<EndedStreamSnapshot>,
+    pub(super) pending_events: VecDeque<CatalogEvent>,
     pub(super) current: Arc<RtmpCatalogSnapshot>,
     pub(super) snapshot_dirty: bool,
     pub(super) work_stats: RtmpRegistryWorkStats,

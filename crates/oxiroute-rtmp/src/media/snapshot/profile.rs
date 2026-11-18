@@ -84,6 +84,7 @@ impl ProfileAccumulator {
                     .observe(event.timestamp_ms(), event.payload_len());
             }
             MediaEventKind::Metadata
+            | MediaEventKind::VideoMetadata
             | MediaEventKind::AvcSequenceHeader
             | MediaEventKind::HevcSequenceHeader
             | MediaEventKind::Av1SequenceHeader => {}
@@ -125,7 +126,9 @@ impl ProfileAccumulator {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn frame_rate_millihertz(frames_per_second: f32) -> u32 {
-    (frames_per_second * 1_000.0).round().clamp(0.0, 1_000_000.0) as u32
+    (frames_per_second * 1_000.0)
+        .round()
+        .clamp(0.0, 1_000_000.0) as u32
 }
 
 const fn kilobits_to_bps(kilobits: u32) -> u64 {

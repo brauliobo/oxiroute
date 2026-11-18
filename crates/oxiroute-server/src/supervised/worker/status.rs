@@ -119,6 +119,16 @@ impl<'a> StatusReporter<'a> {
                 correlation_id: event.correlation_id.clone(),
                 source: event.source.clone(),
                 operation: event.operation.clone(),
+                rtmp: event.rtmp.as_ref().map(|detail| WorkerRtmpDetail {
+                    service: detail.service.clone(),
+                    application: detail.application.clone(),
+                    stream: detail.stream.clone(),
+                    stream_id: detail.stream_id.clone(),
+                    session_id: detail.session_id.clone(),
+                    role: detail.role.clone(),
+                    reason: detail.reason.clone(),
+                    recorder: detail.recorder.clone(),
+                }),
             })
             .collect::<Vec<_>>();
         let next_event_cursor = if event_page.has_more {

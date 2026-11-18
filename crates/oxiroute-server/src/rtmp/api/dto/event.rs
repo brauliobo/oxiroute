@@ -6,7 +6,9 @@ use serde::Serialize;
 use super::mutation::left_running_by_reason;
 use crate::{
     EndpointHealthState, HealthFailure,
-    observability::operational_event::{EventName, EventOutcome, EventPage, OperationalEvent},
+    observability::operational_event::{
+        EventName, EventOutcome, EventPage, OperationalEvent, RtmpEventDetail,
+    },
 };
 
 #[derive(JsonSchema, Serialize)]
@@ -69,6 +71,44 @@ pub(crate) struct OperationalEventDto<N> {
     source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rtmp: Option<RtmpEventDetailDto>,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RtmpEventDetailDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorder: Option<String>,
+}
+
+impl From<&RtmpEventDetail> for RtmpEventDetailDto {
+    fn from(detail: &RtmpEventDetail) -> Self {
+        Self {
+            service: detail.service.clone(),
+            application: detail.application.clone(),
+            stream: detail.stream.clone(),
+            stream_id: detail.stream_id.clone(),
+            session_id: detail.session_id.clone(),
+            role: detail.role.clone(),
+            reason: detail.reason.clone(),
+            recorder: detail.recorder.clone(),
+        }
+    }
 }
 
 impl OperationalEventDto<V1EventNameDto> {
@@ -99,6 +139,7 @@ impl<N> OperationalEventDto<N> {
             actor: event.actor.clone(),
             source: event.source.clone(),
             operation: event.operation.clone(),
+            rtmp: event.rtmp.as_ref().map(Into::into),
         }
     }
 }
@@ -161,6 +202,10 @@ impl From<EventName> for V1EventNameDto {
             | EventName::GenerationRetire
             | EventName::UpstreamEndpointHealth
             | EventName::ServerEvacuation
+            | EventName::RtmpPublishEnd
+            | EventName::RtmpRecorderStarted
+            | EventName::RtmpRecorderStopped
+            | EventName::RtmpRecorderFailed
             | EventName::Unknown => Self::Unknown,
         }
     }
@@ -187,6 +232,10 @@ pub(crate) enum V2EventNameDto {
     RtmpPlay,
     RtmpDisconnect,
     RtmpAccess,
+    RtmpPublishEnd,
+    RtmpRecorderStarted,
+    RtmpRecorderStopped,
+    RtmpRecorderFailed,
     CertificateRenewal,
     CertificateActivated,
     CertificateRevocation,
@@ -221,6 +270,10 @@ impl From<EventName> for V2EventNameDto {
             EventName::RtmpPlay => Self::RtmpPlay,
             EventName::RtmpDisconnect => Self::RtmpDisconnect,
             EventName::RtmpAccess => Self::RtmpAccess,
+            EventName::RtmpPublishEnd => Self::RtmpPublishEnd,
+            EventName::RtmpRecorderStarted => Self::RtmpRecorderStarted,
+            EventName::RtmpRecorderStopped => Self::RtmpRecorderStopped,
+            EventName::RtmpRecorderFailed => Self::RtmpRecorderFailed,
             EventName::CertificateRenewal => Self::CertificateRenewal,
             EventName::CertificateActivation => Self::CertificateActivated,
             EventName::CertificateRevocation => Self::CertificateRevocation,

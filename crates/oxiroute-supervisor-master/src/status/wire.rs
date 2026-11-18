@@ -276,7 +276,21 @@ fn encode_event(
     encoder.optional_string(event.certificate.as_deref())?;
     encoder.optional_string(event.correlation_id.as_deref())?;
     encoder.optional_string(event.source.as_deref())?;
-    encoder.optional_string(event.operation.as_deref())
+    encoder.optional_string(event.operation.as_deref())?;
+    match &event.rtmp {
+        Some(detail) => {
+            encoder.u8(1)?;
+            encoder.optional_string(detail.service.as_deref())?;
+            encoder.optional_string(detail.application.as_deref())?;
+            encoder.optional_string(detail.stream.as_deref())?;
+            encoder.optional_string(detail.stream_id.as_deref())?;
+            encoder.optional_string(detail.session_id.as_deref())?;
+            encoder.optional_string(detail.role.as_deref())?;
+            encoder.optional_string(detail.reason.as_deref())?;
+            encoder.optional_string(detail.recorder.as_deref())
+        }
+        None => encoder.u8(0),
+    }
 }
 
 fn decode_event(decoder: &mut Decoder<'_>) -> Result<WorkerEventRecord, StatusProtocolError> {
@@ -299,7 +313,26 @@ fn decode_event(decoder: &mut Decoder<'_>) -> Result<WorkerEventRecord, StatusPr
         correlation_id: decoder.optional_string()?,
         source: decoder.optional_string()?,
         operation: decoder.optional_string()?,
+        rtmp: decode_rtmp_detail(decoder)?,
     })
+}
+
+fn decode_rtmp_detail(
+    decoder: &mut Decoder<'_>,
+) -> Result<Option<WorkerRtmpDetail>, StatusProtocolError> {
+    if !decoder.flag()? {
+        return Ok(None);
+    }
+    Ok(Some(WorkerRtmpDetail {
+        service: decoder.optional_string()?,
+        application: decoder.optional_string()?,
+        stream: decoder.optional_string()?,
+        stream_id: decoder.optional_string()?,
+        session_id: decoder.optional_string()?,
+        role: decoder.optional_string()?,
+        reason: decoder.optional_string()?,
+        recorder: decoder.optional_string()?,
+    }))
 }
 
 const fn status_flags(status: &WorkerStatus) -> u8 {

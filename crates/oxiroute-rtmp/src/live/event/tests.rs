@@ -101,3 +101,25 @@ fn enhanced_video_metadata_reaches_mixed_viewers_but_never_bootstraps_late_joine
         ]
     );
 }
+
+#[test]
+fn end_of_sequence_markers_are_recognized_without_being_frames() {
+    assert!(MediaEvent::is_video_end_of_sequence(&[0x17, 0x02, 0, 0, 0]));
+    assert!(MediaEvent::is_video_end_of_sequence(&[0x27, 0x02, 0, 0, 0]));
+    assert!(MediaEvent::is_video_end_of_sequence(&[
+        0x92, b'h', b'v', b'c', b'1'
+    ]));
+    assert!(!MediaEvent::is_video_end_of_sequence(&[
+        0x17, 0x01, 0, 0, 0, 1
+    ]));
+    assert!(!MediaEvent::is_video_end_of_sequence(&[
+        0x17, 0x00, 0, 0, 0, 1
+    ]));
+    assert!(!MediaEvent::is_video_end_of_sequence(&[
+        0x91, b'h', b'v', b'c', b'1', 1
+    ]));
+    assert!(!MediaEvent::is_video_end_of_sequence(&[
+        0x52, b'h', b'v', b'c', b'1'
+    ]));
+    assert!(!MediaEvent::is_video_end_of_sequence(&[]));
+}

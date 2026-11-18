@@ -175,7 +175,11 @@ fn exposition_uses_only_fixed_transport_outcome_labels() {
 
 #[test]
 fn exposition_includes_bounded_rtmp_and_acme_event_outcomes() {
-    crate::observability::operational_event::emit_rtmp_access("publish", "accepted");
+    crate::observability::operational_event::emit_rtmp_access(
+        "publish",
+        "accepted",
+        crate::RtmpEventDetail::default(),
+    );
     crate::observability::operational_event::emit_certificate(
         "certificate_renewal",
         "failed",

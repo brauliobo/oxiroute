@@ -135,6 +135,11 @@ impl PublishSession {
         timestamp: RtmpTimestamp,
         at_unix_ms: u64,
     ) -> Result<(), RtmpSessionError> {
+        if MediaEvent::is_video_end_of_sequence(data) {
+            self.last_media_activity_at_unix_ms =
+                self.last_media_activity_at_unix_ms.max(at_unix_ms);
+            return Ok(());
+        }
         let event = MediaEvent::video(timestamp.value, Arc::<[u8]>::from(data.as_ref()))?;
         self.media.observe(&event, at_unix_ms);
         self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);

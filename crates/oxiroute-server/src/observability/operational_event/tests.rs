@@ -269,6 +269,7 @@ fn default_serialization_preserves_persisted_version_one_event_names() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
 
     assert_eq!(
@@ -297,6 +298,7 @@ fn version_one_projection_preserves_shipped_event_names() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
 
     assert_eq!(v1_event_value(&event)["event"], "certificate_activation");
@@ -319,6 +321,7 @@ fn version_two_projection_uses_the_authoritative_event_names() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
 
     assert_eq!(v2_event_value(&event)["event"], "certificate_activated");
@@ -347,6 +350,7 @@ fn passive_endpoint_events_serialize_bounded_recovery_details() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
     let recovery = OperationalEvent {
         cursor: 2,
@@ -365,6 +369,7 @@ fn passive_endpoint_events_serialize_bounded_recovery_details() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
 
     let ejection = serde_json::to_value(ejection).expect("ejection event JSON");
@@ -396,6 +401,7 @@ fn health_changes_serialize_both_states_and_the_failure() {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     };
 
     let value = v2_event_value(&event);
@@ -441,6 +447,7 @@ fn evacuation_event(server: Option<&str>) -> OperationalEvent {
         actor: None,
         source: None,
         operation: None,
+        rtmp: None,
     }
 }
 

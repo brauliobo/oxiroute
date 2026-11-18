@@ -23,6 +23,7 @@ use crate::{
     },
 };
 
+mod events;
 mod ids;
 mod recording;
 mod registration;
@@ -30,6 +31,7 @@ mod registry;
 mod snapshot;
 mod state;
 
+pub use events::*;
 pub use ids::*;
 #[allow(clippy::wildcard_imports)]
 use recording::*;

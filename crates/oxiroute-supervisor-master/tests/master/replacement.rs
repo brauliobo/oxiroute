@@ -249,6 +249,11 @@ pub(super) fn authenticated_worker_status_is_retained_without_creating_a_command
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].generation_id, GenerationId(1));
     assert_eq!(events[0].worker_event.cursor, 1);
+    let rtmp = events[0].worker_event.rtmp.as_ref().expect("rtmp detail");
+    assert_eq!(rtmp.stream.as_deref(), Some("camera"));
+    assert_eq!(rtmp.session_id.as_deref(), Some("session"));
+    assert_eq!(rtmp.reason.as_deref(), Some("closed"));
+    assert_eq!(rtmp.application, None);
     let catalog = SupervisedGenerationCatalog::new(GenerationLaunchDocument::new(
         InstanceId::new("a").unwrap(),
         GenerationId(1),
