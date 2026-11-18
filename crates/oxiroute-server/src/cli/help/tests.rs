@@ -65,6 +65,7 @@ fn every_command_family_ends_its_help_with_examples() {
         "generation",
         "config",
         "context",
+        "overlay",
         "tls",
         "rtmp",
         "registry",

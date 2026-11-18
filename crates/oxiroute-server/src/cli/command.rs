@@ -15,6 +15,7 @@ use super::{
     import::ImportCommand,
     listener::ListenerCommand,
     man::ManArgs,
+    overlay::OverlayCommand,
     pool::PoolCommand,
     process::ProcessCommand,
     registry::RegistryCommand,
@@ -90,6 +91,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ContextCommand,
     },
+    /// Show, clear or promote the settings kept with `--persist`.
+    #[command(after_help = help::OVERLAY_EXAMPLES)]
+    Overlay {
+        #[command(subcommand)]
+        command: OverlayCommand,
+    },
     /// Check, compare and apply configurations.
     #[command(after_help = help::CONFIG_EXAMPLES)]
     Config {
@@ -138,6 +145,7 @@ impl Command {
             Self::Top(args) => args.run(context),
             Self::Requests { command } => command.run(context),
             Self::Server { command } => command.run(context),
+            Self::Overlay { command } => command.run(context),
             Self::Pool { command } => command.run(context),
             Self::Listener { command } => command.run(context),
             Self::Generation { command } => command.run(context),

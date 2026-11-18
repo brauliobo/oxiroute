@@ -6,6 +6,7 @@ mod generic;
 mod listeners;
 mod monitoring;
 mod outcome;
+mod overlay;
 mod pools;
 mod read;
 mod requests;
@@ -35,6 +36,7 @@ pub(crate) enum View {
     Topology,
     Config,
     Contexts,
+    Overlay,
     Pools,
     Pool,
     Servers,
@@ -61,6 +63,7 @@ impl View {
             Self::Topology => topology::show(value),
             Self::Config => config::show(value),
             Self::Contexts => contexts::list(value),
+            Self::Overlay => overlay::show(value),
             Self::Pools => pools::list(value),
             Self::Pool => pools::detail(value),
             Self::Servers => servers::list(value),

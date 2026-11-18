@@ -72,6 +72,9 @@ a secret manager). A token has the same bounds everywhere: 32 to 512 visible ASC
 
 | Command | What it does |
 | --- | --- |
+| `overlay show` | The settings kept with `--persist`: target, setting, value and `status` (`applied`, `diverged` after a later runtime change, `orphan` when the target is gone), with the file's revision and state (`empty`, `applied`, `diverged`, `unreadable`) |
+| `overlay clear` | Deletes the overlay file; the running state does not change |
+| `overlay promote [--wait]` | Writes the overlay's connection limits into the configuration file in its own format (comments and logic are not kept; a composed file is refused) and removes them from the overlay; states, health, checks, weights and listener states stay in it |
 | `context list` | One row per context: `*` for the current one, name, address, token source as `file:PATH`, `env:VARIABLE` or `command:PROGRAM`, and timeout. The token itself is never printed; `--output json` carries `tokenSource` and `tokenRef` |
 | `context add NAME --address URL [--token-from-file FILE \| --token-from-env VARIABLE \| --token-from-command PROGRAM ARG...] [--default-timeout 15s] [--use] [--replace]` | Adds a context, or replaces one of the same name with `--replace`; `--use` makes it current. `--token-from-command` takes every word after it, so give it last |
 | `context use NAME` | Makes a context the current one |
@@ -117,8 +120,11 @@ document (use `--output json` for the document).
 Commands that change runtime state (`listener`/`pool`/`server` `ready`, `drain`, `maintenance`, `set-health`,
 `check`, `max-connections`, `weight`, `evacuate`, `refresh-dns`, `generation rollback|drain`, `process drain`)
 print `persistence`: `runtime` (this process only: it survives reloads but not a restart), `registry`
-(a registered server's drain or maintenance, stored with its registration) or `mixed`. To keep a change on a
-configured server across a restart, edit the configuration file (`config edit`).
+(a registered server's drain or maintenance, stored with its registration), `overlay` or `mixed`. Add
+`--persist` to `listener`/`pool`/`server` `ready`, `drain`, `maintenance`, `set-health`, `check`,
+`max-connections`, `weight` and `evacuate` to keep the change across restarts in the overlay file
+(`<configuration file>.overlay.json`, mode 0600) beside the configuration; the table output then adds a
+`persistence` column. The configuration file is left alone until `overlay promote`.
 
 `--output plain` prints one `key=value` record per line with raw numbers and no padding, for `grep`,
 `awk` and `read`. Keys carry their unit as a suffix (`age_ms`, `received_bytes`); values with spaces

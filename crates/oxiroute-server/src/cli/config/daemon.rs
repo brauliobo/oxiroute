@@ -85,6 +85,16 @@ pub(super) fn rollback(client: &Client, id: &str, revision: &str) -> Result<Chec
     )
 }
 
+pub(super) fn promote(client: &Client, revision: &str) -> Result<Checked, CliError> {
+    write(
+        client,
+        "POST",
+        "/api/v1/overlay/promote",
+        &Value::Object(serde_json::Map::new()),
+        revision,
+    )
+}
+
 pub(super) fn history(client: &Client) -> Result<Response, CliError> {
     client.get(HISTORY, true)
 }

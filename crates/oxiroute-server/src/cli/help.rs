@@ -44,7 +44,7 @@ pub(crate) const ENVIRONMENT: [(&str, &str); 3] = [
     ),
 ];
 
-pub(crate) const FILES: [(&str, &str); 4] = [
+pub(crate) const FILES: [(&str, &str); 5] = [
     (
         "/etc/oxiroute/oxiroute.kdl",
         "packaged configuration; its management bind is the default endpoint",
@@ -60,6 +60,10 @@ pub(crate) const FILES: [(&str, &str); 4] = [
     (
         "$XDG_CONFIG_HOME/oxiroute/contexts",
         "named contexts (mode 0600), managed with `oxiroute context`; ~/.config is used when XDG_CONFIG_HOME is unset",
+    ),
+    (
+        "<configuration file>.overlay.json",
+        "runtime changes kept with `--persist` (mode 0600), managed with `oxiroute overlay`",
     ),
 ];
 
@@ -110,7 +114,18 @@ pub(crate) const SERVER_EXAMPLES: &str = "Examples:
   oxiroute server list --pool web
   oxiroute server drain --pool web app-1
   oxiroute server weight set --pool web app-1 50
+  oxiroute server drain --pool web app-1 --persist
   oxiroute server register --pool web app-9 --address 192.0.2.10:8080 --ttl 15s --heartbeat";
+
+pub(crate) const OVERLAY_EXAMPLES: &str = "Examples:
+  oxiroute server maintenance --pool web app-1 --persist
+  oxiroute overlay show
+  oxiroute overlay promote --wait
+  oxiroute overlay clear
+
+`--persist` keeps a runtime change in the overlay file next to the configuration (`oxiroute.kdl.overlay.json`), \
+which the daemon applies again at every start and reload. The configuration file itself is not edited until \
+`overlay promote`.";
 
 pub(crate) const POOL_EXAMPLES: &str = "Examples:
   oxiroute pool list

@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 
 use super::{
     args::{
-        MaxConnectionsCommand, OriginFilter, RegisterArgs, ServerCommand, ServerTarget, Toggle,
-        WeightCommand,
+        ChangeTarget, MaxConnectionsCommand, OriginFilter, RegisterArgs, ServerCommand,
+        ServerTarget, Toggle, WeightCommand,
     },
     registration,
 };
@@ -99,7 +99,7 @@ impl Execute for WeightCommand {
 
 fn administrative_state(
     context: &Context<'_>,
-    target: &ServerTarget,
+    target: &ChangeTarget,
     state: &str,
 ) -> Result<(), CliError> {
     context.change(

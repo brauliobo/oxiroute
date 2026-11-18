@@ -26,6 +26,7 @@ mod import;
 mod listener;
 mod man;
 mod net;
+mod overlay;
 mod parse;
 mod pool;
 mod process;

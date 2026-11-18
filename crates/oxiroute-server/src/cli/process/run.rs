@@ -5,6 +5,7 @@ use crate::cli::{
     context::{Context, Execute},
     error::CliError,
     net::{Client, Response},
+    overlay,
     view::View,
     wait::{self, Attempt},
 };
@@ -41,7 +42,9 @@ fn probe(client: &Client) -> Result<Attempt<Response>, CliError> {
 impl Execute for ProcessCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
-            Self::Status => context.show("/api/v1/status", View::Status),
+            Self::Status => context
+                .show("/api/v1/status", View::Status)
+                .and_then(|()| overlay::announce(context)),
             Self::Ready { wait } => ready(context, *wait),
             Self::Metrics => context.show_text("/metrics"),
             Self::Topology => context.show("/api/v1/topology", View::Topology),

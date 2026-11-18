@@ -190,11 +190,29 @@ fn parses_pool_evacuate_without_force_by_default() {
     let cli = Cli::try_parse_from(["oxiroute", "pool", "evacuate", "gpu-render", "voice-tts"])
         .expect("CLI");
     let Command::Pool {
-        command: PoolCommand::Evacuate { pools, force },
+        command:
+            PoolCommand::Evacuate {
+                pools,
+                force,
+                persist,
+            },
     } = cli.subcommand()
     else {
         panic!("pool evacuate command")
     };
     assert!(!force);
+    assert!(!persist.persist);
     assert_eq!(*pools, ["gpu-render", "voice-tts"]);
+}
+
+#[test]
+fn a_runtime_change_is_kept_in_the_overlay_only_when_asked() {
+    let cli = Cli::try_parse_from(["oxiroute", "pool", "drain", "web", "--persist"]).expect("CLI");
+    let Command::Pool {
+        command: PoolCommand::Drain { persist, .. },
+    } = cli.subcommand()
+    else {
+        panic!("pool drain command")
+    };
+    assert!(persist.persist);
 }

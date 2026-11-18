@@ -1,6 +1,6 @@
 use clap::Subcommand;
 
-use crate::cli::parse::nonempty_target;
+use crate::cli::{change::Persist, parse::nonempty_target};
 
 #[derive(Subcommand)]
 pub(crate) enum ListenerCommand {
@@ -17,17 +17,23 @@ pub(crate) enum ListenerCommand {
         /// Names of the listeners.
         #[arg(required = true, value_parser = nonempty_target)]
         listeners: Vec<String>,
+        #[command(flatten)]
+        persist: Persist,
     },
     /// Stop accepting new connections on the listeners; existing ones are not revoked.
     Drain {
         /// Names of the listeners.
         #[arg(required = true, value_parser = nonempty_target)]
         listeners: Vec<String>,
+        #[command(flatten)]
+        persist: Persist,
     },
     /// Put the listeners in maintenance: no new connections, existing ones are not revoked.
     Maintenance {
         /// Names of the listeners.
         #[arg(required = true, value_parser = nonempty_target)]
         listeners: Vec<String>,
+        #[command(flatten)]
+        persist: Persist,
     },
 }

@@ -781,3 +781,124 @@ async fn a_rollback_to_a_version_that_no_longer_validates_changes_nothing() {
     assert_eq!(daemon.stored(), stored);
     daemon.server.shutdown();
 }
+
+fn overlay_file(daemon: &Daemon) -> PathBuf {
+    let mut path = daemon.server.config_path.clone().into_os_string();
+    path.push(".overlay.json");
+    PathBuf::from(path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persist_keeps_a_change_in_the_overlay_and_every_report_names_it() {
+    let daemon = Daemon::start().await;
+
+    let drained = daemon.run(&[
+        "--output",
+        "plain",
+        "server",
+        "drain",
+        "--pool",
+        "farm",
+        "alpha",
+        "--persist",
+    ]);
+
+    assert_eq!(code(&drained), 0, "{}", report(&drained));
+    assert_eq!(
+        out(&drained),
+        "target=farm/alpha setting=state value=drain change=changed persistence=overlay\n"
+    );
+    assert_eq!(daemon.stored(), daemon.text);
+    let shown = daemon.run(&["--output", "plain", "overlay", "show"]);
+    assert_eq!(code(&shown), 0, "{}", report(&shown));
+    let text = out(&shown);
+    assert!(text.contains("state=applied"), "{text}");
+    assert!(
+        text.contains("target=farm/alpha setting=state value=drain status=applied"),
+        "{text}"
+    );
+    let status = daemon.run(&["status"]);
+    assert!(
+        err(&status).contains("persistence overlay: 1 setting(s)"),
+        "{}",
+        report(&status)
+    );
+    let file = daemon.file("same.kdl", &daemon.text);
+    let diff = daemon.run(&["config", "diff", "--exit-code", path(&file)]);
+    assert_eq!(code(&diff), 0, "{}", report(&diff));
+    assert!(
+        err(&diff).contains("persistence overlay"),
+        "{}",
+        report(&diff)
+    );
+    let plain = daemon.run(&[
+        "--output", "plain", "server", "ready", "--pool", "farm", "alpha",
+    ]);
+    assert_eq!(
+        out(&plain),
+        "target=farm/alpha setting=state value=ready change=changed\n"
+    );
+    let diverged = daemon.run(&["--output", "plain", "overlay", "show"]);
+    assert!(
+        out(&diverged).contains("status=diverged"),
+        "{}",
+        report(&diverged)
+    );
+
+    let cleared = daemon.run(&["overlay", "clear"]);
+
+    assert_eq!(code(&cleared), 0, "{}", report(&cleared));
+    assert!(!overlay_file(&daemon).exists());
+    let empty = daemon.run(&["--output", "plain", "overlay", "show"]);
+    assert!(out(&empty).contains("state=empty"), "{}", report(&empty));
+    daemon.server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn promote_writes_the_persisted_limits_into_the_file_and_empties_the_overlay() {
+    let daemon = Daemon::start().await;
+    let limit = daemon.run(&[
+        "server",
+        "max-connections",
+        "set",
+        "--pool",
+        "farm",
+        "alpha",
+        "9",
+        "--persist",
+    ]);
+    assert_eq!(code(&limit), 0, "{}", report(&limit));
+    let weight = daemon.run(&[
+        "server",
+        "weight",
+        "set",
+        "--pool",
+        "farm",
+        "alpha",
+        "3",
+        "--persist",
+    ]);
+    assert_eq!(code(&weight), 0, "{}", report(&weight));
+
+    let promoted = daemon.run(&["overlay", "promote", "--wait"]);
+
+    assert_eq!(code(&promoted), 0, "{}", report(&promoted));
+    let stored = daemon.stored();
+    assert!(stored.contains("max_connections 9"), "{stored}");
+    assert!(!stored.contains("max_connections 3"), "{stored}");
+    let shown = daemon.run(&["--output", "plain", "overlay", "show"]);
+    let text = out(&shown);
+    assert!(
+        text.contains("setting=weight value=3 status=applied"),
+        "{text}"
+    );
+    assert!(!text.contains("max_connections"), "{text}");
+    let nothing = daemon.run(&["overlay", "promote"]);
+    assert_eq!(code(&nothing), 0, "{}", report(&nothing));
+    assert!(
+        out(&nothing).contains("nothing_to_promote"),
+        "{}",
+        report(&nothing)
+    );
+    daemon.server.shutdown();
+}

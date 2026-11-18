@@ -1,3 +1,4 @@
+use clap::Args;
 use serde_json::Value;
 
 use super::{
@@ -6,6 +7,22 @@ use super::{
     render::{Document, Field},
     view,
 };
+
+#[derive(Args, Clone, Copy)]
+pub(crate) struct Persist {
+    /// Keep the change in the overlay file beside the configuration, so it survives a restart.
+    #[arg(long)]
+    pub(crate) persist: bool,
+}
+
+impl Persist {
+    pub(crate) fn body(self, mut fields: Value) -> Value {
+        if self.persist {
+            fields["persist"] = true.into();
+        }
+        fields
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum Scope {
@@ -158,19 +175,23 @@ impl Plan {
             .collect())
     }
 
-    pub(crate) fn summary(&self, observed: &[Option<Observation>]) -> Document {
+    pub(crate) fn summary(&self, observed: &[Option<Observation>], persistence: &str) -> Document {
         let rows = self
             .targets
             .iter()
             .zip(observed)
             .map(|(target, observed)| {
                 let (value, change) = self.outcome(observed.as_ref());
-                vec![
+                let mut row = vec![
                     Field::text("target", Some(target)),
                     Field::text("setting", Some(self.setting.name())),
                     Field::text("value", Some(&value)),
                     Field::text("change", Some(change)),
-                ]
+                ];
+                if persistence != "runtime" {
+                    row.push(Field::text("persistence", Some(persistence)));
+                }
+                row
             })
             .collect();
         Document::rows(self.scope.noun(), rows)

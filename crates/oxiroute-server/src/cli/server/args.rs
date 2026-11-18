@@ -4,7 +4,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    change::{Desired, Plan, Scope, Setting},
+    change::{Desired, Persist, Plan, Scope, Setting},
     parse::{nonempty_target, parse_duration, parse_label},
 };
 
@@ -36,26 +36,26 @@ pub(crate) enum ServerCommand {
     /// Show one server of each named pool.
     Show(ServerTarget),
     /// Return a server to service.
-    Ready(ServerTarget),
+    Ready(ChangeTarget),
     /// Stop sending new requests to a server; running ones finish and health checks continue.
-    Drain(ServerTarget),
+    Drain(ChangeTarget),
     /// Drain a server, then move the HTTP requests running on it to other servers of its pool.
     ///
     /// Requests that sent no response and can be replayed are cancelled and served by another server
     /// without the caller noticing; the rest keep running as in a drain and are counted in the report.
     Evacuate {
         #[command(flatten)]
-        target: ServerTarget,
+        target: ChangeTarget,
         /// Also cancel the requests that cannot move; their callers get an error.
         #[arg(long)]
         force: bool,
     },
     /// Take a server out of service and suspend its health checks.
-    Maintenance(ServerTarget),
+    Maintenance(ChangeTarget),
     /// Force a server up or down regardless of its health checks, or back to `auto`.
     SetHealth {
         #[command(flatten)]
-        target: ServerTarget,
+        target: ChangeTarget,
         /// `up` or `down` forces the health, `auto` follows the health checks.
         #[arg(value_enum)]
         health: HealthValue,
@@ -63,7 +63,7 @@ pub(crate) enum ServerCommand {
     /// Switch the active health checks of a server on or off.
     Check {
         #[command(flatten)]
-        target: ServerTarget,
+        target: ChangeTarget,
         /// Whether the checks run.
         #[arg(value_enum)]
         action: Toggle,
@@ -111,6 +111,28 @@ impl ServerTarget {
             .map(|pool| json!({ "pool": pool, "server": self.server }))
             .collect();
         fields
+    }
+}
+
+#[derive(Args)]
+pub(crate) struct ChangeTarget {
+    #[command(flatten)]
+    target: ServerTarget,
+    #[command(flatten)]
+    persist: Persist,
+}
+
+impl std::ops::Deref for ChangeTarget {
+    type Target = ServerTarget;
+
+    fn deref(&self) -> &ServerTarget {
+        &self.target
+    }
+}
+
+impl ChangeTarget {
+    pub(super) fn body(&self, fields: Value) -> Value {
+        self.persist.body(self.target.body(fields))
     }
 }
 
@@ -168,13 +190,13 @@ pub(crate) enum MaxConnectionsCommand {
     /// Limit the connections a server accepts, overriding the configuration.
     Set {
         #[command(flatten)]
-        target: ServerTarget,
+        target: ChangeTarget,
         /// Largest number of simultaneous connections.
         #[arg(value_parser = clap::value_parser!(u64).range(1..))]
         limit: u64,
     },
     /// Return to the configured connection limit.
-    Reset(ServerTarget),
+    Reset(ChangeTarget),
 }
 
 #[derive(Subcommand)]
@@ -182,13 +204,13 @@ pub(crate) enum WeightCommand {
     /// Set the share of requests a server receives relative to its pool, overriding the configuration.
     Set {
         #[command(flatten)]
-        target: ServerTarget,
+        target: ChangeTarget,
         /// Relative weight, 1 to 100.
         #[arg(value_parser = clap::value_parser!(u16).range(1..=100))]
         weight: u16,
     },
     /// Return to the configured weight.
-    Reset(ServerTarget),
+    Reset(ChangeTarget),
 }
 
 #[derive(Clone, Copy, ValueEnum)]

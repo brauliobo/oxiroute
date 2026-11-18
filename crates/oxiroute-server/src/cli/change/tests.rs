@@ -14,7 +14,7 @@ fn seen(current: &str, configured: Option<&str>) -> Observation {
 }
 
 fn rows(plan: &Plan, observed: &[Option<Observation>]) -> String {
-    plan.summary(observed).plain()
+    plan.summary(observed, "runtime").plain()
 }
 
 #[test]
@@ -90,4 +90,18 @@ fn a_pool_state_is_mixed_when_its_servers_disagree() {
     let entry = Scope::Pool.find(&entries, "web").expect("web");
     let observation = Setting::State.observe(Scope::Pool, entry);
     assert_eq!(observation.current.as_deref(), Some("mixed"));
+}
+
+#[test]
+fn a_change_kept_beyond_the_process_names_where() {
+    let plan = plan(
+        Scope::Server,
+        Setting::State,
+        Desired::Value("drain".into()),
+    );
+    assert_eq!(
+        plan.summary(&[Some(seen("ready", None))], "overlay")
+            .plain(),
+        "target=web/a setting=state value=drain change=changed persistence=overlay\n"
+    );
 }

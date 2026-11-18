@@ -7,7 +7,7 @@ use super::{
     input::SourceInput,
     report,
 };
-use crate::cli::{context::Context, error::CliError, global::Output, render};
+use crate::cli::{context::Context, error::CliError, global::Output, overlay, render};
 
 pub(super) fn validate(context: &Context<'_>, args: &SourceArgs) -> Result<(), CliError> {
     let client = context.client()?;
@@ -69,6 +69,7 @@ pub(super) fn diff(context: &Context<'_>, args: &DiffArgs) -> Result<(), CliErro
             text_diff,
         )?;
     }
+    overlay::announce(context)?;
     let differs = !report::is_equal(comparison) || (args.text && text_diff.is_some());
     if args.exit_code && differs {
         return Err(CliError::Differs);

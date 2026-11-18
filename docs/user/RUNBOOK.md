@@ -84,6 +84,14 @@ deregisters. Without `--heartbeat` the command registers once and the lease runs
 decision is stored with the registration, so it survives re-registration, reloads and restarts. A
 server in the configuration file wins over a registration of the same name or address.
 
+## Keep a drain across a restart
+
+`oxiroute server drain --pool web app-1 --persist` drains the configured server and records it in
+`<configuration file>.overlay.json`, so a restart or reload drains it again. Check it with `oxiroute overlay show`
+(status `applied`); undo it with `oxiroute server ready --pool web app-1 --persist`. A machine that is gone for
+good belongs in the configuration file: `oxiroute overlay promote` folds connection limits into it, `config edit`
+does the rest, and `oxiroute overlay clear` removes what remains.
+
 ## Remove a machine
 
 A registered machine: stop its agent (`systemctl stop`), which drains and deregisters it; its requests finish.

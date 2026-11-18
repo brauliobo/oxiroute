@@ -174,7 +174,11 @@ impl<'a> Context<'a> {
             return self.print_response(&client.mutation_json(method, path, body)?, View::Generic);
         }
         let observed = plan.observe(&client)?;
-        client.mutation_json(method, path, body)?;
-        self.print_document(&plan.summary(&observed))
+        let response = client.mutation_json(method, path, body)?;
+        let persistence = response.json()?["persistence"]
+            .as_str()
+            .unwrap_or("runtime")
+            .to_owned();
+        self.print_document(&plan.summary(&observed, &persistence))
     }
 }

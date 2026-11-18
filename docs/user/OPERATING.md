@@ -183,8 +183,14 @@ server name) when the configuration file changes or you reload, apply or roll ba
 a drained server stays drained. A server removed from the file loses its state, and a server added
 to it starts ready. A restart of the process resets them, except the drain and maintenance of a registered
 server (and of a pool made of them), which are stored with the registration. Each command prints
-`persistence=runtime`, `registry` or `mixed` so the scope is not a guess; to keep a change on a configured
-server across a restart, edit the configuration file (`config edit`).
+`persistence=runtime`, `registry`, `overlay` or `mixed` so the scope is not a guess. To keep a change on a
+configured server across a restart, add `--persist`: the change is written to
+`<configuration file>.overlay.json` beside the configuration (mode 0600, JSON, sorted, safe to read and to
+back up) and applied again at every start and reload. `oxiroute overlay show` lists what is kept and whether
+each setting is `applied`, `diverged` (a later runtime change replaced it until the next restart) or `orphan`
+(its server or listener is gone). The configuration file is not edited: `oxiroute overlay promote` writes the
+connection limits into it, in its format, and `oxiroute overlay clear` deletes the overlay. An overlay the
+daemon cannot read is ignored and logged; fix it or run `overlay clear`.
 
 DNS refresh is explicitly non-atomic because resolution is external. Inspect every returned outcome
 before treating a partial result as a successful rollout.
