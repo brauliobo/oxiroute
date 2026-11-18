@@ -42,7 +42,7 @@ section.client-section(aria-labelledby="client-heading")
 
 <script setup lang="ts" vapor>
 import type { RtmpClientControlTarget, RtmpClientSnapshot, RtmpStats } from './api'
-import { formatClockTime as formatTime } from './formatters'
+import { formatTime } from './formatters'
 
 defineProps<{
   stats: RtmpStats | null

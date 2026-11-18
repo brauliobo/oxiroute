@@ -163,7 +163,7 @@ import { computed } from 'vue'
 
 import type { MonitoringPool, MonitoringSnapshot } from '../api'
 import { vCssVars } from '#design/directives/cssVars'
-import { formatBytes, formatClockTime as formatTime, formatCount } from '../formatters'
+import { formatBytes, formatTime, formatCount } from '../formatters'
 import { listenerStateLabels } from '../runtimeStates'
 import { endpointHealthLabels, healthFailureLabels, listenerProtocolLabels, poolAlgorithmLabels } from './labels'
 import {

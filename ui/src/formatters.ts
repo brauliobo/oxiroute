@@ -1,27 +1,20 @@
-import { formatAge } from '#design/format'
+import { formatAge, formatTimestamp } from '#design/format'
 
 export { formatBytes, formatDuration as formatTelemetryDuration, formatExact as formatCount } from '#design/format'
+export { formatTimestamp as formatTime } from '#design/format'
 
-const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'short',
-  timeStyle: 'medium',
-})
-const clockTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-})
+export const NO_DATA_YET = 'no data yet'
 
 export function formatTelemetryAge(timestamp: number, now = Date.now()): string {
   return formatAge(Math.max(0, now - timestamp))
 }
 
-export function formatTime(timestamp: number): string {
-  return dateTimeFormatter.format(timestamp)
+export function formatSnapshotTime(unixMs: number): string {
+  return unixMs === 0 ? NO_DATA_YET : formatTimestamp(unixMs)
 }
 
-export function formatClockTime(timestamp: number): string {
-  return clockTimeFormatter.format(timestamp)
+export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
 }
 
 export function shortRevision(revision: string | null): string {

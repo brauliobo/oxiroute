@@ -57,7 +57,7 @@ section.stream-section(v-show="visible" aria-labelledby="stream-heading")
 
 <script setup lang="ts" vapor>
 import type { RecorderSnapshot, RtmpCatalog, StreamSnapshot, TrackSnapshot } from '../api'
-import { formatBytes, formatClockTime as formatTime } from '../formatters'
+import { formatBytes, formatTime } from '../formatters'
 import RtmpRecorderPanel from '../RtmpRecorderPanel.vue'
 
 const props = defineProps<{

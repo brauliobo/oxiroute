@@ -153,7 +153,7 @@ import { computed } from 'vue'
 
 import {
   formatBytes,
-  formatClockTime as formatTime,
+  formatTime,
   formatCount,
   formatTelemetryAge,
   formatTelemetryDuration,
