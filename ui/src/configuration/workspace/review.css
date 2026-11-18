@@ -1,0 +1,36 @@
+@layer ox.page {
+  .ox-review {
+    width: min(60rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+  }
+
+  .ox-review-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: var(--ox-space-1);
+    margin: 0 0 var(--ox-space-6);
+    border: var(--ox-border-width) solid var(--ox-border);
+    background: var(--ox-border);
+  }
+
+  .ox-review-facts > div {
+    display: grid;
+    gap: var(--ox-space-3);
+    padding: var(--ox-space-5);
+    background: var(--ox-surface);
+  }
+
+  .ox-review-facts dt {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+  }
+
+  .ox-review-facts dd {
+    margin: 0;
+  }
+
+  .ox-review .ox-banner {
+    margin-bottom: var(--ox-space-5);
+  }
+}

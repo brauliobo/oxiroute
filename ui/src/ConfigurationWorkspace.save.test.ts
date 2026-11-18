@@ -43,18 +43,16 @@ describe('ConfigurationWorkspace', () => {
     const reviewButton = findButton(wrapper, 'Review save')
     ;(reviewButton.element as HTMLButtonElement).focus()
     await reviewButton.trigger('click')
-    expect(wrapper.get('[role="dialog"]').text()).toContain('Save review')
+    expect(wrapper.get('dialog[open]').text()).toContain('Save review')
     expect(wrapper.get('.review-warning').text()).toContain('no process restart is required')
-    expect(document.activeElement).toBe(wrapper.get('.save-review .close-button').element)
-    expect(wrapper.get('.config-layout').attributes()).toHaveProperty('inert')
-    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Escape' })
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(reviewButton.element)
+    ;(wrapper.get('dialog').element as HTMLDialogElement).close()
+    await flushPromises()
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
 
     await reviewButton.trigger('click')
-    await wrapper.get('.review-scrim').trigger('click')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(reviewButton.element)
+    expect(wrapper.find('dialog[open]').exists()).toBe(true)
+    await wrapper.get('dialog').trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
 
     await reviewButton.trigger('click')
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
@@ -75,7 +73,7 @@ describe('ConfigurationWorkspace', () => {
     expect(saved.http_services[0]).toHaveProperty('max_request_body_bytes', 10_485_760)
     expect(wrapper.get('.revision-banner.pending').text()).toContain('activation pending')
     expect(wrapper.get('.revision-banner.pending').text()).toContain('no restart is required')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
     expect(document.activeElement).toBe(wrapper.get('.revision-banner.save-state').element)
     wrapper.unmount()
   })
@@ -243,7 +241,7 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.get('.revision-banner.stale').text()).toContain('Draft preserved')
     expect(wrapper.get('.revision-banner.error').text()).toContain('Save conflict')
     expect((wrapper.get('[data-field="listeners[].name"] input').element as HTMLInputElement).value).toBe('preserved-listener')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
 
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await findButton(wrapper, 'Reset draft').trigger('click')
@@ -381,9 +379,9 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="dialog"]').text()).toContain('revision precondition')
+    expect(wrapper.get('dialog[open]').text()).toContain('revision precondition')
     expect(wrapper.get('.revision-banner.stale').element).toBeInstanceOf(HTMLElement)
-    expect(wrapper.get('[role="dialog"] .primary-button').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('dialog .ox-primary').attributes()).toHaveProperty('disabled')
   })
 
   it('blocks writes when the server cannot reload authoritative state after a conflict', async () => {
@@ -415,7 +413,7 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.get('.revision-banner.stale').text()).toContain('Draft preserved')
     expect(wrapper.get('.revision-banner.error').text()).toContain('Authoritative configuration unavailable')
     expect(wrapper.get('.diagnostic-list').text()).toContain('E_CONFIG_READ')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
   })
 
   it.each([
@@ -451,9 +449,9 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="dialog"] .dialog-error').text()).toContain(expected)
+    expect(wrapper.get('dialog .dialog-error').text()).toContain(expected)
     expect(wrapper.get('.diagnostic-list').text()).toContain(code)
     expect(wrapper.get('.revision-board').text()).toContain('Unsaved changes')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.find('dialog[open]').exists()).toBe(true)
   })
 })

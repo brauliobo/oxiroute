@@ -382,16 +382,6 @@ function isWeightedRoundRobin(algorithm: UpstreamAlgorithm): algorithm is Weight
   margin-top: 16px;
 }
 
-.field-error {
-  margin: 0;
-  color: #ff9b88;
-  font-size: 0.7rem;
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.45;
-  text-transform: none;
-}
-
 .weight-field input:invalid {
   border-color: #ff745c;
 }

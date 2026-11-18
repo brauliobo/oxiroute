@@ -1,7 +1,6 @@
 4 .add-row
 2 .danger-button
 2 .danger-link
-2 .dialog-error
 2 .editor-actions
 2 .editor-form
 4 .empty-list
@@ -17,10 +16,9 @@
 2 .nav-section-label
 3 .object-path
 2 .output-heading
+2 .ox-banner
 2 .ox-btn
 2 .ox-mono
-2 .review-actions
-2 .review-heading
 2 .revision-banner
 2 .route-card
 3 .route-card-heading

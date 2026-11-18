@@ -1,5 +1,5 @@
 <template lang="pug">
-section.revision-board(:inert="reviewOpen || undefined" aria-label="Configuration revisions")
+section.revision-board(aria-label="Configuration revisions")
   .revision-cell
     span.revision-label Disk revision
     code {{ shortRevision(diskRevision) }}
@@ -22,7 +22,6 @@ defineProps<{
   activeRevision: string | null
   dirty: boolean
   validationCurrent: boolean
-  reviewOpen: boolean
 }>()
 </script>
 

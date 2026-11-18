@@ -1,5 +1,5 @@
 <template lang="pug">
-section.validation-output(:inert="reviewOpen || undefined" aria-label="Validated candidate output")
+section.validation-output(aria-label="Validated candidate output")
   article.preview-panel
     header.output-heading
       div
@@ -26,7 +26,7 @@ import type { ConfigValidationResponse } from '../../api'
 import { shortRevision } from '../../formatters'
 import { formatLabel } from './configFormat'
 
-defineProps<{ result: ConfigValidationResponse; reviewOpen: boolean }>()
+defineProps<{ result: ConfigValidationResponse }>()
 </script>
 
 <style scoped src="./base.css"></style>

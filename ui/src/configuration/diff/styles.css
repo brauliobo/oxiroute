@@ -1,0 +1,75 @@
+@layer ox.page {
+  .ox-diff h3 {
+    margin: 0 0 var(--ox-space-3);
+    font-size: var(--ox-text-lg);
+  }
+
+  .ox-diff-summary {
+    margin: 0 0 var(--ox-space-4);
+    color: var(--ox-muted);
+  }
+
+  .ox-diff-scroll {
+    max-height: 20rem;
+    overflow: auto;
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius-sm);
+    background: var(--ox-bg);
+    font-family: var(--ox-mono);
+    font-size: var(--ox-text-xs);
+  }
+
+  .ox-diff-gap {
+    margin: 0;
+    padding: var(--ox-space-2) var(--ox-space-5);
+    border-block: var(--ox-border-width) dashed var(--ox-border);
+    color: var(--ox-muted);
+  }
+
+  .ox-diff-line {
+    display: grid;
+    grid-template-columns: 3.5ch 3.5ch 2ch minmax(0, 1fr);
+    gap: var(--ox-space-3);
+    padding-inline: var(--ox-space-4);
+    border-left: var(--ox-space-2) solid transparent;
+  }
+
+  .ox-diff-line code {
+    font: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .ox-diff-number {
+    color: var(--ox-muted);
+    text-align: end;
+    user-select: none;
+  }
+
+  .ox-diff-mark {
+    font-weight: var(--ox-weight-bold);
+    text-align: center;
+  }
+
+  .ox-diff-line[data-kind='added'] {
+    border-left-color: var(--ox-ok);
+    background: color-mix(in srgb, var(--ox-ok) 12%, transparent);
+  }
+
+  .ox-diff-line[data-kind='removed'] {
+    border-left-color: var(--ox-bad);
+    background: color-mix(in srgb, var(--ox-bad) 12%, transparent);
+  }
+
+  .ox-diff-line[data-kind='removed'] code {
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  @media (forced-colors: active) {
+    .ox-diff-line[data-kind='added'],
+    .ox-diff-line[data-kind='removed'] {
+      border-left-color: Highlight;
+    }
+  }
+}

@@ -4,7 +4,7 @@ footer.editor-actions
   button.primary-button(type="button" :disabled="validating || saving || stale" :title="validationDisabledReason" @click="emit('validate')")
     | {{ validating ? 'Validating...' : 'Validate candidate' }}
   span.diagnostic-summary(v-if="summary") {{ summary }}
-  button.review-button(type="button" :disabled="!canReview || saving" :title="reviewDisabledReason" @click="emit('review', $event)") Review save
+  button.review-button(type="button" :disabled="!canReview || saving" :title="reviewDisabledReason" @click="emit('review')") Review save
 </template>
 
 <script setup lang="ts" vapor>
@@ -20,7 +20,7 @@ const props = defineProps<{
   canReview: boolean
   summary: string
 }>()
-const emit = defineEmits<{ reset: []; validate: []; review: [event: Event] }>()
+const emit = defineEmits<{ reset: []; validate: []; review: [] }>()
 
 const resetDisabledReason = computed(() => {
   if (props.validating || props.saving) return 'Wait for the current configuration request to finish.'

@@ -1,5 +1,5 @@
 <template lang="pug">
-header.workspace-heading(:inert="reviewOpen || undefined")
+header.workspace-heading
   div
     p.eyebrow Canonical control plane
     h2#configuration-heading Configuration workspace
@@ -14,7 +14,7 @@ header.workspace-heading(:inert="reviewOpen || undefined")
 </template>
 
 <script setup lang="ts" vapor>
-defineProps<{ canCheck: boolean; loading: boolean; reviewOpen: boolean }>()
+defineProps<{ canCheck: boolean; loading: boolean }>()
 const emit = defineEmits<{ check: [] }>()
 </script>
 

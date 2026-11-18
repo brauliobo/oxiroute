@@ -1,3 +1,4 @@
+import './dialog'
 import { flushPromises, mount, type VaporWrapper } from './mount'
 import { afterEach, vi } from 'vitest'
 

@@ -1,6 +1,6 @@
 <template lang="pug">
-section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-heading" :aria-busy="loading || validating || saving" @keydown.esc="closeReview")
-  WorkspaceHeading(:can-check="snapshot !== null && accessToken !== null" :loading="loading" :review-open="reviewOpen" @check="checkDiskRevision")
+section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-heading" :aria-busy="loading || validating || saving")
+  WorkspaceHeading(:can-check="snapshot !== null && accessToken !== null" :loading="loading" @check="checkDiskRevision")
 
   LoadingPanel(
     v-if="loading && !snapshot"
@@ -38,7 +38,6 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       :active-revision="activeRevision"
       :dirty="isDirty"
       :validation-current="validationCurrent"
-      :review-open="reviewOpen"
     )
 
     RevisionBanners(
@@ -50,11 +49,10 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       :canonical-unavailable="canonicalUnavailable"
       :save-message="saveMessage"
       :tls-alpn-message="tlsAlpnMessage"
-      :review-open="reviewOpen"
       @discard="discardAndReload"
     )
 
-    .config-layout(:inert="reviewOpen || undefined")
+    .config-layout
       ObjectRail(
         v-model="selectedKey"
         :config="draft"
@@ -147,13 +145,14 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           @review="openReview"
         )
 
-    ValidationOutput(v-if="validationCurrent && validationResult" :result="validationResult" :review-open="reviewOpen")
+    ValidationOutput(v-if="validationCurrent && validationResult" :result="validationResult")
 
     SaveReviewDialog(
-      v-if="reviewOpen"
+      :open="reviewOpen"
       :disk-revision="diskRevision"
       :active-revision="activeRevision"
       :result="validationResult"
+      :diff="reviewDiff"
       :normalization-changed="normalizationChanged"
       :error="dialogError"
       :saving="saving"
@@ -170,6 +169,7 @@ import { locateDiagnostic, type CanonicalConfig, type ConfigDiagnostic, type Con
 import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
 import CertificateEditor from './configuration/CertificateEditor.vue'
 import { clone } from './configuration/clone'
+import { diffLines } from './configuration/diff/lines'
 import { issueId, provideFieldDiagnostics } from './configuration/fields/context'
 import ForwardProxyServiceEditor from './configuration/ForwardProxyServiceEditor.vue'
 import HttpServiceEditor from './configuration/HttpServiceEditor.vue'
@@ -195,7 +195,6 @@ import StatsSection from './configuration/workspace/StatsSection.vue'
 import { hasErrors, summarizeDiagnostics } from './configuration/workspace/diagnosticSummary'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
 import { useLiveRegion } from '#design/composables/useLiveRegion'
-import { useReviewDialog } from './configuration/workspace/useReviewDialog'
 import { useSnapshotLoader } from './configuration/workspace/useSnapshotLoader'
 import { useTlsAlpnPreparation } from './configuration/workspace/useTlsAlpnPreparation'
 import ValidationOutput from './configuration/workspace/ValidationOutput.vue'
@@ -215,7 +214,7 @@ const emit = defineEmits<{ unauthorized: [] }>()
 const accessToken = computed(() => props.token || null)
 const selectedKey = ref('general')
 
-const { reviewOpen, enterReview, exitReview, releaseBackground } = useReviewDialog(workspaceRoot)
+const reviewOpen = ref(false)
 
 const {
   canReviewSave,
@@ -355,16 +354,30 @@ function resetDraft(): void {
   ensureSelection()
 }
 
+const reviewDiff = computed(() => reviewOpen.value && snapshot.value && validationResult.value
+  ? diffLines(snapshot.value.configPreview, validationResult.value.configPreview)
+  : [])
+
 function closeReview(): void {
-  if (!reviewOpen.value || saving.value) return
-  exitReview()
+  reviewOpen.value = false
 }
 
-function openReview(event: Event): void {
+async function exitReview(focusSelector?: string): Promise<void> {
+  reviewOpen.value = false
+  if (!focusSelector) return
+  await nextTick()
+  workspaceRoot.value?.querySelector<HTMLElement>(focusSelector)?.focus()
+}
+
+function openReview(): void {
   if (!canReviewSave.value) return
   dialogError.value = null
-  enterReview(event)
+  reviewOpen.value = true
 }
+
+watch(dialogError, (error) => {
+  if (error) reviewOpen.value = true
+})
 
 function relockConfiguration(): void {
   stopLoading()
@@ -394,7 +407,6 @@ onDeactivated(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload)
-  releaseBackground()
   stopLoading()
   abortRequests()
 })

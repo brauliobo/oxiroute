@@ -1,24 +1,24 @@
 <template lang="pug">
-.revision-banner.diverged(v-if="diskRevision !== activeRevision" :inert="reviewOpen || undefined" role="status" aria-live="polite")
+.revision-banner.diverged(v-if="diskRevision !== activeRevision" role="status" aria-live="polite")
   strong Disk and active revisions differ.
   |  The saved file is not the generation currently serving traffic.
 
-.revision-banner.compositional(v-if="snapshot.compositional" :inert="reviewOpen || undefined" role="status")
+.revision-banner.compositional(v-if="snapshot.compositional" role="status")
   div
     strong Compositional root is read-only.
     p Typed saves are unavailable because this {{ formatLabel(snapshot.configFormat) }} root resolves {{ snapshot.dependencyCount }} {{ snapshot.dependencyCount === 1 ? 'dependency' : 'dependencies' }}. Inspection and server validation remain available without flattening its source files.
 
-.revision-banner.stale(v-if="staleRevision" :inert="reviewOpen || undefined" tabindex="-1" role="alert")
+.revision-banner.stale(v-if="staleRevision" tabindex="-1" role="alert")
   div
     strong Draft preserved: the disk revision changed.
     p Expected {{ shortRevision(diskRevision) }}, current {{ shortRevision(staleRevision) }}. Reconcile explicitly; this editor will not overwrite the newer file.
   button.secondary-button(type="button" @click="emit('discard')") Discard draft and load disk
 
-.revision-banner.error(v-if="refreshError" :inert="reviewOpen || undefined" role="alert")
+.revision-banner.error(v-if="refreshError" role="alert")
   strong Configuration refresh failed.
   |  {{ refreshError }} The current draft and revision state were retained.
 
-.revision-banner.error(v-if="canonicalUnavailable" :inert="reviewOpen || undefined" role="alert")
+.revision-banner.error(v-if="canonicalUnavailable" role="alert")
   strong Persisted canonical configuration unavailable.
   |  Disk revision {{ canonicalUnavailable.diskRevision ? shortRevision(canonicalUnavailable.diskRevision) : 'unknown' }}; active revision {{ canonicalUnavailable.activeRevision ? shortRevision(canonicalUnavailable.activeRevision) : 'unknown' }}.
   ol.diagnostic-list(v-if="canonicalUnavailable.diagnostics.length")
@@ -26,11 +26,11 @@
       code {{ diagnostic.code }}
       span {{ diagnostic.message }}
 
-.revision-banner.save-state(v-if="saveMessage" :inert="reviewOpen || undefined" :class="saveMessage.kind" tabindex="-1" role="status" aria-live="polite")
+.revision-banner.save-state(v-if="saveMessage" :class="saveMessage.kind" tabindex="-1" role="status" aria-live="polite")
   strong {{ saveMessage.title }}
   |  {{ saveMessage.detail }}
 
-.revision-banner.tls-alpn(v-if="tlsAlpnMessage" :inert="reviewOpen || undefined" :class="tlsAlpnMessage.kind" :role="tlsAlpnMessage.kind === 'error' ? 'alert' : 'status'" aria-live="polite")
+.revision-banner.tls-alpn(v-if="tlsAlpnMessage" :class="tlsAlpnMessage.kind" :role="tlsAlpnMessage.kind === 'error' ? 'alert' : 'status'" aria-live="polite")
   strong {{ tlsAlpnMessage.title }}
   |  {{ tlsAlpnMessage.detail }}
 </template>
@@ -52,7 +52,6 @@ defineProps<{
   canonicalUnavailable: CanonicalUnavailableState | null
   saveMessage: SaveMessage | null
   tlsAlpnMessage: TlsAlpnMessage | null
-  reviewOpen: boolean
 }>()
 const emit = defineEmits<{ discard: [] }>()
 </script>
