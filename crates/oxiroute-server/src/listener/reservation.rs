@@ -389,6 +389,15 @@ impl ListenerReservation {
 
 type ReservationKey = ListenerId;
 
+/// A listener setting of a candidate that only a process restart can apply, with the listener it belongs to.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingListenerChange {
+    pub listener: String,
+    pub code: &'static str,
+    pub bind: ListenerBind,
+}
+
 #[derive(Clone, Copy)]
 struct PrepareOptions {
     apply_unix_modes: bool,
@@ -676,6 +685,23 @@ impl ListenerReservations {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn pending_startup_listener_changes(
+        active: &ValidatedConfig,
+        candidate: &ValidatedConfig,
+    ) -> Vec<PendingListenerChange> {
+        ListenerInventory::compile(active)
+            .pending_startup_changes(&ListenerInventory::compile(candidate))
+            .into_iter()
+            .map(|change| PendingListenerChange {
+                listener: change.listener,
+                code: change.reason.code(),
+                bind: change.bind,
+            })
+            .collect()
     }
 
     #[doc(hidden)]

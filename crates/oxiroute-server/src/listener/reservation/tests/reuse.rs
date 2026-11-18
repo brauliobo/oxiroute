@@ -327,3 +327,31 @@ fn a_kept_udp_relay_socket_cannot_take_more_http3_workers() {
     .expect("one worker needs no sharing");
     assert!(kept.get("udp").expect("kept").udp_group(2).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_second_wildcard_socket_with_another_ipv6_only_cannot_join_the_kept_one() {
+    let probe = std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, 0));
+    let Ok(probe) = probe else {
+        eprintln!("IPv6 is unavailable in this environment: wildcard bind not exercised");
+        return;
+    };
+    let address = probe.local_addr().expect("probe address");
+    drop(probe);
+    let wildcard = |ipv6_only| {
+        let mut draft = config("wildcard", address);
+        draft.listeners[0].bind = ListenerBind::Socket { address, ipv6_only };
+        draft
+    };
+    let dual_stack = prepare_reservations(&wildcard(false), None).expect("dual-stack reservation");
+
+    let error = prepare_reservations(&wildcard(true), Some(&dual_stack))
+        .err()
+        .expect("the port is owned by the dual-stack socket");
+    assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    let kept = prepare_reservations(&wildcard(false), Some(&dual_stack)).expect("same setting");
+    assert!(Arc::ptr_eq(
+        &dual_stack.get("wildcard").expect("first").inner,
+        &kept.get("wildcard").expect("kept").inner,
+    ));
+}

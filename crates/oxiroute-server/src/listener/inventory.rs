@@ -45,6 +45,21 @@ pub(crate) enum ListenerRestartReason {
     Ipv6OnlyChange,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingStartupChange {
+    pub(crate) listener: String,
+    pub(crate) bind: ListenerBind,
+    pub(crate) reason: ListenerRestartReason,
+}
+
+impl ListenerRestartReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Ipv6OnlyChange => "listener_ipv6_only",
+        }
+    }
+}
+
 /// What a reload does to the listener sockets, as operator-facing labels.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ListenerChangeSummary {
@@ -234,11 +249,26 @@ impl ListenerInventory {
     /// keeps its path takes a changed mode in place. Only a TCP socket that keeps its address and
     /// changes `ipv6_only` is refused, because the new socket would need the port the running one owns.
     pub(crate) fn restart_reason(&self, candidate: &Self) -> Option<ListenerRestartReason> {
-        candidate.entries.iter().find_map(|candidate| {
-            self.entries
-                .iter()
-                .find_map(|active| restart_reason(&active.bind, &candidate.bind))
-        })
+        self.pending_startup_changes(candidate)
+            .first()
+            .map(|change| change.reason)
+    }
+
+    pub(crate) fn pending_startup_changes(&self, candidate: &Self) -> Vec<PendingStartupChange> {
+        candidate
+            .entries
+            .iter()
+            .filter_map(|next| {
+                self.entries
+                    .iter()
+                    .find_map(|active| restart_reason(&active.bind, &next.bind))
+                    .map(|reason| PendingStartupChange {
+                        listener: next.name.clone(),
+                        bind: next.bind.clone(),
+                        reason,
+                    })
+            })
+            .collect()
     }
 
     pub(crate) fn restart_required(&self, candidate: &Self) -> bool {

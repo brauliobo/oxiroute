@@ -369,6 +369,11 @@ fn a_socket_that_keeps_its_address_and_changes_ipv6_only_needs_a_restart() {
         Some(ListenerRestartReason::Ipv6OnlyChange)
     );
     assert_eq!(dual.restart_reason(&with(false)), None);
+    let pending = dual.pending_startup_changes(&only);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].listener, "http");
+    assert_eq!(pending[0].reason.code(), "listener_ipv6_only");
+    assert!(dual.pending_startup_changes(&with(false)).is_empty());
 }
 
 fn matrix_config() -> oxiroute_config::ValidatedConfig {

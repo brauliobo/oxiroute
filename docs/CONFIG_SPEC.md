@@ -497,7 +497,9 @@ Current constraints:
   clients alone, so it can share its port with a separate IPv4 listener (for example `0.0.0.0:80` next to
   `[::]:80` with `ipv6_only = true`, each serving its own service). An `ipv6_only` wildcard does not overlap IPv4
   binds on its port; it still overlaps any other IPv6 bind on that port. Other IPv6 addresses are unchanged.
-  Changing `ipv6_only` on a socket that keeps its address needs a process restart.
+  Changing `ipv6_only` on a socket that keeps its address needs a process restart: the flag cannot change on a bound
+  socket, and a second `[::]` socket cannot join the running one because listener sockets are bound exclusively
+  (see [operations](OPERATIONS.md#listener-changes-on-reload)).
 - HTTP, HTTP/3, forward-HTTP/1, forward-HTTP/2, forward-HTTP/3, RTMP, and TCP listeners MUST
   reference an existing same-kind service. An RTMP service MUST contain between 1 and 256 unique
   applications, and one configuration accepts at most 64 RTMP services.
