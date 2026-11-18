@@ -1,4 +1,5 @@
 import type { Tone } from '#design/badge/tone'
+import { shortRevision } from '../formatters'
 import type { OperationalEvacuationOutcome, OperationalEvent, OperationalEventOutcome } from '../api'
 
 const OUTCOME_TONES: Readonly<Record<string, Tone>> = {
@@ -49,3 +50,8 @@ export function eventDetails(event: OperationalEvent): string[] {
   const detail = outcomeDetail(event.outcome)
   return [event.certificate && `Certificate ${event.certificate}`, detail].filter((part): part is string => Boolean(part))
 }
+
+export const eventNotes = (event: OperationalEvent): string[] => [
+  ...eventDetails(event),
+  ...(event.revision ? [`Revision ${shortRevision(event.revision)}`] : []),
+]

@@ -132,8 +132,8 @@ describe('local management workspaces', () => {
     const wrapper = mount(EventsWorkspace, { props: { token } })
     await flushPromises()
 
-    expect(wrapper.get('.resync-banner').text()).toContain('resynchronized')
-    expect(wrapper.text()).toContain('generation activate')
+    expect(wrapper.text()).toContain('resynchronized')
+    expect(wrapper.text()).toContain('Generation activate')
     expect(eventPages).toBe(2)
     expect(streams).toBe(2)
     wrapper.unmount()
@@ -178,7 +178,7 @@ describe('local management workspaces', () => {
     const wrapper = mount(EventsWorkspace, { props: { token } })
     await flushPromises()
 
-    expect(wrapper.get('.outcome-chip').text()).toBe('ejected')
+    expect(wrapper.get('tbody .ox-badge').text()).toBe('Ejected')
     expect(wrapper.text()).toContain('backend / primary / connect failed')
     expect(wrapper.text()).not.toContain('[object Object]')
     wrapper.unmount()
