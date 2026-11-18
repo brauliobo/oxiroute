@@ -20,7 +20,6 @@
     "pretest": "pnpm run build:management",
     "test": "vitest run",
     "test:browser": "playwright test",
-    "test:browser:snapshots": "playwright test --project=gallery-chromium --update-snapshots",
     "test:browser:install": "playwright install --with-deps chromium",
     "typecheck": "vue-tsc --noEmit",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit"

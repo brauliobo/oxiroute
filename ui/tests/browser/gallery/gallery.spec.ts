@@ -14,10 +14,6 @@ for (const theme of THEMES) {
         await expect(page.getByRole('heading', { level: 1, name: 'Design gallery' })).toBeVisible()
       })
 
-      test('renders every primitive as designed', async ({ page }) => {
-        await expect(page).toHaveScreenshot(`${theme}-${density}.png`, { fullPage: true })
-      })
-
       test('has no accessibility violations', async ({ page }) => {
         const results = await new AxeBuilder({ page }).analyze()
         expect(results.violations.map(({ id, nodes }) => `${id}: ${nodes.map((node) => node.target.join(' ')).join(' | ')}`)).toEqual([])

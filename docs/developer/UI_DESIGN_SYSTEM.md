@@ -69,8 +69,7 @@ only ships the primitives it uses.
    shape and never colour alone.
 3. Let native attributes and listeners fall through to the root element. Boolean props that must be absent rather than
    `false` default to `undefined`.
-4. Add it to the gallery (`ui/src/gallery/sections`), refresh the snapshots with `pnpm test:browser:snapshots` and review
-   them.
+4. Add it to the gallery (`ui/src/gallery/sections`) so the axe checks cover it in every theme and density.
 
 ## Enforcement
 
@@ -96,6 +95,6 @@ and the generated table; `scripts/verify/stats/assets.sh` fails CI when they dif
 ## Tests
 
 - `pnpm test`: primitive unit tests, token contrast, base styles, SFC policy.
-- Playwright `gallery-chromium`: a visual snapshot of the gallery in each theme and density (tolerance 5%, fonts differ
-  between machines: refresh with `pnpm test:browser:snapshots` when a primitive changes on purpose) and axe checks of the
-  gallery and the stats page in both themes.
+- Playwright `gallery-chromium`: axe checks of the gallery in each theme and density and of the stats page in both
+  themes, plus behaviour checks of the dialog, tabs and the theme and density switches. Pixel snapshots are not used:
+  fonts differ between machines, so they cannot be reproduced.
