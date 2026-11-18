@@ -26,6 +26,8 @@ fn managed_acme_without_a_current_revision_uses_a_bootstrap_and_is_due() {
     let status = reconciler.status();
     assert_eq!(status.disk_revision, "bootstrap");
     assert_eq!(status.next_action_unix_seconds, Some(0));
+    assert!(!reconciler.renewal_due(1));
+    reconciler.claim_state().unwrap();
     assert!(reconciler.renewal_due(1));
     assert_eq!(
         prepared.certificates()["primary"]

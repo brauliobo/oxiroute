@@ -15,8 +15,21 @@ impl AcmeManagedReconciler {
         state: Arc<StateStore>,
         key_type: AcmeKeyType,
     ) -> Result<LoadedManagedCertificate, TlsBuildError> {
-        let certificate = certificate.into();
-        let revisions = RevisionStore::from_arc(state);
+        Self::load_from(
+            RevisionStore::from_arc(state),
+            &certificate.into(),
+            declared_dns_names,
+            key_type,
+        )
+    }
+
+    pub(super) fn load_from(
+        revisions: RevisionStore,
+        certificate: &str,
+        declared_dns_names: &[String],
+        key_type: AcmeKeyType,
+    ) -> Result<LoadedManagedCertificate, TlsBuildError> {
+        let certificate = certificate.to_owned();
         let material = match revisions.load_current(&certificate) {
             Ok(material) => material,
             Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
@@ -134,95 +147,19 @@ impl AcmeManagedReconciler {
         active: Arc<ActiveCertificateGeneration>,
     ) -> Self {
         let certificate = certificate.into();
-        let persisted = if initial_issuance_due {
-            None
-        } else {
-            read_persisted_renewal(&revisions, &certificate).filter(|renewal| {
-                renewal.certificate == certificate
-                    && renewal.identifiers == declared_dns_names
-                    && renewal.directory_url == policy.directory_url
-                    && renewal.authenticator == challenge_string(policy.challenge)
-                    && renewal.dns_provider
-                        == policy.dns01.as_ref().map(|dns01| dns01.provider.clone())
-                    && renewal.key_type == key_type_string(policy.key_type)
-            })
-        };
-        let next_action_unix_seconds = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.next_action_unix_seconds)
-            .or_else(|| {
-                if initial_issuance_due {
-                    Some(0)
-                } else {
-                    not_before_unix_seconds.and_then(|not_before| {
-                        not_after_unix_seconds.and_then(|not_after| {
-                            stable_renewal_time(not_before, not_after, &certificate)
-                        })
-                    })
-                }
-            });
-        let auto_retry_blocked = persisted
-            .as_ref()
-            .is_some_and(|renewal| renewal.auto_retry_blocked);
-        let next_action_unix_seconds = if auto_retry_blocked {
-            None
-        } else {
-            next_action_unix_seconds
-        };
-        let paused = persisted.as_ref().is_some_and(|renewal| renewal.paused);
-        let next_action_unix_seconds = if paused {
-            None
-        } else {
-            next_action_unix_seconds
-        };
-        let retry_attempt = persisted
-            .as_ref()
-            .map_or(0, |renewal| renewal.retry_attempt);
-        let retry_at_unix_seconds = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.retry_at_unix_seconds);
-        let suggested_renewal_unix_seconds = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.suggested_renewal_unix_seconds);
-        let account_url = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.account_url.clone());
-        let renewal_info_url = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.renewal_info_url.clone());
-        let renewal_information_status = persisted
-            .as_ref()
-            .and_then(|renewal| {
-                normalized_renewal_information_status(&renewal.renewal_information_status)
-            })
-            .unwrap_or(if renewal_info_url.is_some() {
-                "pending"
-            } else {
-                "not_advertised"
-            });
-        let last_success_unix_seconds = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.last_success_unix_seconds);
-        let last_error_code = persisted
-            .as_ref()
-            .and_then(|renewal| renewal.last_error_code.as_deref())
-            .filter(|code| is_known_error_code(code))
-            .map(str::to_owned);
-        let last_outcome = Some(AcmeManagedOutcome::Loaded.code());
-        let dns_cleanup_status = if policy.challenge == AcmeChallengeType::Dns01 {
-            persisted_dns_cleanup_status(&revisions, &certificate)
-        } else {
-            "not_applicable"
-        };
-        let dns_provider_health = if policy.challenge != AcmeChallengeType::Dns01 {
-            "not_applicable"
-        } else if dns_provider.is_none() {
-            "unsupported"
-        } else if matches!(dns_cleanup_status, "pending" | "failed") {
-            "degraded"
-        } else {
-            "unknown"
-        };
+        let state = ReconcileState::load(
+            &revisions,
+            &certificate,
+            &declared_dns_names,
+            &policy,
+            &LoadedSchedule {
+                disk_revision,
+                not_before_unix_seconds,
+                not_after_unix_seconds,
+                initial_issuance_due,
+            },
+            dns_provider.is_some(),
+        );
         let reconciler = Self {
             certificate,
             declared_dns_names,
@@ -234,29 +171,10 @@ impl AcmeManagedReconciler {
             active,
             job: Mutex::new(()),
             control: Mutex::new(JobControl::default()),
-            state: Mutex::new(ReconcileState {
-                disk_revision,
-                not_before_unix_seconds,
-                not_after_unix_seconds,
-                next_action_unix_seconds,
-                retry_attempt,
-                retry_at_unix_seconds,
-                suggested_renewal_unix_seconds,
-                auto_retry_blocked,
-                account_url,
-                renewal_info_url,
-                job_status: paused.then_some(JobStatus::Paused),
-                job_id: None,
-                paused,
-                last_success_unix_seconds,
-                last_outcome,
-                last_error_code,
-                renewal_information_status,
-                dns_provider_health,
-                dns_cleanup_status,
-            }),
+            state: Mutex::new(state),
+            claim_listeners: Mutex::new(Vec::new()),
         };
-        if reconciler.dns_provider.is_some() {
+        if reconciler.dns_provider.is_some() && reconciler.revisions.state().is_owned() {
             let _ = reconciler.recover_pending_dns_cleanup();
         }
         reconciler
@@ -325,6 +243,9 @@ impl AcmeManagedReconciler {
 
     #[must_use]
     pub fn renewal_due(&self, now_unix_seconds: u64) -> bool {
+        if !self.revisions.state().is_owned() {
+            return false;
+        }
         let state = self
             .state
             .lock()

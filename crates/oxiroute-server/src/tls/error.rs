@@ -10,6 +10,15 @@ pub enum TlsBuildError {
         source: Box<oxiroute_acme::AcmeStateError>,
     },
     #[error(
+        "managed ACME certificate `{certificate}` state at `{}` is owned by the active worker; \
+         the replacement takes it when the active worker releases it",
+        state_root.display()
+    )]
+    AcmeStateOwned {
+        certificate: String,
+        state_root: PathBuf,
+    },
+    #[error(
         "managed ACME certificate `{certificate}` uses unsupported DNS-01 provider `{provider}`"
     )]
     DnsProviderUnsupported {

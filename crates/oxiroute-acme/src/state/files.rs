@@ -30,6 +30,14 @@ pub(super) fn ensure_state_root(path: &Path) -> Result<(), AcmeStateError> {
     validate_directory_metadata(&metadata)
 }
 
+pub(super) fn validate_existing_state_root(path: &Path) -> Result<(), AcmeStateError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(metadata) if metadata.is_dir() => validate_directory_metadata(&metadata),
+        _ => Err(AcmeStateError::UnsafeDirectory),
+    }
+}
+
 pub(super) fn ensure_managed_directory(root: &Path, path: &Path) -> Result<(), AcmeStateError> {
     let mut current = root.to_owned();
     for component in path
@@ -89,7 +97,7 @@ fn set_directory_mode(path: &Path) -> Result<(), AcmeStateError> {
     Ok(())
 }
 
-fn open_lock(path: &Path) -> Result<File, AcmeStateError> {
+pub(super) fn open_lock(path: &Path, wait: bool) -> Result<File, AcmeStateError> {
     #[cfg(unix)]
     {
         let (descriptor, created) = match rustix_fs::open(
@@ -120,8 +128,18 @@ fn open_lock(path: &Path) -> Result<File, AcmeStateError> {
         {
             return Err(AcmeStateError::UnsafeDirectoryPermissions);
         }
-        rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
-            .map_err(|_| AcmeStateError::StateLocked)?;
+        let operation = if wait {
+            FlockOperation::LockExclusive
+        } else {
+            FlockOperation::NonBlockingLockExclusive
+        };
+        match rustix_fs::flock(&descriptor, operation) {
+            Ok(()) => {}
+            Err(error) if error == rustix::io::Errno::AGAIN => {
+                return Err(AcmeStateError::StateLocked);
+            }
+            Err(_) => return Err(AcmeStateError::LockAcquire),
+        }
         Ok(File::from(descriptor))
     }
     #[cfg(not(unix))]
@@ -133,19 +151,6 @@ fn open_lock(path: &Path) -> Result<File, AcmeStateError> {
             .open(path)
             .map_err(AcmeStateError::LockOpen)
     }
-}
-
-pub(super) fn shared_lock(root: &Path, path: &Path) -> Result<Arc<File>, AcmeStateError> {
-    let locks = SHARED_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut locks = locks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(lock) = locks.get(root).and_then(Weak::upgrade) {
-        return Ok(lock);
-    }
-    let lock = Arc::new(open_lock(path)?);
-    locks.insert(root.to_owned(), Arc::downgrade(&lock));
-    Ok(lock)
 }
 
 pub(super) fn open_private_temp(path: &Path) -> io::Result<File> {

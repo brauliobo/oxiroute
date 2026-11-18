@@ -37,6 +37,7 @@ use super::*;
 mod dns01;
 mod issuance;
 mod lifecycle;
+mod ownership;
 mod support;
 
 #[allow(clippy::wildcard_imports)]

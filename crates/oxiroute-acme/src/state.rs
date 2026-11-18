@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fmt,
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -30,7 +30,6 @@ const PUBLIC_MODE: u32 = 0o644;
 const MAX_TEMP_ATTEMPTS: usize = 128;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static SHARED_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
 
 mod files;
 mod revision;

@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn restart_retains_bounded_retry_state_and_redacted_error_code() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     state
         .write_json(
             "certificates/managed/renewal.json",
@@ -76,7 +76,7 @@ fn cancellation_at_transport_boundaries_persists_one_cancelled_job_and_cleans_on
         BlockingBoundary::Poll,
     ] {
         let temp = TempDir::new().expect("state directory");
-        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
         let names = vec!["proxy.example.test".to_owned()];
         let bootstrap = CertificateGeneration::self_signed_development(
             "managed",
@@ -156,7 +156,7 @@ fn cancellation_at_transport_boundaries_persists_one_cancelled_job_and_cleans_on
 fn permanent_and_retryable_protocol_failures_control_automatic_retries() {
     for (problem_type, retryable) in [("rateLimited", true), ("rejectedIdentifier", false)] {
         let temp = TempDir::new().expect("state directory");
-        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
         let revisions = RevisionStore::from_arc(Arc::clone(&state));
         let names = vec!["proxy.example.test".to_owned()];
         let bootstrap = CertificateGeneration::self_signed_development(
@@ -228,7 +228,7 @@ fn permanent_and_retryable_protocol_failures_control_automatic_retries() {
 #[test]
 fn pause_and_resume_restores_the_persisted_ari_schedule() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     state
         .write_json(
             "certificates/managed/renewal.json",

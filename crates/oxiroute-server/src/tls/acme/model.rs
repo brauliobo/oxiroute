@@ -282,6 +282,7 @@ pub struct AcmeManagedReconciler {
     pub(super) job: Mutex<()>,
     pub(super) control: Mutex<JobControl>,
     pub(super) state: Mutex<ReconcileState>,
+    pub(super) claim_listeners: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
 }
 
 pub(super) type LoadedManagedCertificate = (

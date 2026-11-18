@@ -3,7 +3,7 @@ use super::*;
 
 pub struct StateStore {
     root: PathBuf,
-    _lock: Arc<File>,
+    lock: Mutex<Option<File>>,
 }
 
 impl fmt::Debug for StateStore {
@@ -11,30 +11,97 @@ impl fmt::Debug for StateStore {
         formatter
             .debug_struct("StateStore")
             .field("root", &self.root)
-            .field("lock", &"held")
+            .field("owned", &self.is_owned())
             .finish_non_exhaustive()
     }
 }
 
 impl StateStore {
-    /// Opens an owner-only state root and retains an exclusive process-lifetime lock.
+    /// Opens a state root for reading. An existing root must be an owner-only directory; a missing
+    /// root is created when the store is claimed. Writes are refused until [`Self::claim`]
+    /// succeeds, so any number of candidate generations can validate the same root.
     ///
     /// # Errors
     ///
-    /// Returns an error when any path component, owner, mode, or lock is unsafe.
+    /// Returns an error when the root is relative or an existing path component, owner, or mode is
+    /// unsafe.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, AcmeStateError> {
         let root = root.as_ref();
         if !root.is_absolute() {
             return Err(AcmeStateError::StateRootNotAbsolute);
         }
-        ensure_state_root(root)?;
-
-        let lock_path = root.join(".lock");
-        let lock = shared_lock(root, &lock_path)?;
+        validate_existing_state_root(root)?;
         Ok(Self {
             root: root.into(),
-            _lock: lock,
+            lock: Mutex::new(None),
         })
+    }
+
+    /// Opens a state root and claims it for writing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::open`] and [`Self::claim`].
+    pub fn open_owned(root: impl AsRef<Path>) -> Result<Self, AcmeStateError> {
+        let store = Self::open(root)?;
+        store.claim()?;
+        Ok(store)
+    }
+
+    /// Creates the root if needed and takes its exclusive lock, which this store keeps until
+    /// [`Self::release`] or its drop. Claiming an owned store succeeds without effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcmeStateError::StateLocked`] while another writer owns the root, or an error
+    /// when the root or its lock file is unsafe.
+    pub fn claim(&self) -> Result<(), AcmeStateError> {
+        self.take_lock(false)
+    }
+
+    /// Takes the root lock back after an aborted hand-over, waiting while the replacement that
+    /// failed to activate still holds it. Claiming an owned store succeeds without effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the root or its lock file is unsafe or the lock cannot be taken.
+    pub fn reclaim(&self) -> Result<(), AcmeStateError> {
+        self.take_lock(true)
+    }
+
+    fn take_lock(&self, wait: bool) -> Result<(), AcmeStateError> {
+        if self.is_owned() {
+            return Ok(());
+        }
+        ensure_state_root(&self.root)?;
+        let lock = open_lock(&self.root.join(".lock"), wait)?;
+        *self.lock_slot() = Some(lock);
+        Ok(())
+    }
+
+    /// Gives the root lock to a replacement writer. Reads keep working; writes are refused until
+    /// the store is claimed again.
+    pub fn release(&self) {
+        self.lock_slot().take();
+    }
+
+    #[must_use]
+    pub fn is_owned(&self) -> bool {
+        self.lock_slot().is_some()
+    }
+
+    pub(super) fn ensure_owned(&self) -> Result<(), AcmeStateError> {
+        if self.is_owned() {
+            Ok(())
+        } else {
+            Err(AcmeStateError::NotOwned)
+        }
+    }
+
+    fn lock_slot(&self) -> std::sync::MutexGuard<'_, Option<File>> {
+        self.lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[must_use]
@@ -137,6 +204,7 @@ impl StateStore {
     /// Returns an error when the path is unsafe, the file cannot be removed, or the parent cannot be
     /// synchronized.
     pub fn remove_file(&self, relative: &str) -> Result<(), AcmeStateError> {
+        self.ensure_owned()?;
         let path = self.safe_path(relative)?;
         let parent = path.parent().ok_or(AcmeStateError::UnsafePath)?;
         match fs::remove_file(&path) {
@@ -397,6 +465,7 @@ impl StateStore {
     }
 
     fn write_atomic(&self, relative: &str, bytes: &[u8], mode: u32) -> Result<(), AcmeStateError> {
+        self.ensure_owned()?;
         if bytes.len() > MAX_STATE_FILE_BYTES {
             return Err(AcmeStateError::FileTooLarge {
                 limit: MAX_STATE_FILE_BYTES,

@@ -22,7 +22,7 @@ fn material() -> CertificateMaterial {
 #[test]
 fn state_root_lock_and_revision_are_secure_and_redacted() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     let revision = RevisionStore::new(state);
     let material = material();
     revision
@@ -59,18 +59,51 @@ fn state_root_lock_and_revision_are_secure_and_redacted() {
 }
 
 #[test]
-fn same_process_state_root_reuses_the_lock_for_generation_reload() {
+fn state_root_has_exactly_one_writer_across_a_release() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let first = StateStore::open(directory.path().join("state")).expect("first state");
-    let second = StateStore::open(directory.path().join("state")).expect("second state");
-    assert_eq!(first.root(), second.root());
+    let root = directory.path().join("state");
+    let first = StateStore::open_owned(&root).expect("first state");
+    let second = StateStore::open(&root).expect("candidate reads the owned root");
+    assert!(matches!(second.claim(), Err(AcmeStateError::StateLocked)));
+    assert!(matches!(
+        second.write_public("probe.txt", b"candidate"),
+        Err(AcmeStateError::NotOwned)
+    ));
+
+    first.release();
+    assert!(!first.is_owned());
+    assert!(matches!(
+        first.write_public("probe.txt", b"released"),
+        Err(AcmeStateError::NotOwned)
+    ));
+    second.claim().expect("claim after release");
+    second
+        .write_public("probe.txt", b"candidate")
+        .expect("owner writes");
+    assert!(matches!(first.claim(), Err(AcmeStateError::StateLocked)));
+    assert_eq!(
+        first
+            .read_bounded("probe.txt", 16)
+            .expect("released store still reads"),
+        b"candidate"
+    );
+}
+
+#[test]
+fn opening_a_missing_root_creates_nothing_until_it_is_claimed() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path().join("state");
+    let store = StateStore::open(&root).expect("validated root");
+    assert!(!root.exists());
+    store.claim().expect("claim");
+    assert!(root.join(".lock").exists());
 }
 
 #[test]
 fn old_revision_survives_current_pointer_replacement() {
     let directory = tempfile::tempdir().expect("tempdir");
     let revision =
-        RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        RevisionStore::new(StateStore::open_owned(directory.path().join("state")).expect("state"));
     let first = material();
     revision.commit("edge", "00000001", &first).expect("first");
     let mut second = material();
@@ -98,7 +131,7 @@ fn old_revision_survives_current_pointer_replacement() {
 fn garbage_collection_preserves_current_and_newest_revisions() {
     let directory = tempfile::tempdir().expect("tempdir");
     let revision =
-        RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        RevisionStore::new(StateStore::open_owned(directory.path().join("state")).expect("state"));
     for (revision_id, created_at) in [("00000001", 1), ("00000002", 2), ("00000003", 3)] {
         let mut material = material();
         material.metadata.revision = revision_id.into();
@@ -134,7 +167,7 @@ fn garbage_collection_preserves_current_and_newest_revisions() {
 fn deleting_certificate_state_removes_account_and_revisions() {
     let directory = tempfile::tempdir().expect("tempdir");
     let revision =
-        RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        RevisionStore::new(StateStore::open_owned(directory.path().join("state")).expect("state"));
     let material = material();
     revision
         .commit("edge", "0123abcd", &material)
@@ -161,7 +194,7 @@ fn deleting_certificate_state_removes_account_and_revisions() {
 fn deleting_certificate_state_blocks_unresolved_dns_cleanup() {
     let directory = tempfile::tempdir().expect("tempdir");
     let revision =
-        RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        RevisionStore::new(StateStore::open_owned(directory.path().join("state")).expect("state"));
     revision
         .commit("edge", "0123abcd", &material())
         .expect("revision");
@@ -193,7 +226,7 @@ fn deleting_certificate_state_rejects_a_symlinked_revision_directory() {
 
     let directory = tempfile::tempdir().expect("tempdir");
     let revision =
-        RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        RevisionStore::new(StateStore::open_owned(directory.path().join("state")).expect("state"));
     revision
         .commit("edge", "0123abcd", &material())
         .expect("revision");
@@ -213,7 +246,7 @@ fn deleting_certificate_state_rejects_a_symlinked_revision_directory() {
 #[test]
 fn job_state_is_durable_and_contains_only_redacted_outcomes() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     state
         .create_job("job-1", "edge", "renew", None, 1)
         .expect("create job");
@@ -299,7 +332,7 @@ fn job_transition_matrix_is_explicit_and_terminal_states_are_terminal() {
 #[test]
 fn every_store_emitted_status_satisfies_job_invariants() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     let outcome = || RedactedOutcome::new("complete", "redacted outcome");
 
     let queued = state
@@ -360,7 +393,7 @@ fn every_store_emitted_status_satisfies_job_invariants() {
 #[test]
 fn historical_json_recovers_every_status_without_enforcing_new_write_invariants() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     for (index, (spelling, status)) in [
         ("queued", JobStatus::Queued),
         ("running", JobStatus::Running),
@@ -392,7 +425,7 @@ fn historical_json_recovers_every_status_without_enforcing_new_write_invariants(
 #[test]
 fn job_timestamps_are_monotonic_created_time_is_immutable_and_attempts_are_bounded() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     state
         .create_job("clock", "edge", "renew", None, 10)
         .expect("create");
@@ -424,7 +457,7 @@ fn job_timestamps_are_monotonic_created_time_is_immutable_and_attempts_are_bound
 #[test]
 fn unsafe_paths_and_invalid_revisions_are_rejected() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(directory.path().join("state")).expect("state");
+    let state = StateStore::open_owned(directory.path().join("state")).expect("state");
     assert!(matches!(
         state.write_public("../escape", b"x"),
         Err(AcmeStateError::UnsafePath)

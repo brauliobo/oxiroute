@@ -9,8 +9,10 @@ pub enum AcmeStateError {
     UnsafeDirectory,
     #[error("ACME state directory ownership or mode is unsafe")]
     UnsafeDirectoryPermissions,
-    #[error("ACME state root is already locked by another process")]
+    #[error("ACME state root is owned by another writer")]
     StateLocked,
+    #[error("ACME state root is not owned by this generation")]
+    NotOwned,
     #[error("ACME state lock could not be opened")]
     LockOpen(#[source] io::Error),
     #[error("ACME state lock could not be acquired")]

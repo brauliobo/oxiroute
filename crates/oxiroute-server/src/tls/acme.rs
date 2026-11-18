@@ -37,12 +37,14 @@ mod dns01;
 mod helpers;
 mod job_state;
 mod model;
+mod ownership;
 mod renew;
 
 pub use model::*;
 
 #[allow(clippy::wildcard_imports)]
 use helpers::*;
+use ownership::LoadedSchedule;
 
 #[cfg(test)]
 mod tests;

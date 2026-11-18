@@ -13,7 +13,7 @@ fn dns01_issues_wildcard_and_cleans_the_exact_provider_record() {
         fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
             .expect("credential permissions");
     }
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let names = vec!["*.example.test".to_owned()];
     let bootstrap = CertificateGeneration::self_signed_development(
@@ -110,7 +110,7 @@ fn restart_recovers_a_durable_dns_cleanup_journal_and_retries_failures() {
         fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
             .expect("credential permissions");
     }
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let journal = PersistedDnsCleanup {
         certificate: "managed-recovery".into(),
         provider: "fake".into(),
@@ -207,7 +207,7 @@ fn cancelled_dns_recovery_retains_journal_until_one_confirmed_cleanup() {
         fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
             .expect("credential permissions");
     }
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let bootstrap = CertificateGeneration::self_signed_development(
         "managed-recovery",

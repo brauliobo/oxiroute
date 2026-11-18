@@ -49,8 +49,25 @@ const ACME_RENEWAL_OPERATION_TIMEOUT: Duration = Duration::from_mins(10);
 const GENERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MUTATION_RETRY: Duration = Duration::from_millis(20);
 
+pub(super) enum RenewalSignal {
+    Stop,
+    Rescan,
+}
+
+fn rescan_on_claim(
+    reconcilers: &[Arc<AcmeManagedReconciler>],
+    signals: &mpsc::Sender<RenewalSignal>,
+) {
+    for reconciler in reconcilers {
+        let rescan = signals.clone();
+        reconciler.on_state_claimed(move || {
+            let _ = rescan.send(RenewalSignal::Rescan);
+        });
+    }
+}
+
 pub(super) struct AcmeManagedSupervisor {
-    pub(super) stop: Option<mpsc::Sender<()>>,
+    pub(super) stop: Option<mpsc::Sender<RenewalSignal>>,
     cancellation: Dns01Cancellation,
     pub(super) thread: Option<JoinHandle<()>>,
     #[cfg(test)]
@@ -71,6 +88,7 @@ impl AcmeManagedSupervisor {
         #[cfg(not(test))] _probe: Option<()>,
     ) -> io::Result<Self> {
         let (stop, stop_rx) = mpsc::channel();
+        rescan_on_claim(&reconcilers, &stop);
         let cancellation = Dns01Cancellation::new();
         let worker_cancellation = cancellation.clone();
         #[cfg(test)]
@@ -151,8 +169,10 @@ impl AcmeManagedSupervisor {
                         }
                     }
                     match stop_rx.recv_timeout(acme_scan_delay(&reconcilers, now)) {
-                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Ok(RenewalSignal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            break;
+                        }
+                        Ok(RenewalSignal::Rescan) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                 }
             })?;
@@ -168,7 +188,7 @@ impl AcmeManagedSupervisor {
     pub(super) fn shutdown(&mut self) {
         self.cancellation.cancel();
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(RenewalSignal::Stop);
             #[cfg(test)]
             if let Some(probe) = &self.probe {
                 probe.stops.fetch_add(1, Ordering::Relaxed);

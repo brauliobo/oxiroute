@@ -123,6 +123,7 @@ impl RevisionStore {
         retain_revisions: usize,
         retain_after_unix_seconds: u64,
     ) -> Result<usize, AcmeStateError> {
+        self.state.ensure_owned()?;
         validate_slug(certificate)?;
         if retain_revisions == 0 {
             return Err(AcmeStateError::InvalidRevision);
@@ -192,6 +193,7 @@ impl RevisionStore {
     ///
     /// Returns an error when any namespace, entry, or deletion path is unsafe or unavailable.
     pub fn delete_certificate_state(&self, certificate: &str) -> Result<(), AcmeStateError> {
+        self.state.ensure_owned()?;
         validate_slug(certificate)?;
         let certificate_relative = format!("certificates/{certificate}");
         let certificate_path = self.state.safe_path(&certificate_relative)?;

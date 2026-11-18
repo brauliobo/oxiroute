@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn local_fake_pebble_issues_validates_and_publishes_managed_certificate() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let names = vec!["proxy.example.test".to_owned()];
     let bootstrap = CertificateGeneration::self_signed_development(
@@ -89,7 +89,7 @@ fn local_fake_pebble_issues_validates_and_publishes_managed_certificate() {
 #[allow(clippy::too_many_lines)]
 fn local_fake_pebble_renews_activates_and_rolls_back_without_leaking_challenges() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let names = vec!["proxy.example.test".to_owned()];
     let bootstrap = CertificateGeneration::self_signed_development(
@@ -252,7 +252,7 @@ fn local_fake_pebble_renews_activates_and_rolls_back_without_leaking_challenges(
 #[test]
 fn tls_alpn01_issues_cleans_up_and_keeps_a_redacted_audit_record() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let names = vec!["proxy.example.test".to_owned()];
     let bootstrap = CertificateGeneration::self_signed_development(
@@ -329,7 +329,7 @@ fn tls_alpn01_issues_cleans_up_and_keeps_a_redacted_audit_record() {
 #[test]
 fn tls_alpn01_failure_cleans_up_and_keeps_the_bootstrap_generation() {
     let temp = TempDir::new().expect("state directory");
-    let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+    let state = Arc::new(StateStore::open_owned(temp.path().join("state")).expect("state"));
     let revisions = RevisionStore::from_arc(Arc::clone(&state));
     let names = vec!["proxy.example.test".to_owned()];
     let bootstrap = CertificateGeneration::self_signed_development(
