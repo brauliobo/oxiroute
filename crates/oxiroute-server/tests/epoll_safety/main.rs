@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::future::join_all;
 use http_support::http_request;
 use oxiroute_config::{
     AccessLogPolicy, ConfigDraft, DnsResolutionPolicy, HttpDataPlane, Management,
@@ -414,7 +415,17 @@ async fn answer_one_request(client: &mut TcpStream) {
 }
 
 const CLIENTS: usize = 17_000;
+const CLIENTS_PER_BATCH: usize = 50;
 const DESCRIPTORS_FOR_IDLE_CLIENTS: u64 = CLIENTS as u64 + 1_000;
+
+async fn served_clients(address: SocketAddr, count: usize) -> Vec<TcpStream> {
+    join_all((0..count).map(|_| async move {
+        let mut client = TcpStream::connect(address).await.expect("connect");
+        answer_one_request(&mut client).await;
+        client
+    }))
+    .await
+}
 
 async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataPlane) {
     raise_descriptor_limit(DESCRIPTORS_FOR_IDLE_CLIENTS);
@@ -424,12 +435,10 @@ async fn more_idle_connections_than_a_thread_cap_are_all_served(plane: HttpDataP
         }
     })
     .await;
-    let mut proxy = Proxy::start(origin.address, plane, |config| config.log_filter = None).await;
+    let proxy = Proxy::start(origin.address, plane, |config| config.log_filter = None).await;
     let mut clients = Vec::with_capacity(CLIENTS);
-    for _ in 0..CLIENTS {
-        let mut client = proxy.connect().await;
-        answer_one_request(&mut client).await;
-        clients.push(client);
+    for _ in 0..CLIENTS / CLIENTS_PER_BATCH {
+        clients.extend(served_clients(proxy.address, CLIENTS_PER_BATCH).await);
     }
     answer_one_request(&mut clients[0]).await;
     answer_one_request(&mut clients[CLIENTS - 1]).await;
