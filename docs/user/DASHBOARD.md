@@ -23,6 +23,7 @@ not a production daemon or secret-bearing screenshot.
 | View | What it answers | Data source |
 | --- | --- | --- |
 | **Overview** | Is the process, listener, origin pool, topology, or RTMP catalog healthy? | Monitoring, topology, and RTMP catalog snapshots |
+| **Cameras** | Which streams are live, idle, degraded, or offline, what was recorded, and which keys guard them? | Authenticated RTMP catalog, stats, recordings, media tickets, and secret fingerprints |
 | **Statistics** | What are the process, listener, backend, queue, and server counters? | The active runtime monitoring snapshot |
 | **Operations** | What can be drained, reloaded, rolled back, or changed administratively? | Authenticated generation and runtime action APIs |
 | **Certificates** | Which imported, Certbot, or managed identities are active and what lifecycle actions are available? | Authenticated TLS inventory and job APIs |
@@ -56,6 +57,34 @@ Select a node in the topology schematic to inspect:
 Certificate private-key paths, recording roots, token paths, and other sensitive paths are excluded
 or redacted. The topology endpoint is an active-generation view; configuration validation exposes a
 separate candidate topology marked `not_active`.
+
+## Cameras
+
+The Cameras view has three tabs: Streams, Recordings, and Access keys.
+
+**Streams** shows one tile per stream, problems first. Each tile carries a state word (live, idle,
+degraded, or offline), codecs, resolution, bitrate, publisher address, viewers, and uptime. A stream
+is degraded when its media stalls or a recorder failed, and the tile names the reason. Offline cameras
+come from the catalog of recently ended streams, which the daemon keeps in memory for about an hour,
+with the end reason. The grid filters by state and search text, and every tile is keyboard operable.
+
+A live preview plays through a short-lived media ticket, so the management token never reaches the
+player and the ticket is never shown. It is renewed before it expires, at most four previews run at
+once, and it needs an application with an HLS output and a browser that plays HLS natively. When
+nothing is playable, the tile explains why and keeps its metadata.
+
+Management actions keep their result on the page until dismissed: start or stop a manual recorder,
+list viewers, and drop a publisher or one viewer. Dropping asks first and names the stream, the
+address, and the audience.
+
+**Recordings** lists finished and running recordings with filters for stream, status, date range,
+codec, and name, sortable columns (name, stream, start, duration, size, status), and pages of 50. Each recorder root shows disk and file usage
+against its quota and explains in words what the retention policy does and what the failure codes
+`quota_files` and `quota_bytes` mean. Recordings are FLV, which browsers cannot play, so each row
+offers a ticketed download instead of in-page playback. Deleting asks first and names the recording.
+
+**Access keys** lists the fingerprint of each publish and play key (`fp-` plus eight hexadecimal
+characters of its SHA-256). The keys themselves are never sent to the browser.
 
 ## Statistics
 
