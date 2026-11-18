@@ -24,7 +24,7 @@ test.describe('overview workspace browser gates', () => {
   test('shows empty RTMP sections as no data yet, never as the epoch', async ({ page }) => {
     await installApiMock(page, (request) => {
       const path = requestPath(request)
-      if (path === '/api/v1/rtmp/streams') return { body: { revision: '0', as_of_unix_ms: 0, capabilities: { live_ingest: false, manual_recording: false }, streams: [] } }
+      if (path === '/api/v1/rtmp/streams') return { body: { revision: '0', as_of_unix_ms: 0, capabilities: { live_ingest: false, manual_recording: false }, streams: [], recently_ended_streams: [] } }
       if (path === '/api/v1/rtmp/stats') {
         return { body: { revision: '0', asOfUnixMs: 0, global: { activeStreams: 0, publishers: 0, subscribers: 0, audioPayloadBytes: '0', videoPayloadBytes: '0', liveIngest: false, manualRecording: false }, live: [], clients: [], liveTruncated: false, clientsTruncated: false } }
       }
