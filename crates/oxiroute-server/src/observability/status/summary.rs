@@ -70,6 +70,9 @@ pub(crate) struct PoolSummary {
     pub(crate) oldest_queue_wait_ms: u64,
     pub(crate) inflight: u64,
     pub(crate) oldest_inflight_ms: u64,
+    /// The pool takes dynamic registrations, so it may have no servers yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) registers: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) canary: Option<CanarySummary>,
 }
@@ -151,6 +154,7 @@ impl PoolSummary {
             oldest_queue_wait_ms: pool.oldest_queue_wait_ms,
             inflight: live.requests,
             oldest_inflight_ms: live.oldest_age_ms,
+            registers: false,
             canary: pool
                 .canary
                 .as_ref()
@@ -197,6 +201,9 @@ pub(crate) fn status_document(
             unix_ms: u64::try_from(now).unwrap_or(u64::MAX),
         },
     );
+    if let Some(service) = registry_service {
+        summary.mark_registering(&service.registration_pools());
+    }
     summary.registry = registry_service.and_then(|service| {
         Some(RegistrySummary::project(
             &service.status(),
@@ -240,6 +247,15 @@ impl StatusSummary {
         };
         summary.state = summary.judge(&Thresholds::default()).severity;
         summary
+    }
+}
+
+impl StatusSummary {
+    fn mark_registering(&mut self, registering: &[String]) {
+        for pool in &mut self.pools {
+            pool.registers = registering.contains(&pool.name);
+            pool.state = Self::pool_severity(pool);
+        }
     }
 }
 

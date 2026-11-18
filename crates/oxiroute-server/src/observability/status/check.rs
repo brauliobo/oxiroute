@@ -24,7 +24,9 @@ mod tests;
 pub(crate) struct Thresholds {
     /// Warn below this many available servers; `None` warns when any server of the pool is missing.
     pub(crate) warn_available_below: Option<usize>,
-    pub(crate) crit_available_below: usize,
+    /// Critical below this many available servers; `None` is 1, except that a pool that takes
+    /// registrations and has none yet is then only noted.
+    pub(crate) crit_available_below: Option<usize>,
     pub(crate) max_queue_wait_ms: u64,
     /// Oldest in-flight request a pool may hold; `None` leaves slow requests to the overdue rule.
     pub(crate) max_inflight_age_ms: Option<u64>,
@@ -35,7 +37,7 @@ impl Default for Thresholds {
     fn default() -> Self {
         Self {
             warn_available_below: None,
-            crit_available_below: 1,
+            crit_available_below: None,
             max_queue_wait_ms: 5_000,
             max_inflight_age_ms: None,
             max_retired_age_seconds: 3_600,
@@ -62,6 +64,14 @@ impl Thresholds {
     fn warn_below(&self, total: usize) -> usize {
         self.warn_available_below.unwrap_or(total)
     }
+
+    fn crit_below(&self) -> usize {
+        self.crit_available_below.unwrap_or(1)
+    }
+
+    fn has_availability_threshold(&self) -> bool {
+        self.warn_available_below.is_some() || self.crit_available_below.is_some()
+    }
 }
 
 impl PoolSummary {
@@ -73,7 +83,9 @@ impl PoolSummary {
         };
         let mut findings = Vec::new();
         let counts = format!("{}/{} available", self.available, self.total);
-        if self.available < limits.crit_available_below {
+        if self.registers && self.total == 0 && !limits.has_availability_threshold() {
+            findings.push(at(Severity::Ok, "has no registered servers yet".into()));
+        } else if self.available < limits.crit_below() {
             findings.push(at(Severity::Critical, counts));
         } else if self.available < limits.warn_below(self.total) {
             findings.push(at(Severity::Warning, counts));
@@ -303,7 +315,7 @@ fn performance_data(summary: &StatusSummary, limits: &Thresholds) -> String {
              {name}_inflight={} {name}_oldest_inflight_ms={} ",
             pool.available,
             limits.warn_below(pool.total),
-            limits.crit_available_below,
+            limits.crit_below(),
             pool.queued,
             pool.oldest_queue_wait_ms,
             pool.inflight,

@@ -407,3 +407,26 @@ async fn check_judges_the_pool_canary_that_the_status_page_and_metrics_report() 
     eventually_exits(scratch, &[], 0).await;
     farm.server.shutdown();
 }
+
+#[tokio::test]
+async fn a_registering_pool_that_has_no_servers_yet_is_ok_unless_a_threshold_asks_for_one() {
+    let scratch = Scratch {
+        state: TempDir::new().expect("scratch"),
+        management: reserve_tcp_address(),
+        traffic: reserve_tcp_address(),
+    };
+    let mut server = ServerProcess::start(&scratch.config(&[]), Some(TOKEN));
+    server.wait_for_tcp(scratch.management).await;
+    server.wait_for_tcp(scratch.traffic).await;
+
+    let ok = eventually_exits(&scratch, &[], 0).await;
+    assert!(
+        ok.stdout
+            .starts_with("OXIROUTE OK - pool farm has no registered servers yet | "),
+        "{}",
+        ok.stdout
+    );
+    let required = scratch.check(&["--crit-available-below", "1"]).await;
+    assert_eq!(required.code, 2, "{}", required.stdout);
+    server.shutdown();
+}

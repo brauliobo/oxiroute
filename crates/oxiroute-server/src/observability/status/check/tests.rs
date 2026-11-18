@@ -65,7 +65,7 @@ fn the_operator_thresholds_replace_the_defaults() {
     let farm = summary(&[pool("farm", 2, 4)], &json!({}));
     let limits = Thresholds {
         warn_available_below: Some(2),
-        crit_available_below: 3,
+        crit_available_below: Some(3),
         ..Thresholds::default()
     };
     assert_eq!(verdict(&farm, &limits).0, 2);
@@ -254,4 +254,31 @@ fn settings_that_wait_for_a_restart_warn_without_degrading() {
         line.contains("WARNING - restart required to apply listener_ipv6_only"),
         "{line}"
     );
+}
+
+#[test]
+fn a_pool_waiting_for_its_first_registration_is_noted_unless_a_threshold_is_set() {
+    let mut waiting = pool("farm", 0, 0);
+    waiting["registers"] = json!(true);
+    let farm = summary(&[waiting], &json!({}));
+    let (code, line) = verdict(&farm, &Thresholds::default());
+    assert_eq!(code, 0);
+    assert!(
+        line.contains("OK - pool farm has no registered servers yet"),
+        "{line}"
+    );
+
+    let required = Thresholds {
+        crit_available_below: Some(1),
+        ..Thresholds::default()
+    };
+    assert_eq!(verdict(&farm, &required).0, 2);
+    let wanted = Thresholds {
+        warn_available_below: Some(1),
+        ..Thresholds::default()
+    };
+    assert_eq!(verdict(&farm, &wanted).0, 2);
+
+    let configured = summary(&[pool("static", 0, 0)], &json!({}));
+    assert_eq!(verdict(&configured, &Thresholds::default()).0, 2);
 }

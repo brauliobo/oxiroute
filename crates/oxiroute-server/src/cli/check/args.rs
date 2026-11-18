@@ -13,9 +13,10 @@ pub(crate) struct CheckArgs {
     /// WARNING when a pool has fewer available servers than this. Default: any server missing.
     #[arg(long, value_name = "N")]
     pub(super) warn_available_below: Option<u16>,
-    /// CRITICAL when a pool has fewer available servers than this.
-    #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
-    pub(super) crit_available_below: u16,
+    /// CRITICAL when a pool has fewer available servers than this. Default: 1, except that a pool
+    /// that takes registrations and has no servers yet is only noted unless a threshold is given.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..))]
+    pub(super) crit_available_below: Option<u16>,
     /// WARNING when the oldest queued request has waited longer, for example 5s.
     #[arg(long, value_name = "AGE", default_value = "5s", value_parser = parse_age_ms)]
     pub(super) max_queue_wait: u64,
@@ -54,7 +55,7 @@ impl CheckArgs {
     pub(super) fn thresholds(&self) -> Thresholds {
         Thresholds {
             warn_available_below: self.warn_available_below.map(usize::from),
-            crit_available_below: usize::from(self.crit_available_below),
+            crit_available_below: self.crit_available_below.map(usize::from),
             max_queue_wait_ms: self.max_queue_wait,
             max_inflight_age_ms: self.max_inflight_age,
             max_retired_age_seconds: self.max_retired_age / 1_000,
