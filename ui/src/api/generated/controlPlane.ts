@@ -272,6 +272,10 @@ export interface ListenerInventoryResponse {
 
 export type ListenerRuntimeStateDto = "configured" | "listening" | "stopped" | "failed"
 
+export interface MediaTicketRequest {
+  ttlSeconds: number | null
+}
+
 export type NoneDto = "none"
 
 export interface PendingApplyDto {
@@ -396,6 +400,13 @@ export interface TcpRelayDto {
 
 export type TcpRelayResultDto = "success" | "connect_error" | "connect_timeout" | "idle_timeout" | "lifetime_timeout" | "cancelled" | "io_error" | "accounting_error" | "proxy_protocol_error"
 
+export interface TicketResponse {
+  expiresAtUnixMs: number
+  path: string
+  ticket: string
+  ttlSeconds: number
+}
+
 export interface TlsClientAuthDto {
   allowedDnsNameCount: number
   caConfigured: boolean
@@ -419,6 +430,11 @@ export interface UdpCapabilityDto {
 }
 
 export type UdpTransportDto = "udp"
+
+export interface VodTicketRequest {
+  path: string
+  ttlSeconds: number | null
+}
 
 export interface ControlPlaneResponses {
   getGenerations: GenerationResponse
