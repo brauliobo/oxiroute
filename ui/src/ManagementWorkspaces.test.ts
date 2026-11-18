@@ -51,7 +51,7 @@ describe('local management workspaces', () => {
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.get('#management-access-token').setValue(token)
-    await wrapper.get('.management-auth').trigger('submit')
+    await wrapper.get('form.ox-token').trigger('submit')
     await flushPromises()
 
     expect(wrapper.get('a[href="#/provenance"]').attributes('aria-current')).toBe('page')

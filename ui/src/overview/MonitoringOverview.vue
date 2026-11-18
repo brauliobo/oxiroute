@@ -204,5 +204,5 @@ function loadFillPercent(value: number | null): number {
 }
 </script>
 
-<style scoped src="../consoleBase.css"></style>
+<style scoped src="./base.css"></style>
 <style scoped src="./MonitoringOverview.css"></style>

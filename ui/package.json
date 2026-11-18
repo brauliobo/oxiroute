@@ -11,7 +11,7 @@
     "dev": "vite",
     "generate:control-plane": "node ../scripts/generate/control-plane-types.mjs",
     "generate:stats-page": "node ../scripts/generate/stats/page-types.mjs",
-    "lint:css": "stylelint \"src/{design,stats,gallery}/**/*.{css,vue}\"",
+    "lint:css": "stylelint \"src/{design,stats,gallery,shell}/**/*.{css,vue}\"",
     "verify:css": "pnpm lint:css && ../scripts/verify/ui/colors.sh && ../scripts/verify/ui/duplicates.sh",
     "verify:bundle": "node ../scripts/verify/ui-bundle.mjs dist",
     "verify:stats-bundle": "node ../scripts/verify/ui-bundle.mjs dist-stats && node ../scripts/verify/stats/budget.mjs dist-stats",

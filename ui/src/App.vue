@@ -1,119 +1,54 @@
 <template lang="pug">
-main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === null && refreshing")
-  header.masthead
-    .brand-block
-      p.eyebrow Network control / telemetry
-      h1 OxiRoute
-      p.deck {{ viewTitles[activeView] }}
-    .system-state(v-if="activeView !== 'configuration'" :class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
-      span.state-light(aria-hidden="true")
-      span {{ monitoringStatus }}
-    .system-state.configuration-state(v-else role="status")
-      span.state-light(aria-hidden="true")
-      span Revision-aware editor
+Shell(title="OxiRoute" skip-label="Skip to content" v-model:theme="theme")
+  template(v-slot:header)
+    p.ox-view-title {{ viewTitle(activeView) }}
+    .ox-header-end
+      FeedStatus(:state="feedState")
+  template(v-slot:above)
+    .ox-console-bar
+      Nav(:items="NAV_ITEMS" :current="activeView" label="Primary navigation" @click="onNavigate")
+      TokenForm(:signed-in="managementToken !== ''" @submit="setManagementToken")
 
-  nav.app-navigation(aria-label="Primary navigation")
-    a(
-      href="#/overview"
-      :aria-current="activeView === 'overview' ? 'page' : undefined"
-      @click="activateView('overview')"
-    ) Overview
-    a(
-      href="#/stats"
-      :aria-current="activeView === 'stats' ? 'page' : undefined"
-      @click="activateView('stats')"
-    ) Statistics
-    a(
-      href="#/operations"
-      :aria-current="activeView === 'operations' ? 'page' : undefined"
-      @click="activateView('operations')"
-    ) Operations
-    a(
-      href="#/certificates"
-      :aria-current="activeView === 'certificates' ? 'page' : undefined"
-      @click="activateView('certificates')"
-    ) Certificates
-    a(
-      href="#/events"
-      :aria-current="activeView === 'events' ? 'page' : undefined"
-      @click="activateView('events')"
-    ) Events
-    a(
-      href="#/audit"
-      :aria-current="activeView === 'audit' ? 'page' : undefined"
-      @click="activateView('audit')"
-    ) Audit
-    a(
-      href="#/configuration"
-      :aria-current="activeView === 'configuration' ? 'page' : undefined"
-      @click="activateView('configuration')"
-    ) Configuration
-    a(
-      href="#/provenance"
-      :aria-current="activeView === 'provenance' ? 'page' : undefined"
-      @click="activateView('provenance')"
-    ) Provenance
-    form.management-auth(@submit.prevent="setManagementToken")
-      label(for="management-access-token") Management token
-      input#management-access-token(
-        v-model="managementTokenInput"
-        type="password"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="Bearer token"
-      )
-      button(type="submit" :disabled="managementTokenInput.length === 0")
-        | {{ managementToken ? 'Replace token' : 'Unlock telemetry' }}
+  .ox-notices
+    Loading(v-if="activeView !== 'configuration' && !monitoring && refreshing" label="Establishing telemetry")
+    Notice(v-if="activeView !== 'configuration' && monitoringError && !monitoring" kind="alert")
+      Banner(tone="bad")
+        strong Monitoring unavailable.
+        |  {{ monitoringError }}
+    Notice(v-else-if="activeView !== 'configuration' && monitoring && isStale" kind="status")
+      Banner(tone="warn")
+        strong Retaining the last valid sample.
+        |  {{ staleMessage }}
+    Notice(v-if="activeView === 'overview' && catalogError" kind="alert")
+      Banner(tone="bad")
+        strong {{ catalog ? 'Stream inventory refresh failed.' : 'Stream inventory unavailable.' }}
+        |  {{ catalogError }}{{ catalog ? ' The last valid inventory remains visible.' : '' }}
+    Notice(v-else-if="activeView === 'overview' && !catalog && refreshing" kind="status")
+      Banner(tone="info")
+        strong Loading stream inventory.
+        |  Waiting for the RTMP catalog.
+    Notice(v-if="activeView === 'overview' && rtmpStatsError" kind="alert")
+      Banner(tone="bad")
+        strong RTMP client control unavailable.
+        |  {{ rtmpStatsError }}
+    Notice(v-if="activeView === 'overview' && topologyError" kind="alert")
+      Banner(tone="bad")
+        strong {{ topology ? 'Topology refresh failed.' : 'Topology unavailable.' }}
+        |  {{ topologyError }}{{ topology ? ' The last valid topology remains visible.' : '' }}
+    Notice(v-else-if="activeView === 'overview' && !topology && refreshing" kind="status")
+      Banner(tone="info")
+        strong Loading topology.
+        |  Waiting for the active runtime graph.
+    Notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.live_ingest" kind="status")
+      Banner(tone="warn")
+        strong RTMP ingestion is not connected.
+        |  Configure an RTMP listener to accept publishers; handshakes never create synthetic streams.
+    Notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.manual_recording" kind="status")
+      Banner(tone="warn")
+        strong Manual recording controls are unavailable.
+        |  Continuous recorder state remains visible, but this runtime does not accept start or stop commands.
 
-  section.readout-bar(v-show="activeView !== 'configuration'" aria-label="Live monitoring summary")
-    .readout
-      span.label Active connections
-      strong {{ monitoring ? formatCount(monitoring.traffic.activeConnections) : '--' }}
-    .readout
-      span.label Traffic moved
-      strong {{ monitoring ? formatBytes(totalTrafficBytes(monitoring.traffic)) : '--' }}
-    .readout
-      span.label Host memory used
-      strong {{ monitoring ? formatOptionalPercent(memoryUsagePercent(monitoring.host)) : '--' }}
-    .readout
-      span.label Uptime
-      strong.mono {{ monitoring ? formatTelemetryDuration(monitoring.uptimeMs) : '--' }}
-    button.refresh-button(type="button" @click="refresh" :disabled="refreshing")
-      | {{ refreshing ? 'Refreshing...' : 'Refresh now' }}
-
-  section.loading-state(v-if="activeView !== 'configuration' && !monitoring && refreshing" role="status" aria-live="polite")
-    span.loading-mark(aria-hidden="true")
-    div
-      strong Establishing telemetry
-      p Waiting for the first monitoring sample from the control plane.
-
-  p.notice.error-notice(v-if="activeView !== 'configuration' && monitoringError && !monitoring" role="alert")
-    strong Monitoring unavailable.
-    |  {{ monitoringError }}
-  p.notice.stale-notice(v-else-if="activeView !== 'configuration' && monitoring && isStale" role="status" aria-live="polite")
-    strong Retaining the last valid sample.
-    |  {{ staleMessage }}
-  p.notice.error-notice(v-if="activeView === 'overview' && catalogError" role="alert")
-    strong {{ catalog ? 'Stream inventory refresh failed.' : 'Stream inventory unavailable.' }}
-    |  {{ catalogError }}{{ catalog ? ' The last valid inventory remains visible.' : '' }}
-  p.notice.loading-notice(v-else-if="activeView === 'overview' && !catalog && refreshing" role="status")
-    strong Loading stream inventory.
-    |  Waiting for the RTMP catalog.
-  p.notice.error-notice(v-if="activeView === 'overview' && rtmpStatsError" role="alert")
-    strong RTMP client control unavailable.
-    |  {{ rtmpStatsError }}
-  p.notice.error-notice(v-if="activeView === 'overview' && topologyError" role="alert")
-    strong {{ topology ? 'Topology refresh failed.' : 'Topology unavailable.' }}
-    |  {{ topologyError }}{{ topology ? ' The last valid topology remains visible.' : '' }}
-  p.notice.loading-notice(v-else-if="activeView === 'overview' && !topology && refreshing" role="status")
-    strong Loading topology.
-    |  Waiting for the active runtime graph.
-  p.notice.capability-notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.live_ingest")
-    strong RTMP ingestion is not connected.
-    |  Configure an RTMP listener to accept publishers; handshakes never create synthetic streams.
-  p.notice.capability-notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.manual_recording")
-    strong Manual recording controls are unavailable.
-    |  Continuous recorder state remains visible, but this runtime does not accept start or stop commands.
+  Readouts(v-show="activeView !== 'configuration'" :monitoring="monitoring" :refreshing="refreshing" @refresh="refresh")
 
   HaproxyStatsDashboard(v-if="activeView === 'stats' && monitoring" :monitoring="monitoring")
 
@@ -149,24 +84,39 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
   KeepAlive
     ConfigurationWorkspace(v-if="activeView === 'configuration'")
 
-  footer.page-footer
-    span OxiRoute pre-alpha
-    span.mono Live measurements / runtime inventory
+  template(v-slot:footer)
+    footer.ox-footer
+      p OxiRoute pre-alpha
+      p Live measurements / runtime inventory
 </template>
 
 <script setup lang="ts" vapor>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import Banner from '#design/banner/Banner.vue'
+import Notice from '#design/banner/Notice.vue'
+import { useStoredTheme } from '#design/composables/useTheme'
+import Loading from '#design/empty/Loading.vue'
+import Shell from '#design/layout/Shell.vue'
+import Nav from '#design/nav/Nav.vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import AuditWorkspace from './AuditWorkspace.vue'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
-import { formatBytes, formatCount, formatTelemetryDuration, presentApiError } from './formatters'
+import { presentApiError } from './formatters'
 import MonitoringOverview from './overview/MonitoringOverview.vue'
 import StreamInventory from './overview/StreamInventory.vue'
-import { formatOptionalPercent, formatSampleAge, memoryUsagePercent, totalTrafficBytes } from './overview/telemetry'
+import { formatSampleAge } from './overview/telemetry'
 import RtmpClientPanel from './RtmpClientPanel.vue'
+import FeedStatus from './shell/FeedStatus.vue'
+import type { FeedState } from './shell/FeedStatus.vue'
+import Readouts from './shell/Readouts.vue'
+import TokenForm from './shell/TokenForm.vue'
+import { useDocumentTitle } from './shell/useDocumentTitle'
+import { documentTitle, NAV_ITEMS, viewFromHash, viewTitle } from './shell/views'
+import type { ViewId } from './shell/views'
+import './shell/styles.css'
 import { recorderControlAction } from './recording'
 import TopologyView from './TopologyView.vue'
 import OperationsWorkspace from './OperationsWorkspace.vue'
@@ -194,22 +144,9 @@ import {
 const REFRESH_INTERVAL_MS = 5_000
 const STALE_AFTER_MS = REFRESH_INTERVAL_MS * 3
 
-type AppView = 'overview' | 'stats' | 'operations' | 'certificates' | 'events' | 'audit' | 'configuration' | 'provenance'
-
-const viewTitles: Record<AppView, string> = {
-  overview: 'Runtime observatory',
-  stats: 'HAProxy statistics',
-  operations: 'Local operations',
-  certificates: 'Certificate inventory',
-  events: 'Operational event history',
-  audit: 'Durable audit history',
-  configuration: 'Canonical configuration',
-  provenance: 'Source provenance',
-}
-
-const activeView = ref<AppView>(viewFromHash())
+const activeView = ref<ViewId>(viewFromHash(window.location.hash))
+const theme = useStoredTheme()
 const managementToken = ref('')
-const managementTokenInput = ref('')
 const monitoring = ref<MonitoringSnapshot | null>(null)
 const catalog = ref<RtmpCatalog | null>(null)
 const rtmpStats = ref<RtmpStats | null>(null)
@@ -234,11 +171,12 @@ const isStale = computed(
     (monitoringError.value !== null ||
       currentUnixMs.value - monitoring.value.sampledAtUnixMs > STALE_AFTER_MS),
 )
-const monitoringStatus = computed(() => {
-  if (!monitoring.value) return refreshing.value ? 'Establishing telemetry' : 'Telemetry offline'
-  if (isStale.value) return 'Telemetry stale'
-  return refreshing.value ? 'Synchronizing' : 'Telemetry live'
+const feedState = computed<FeedState>(() => {
+  if (activeView.value === 'configuration') return 'paused'
+  if (!monitoring.value) return refreshing.value ? 'loading' : 'unavailable'
+  return isStale.value ? 'stale' : 'live'
 })
+useDocumentTitle(() => documentTitle(activeView.value))
 const staleMessage = computed(() => {
   if (monitoringError.value) return `${monitoringError.value} The displayed values have not been cleared.`
   if (!monitoring.value) return ''
@@ -264,17 +202,7 @@ function refresh(): Promise<void> {
   return activeRefresh
 }
 
-function viewFromHash(): AppView {
-  if (window.location.hash === '#/configuration') return 'configuration'
-  if (window.location.hash === '#/stats') return 'stats'
-  if (window.location.hash === '#/operations') return 'operations'
-  if (window.location.hash === '#/certificates') return 'certificates'
-  if (window.location.hash === '#/events') return 'events'
-  if (window.location.hash === '#/audit') return 'audit'
-  return window.location.hash === '#/provenance' ? 'provenance' : 'overview'
-}
-
-function activateView(view: AppView): void {
+function activateView(view: ViewId): void {
   activeView.value = view
   if (view !== 'configuration') {
     startMonitoring()
@@ -284,10 +212,8 @@ function activateView(view: AppView): void {
   }
 }
 
-function setManagementToken(): void {
-  if (!managementTokenInput.value) return
-  managementToken.value = managementTokenInput.value
-  managementTokenInput.value = ''
+function setManagementToken(token: string): void {
+  managementToken.value = token
   if (activeView.value !== 'configuration') {
     stopEventStream()
     if (activeView.value === 'overview' || activeView.value === 'stats') startEventStream()
@@ -297,13 +223,19 @@ function setManagementToken(): void {
 
 function clearManagementToken(): void {
   managementToken.value = ''
-  managementTokenInput.value = ''
   monitoringError.value = 'Management token rejected. Enter a valid bearer token.'
   stopEventStream()
 }
 
 function syncViewFromHash(): void {
-  activateView(viewFromHash())
+  activateView(viewFromHash(window.location.hash))
+}
+
+function onNavigate(event: MouseEvent): void {
+  const href = (event.target as Element).closest('a')?.getAttribute('href')
+  if (!href) return
+  activateView(viewFromHash(href))
+  document.getElementById('ox-main')?.focus()
 }
 
 function startMonitoring(): void {
@@ -539,6 +471,3 @@ onUnmounted(() => {
   stopMonitoring()
 })
 </script>
-
-<style scoped src="./consoleBase.css"></style>
-<style scoped src="./App.css"></style>

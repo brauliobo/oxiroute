@@ -44,11 +44,7 @@ test.describe('overview workspace browser gates', () => {
     await expect(page.locator('.pool-section')).toContainText('web-backends')
     await expect(page.locator('.recorder-panel')).toContainText('Recording supported')
 
-    const viewport = page.viewportSize()
-    expect(viewport).not.toBeNull()
-    const navigationDisplay = await page.locator('.app-navigation').evaluate((element) => getComputedStyle(element).display)
-    if ((viewport?.width ?? 0) <= 700) expect(navigationDisplay).toBe('grid')
-    else expect(navigationDisplay).toBe('flex')
+    await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toHaveCSS('display', 'flex')
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })
 })

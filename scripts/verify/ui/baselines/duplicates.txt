@@ -12,7 +12,7 @@
 9 .empty-list
 2 .empty-state
 2 .enable-row
-6 .error-notice
+5 .error-notice
 10 .eyebrow
 2 .fact
 4 .field
@@ -28,16 +28,13 @@
 7 .label
 2 .list-field
 2 .list-row
-7 .loading-mark
+6 .loading-mark
 6 .loading-panel
-2 .masthead
 3 .mobile-object-nav
-2 .mono
 2 .nav-section-label
-6 .notice
+5 .notice
 3 .object-path
 2 .output-heading
-2 .page-footer
 7 .panel-heading
 2 .panel-index
 5 .panel-note
@@ -45,7 +42,6 @@
 2 .pool-heading
 2 .preview-panel
 4 .primary-button
-2 .readout-bar
 2 .review-actions
 2 .review-heading
 2 .revision-banner
@@ -57,8 +53,7 @@
 5 .section-heading
 2 .snapshot-time
 2 .sr-only
-2 .stale
-3 .state-light
+2 .state-light
 3 .status-chip
 2 .status-degraded
 2 .status-grid

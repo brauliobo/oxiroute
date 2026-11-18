@@ -36,7 +36,7 @@ describe('application event-driven refresh', () => {
     expect(monitoringRequests).toBe(1)
 
     await wrapper.get('#management-access-token').setValue('in-memory-token')
-    await wrapper.get('.management-auth').trigger('submit')
+    await wrapper.get('form.ox-token').trigger('submit')
     await flushPromises()
     expect(monitoringRequests).toBe(2)
 

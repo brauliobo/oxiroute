@@ -90,5 +90,5 @@ function formatAge(startedAt: number): string {
 }
 </script>
 
-<style scoped src="../consoleBase.css"></style>
+<style scoped src="./base.css"></style>
 <style scoped src="./StreamInventory.css"></style>

@@ -93,8 +93,8 @@ describe('monitoring dashboard', () => {
     expect(wrapper.findAll('.load-track span').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
     expect(fill(wrapper.get('.memory-track span').element)).toBe('75')
     expect(wrapper.get('.process-panel').text()).toContain('12.5%')
-    expect(wrapper.get('.readout-bar').text()).toContain('75%')
-    expect(wrapper.get('.readout-bar').text()).toContain('1d 1h')
+    expect(wrapper.get('.ox-readouts').text()).toContain('75%')
+    expect(wrapper.get('.ox-readouts').text()).toContain('1d 1h')
     expect(wrapper.get('.rtmp-panel').text()).toContain('768 MiB')
     expect(wrapper.get('.listener-section').text()).toContain('HTTP ingress')
     expect(wrapper.get('.listener-section').text()).toContain('127.0.0.1:8080')
@@ -164,7 +164,7 @@ describe('monitoring dashboard', () => {
 
     expect(wrapper.get('.host-panel').text()).toContain('Unavailable')
     expect(wrapper.get('.process-panel').text()).toContain('Unavailable')
-    expect(wrapper.get('.readout-bar').text()).toContain('Host memory usedUnavailable')
+    expect(wrapper.get('.ox-readouts').text()).toContain('Host memory usedUnavailable')
     wrapper.unmount()
 
     const zero = monitoringSample()
@@ -190,7 +190,7 @@ describe('monitoring dashboard', () => {
     await flushPromises()
     expect(zeroWrapper.get('.host-panel').text()).toContain('0.00')
     expect(zeroWrapper.get('.process-panel').text()).toContain('0%')
-    expect(zeroWrapper.get('.readout-bar').text()).toContain('Host memory used0%')
+    expect(zeroWrapper.get('.ox-readouts').text()).toContain('Host memory used0%')
     zeroWrapper.unmount()
   })
 
@@ -211,9 +211,8 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await nextTick()
 
-    expect(wrapper.attributes('aria-busy')).toBe('true')
-    expect(wrapper.get('.loading-state').attributes('role')).toBe('status')
-    expect(wrapper.get('.loading-state').text()).toContain('Establishing telemetry')
+    expect(wrapper.get('.ox-notices .ox-loading').attributes('role')).toBe('status')
+    expect(wrapper.get('.ox-notices .ox-loading').text()).toContain('Establishing telemetry')
     expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
 
     pendingMonitoring.resolve(jsonResponse(monitoringSample()))
@@ -222,8 +221,7 @@ describe('monitoring dashboard', () => {
     pendingTopology.resolve(jsonResponse(topology))
     await flushPromises()
 
-    expect(wrapper.attributes('aria-busy')).toBe('false')
-    expect(wrapper.find('.loading-state').exists()).toBe(false)
+    expect(wrapper.find('.ox-notices .ox-loading').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -242,7 +240,7 @@ describe('monitoring dashboard', () => {
 
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
     expect(wrapper.get('.topology-section').text()).toContain('Network topology')
-    expect(wrapper.get('.loading-notice').text()).toContain('Loading stream inventory')
+    expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('Loading stream inventory')
     wrapper.unmount()
   })
 
@@ -337,8 +335,8 @@ describe('monitoring dashboard', () => {
     await wrapper.get('[data-recorder-action]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.error-notice').text()).toContain(expected)
-    expect(wrapper.get('.error-notice').text().toLowerCase()).not.toContain('success')
+    expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain(expected)
+    expect(wrapper.get('.ox-notices [role="alert"]').text().toLowerCase()).not.toContain('success')
     wrapper.unmount()
   })
 
@@ -365,7 +363,7 @@ describe('monitoring dashboard', () => {
     await flushPromises()
 
     await wrapper.get('[data-recorder-action]').trigger('click')
-    await wrapper.get('.refresh-button').trigger('click')
+    await wrapper.get('[data-action="refresh"]').trigger('click')
     await flushPromises()
     pendingCommand.resolve(jsonResponse({
       ...catalog.streams[0]!.recorders[0]!,
@@ -373,8 +371,8 @@ describe('monitoring dashboard', () => {
     }, 202))
     await flushPromises()
 
-    expect(wrapper.get('.error-notice').text()).toContain('publisher stream was replaced')
-    expect(wrapper.get('.error-notice').text()).toContain('no command success was assumed')
+    expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('publisher stream was replaced')
+    expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('no command success was assumed')
     expect(wrapper.text()).toContain('live / camera')
     wrapper.unmount()
   })
@@ -393,9 +391,9 @@ describe('monitoring dashboard', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    expect(wrapper.get('.error-notice').attributes('role')).toBe('alert')
-    expect(wrapper.get('.error-notice').text()).toContain('Monitoring unavailable')
-    expect(wrapper.get('.error-notice').text()).toContain('metrics offline')
+    expect(wrapper.get('.ox-notices [role="alert"]').attributes('role')).toBe('alert')
+    expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('Monitoring unavailable')
+    expect(wrapper.get('.ox-notices [role="alert"]').text()).toContain('metrics offline')
     expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -447,10 +445,10 @@ describe('monitoring dashboard', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
-    expect(wrapper.get('.stale-notice').attributes('role')).toBe('status')
-    expect(wrapper.get('.stale-notice').text()).toContain('Retaining the last valid sample')
-    expect(wrapper.get('.stale-notice').text()).toContain('gateway timeout')
-    expect(wrapper.get('.system-state').text()).toContain('Telemetry stale')
+    expect(wrapper.get('.ox-notices [role="status"]').attributes('role')).toBe('status')
+    expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('Retaining the last valid sample')
+    expect(wrapper.get('.ox-notices [role="status"]').text()).toContain('gateway timeout')
+    expect(wrapper.get('.ox-feed').text()).toContain('Stale')
     expect(wrapper.get('.pool-section').text()).toContain('web-backends')
     wrapper.unmount()
   })

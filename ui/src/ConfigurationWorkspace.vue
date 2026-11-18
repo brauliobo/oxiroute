@@ -66,7 +66,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
         @add="addObject"
       )
 
-      main.editor-surface
+      .editor-surface
         form.editor-form(:inert="snapshot.compositional || undefined" @submit.prevent @input="markDraftChanged" @change="markDraftChanged")
           GeneralSection(v-if="selectedKey === 'general'" :config="draft")
           ManagementSection(v-else-if="selectedKey === 'management'" :config="draft")

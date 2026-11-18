@@ -80,17 +80,15 @@ test.describe('provenance workspace browser gates', () => {
 
     const viewport = page.viewportSize()
     expect(viewport).not.toBeNull()
-    const navigationDisplay = await page.locator('.app-navigation').evaluate((element) => getComputedStyle(element).display)
+    await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toHaveCSS('display', 'flex')
     const metricColumns = await provenance.locator('.report-metrics').evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
     )
     const reportHeadingDirection = await provenance.locator('.report-heading').evaluate((element) => getComputedStyle(element).flexDirection)
     if ((viewport?.width ?? 0) <= 700) {
-      expect(navigationDisplay).toBe('grid')
       expect(metricColumns).toBe((viewport?.width ?? 0) <= 420 ? 1 : 2)
       expect(reportHeadingDirection).toBe('column')
     } else {
-      expect(navigationDisplay).toBe('flex')
       expect(metricColumns).toBe(5)
       expect(reportHeadingDirection).toBe('row')
     }

@@ -1,0 +1,97 @@
+@layer ox.page {
+  .ox-view-title {
+    color: var(--ox-muted);
+  }
+
+  .ox-feed {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-feed-age {
+    color: var(--ox-muted);
+  }
+
+  .ox-header-end {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ox-space-5);
+    margin-inline-start: auto;
+  }
+
+  .ox-console-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-4) var(--ox-gap);
+  }
+
+  .ox-readouts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: var(--ox-gap);
+    align-items: end;
+    padding: var(--ox-pad);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+  }
+
+  .ox-readout {
+    display: grid;
+    gap: var(--ox-space-2);
+  }
+
+  .ox-readout > span {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-sm);
+  }
+
+  .ox-readout > strong {
+    font-size: var(--ox-text-xl);
+  }
+
+  .ox-token {
+    display: flex;
+    align-items: center;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-token .ox-input {
+    width: min(100%, 16rem);
+  }
+
+  .ox-notices {
+    display: grid;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-notices:empty {
+    display: none;
+  }
+
+  .ox-login {
+    display: grid;
+    gap: var(--ox-space-5);
+    max-width: 34rem;
+    margin: var(--ox-space-8) auto;
+  }
+
+  .ox-login-form {
+    display: grid;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-login-form .ox-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  @media (max-width: 45rem) {
+    .ox-header-end {
+      margin-inline-start: 0;
+    }
+  }
+}

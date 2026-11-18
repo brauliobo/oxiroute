@@ -41,7 +41,7 @@ describe('application navigation', () => {
 
     const wrapper = mount(App)
 
-    expect(wrapper.get('.app-navigation').attributes('aria-label')).toBe('Primary navigation')
+    expect(wrapper.get('nav.ox-nav').attributes('aria-label')).toBe('Primary navigation')
     expect(wrapper.get('a[href="#/configuration"]').attributes('aria-current')).toBe('page')
     expect(wrapper.get('.config-workspace').text()).toContain('Configuration workspace')
     expect(fetch).not.toHaveBeenCalled()
@@ -52,7 +52,6 @@ describe('application navigation', () => {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${bearerToken}` },
     }))
-    expect(wrapper.attributes('aria-busy')).toBe('false')
     expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
     wrapper.unmount()
   })

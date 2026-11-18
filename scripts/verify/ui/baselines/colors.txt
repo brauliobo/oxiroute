@@ -1,4 +1,3 @@
-46 ui/src/App.css
 42 ui/src/AuditWorkspace.vue
 45 ui/src/CertificatesWorkspace.vue
 2 ui/src/ConfigurationWorkspace.vue
@@ -30,6 +29,6 @@
 13 ui/src/configuration/workspace/fields.css
 1 ui/src/configuration/workspace/output.css
 5 ui/src/configuration/workspace/panels.css
-4 ui/src/consoleBase.css
 65 ui/src/overview/MonitoringOverview.css
 16 ui/src/overview/StreamInventory.css
+4 ui/src/overview/base.css
