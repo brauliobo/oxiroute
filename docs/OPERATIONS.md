@@ -677,6 +677,23 @@ metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`
 `oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
 them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.
 
+### Stores one worker writes
+
+A disk cache store (`cache_stores` with `type = "disk"`) and a managed ACME state root
+(`acme_managed` certificate) are written by one generation at a time, and neither blocks a reload.
+Preparing the replacement validates them without locking, and the lock moves when the replacement
+activates: the replaced worker keeps serving cache hits and its certificates but stops inserting,
+evicting, purging, renewing and issuing, and the replacement locks the root, scans the cache (so the warm
+entries survive) or reloads the certificate state, and takes over renewal. A changed cache limit
+applies at that scan, and a changed `root_directory` or `state_root` is a different store: the old
+one is released. While the lock is in transit the replaced worker stores no new cache entries, so a
+reload costs the misses of that moment, not the cache. If the replacement cannot take the lock the
+reload is rejected, the active worker takes it back and the log names the store, for example
+`disk cache store `edge` at `/var/cache/oxiroute/edge` is owned by the active worker` or
+`managed ACME certificate `www` state at `/var/lib/oxiroute/acme` is owned by the active worker`; a
+store another daemon owns is not shared. In the direct runtime the same hand-over runs between the
+two generations of the process.
+
 One case still needs a process restart: a Unix socket that keeps its path and changes its mode,
 because the new socket would need the path the running one owns.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor

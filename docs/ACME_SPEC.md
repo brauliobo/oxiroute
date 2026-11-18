@@ -232,7 +232,18 @@ state/
 - Symlink handling MUST reject paths escaping the configured state root for managed material.
 - Backups and diagnostics MUST not copy private keys into general logs or support bundles.
 - Hardware or external key stores are a future `KeyProvider`; lifecycle code must not assume keys are exportable.
-- A process-lifetime OS lock protects the state root; per-certificate jobs also coalesce in process.
+- An OS lock protects the state root, and exactly one generation holds it at a time; per-certificate
+  jobs also coalesce in process. Preparing a configuration reads the state read-only (the current
+  revision, the renewal schedule) and takes no lock, so a reload with a managed certificate is prepared
+  while the active generation keeps renewing. The lock moves at activation: the replaced generation
+  stops renewal and issuance (a running job is cancelled and finished first) and keeps serving its
+  current certificate; the new generation takes the lock, reloads the selected revision and the
+  persisted schedule, recovers a pending DNS-01 cleanup, and resumes renewal at once. Management
+  operations that write state (pause, resume, renew, revoke, rollover, delete) answer `state_failed`
+  on the replaced generation. A replacement that cannot take the lock is rejected with
+  `managed ACME certificate `NAME` state at `PATH` is owned by the active worker`; the replaced
+  generation takes the lock back and renewal continues from its persisted schedule. A changed
+  `state_root` is a different store: the old root is released.
 - Revision garbage collection keeps at least the configured newest revision count and age window,
   always retaining the current pointer. Account and revision deletion requires an operator action and
   an active-generation check that no TLS profile references the certificate.

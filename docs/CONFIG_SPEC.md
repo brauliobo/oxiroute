@@ -1448,8 +1448,21 @@ RFC-policy records without a finite canonical keep window.
 A prepared cache entry is bound to the shared cache identity that validated it. Memory and disk fill
 guards reject an entry prepared by another cache before eviction, quota, or disk publication; cache
 clones share the identity, and recovered disk entries are rebound only to the cache that recovered
-them. A persistent root is exclusively leased and may be reused by an overlapping generation only
-when its complete store configuration is unchanged.
+them. A persistent root is exclusively leased by one generation at a time. Preparing a candidate only
+validates the store (limits, root path, an existing root's owner and mode) and takes no lease, so a
+reload with a disk store is prepared like any other. The lease moves at activation: the replaced
+generation stops inserting, evicting and purging and keeps serving the entries it holds, the new
+generation takes the lease and scans the root, and the entries the replaced generation wrote are hits
+again (the cache stays warm across an unrelated reload). A changed `max_bytes`, `max_files` or limit is
+applied by that scan, which evicts the oldest records beyond the new bounds; a changed
+`root_directory` is a different store, so the old root is released and the new one is scanned. Misses
+on the replaced generation are served without being stored, and `PURGE` requests it still receives
+are refused (`503`) instead of leaving stale disk records. The scan runs inside the activation
+window of the replacement (10 seconds under the supervising master), so a root too large to scan in
+that window makes the reload fail cleanly and roll back. A reload whose replacement cannot take the
+lease (another process owns the root, or the root cannot be opened) is rejected with
+`disk cache store `NAME` at `PATH` is owned by the active worker`, the replaced generation takes the
+lease back, rescans the root and keeps writing.
 
 The active reverse HTTP slice admits GET and HEAD representations, preserves collapsed forwarding,
 origin revalidation, conditional `ETag`/`Last-Modified` hits, bounded surrogate tags, exact/base
