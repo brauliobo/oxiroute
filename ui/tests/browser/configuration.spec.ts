@@ -8,6 +8,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  unlock,
   managedAcmeConfigSnapshot,
   json,
   managementEventPage,
@@ -32,7 +33,7 @@ import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, de
 import type { CanonicalConfig, RtmpServiceConfig } from '../../src/config'
 
 test.describe('configuration workspace browser gates', () => {
-  test('unlocks configuration, re-locks after authorization failure, and preserves the draft', async ({ page }) => {
+  test('re-asks for the token after authorization failure and preserves the draft', async ({ page }) => {
     let validationRequests = 0
     await installApiMock(page, (request) => {
       const path = requestPath(request)
@@ -46,19 +47,16 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await expect(page.locator('.revision-board')).toBeVisible()
 
     await page.locator('[data-field="version"] input').fill('2')
     await page.getByRole('button', { name: 'Validate candidate' }).click()
     await expect.poll(() => validationRequests).toBe(1)
-    await expect(page.locator('form[data-unlock-form]')).toBeVisible()
-    await expect(page.locator('.unlock-error')).toContainText('Authorization expired')
+    await expect(page.getByRole('alert')).toContainText('Management token rejected')
     expect(await page.locator('body').textContent()).not.toContain(CONFIG_TOKEN)
 
-    await page.locator('#config-access-token').fill('browser-test-refreshed-token')
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, 'browser-test-refreshed-token')
     await expect(page.locator('.revision-board')).toContainText('Unsaved changes')
     await expect(page.locator('[data-field="version"] input')).toHaveValue('2')
   })
@@ -82,8 +80,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await expect(page.locator('.revision-board')).toBeVisible()
     await page.locator('[data-field="version"] input').fill('2')
     await page.getByRole('button', { name: 'Validate candidate' }).click()
@@ -118,8 +115,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await expect(page.locator('.revision-board')).toBeVisible()
     await page.locator('[data-field="version"] input').fill('2')
     await page.getByRole('button', { name: 'Validate candidate' }).click()
@@ -152,8 +148,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await page.locator('#mobile-object-navigation').selectOption('certificates:0')
 
     const challenge = page.locator('[data-field="certificates[].source.challenge"] select')
@@ -198,8 +193,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     if (testInfo.project.name === 'mobile-chromium') {
       await page.locator('#mobile-object-navigation').selectOption('certificates:0')
     } else {
@@ -249,8 +243,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await page.locator('[data-field="version"] input').fill('2')
     await page.getByRole('button', { name: 'Validate candidate' }).click()
     await page.getByRole('button', { name: 'Review save' }).click()
@@ -301,8 +294,7 @@ test.describe('configuration workspace browser gates', () => {
     })
 
     await page.goto('/#/configuration')
-    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
-    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await unlock(page, CONFIG_TOKEN)
     await expect(page.locator('.revision-board')).toBeVisible()
     await expect.poll(() => streamRequests).toBe(1)
 

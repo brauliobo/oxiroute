@@ -8,6 +8,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  unlock,
   managedAcmeConfigSnapshot,
   json,
   managementEventPage,
@@ -56,8 +57,7 @@ test.describe('certificates workspace browser gates', () => {
     })
 
     await page.goto('/#/certificates')
-    await page.locator('#management-access-token').fill(MANAGEMENT_TOKEN)
-    await page.getByRole('button', { name: 'Unlock telemetry' }).click()
+    await unlock(page)
     await expect(page.getByRole('heading', { name: 'Configured certificates' })).toBeVisible()
     await expect(page.locator('.certificate-grid')).toContainText('managed-edge')
     await expect(page.locator('.certificate-grid')).toContainText('tls_alpn01')

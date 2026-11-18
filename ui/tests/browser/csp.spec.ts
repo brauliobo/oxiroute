@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { dashboardResponse, installApiMock, requestPath } from './support'
+import { dashboardResponse, installApiMock, requestPath, unlock } from './support'
 
 // `vite preview` serves the build with a strict policy (vite.config.ts). Static and string style attributes are
 // blocked by it; Vapor applies object bindings through the CSSOM, so geometry comes from custom properties.
@@ -17,6 +17,7 @@ test.describe('strict content security policy', () => {
 
     const response = await page.goto('/#/overview')
     expect(response?.headers()['content-security-policy']).toContain("style-src 'self'")
+    await unlock(page)
     await expect(page.locator('.topology-node').first()).toBeVisible()
 
     const loadWidth = await page.locator('.load-track span').first().evaluate((bar) => bar.getBoundingClientRect().width)

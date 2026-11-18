@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import type { ConfigSnapshot } from './config'
 import { contractMonitoring, emptyConfigSnapshot, jsonResponse } from './test/contractFixtures'
+import { signIn } from './test/session'
 
 const bearerToken = 'test-only-navigation-token'
 
@@ -19,6 +20,7 @@ afterEach(() => {
 describe('application navigation', () => {
   it('opens the statistics route with only the monitoring request', async () => {
     window.location.hash = '#/stats'
+    signIn(bearerToken)
     const fetch = vi.fn(() => Promise.resolve(jsonResponse(contractMonitoring())))
     vi.stubGlobal('fetch', fetch)
 
@@ -27,7 +29,8 @@ describe('application navigation', () => {
 
     expect(wrapper.get('a[href="#/stats"]').attributes('aria-current')).toBe('page')
     expect(wrapper.get('.haproxy-stats').text()).toContain('Statistics')
-    expect(fetch).toHaveBeenCalledTimes(1)
+    const apiPaths = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith('/api/v1/'))
+    expect(apiPaths).toEqual(['/api/v1/monitoring'])
     expect(fetch).toHaveBeenCalledWith('/api/v1/monitoring', expect.objectContaining({ cache: 'no-store' }))
     expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
     expect(wrapper.find('.topology-section').exists()).toBe(false)
@@ -36,16 +39,16 @@ describe('application navigation', () => {
 
   it('opens the configuration route without starting monitoring requests', async () => {
     window.location.hash = '#/configuration'
+    signIn(bearerToken)
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(snapshot))))
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
+    await flushPromises()
 
     expect(wrapper.get('nav.ox-nav').attributes('aria-label')).toBe('Primary navigation')
     expect(wrapper.get('a[href="#/configuration"]').attributes('aria-current')).toBe('page')
     expect(wrapper.get('.config-workspace').text()).toContain('Configuration workspace')
-    expect(fetch).not.toHaveBeenCalled()
-    await unlockConfiguration(wrapper)
     expect(fetch.mock.calls.filter((call) => String((call as unknown as [RequestInfo | URL])[0]) === '/api/v1/config'))
       .toHaveLength(1)
     expect(fetch).toHaveBeenCalledWith('/api/v1/config', expect.objectContaining({
@@ -58,6 +61,7 @@ describe('application navigation', () => {
 
   it('preserves a dirty draft and validation errors across topology navigation', async () => {
     window.location.hash = '#/configuration'
+    signIn(bearerToken)
     const diagnostic = {
       code: 'E_VERSION',
       severity: 'error',
@@ -102,7 +106,7 @@ describe('application navigation', () => {
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
-    await unlockConfiguration(wrapper)
+    await flushPromises()
     await wrapper.get('[data-field="version"] input').setValue(2)
     await findButton(wrapper, 'Validate candidate').trigger('click')
     await flushPromises()
@@ -130,8 +134,4 @@ function findButton(wrapper: ReturnType<typeof mount>, text: string) {
   return button
 }
 
-async function unlockConfiguration(wrapper: ReturnType<typeof mount>): Promise<void> {
-  await wrapper.get('#config-access-token').setValue(bearerToken)
-  await wrapper.get('form[data-unlock-form]').trigger('submit')
-  await flushPromises()
-}
+

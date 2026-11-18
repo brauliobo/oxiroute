@@ -23,8 +23,8 @@ describe('configuration event-driven revision checks', () => {
     stream = controllableStream('event: ready\ndata: {"cursor":0}\n\n')
     const fetch = installFetch(initial, updated, stream)
 
-    wrapper = mount(ConfigurationWorkspace)
-    await unlock(wrapper)
+    wrapper = mount(ConfigurationWorkspace, { props: { token } })
+    await flushPromises()
     stream.send(revisionEvent(updated.diskRevision))
     await flushPromises()
 
@@ -40,8 +40,8 @@ describe('configuration event-driven revision checks', () => {
     stream = controllableStream('event: ready\ndata: {"cursor":0}\n\n')
     installFetch(initial, updated, stream)
 
-    wrapper = mount(ConfigurationWorkspace)
-    await unlock(wrapper)
+    wrapper = mount(ConfigurationWorkspace, { props: { token } })
+    await flushPromises()
     await wrapper.get('[data-field="version"] input').setValue(3)
     stream.send(revisionEvent(updated.diskRevision))
     await flushPromises()
@@ -69,12 +69,6 @@ function installFetch(
   })
   vi.stubGlobal('fetch', fetch)
   return fetch
-}
-
-async function unlock(wrapper: VaporWrapper): Promise<void> {
-  await wrapper.get('#config-access-token').setValue(token)
-  await wrapper.get('form[data-unlock-form]').trigger('submit')
-  await flushPromises()
 }
 
 function updatedSnapshot(snapshot: ReturnType<typeof emptyConfigSnapshot>) {

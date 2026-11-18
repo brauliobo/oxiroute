@@ -8,6 +8,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  unlock,
   managedAcmeConfigSnapshot,
   json,
   managementEventPage,
@@ -59,8 +60,7 @@ test.describe('audit workspace browser gates', () => {
     })
 
     await page.goto('/#/audit')
-    await page.locator('#management-access-token').fill(MANAGEMENT_TOKEN)
-    await page.getByRole('button', { name: 'Unlock telemetry' }).click()
+    await unlock(page)
     await expect(page.getByRole('heading', { name: 'Audit' })).toBeVisible()
     await expect(page.locator('.audit-record')).toContainText('server_update')
     await expect(page.locator('.status-panel')).toContainText('Persistent')

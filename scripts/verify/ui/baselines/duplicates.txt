@@ -60,7 +60,6 @@
 2 .stream-header
 3 .success-notice
 2 .track-heading
-2 .unlock-panel
 2 .validation-output
 2 .warning-copy
 6 .workspace-deck

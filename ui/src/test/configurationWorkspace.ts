@@ -342,18 +342,12 @@ export function findButtonIn(
   return button
 }
 
-export async function unlockConfiguration(wrapper: VaporWrapper, token = bearerToken): Promise<void> {
-  await wrapper.get('#config-access-token').setValue(token)
-  await wrapper.get('form[data-unlock-form]').trigger('submit')
-  await flushPromises()
-}
-
 export async function mountUnlocked(attachToBody = false): Promise<VaporWrapper> {
-  const wrapper = mount(
-    ConfigurationWorkspace,
-    attachToBody ? { attachTo: document.body } : undefined,
-  )
-  await unlockConfiguration(wrapper)
+  const wrapper = mount(ConfigurationWorkspace, {
+    props: { token: bearerToken },
+    ...(attachToBody ? { attachTo: document.body } : {}),
+  })
+  await flushPromises()
   return wrapper
 }
 

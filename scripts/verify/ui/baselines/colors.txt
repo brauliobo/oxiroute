@@ -20,7 +20,6 @@
 7 ui/src/configuration/workspace/RevisionBoard.vue
 13 ui/src/configuration/workspace/SaveReviewDialog.vue
 1 ui/src/configuration/workspace/SectionHeading.vue
-6 ui/src/configuration/workspace/UnlockPanel.vue
 7 ui/src/configuration/workspace/ValidationOutput.vue
 1 ui/src/configuration/workspace/WorkspaceHeading.vue
 2 ui/src/configuration/workspace/base.css

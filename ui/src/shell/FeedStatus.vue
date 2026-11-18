@@ -2,9 +2,8 @@
 import { computed } from 'vue'
 import StatusDot from '#design/badge/StatusDot.vue'
 import type { Tone } from '#design/badge/tone'
+import type { FeedState } from './feed'
 import './styles.css'
-
-export type FeedState = 'loading' | 'live' | 'stale' | 'unavailable' | 'paused'
 
 const LABELS: Readonly<Record<FeedState, string>> = {
   loading: 'Loading', live: 'Live', stale: 'Stale', unavailable: 'Unavailable', paused: 'Paused',

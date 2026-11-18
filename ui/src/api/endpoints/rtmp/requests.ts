@@ -11,17 +11,17 @@ import type {
   RtmpStats,
 } from './types'
 
-export async function fetchRtmpCatalog(signal?: AbortSignal, token?: string): Promise<RtmpCatalog> {
+export async function fetchRtmpCatalog(token: string, signal?: AbortSignal): Promise<RtmpCatalog> {
   return parseRtmpCatalog(await request('/api/v1/rtmp/streams', {
-    headers: token ? authorizationHeader(token) : undefined,
+    headers: authorizationHeader(token),
     signal,
   }))
 }
 
-export async function fetchRtmpStats(signal?: AbortSignal, token?: string): Promise<RtmpStats> {
+export async function fetchRtmpStats(token: string, signal?: AbortSignal): Promise<RtmpStats> {
   return parseRtmpStats(await request('/api/v1/rtmp/stats', {
     cache: 'no-store',
-    headers: token ? authorizationHeader(token) : undefined,
+    headers: authorizationHeader(token),
     signal,
   }))
 }
@@ -30,12 +30,12 @@ export async function setRecording(
   streamId: string,
   recorderId: string,
   action: 'start' | 'stop',
-  token?: string,
+  token: string,
 ): Promise<RecorderSnapshot> {
-  const headers = token ? {
+  const headers = {
     ...authorizationHeader(token),
     'If-Generation-Revision': await fetchActiveRevision(token),
-  } : undefined
+  }
   return parseRecorder(await request(
     `/api/v1/rtmp/streams/${streamId}/recorders/${recorderId}/${action}`,
     { method: 'POST', headers },

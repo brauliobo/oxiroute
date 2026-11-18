@@ -20,14 +20,6 @@
     margin-inline-start: auto;
   }
 
-  .ox-console-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ox-space-4) var(--ox-gap);
-  }
-
   .ox-readouts {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
@@ -51,16 +43,6 @@
 
   .ox-readout > strong {
     font-size: var(--ox-text-xl);
-  }
-
-  .ox-token {
-    display: flex;
-    align-items: center;
-    gap: var(--ox-space-4);
-  }
-
-  .ox-token .ox-input {
-    width: min(100%, 16rem);
   }
 
   .ox-notices {

@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
 import { contractMonitoring, jsonResponse } from '../test/contractFixtures'
 import { flushPromises, mount } from '../test/mount'
+import { signIn } from '../test/session'
 import { documentTitle, NAV_ITEMS, viewFromHash, viewTitle } from './views'
 
 const indexHtml = readFileSync(join(import.meta.dirname, '../../index.html'), 'utf8')
 
 beforeEach(() => {
+  signIn()
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse(contractMonitoring()))))
 })
 

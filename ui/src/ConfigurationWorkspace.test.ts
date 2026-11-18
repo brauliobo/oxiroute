@@ -13,22 +13,13 @@ import {
   findButtonIn,
   installConfigFetch,
   mountUnlocked,
-  unlockConfiguration,
 } from './test/configurationWorkspace'
 
 describe('ConfigurationWorkspace', () => {
-  it('starts locked and sends an in-memory bearer token only after accessible unlock', async () => {
+  it('sends the console session token and never stores it', async () => {
     const fetch = installConfigFetch()
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
-    const wrapper = mount(ConfigurationWorkspace)
-    await nextTick()
-
-    expect(fetch).not.toHaveBeenCalled()
-    expect(wrapper.get('form[data-unlock-form]').attributes('aria-labelledby')).toBe('config-unlock-heading')
-    expect(wrapper.get('label[for="config-access-token"]').text()).toContain('Bearer token')
-
-    await wrapper.get('#config-access-token').setValue(bearerToken)
-    await wrapper.get('form[data-unlock-form]').trigger('submit')
+    const wrapper = mount(ConfigurationWorkspace, { props: { token: bearerToken } })
     await flushPromises()
 
     expect(fetch).toHaveBeenCalledWith(
@@ -37,7 +28,7 @@ describe('ConfigurationWorkspace', () => {
         headers: expect.objectContaining({ Authorization: `Bearer ${bearerToken}` }),
       }),
     )
-    expect(wrapper.find('form[data-unlock-form]').exists()).toBe(false)
+    expect(wrapper.find('input[type="password"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain(bearerToken)
     expect(window.location.href).not.toContain(bearerToken)
     expect(storageWrite).not.toHaveBeenCalled()
@@ -223,11 +214,12 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Validate candidate').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('form[data-unlock-form]').text()).toContain('Authorization expired')
-    expect(wrapper.find('.editor-form').exists()).toBe(false)
+    expect(wrapper.emitted('unauthorized')).toHaveLength(1)
     expect(wrapper.text()).not.toContain(bearerToken)
 
-    await unlockConfiguration(wrapper, refreshedToken)
+    await wrapper.setProps({ token: '' })
+    await wrapper.setProps({ token: refreshedToken })
+    await flushPromises()
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('2')
     expect(wrapper.get('.revision-board').text()).toContain('Unsaved changes')
     expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/v1/config')).toContainEqual([

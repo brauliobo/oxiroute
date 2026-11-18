@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import type { Page, Request } from '@playwright/test'
 
 import type { CanonicalConfig, ConfigSnapshot } from '../../src/config'
@@ -19,6 +20,12 @@ export { shutdownStream, sse, type SseMockResponse } from './support/sse'
 
 export const MANAGEMENT_TOKEN = 'browser-test-management-token'
 export const CONFIG_TOKEN = 'browser-test-config-token'
+
+export async function unlock(page: Page, token = MANAGEMENT_TOKEN): Promise<void> {
+  await page.getByLabel('Bearer token').fill(token)
+  await page.getByRole('button', { name: 'Unlock console' }).click()
+  await expect(page.getByLabel('Bearer token')).toBeHidden()
+}
 
 export type JsonMockResponse = {
   kind?: 'json'

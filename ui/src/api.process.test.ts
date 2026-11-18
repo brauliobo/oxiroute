@@ -95,9 +95,9 @@ afterAll(async () => {
 describe('production API client against the built management process', () => {
   it('runs the browser fetch sequence against real response JSON and token authentication', async () => {
     const [monitoring, catalog, topology, snapshot] = await Promise.all([
-      fetchMonitoring(undefined, token),
-      fetchRtmpCatalog(undefined, token),
-      fetchTopology(undefined, token),
+      fetchMonitoring(token),
+      fetchRtmpCatalog(token),
+      fetchTopology(token),
       fetchConfig(token),
     ])
 

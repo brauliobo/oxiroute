@@ -183,7 +183,7 @@ describe('Phase 6 management response characterization', () => {
     rtmp.privateRtmp = secretCanary
 
     stubJson(payload)
-    const parsed = await fetchMonitoring()
+    const parsed = await fetchMonitoring(token)
 
     expect(JSON.stringify(parsed)).not.toContain(secretCanary)
     expect(parsed.listeners[0]).not.toHaveProperty('privateListener')

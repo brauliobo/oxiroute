@@ -1,11 +1,9 @@
 <template lang="pug">
-section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-heading" :aria-busy="unlocking || loading || validating || saving" @keydown.esc="closeReview")
+section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-heading" :aria-busy="loading || validating || saving" @keydown.esc="closeReview")
   WorkspaceHeading(:can-check="snapshot !== null && accessToken !== null" :loading="loading" :review-open="reviewOpen" @check="checkDiskRevision")
 
-  UnlockPanel(v-if="!accessToken" :unlocking="unlocking" :error="unlockError" @unlock="unlockConfiguration")
-
   LoadingPanel(
-    v-else-if="loading && !snapshot"
+    v-if="loading && !snapshot"
     title="Reading canonical configuration"
     detail="No editor state is created until the control-plane capability responds."
   )
@@ -170,7 +168,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
 </template>
 
 <script setup lang="ts" vapor>
-import { nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot } from './config'
 import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
@@ -197,7 +195,6 @@ import RevisionBanners from './configuration/workspace/RevisionBanners.vue'
 import RevisionBoard from './configuration/workspace/RevisionBoard.vue'
 import SaveReviewDialog from './configuration/workspace/SaveReviewDialog.vue'
 import StatsSection from './configuration/workspace/StatsSection.vue'
-import UnlockPanel from './configuration/workspace/UnlockPanel.vue'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
 import { useReviewDialog } from './configuration/workspace/useReviewDialog'
 import { useSnapshotLoader } from './configuration/workspace/useSnapshotLoader'
@@ -214,9 +211,9 @@ const diskRevision = ref('')
 const activeRevision = ref<string | null>(null)
 const diskDiagnostics = ref<ConfigDiagnostic[]>([])
 const staleRevision = ref<string | null>(null)
-const accessToken = ref<string | null>(null)
-const unlockError = ref<string | null>(null)
-const unlocking = ref(false)
+const props = defineProps<{ token: string }>()
+const emit = defineEmits<{ unauthorized: [] }>()
+const accessToken = computed(() => props.token || null)
 const selectedKey = ref('general')
 
 const { reviewOpen, enterReview, exitReview, releaseBackground } = useReviewDialog(workspaceRoot)
@@ -306,17 +303,6 @@ const {
 
 const focusDiagnostic = useDiagnosticFocus(workspaceRoot, selectedKey)
 
-async function unlockConfiguration(token: string): Promise<void> {
-  accessToken.value = token
-  unlockError.value = null
-  unlocking.value = true
-  try {
-    await loadSnapshot(snapshot.value !== null && isDirty.value)
-  } finally {
-    unlocking.value = false
-  }
-}
-
 function ensureSelection(): void {
   if (!selectionExists(selectedKey.value)) selectedKey.value = 'general'
 }
@@ -361,12 +347,10 @@ function openReview(event: Event): void {
 
 function relockConfiguration(): void {
   stopLoading()
-  accessToken.value = null
-  unlockError.value = 'Authorization expired or was rejected. Enter a valid bearer token to continue.'
   abortRequests()
   loading.value = false
-  if (reviewOpen.value) exitReview('#config-access-token')
-  else void nextTick(() => document.querySelector<HTMLInputElement>('#config-access-token')?.focus())
+  exitReview()
+  emit('unauthorized')
 }
 
 function warnBeforeUnload(event: BeforeUnloadEvent): void {
@@ -375,10 +359,11 @@ function warnBeforeUnload(event: BeforeUnloadEvent): void {
   event.returnValue = ''
 }
 
-onMounted(() => {
-  window.addEventListener('beforeunload', warnBeforeUnload)
-  ensureEventStream()
-})
+watch(accessToken, (token) => {
+  if (token) void loadSnapshot(snapshot.value !== null && isDirty.value)
+}, { immediate: true })
+
+onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload))
 onActivated(() => {
   ensureEventStream()
 })

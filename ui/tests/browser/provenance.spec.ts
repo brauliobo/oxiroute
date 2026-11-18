@@ -8,6 +8,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  unlock,
   managedAcmeConfigSnapshot,
   json,
   managementEventPage,
@@ -49,8 +50,7 @@ test.describe('provenance workspace browser gates', () => {
     })
 
     await page.goto('/#/provenance')
-    await page.locator('#management-access-token').fill(MANAGEMENT_TOKEN)
-    await page.getByRole('button', { name: 'Unlock telemetry' }).click()
+    await unlock(page)
     const provenance = page.locator('.provenance-workspace')
     await expect(provenance.locator('#provenance-heading')).toBeVisible()
     await expect(provenance.locator('.report-identity')).toContainText('apache import')

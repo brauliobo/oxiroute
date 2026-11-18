@@ -2,6 +2,7 @@ import { flushPromises, mount } from './test/mount'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
+import { signIn } from './test/session'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
 import OperationsWorkspace from './OperationsWorkspace.vue'
@@ -51,7 +52,7 @@ describe('local management workspaces', () => {
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.get('#management-access-token').setValue(token)
-    await wrapper.get('form.ox-token').trigger('submit')
+    await wrapper.get('form.ox-login-form').trigger('submit')
     await flushPromises()
 
     expect(wrapper.get('a[href="#/provenance"]').attributes('aria-current')).toBe('page')

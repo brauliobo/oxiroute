@@ -8,6 +8,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  unlock,
   managedAcmeConfigSnapshot,
   json,
   managementEventPage,
@@ -51,8 +52,7 @@ test.describe('operations workspace browser gates', () => {
     page.on('dialog', (dialog) => void dialog.accept())
 
     await page.goto('/#/operations')
-    await page.locator('#management-access-token').fill(MANAGEMENT_TOKEN)
-    await page.getByRole('button', { name: 'Unlock telemetry' }).click()
+    await unlock(page)
     await expect(page.getByRole('heading', { name: 'Runtime status' })).toBeVisible()
 
     const reloadRequest = page.waitForRequest((request) =>

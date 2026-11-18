@@ -1,9 +1,11 @@
 import { flushPromises, mount } from './test/mount'
 import { nextTick } from 'vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
+import { signIn } from './test/session'
 import { deferred } from './test/deferred'
+import { managementGeneration } from './test/managementFixtures'
 import {
   contractCatalog,
   contractMonitoring,
@@ -23,7 +25,10 @@ function monitoringSample() {
   return contractMonitoring()
 }
 
+beforeEach(signIn)
+
 afterEach(() => {
+  window.location.hash = ''
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -59,6 +64,7 @@ describe('monitoring dashboard', () => {
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(runtimeCatalog))
       if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
       if (url.endsWith('/start')) {
         return Promise.resolve(
           jsonResponse(
@@ -250,6 +256,7 @@ describe('monitoring dashboard', () => {
     const requestCounts = new Map<string, number>()
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url === '/api/v1/config') return new Promise<Response>(() => {})
       const count = (requestCounts.get(url) ?? 0) + 1
       requestCounts.set(url, count)
       if (count === 1) {
@@ -265,7 +272,7 @@ describe('monitoring dashboard', () => {
     await nextTick()
 
     await wrapper.get('a[href="#/configuration"]').trigger('click')
-    expect(firstSignals).toHaveLength(4)
+    expect(firstSignals).toHaveLength(5)
     expect(firstSignals.every((signal) => signal.aborted)).toBe(true)
 
     await wrapper.get('a[href="#/overview"]').trigger('click')
@@ -288,6 +295,7 @@ describe('monitoring dashboard', () => {
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(recordingCatalog))
       if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
       if (url.endsWith('/stop')) {
         return Promise.resolve(jsonResponse({
           ...recordingCatalog.streams[0]!.recorders[0]!,
@@ -323,6 +331,7 @@ describe('monitoring dashboard', () => {
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(catalog))
       if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
       if (url.endsWith('/start')) {
         return Promise.resolve(jsonResponse({ error: { code, message } }, status))
       }
@@ -355,6 +364,7 @@ describe('monitoring dashboard', () => {
         catalogRequests += 1
         return Promise.resolve(jsonResponse(catalogRequests === 1 ? catalog : replacement))
       }
+      if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
       if (url.endsWith('/start')) return pendingCommand.promise
       throw new Error(`Unexpected request: ${url}`)
     })

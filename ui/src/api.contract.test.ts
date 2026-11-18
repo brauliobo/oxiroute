@@ -21,7 +21,7 @@ import {
   contractTopology,
   emptyConfigSnapshot,
 } from './test/contractFixtures'
-import { durableAuditPage, durableAuditStatus } from './test/managementFixtures'
+import { durableAuditPage, durableAuditStatus, managementGeneration } from './test/managementFixtures'
 
 const token = 'contract-test-token'
 const responseOverrides = new Map<string, unknown>()
@@ -120,7 +120,7 @@ describe('API contracts over HTTP', () => {
       state,
     }))
     responseOverrides.set('GET /api/v1/monitoring', monitoring)
-    await expect(fetchMonitoring()).resolves.toEqual(monitoring)
+    await expect(fetchMonitoring(token)).resolves.toEqual(monitoring)
 
     for (const runtime of ['active', 'starting', 'degraded'] as const) {
       const topology = contractTopology()
@@ -140,7 +140,7 @@ describe('API contracts over HTTP', () => {
         ...topology.overlays.filter(({ state }) => state === 'available' || state === 'healthy'),
       ]
       responseOverrides.set('GET /api/v1/topology', topology)
-      await expect(fetchTopology()).resolves.toEqual(topology)
+      await expect(fetchTopology(token)).resolves.toEqual(topology)
     }
     responseOverrides.clear()
   })
@@ -155,8 +155,8 @@ describe('API contracts over HTTP', () => {
     responseOverrides.set('GET /api/v1/rtmp/streams', catalog)
     responseOverrides.set('GET /api/v1/monitoring', monitoring)
 
-    const parsedCatalog = await fetchRtmpCatalog(undefined, token)
-    const parsedMonitoring = await fetchMonitoring(undefined, token)
+    const parsedCatalog = await fetchRtmpCatalog(token)
+    const parsedMonitoring = await fetchMonitoring(token)
 
     expect(parsedCatalog.streams[0]!.relays[0]).toEqual(expect.objectContaining({
       phase: 'pulling',
@@ -196,43 +196,43 @@ describe('API contracts over HTTP', () => {
     const missingCatalogDns = rustCatalogPayload()
     delete missingCatalogDns.streams[0]!.relays[0]!.dns_refresh_attempts
     responseOverrides.set('GET /api/v1/rtmp/streams', missingCatalogDns)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
 
     const arrayCatalogPhase = rustCatalogPayload()
     arrayCatalogPhase.streams[0]!.relays[0]!.phase = ['pulling']
     responseOverrides.set('GET /api/v1/rtmp/streams', arrayCatalogPhase)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
 
     const objectCatalogFailure = rustCatalogPayload()
     objectCatalogFailure.streams[0]!.relays[0]!.last_failure = { value: 'source' }
     responseOverrides.set('GET /api/v1/rtmp/streams', objectCatalogFailure)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
 
     const arrayCatalogDnsFailure = rustCatalogPayload()
     arrayCatalogDnsFailure.streams[0]!.relays[0]!.last_dns_refresh_failure = ['resolution']
     responseOverrides.set('GET /api/v1/rtmp/streams', arrayCatalogDnsFailure)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
 
     const missingMonitoringDns = rustMonitoringPayload()
     delete missingMonitoringDns.rtmp.relayDnsRefreshAttempts
     responseOverrides.set('GET /api/v1/monitoring', missingMonitoringDns)
-    await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const malformedAccessLog = rustMonitoringPayload()
     const accessLog = malformedAccessLog.rtmp.accessLog as Record<string, unknown>
     accessLog.queueDepth = 2
     responseOverrides.set('GET /api/v1/monitoring', malformedAccessLog)
-    await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const arrayMonitoringFailure = rustMonitoringPayload()
     arrayMonitoringFailure.rtmp.relays[0]!.lastFailure = ['policy']
     responseOverrides.set('GET /api/v1/monitoring', arrayMonitoringFailure)
-    await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const objectMonitoringDnsFailure = rustMonitoringPayload()
     objectMonitoringDnsFailure.rtmp.relays[0]!.lastDnsRefreshFailure = { value: 'address_set' }
     responseOverrides.set('GET /api/v1/monitoring', objectMonitoringDnsFailure)
-    await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
 
@@ -242,7 +242,7 @@ describe('API contracts over HTTP', () => {
     addMonitoringSecretCanaries(payload)
     responseOverrides.set('GET /api/v1/monitoring', payload)
 
-    const parsed = await fetchMonitoring(undefined, token)
+    const parsed = await fetchMonitoring(token)
 
     expect(parsed).toEqual(expected)
     expect(JSON.stringify(parsed)).not.toContain('private-contract-value')
@@ -265,7 +265,7 @@ describe('API contracts over HTTP', () => {
     payload.host.availableMemoryBytes = null
     responseOverrides.set('GET /api/v1/monitoring', payload)
 
-    await expect(fetchMonitoring(undefined, token)).resolves.toEqual(payload)
+    await expect(fetchMonitoring(token)).resolves.toEqual(payload)
     responseOverrides.clear()
   })
 
@@ -281,10 +281,10 @@ describe('API contracts over HTTP', () => {
     }))
     responseOverrides.set('GET /api/v1/monitoring', payload)
 
-    await expect(fetchMonitoring(undefined, token)).resolves.toEqual(payload)
+    await expect(fetchMonitoring(token)).resolves.toEqual(payload)
 
     payload.listeners[0]!.protocol = 'websocket'
-    await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
 
@@ -310,7 +310,7 @@ describe('API contracts over HTTP', () => {
         last_notification: notifications[index % notifications.length],
       })
       responseOverrides.set('GET /api/v1/rtmp/streams', catalog)
-      const parsed = await fetchRtmpCatalog(undefined, token)
+      const parsed = await fetchRtmpCatalog(token)
       expect(parsed.streams[0]!.recorders[0]).toMatchObject({
         phase,
         last_notification: notifications[index % notifications.length],
@@ -327,13 +327,13 @@ describe('API contracts over HTTP', () => {
       const catalog = rustCatalogPayload()
       catalog.streams[0]!.recorders[0]!.phase = phase
       responseOverrides.set('GET /api/v1/rtmp/streams', catalog)
-      await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+      await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
     }
 
     const invalidNotification = rustCatalogPayload()
     invalidNotification.streams[0]!.recorders[0]!.last_notification = 'pending'
     responseOverrides.set('GET /api/v1/rtmp/streams', invalidNotification)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
 
@@ -350,6 +350,7 @@ describe('API contracts over HTTP', () => {
       '2a130dea-5db7-43e0-afb8-f07c4bcb1814',
       '62228380-2dc6-446c-b67e-b31170b8de22',
       'stop',
+      token,
     )
 
     expect(recorder).toEqual(contractCatalog().streams[0]!.recorders[1])
@@ -377,14 +378,14 @@ describe('API contracts over HTTP', () => {
       const payload = fullRustMonitoringPayload()
       mutate(payload)
       responseOverrides.set('GET /api/v1/monitoring', payload)
-      await expect(fetchMonitoring(undefined, token)).rejects.toThrow('invalid response payload')
+      await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
     }
 
     const catalog = rustCatalogPayload()
     const recorder = catalog.streams[0]!.recorders[0]! as Record<string, unknown>
     ;(recorder.phase as Record<string, unknown>).state = ['idle']
     responseOverrides.set('GET /api/v1/rtmp/streams', catalog)
-    await expect(fetchRtmpCatalog(undefined, token)).rejects.toThrow('invalid response payload')
+    await expect(fetchRtmpCatalog(token)).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
 
@@ -435,27 +436,27 @@ describe('API contracts over HTTP', () => {
     const monitoring = contractMonitoring()
     monitoring.traffic.activeConnections = Number.MAX_SAFE_INTEGER + 1
     responseOverrides.set('GET /api/v1/monitoring', monitoring)
-    await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const numericCounter = contractMonitoring()
     numericCounter.upstreamPools[0]!.endpoints[0]!.activeConnections = 3 as unknown as string
     responseOverrides.set('GET /api/v1/monitoring', numericCounter)
-    await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const missingListenerState = contractMonitoring()
     delete (missingListenerState.listeners[0] as { state?: unknown }).state
     responseOverrides.set('GET /api/v1/monitoring', missingListenerState)
-    await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const invalidListenerState = contractMonitoring()
     invalidListenerState.listeners[0]!.state = 'unknown' as typeof invalidListenerState.listeners[0]['state']
     responseOverrides.set('GET /api/v1/monitoring', invalidListenerState)
-    await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
+    await expect(fetchMonitoring(token)).rejects.toThrow('invalid response payload')
 
     const topology = contractTopology()
     topology.overlays[0]!.state = 'active' as unknown as typeof topology.overlays[0]['state']
     responseOverrides.set('GET /api/v1/topology', topology)
-    await expect(fetchTopology()).rejects.toThrow('invalid response payload')
+    await expect(fetchTopology(token)).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
 
@@ -514,6 +515,7 @@ function route(request: IncomingMessage, response: ServerResponse): void {
   }
   if (request.method === 'GET' && path === '/api/v1/monitoring') return json(response, contractMonitoring())
   if (request.method === 'GET' && path === '/api/v1/topology') return json(response, contractTopology())
+  if (request.method === 'GET' && path === '/api/v1/generations') return json(response, managementGeneration())
   if (request.method === 'GET' && path === '/api/v1/audit/status') return json(response, durableAuditStatus())
   if (request.method === 'GET' && path?.startsWith('/api/v1/audit?')) return json(response, durableAuditPage())
   json(response, { error: { code: 'route_not_found', message: 'route does not exist' } }, 404)

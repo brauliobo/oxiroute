@@ -2,6 +2,7 @@ import { flushPromises, mount, type VaporWrapper } from './test/mount'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
+import { signIn } from './test/session'
 import { contractMonitoring, jsonResponse } from './test/contractFixtures'
 
 describe('application event-driven refresh', () => {
@@ -16,7 +17,7 @@ describe('application event-driven refresh', () => {
     vi.restoreAllMocks()
   })
 
-  it('refreshes monitoring when an operational event arrives after token unlock', async () => {
+  it('sends nothing until a token is entered, then refreshes monitoring on an operational event', async () => {
     window.location.hash = '#/stats'
     stream = controllableStream('event: ready\ndata: {"cursor":0}\n\n')
     let monitoringRequests = 0
@@ -33,12 +34,12 @@ describe('application event-driven refresh', () => {
 
     wrapper = mount(App)
     await flushPromises()
-    expect(monitoringRequests).toBe(1)
+    expect(fetch).not.toHaveBeenCalled()
 
     await wrapper.get('#management-access-token').setValue('in-memory-token')
-    await wrapper.get('form.ox-token').trigger('submit')
+    await wrapper.get('form.ox-login-form').trigger('submit')
     await flushPromises()
-    expect(monitoringRequests).toBe(2)
+    expect(monitoringRequests).toBe(1)
 
     stream.send([
       'id: 1',
@@ -50,7 +51,7 @@ describe('application event-driven refresh', () => {
     ].join('\n'))
     await flushPromises()
 
-    expect(monitoringRequests).toBe(3)
+    expect(monitoringRequests).toBe(2)
     expect(fetch.mock.calls.some(([url]) => String(url) === '/api/v2/events/stream')).toBe(true)
   })
 })

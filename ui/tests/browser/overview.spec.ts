@@ -16,6 +16,7 @@ import {
   requestPath,
   sse,
   shutdownStream,
+  unlock,
 } from './support'
 import {
   managementGeneration,
@@ -36,6 +37,7 @@ test.describe('overview workspace browser gates', () => {
     await installApiMock(page, (request) => dashboardResponse(requestPath(request)))
 
     await page.goto('/#/overview')
+    await unlock(page)
 
     await expect(page.getByRole('heading', { name: 'Monitoring overview' })).toBeVisible()
     await expect(page.locator('.traffic-panel')).toContainText('42')
