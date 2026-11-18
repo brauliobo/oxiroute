@@ -363,9 +363,10 @@ kernel or sandbox that cannot run it and with `http_fast_lane = false`, and is n
 the tokio path. The engine threads are named `uring-h1-N` or `epoll-h1-N` after their plane. The plane honours
 `connection_scheduling = "aged_per_worker"` with `connection_age_ms` and `worker_scaling = "dynamic"` on its own
 threads (epoll only): a thread serves its ready connections newest first and the oldest first once it has waited the
-age, a new connection goes to the thread with the fewest open connections, and with dynamic scaling the threads that
-leave the active set stop accepting and hand their idle keep-alive connections to an active thread between two
-requests. The `oxiroute_aged_queue_*` and `oxiroute_worker_scaling_*` metrics are the same on every plane. The option
+age, and with dynamic scaling the threads that leave the active set stop accepting and hand their idle keep-alive
+connections to an active thread between two requests. With two threads or more the plane places every new connection
+on the thread with the fewest open connections, whatever the scheduling, so a burst of connections does not stay on the
+one thread the kernel woke to accept it. The `oxiroute_aged_queue_*` and `oxiroute_worker_scaling_*` metrics are the same on every plane. The option
 is an ordinary reload.
 
 A client that sends requests back to back on one connection without waiting for the answers is served in order by the

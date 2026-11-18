@@ -92,8 +92,10 @@ The server crate owns listener admission and dispatches by protocol:
   runs once on a short-lived ring when the setting names it), and tests feed synthetic capabilities. To put `io_uring` first, add `Self::IoUring` at the head of
   `DataPlane::DEFAULT_ORDER` and the `io_uring` step to the chain sentence in `docs/CONFIG_SPEC.md` and
   `docs/OPERATIONS.md`. An engine thread that panics or fails marks the generation's runtime failed instead of
-  leaving a listener that accepts connections nothing serves. `aged_per_worker` and `dynamic` worker scaling run
-  inside the epoll engine (`plane/schedule`): the ready order is `oxiroute-aged-order`, shared with the tokio
+  leaving a listener that accepts connections nothing serves. Connection placement, `aged_per_worker` and `dynamic`
+  worker scaling run inside the epoll engine (`plane/schedule`): the engine places every accepted connection on the
+  thread with the fewest open ones (the listener is shared, and the kernel hands a burst of connections to the thread
+  it woke, so accept order is not a placement), the ready order is `oxiroute-aged-order`, shared with the tokio
   executor, the active-set decision is `oxiroute-worker-scaling`, and a connection moves between threads as an owned
   descriptor handed through the target thread's inbox while it holds no request, no buffer and no origin
   connection; the engine refuses to start the `io_uring` driver with scheduling.

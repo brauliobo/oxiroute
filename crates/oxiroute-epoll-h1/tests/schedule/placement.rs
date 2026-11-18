@@ -1,12 +1,13 @@
 use oxiroute_epoll_h1::Age;
 
 use crate::{
-    common::{HOUR, aged, connections, echo, open, plain},
+    common::{HOUR, aged, burst, connections, echo, open, plain},
     support::{Fixture, Knobs},
 };
 
 const THREADS: usize = 4;
 const CONNECTIONS: usize = 64;
+const BURST: usize = 512;
 
 fn spread(held: &[usize]) -> usize {
     held.iter().max().unwrap() - held.iter().min().unwrap()
@@ -60,12 +61,36 @@ fn a_thread_gives_its_slot_back_when_its_connection_ends() {
 }
 
 #[test]
-fn without_scheduling_the_engine_counts_nothing() {
+fn without_scheduling_connections_opened_together_are_still_balanced_over_the_threads() {
     let fixture = Fixture::on_shared_listener(plain(THREADS), Knobs::default());
+    let wires = burst(&fixture, CONNECTIONS);
+
+    let held = connections(&fixture);
+
+    assert_eq!(held.iter().sum::<usize>(), CONNECTIONS, "{held:?}");
+    assert!(spread(&held) <= 2, "{held:?}");
+    assert!(fixture.engine().scaling_stats().is_none());
+    drop(wires);
+}
+
+#[test]
+fn without_scheduling_a_burst_of_many_connections_is_balanced_over_two_threads() {
+    let fixture = Fixture::on_shared_listener(plain(2), Knobs::default());
+    let wires = burst(&fixture, BURST);
+
+    let held = connections(&fixture);
+
+    assert_eq!(held.iter().sum::<usize>(), BURST, "{held:?}");
+    assert!(spread(&held) <= 2, "{held:?}");
+    drop(wires);
+}
+
+#[test]
+fn a_single_thread_has_nothing_to_place() {
+    let fixture = Fixture::on_shared_listener(plain(1), Knobs::default());
     let wires = open(&fixture, 8);
 
     assert!(connections(&fixture).is_empty());
-    assert!(fixture.engine().scaling_stats().is_none());
     drop(wires);
 }
 

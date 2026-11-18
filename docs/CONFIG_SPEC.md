@@ -325,11 +325,14 @@ Current constraints:
   rustls backend and serves HTTP/1.1 (ALPN `http/1.1` or none); an HTTP/2 connection continues on the tokio path over
   the same TLS session. The server performs these checks when it
   prepares the generation; the value itself is checked when the configuration is loaded. The probe of the kernel
-  runs once per process and leaves no ring open. The epoll plane runs one thread per `listener_workers` and honours
+  runs once per process and leaves no ring open. The epoll plane runs one thread per `listener_workers`. With two
+  threads or more it places every new connection, whatever the scheduling, on the thread with the fewest open
+  connections: left to the kernel, the thread woken to accept a burst of connections takes most of them and keeps them
+  for their whole keep-alive life, so the other threads idle. It honours
   `connection_scheduling = "aged_per_worker"` (or `auto` with two workers or more) with its `connection_age_ms` and
   `worker_scaling = "dynamic"` with its tunables on its own threads: each thread serves its ready connections newest
-  first and the oldest first once it has waited the age, a new connection goes to the thread with the fewest open
-  connections, and a dynamically scaled listener keeps its connections on the active threads. The `io_uring` plane runs
+  first and the oldest first once it has waited the age, and a dynamically scaled listener keeps its connections on the
+  active threads. The `io_uring` plane runs
   the same engine on io_uring completions instead of epoll readiness. The epoll and io_uring planes serve requests that
   a client sends back to back on one connection without waiting for the answers (pipelining) one after the other, where
   the classic path closes such a connection after the first answer. Measurements of the planes are in
@@ -381,9 +384,10 @@ Current constraints:
   hundreds to thousands of busy keep-alive connections per worker, and no ready connection waits for more than about
   the age plus the time to serve the connections already older than it. It changes only the order in which ready
   connections are served: parsing, admission, limits, drain, retirement and evacuation are the same. A slow handler
-  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks run on the worker of their connection. The epoll data plane orders and places its connections the same way on its own threads
-  (a thread reads its ready events, serves the newest ready connection first and promotes the oldest after the age) and
-  reports the same `oxiroute_aged_queue_*` metrics. The default stays `work_stealing`: with one worker per
+  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks run on the worker of their connection. The epoll data plane places its connections the same way on its own threads
+  with any scheduling and, with `aged_per_worker`, orders them the same way (a thread reads its ready events, serves
+  the newest ready connection first and promotes the oldest after the age) and reports the same
+  `oxiroute_aged_queue_*` metrics. The default stays `work_stealing`: with one worker per
   listener `aged_per_worker` can lose request rate (0.6x to 0.8x at 512 and 2048 busy connections), so it is
   recommended from two workers (`listener_workers`) up. `auto` makes that choice: `aged_per_worker` when
   `listener_workers` is 2 or more, `work_stealing` with one (or omitted); `connection_age_ms` is accepted with it and

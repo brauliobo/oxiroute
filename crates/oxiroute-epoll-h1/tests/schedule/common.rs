@@ -97,6 +97,29 @@ pub fn open(fixture: &Fixture, count: usize) -> Vec<Wire> {
         .collect()
 }
 
+pub fn burst(fixture: &Fixture, count: usize) -> Vec<Wire> {
+    const CLIENTS: usize = 4;
+    let addr = fixture.addr;
+    let clients = (0..CLIENTS)
+        .map(|_| {
+            std::thread::spawn(move || {
+                (0..count / CLIENTS)
+                    .map(|_| Wire::connect(addr))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut wires = clients
+        .into_iter()
+        .flat_map(|client| client.join().expect("client thread"))
+        .collect::<Vec<_>>();
+    wires
+        .iter_mut()
+        .enumerate()
+        .for_each(|(id, wire)| echo(wire, id, 16));
+    wires
+}
+
 pub fn pack(fixture: &Fixture, wires: &mut [Wire], threads: usize) {
     let total = wires.len();
     eventually("the connections to be packed on the first thread", || {

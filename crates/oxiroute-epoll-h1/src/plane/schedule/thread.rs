@@ -2,7 +2,7 @@ use super::{arrival::Arrival, fleet::Plan, order::Order, placement::Placement};
 
 pub(crate) struct Schedule<A> {
     pub(crate) placement: Placement<A>,
-    pub(crate) order: Order,
+    pub(crate) order: Option<Order>,
     pub(crate) arrivals: Vec<Arrival<A>>,
     pub(crate) shared: Vec<bool>,
 }
@@ -11,7 +11,7 @@ impl<A> Schedule<A> {
     pub(crate) fn new(plan: Plan<A>, shared: Vec<bool>) -> Self {
         Self {
             placement: plan.placement,
-            order: Order::new(plan.age),
+            order: plan.age.map(Order::new),
             arrivals: Vec::new(),
             shared,
         }

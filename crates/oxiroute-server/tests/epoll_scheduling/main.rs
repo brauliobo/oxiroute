@@ -13,6 +13,8 @@ mod h1_wire;
 mod http_support;
 #[path = "../support/process.rs"]
 mod process_support;
+#[path = "../support/workers.rs"]
+mod workers_support;
 
 use std::{
     collections::BTreeSet,
@@ -28,7 +30,8 @@ use tokio::{
 
 use h1_wire::{Origin, Wire};
 use http_support::http_request;
-use process_support::{reserve_tcp_address, serves_on_epoll};
+use process_support::{reserve_tcp_address, serves_on_epoll, suite_data_plane};
+use workers_support::{connection_inodes, watched_per_epoll};
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 const GET: &[u8] = b"GET /r HTTP/1.1\r\nHost: example.test\r\n\r\n";
@@ -178,4 +181,52 @@ async fn the_epoll_plane_reports_the_series_of_the_tokio_plane() {
     }
 
     assert_eq!(series[0], series[1]);
+}
+
+async fn watched_by_the_workers(
+    scheduling: Option<ConnectionScheduling>,
+    connections: usize,
+) -> Vec<usize> {
+    let wire = Wire::over(Origin::start(OK).await, |config| {
+        config.listener_workers = Some(2);
+        config.connection_scheduling = scheduling;
+    })
+    .await;
+    let mut streams = futures_util::future::join_all(
+        (0..connections).map(|_| async { TcpStream::connect(wire.proxy).await.expect("connect") }),
+    )
+    .await;
+    futures_util::future::join_all(streams.iter_mut().map(ask)).await;
+    let ports = streams
+        .iter()
+        .map(|stream| stream.local_addr().expect("port").port())
+        .collect::<Vec<_>>();
+    let inodes = connection_inodes(wire.proxy, &ports);
+    assert_eq!(inodes.len(), connections);
+    let mut watched = watched_per_epoll(wire.server.pid(), &inodes);
+    watched.sort_unstable_by(|left, right| right.cmp(left));
+    watched.truncate(2);
+    drop(streams);
+    wire.finish();
+    watched
+}
+
+fn serves_on_epoll_threads() -> bool {
+    serves_on_epoll() && suite_data_plane() != Some(HttpDataPlane::IoUring)
+}
+
+#[tokio::test]
+async fn two_workers_share_the_connections_opened_together_whatever_the_scheduling() {
+    if !serves_on_epoll_threads() {
+        return;
+    }
+    for scheduling in [None, Some(ConnectionScheduling::AgedPerWorker)] {
+        for connections in [64, 256] {
+            let watched = watched_by_the_workers(scheduling, connections).await;
+
+            assert_eq!(watched.iter().sum::<usize>(), connections, "{watched:?}");
+            assert_eq!(watched.len(), 2, "{watched:?}");
+            assert!(watched[0] - watched[1] <= 2, "{scheduling:?} {watched:?}");
+        }
+    }
 }

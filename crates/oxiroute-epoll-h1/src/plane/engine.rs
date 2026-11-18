@@ -176,11 +176,7 @@ impl Engine {
             .map(|_| Waker::new())
             .collect::<io::Result<Vec<_>>>()
             .map_err(during("creating the thread wakers"))?;
-        let fleet = config
-            .scheduling
-            .as_ref()
-            .map(|scheduling| Fleet::<S::Admission>::new(scheduling, wakers.clone()))
-            .transpose()
+        let fleet = Fleet::<S::Admission>::of(config, wakers.clone())
             .map_err(during("creating the thread scheduler"))?;
         let mut engine = Self {
             control: Arc::clone(&control),

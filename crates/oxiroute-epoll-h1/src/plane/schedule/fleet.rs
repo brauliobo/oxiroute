@@ -7,7 +7,10 @@ use super::{
     peers::{EngineWorkers, Peers},
     placement::Placement,
 };
-use crate::plane::wake::Waker;
+use crate::plane::{
+    config::{Config, Driver},
+    wake::Waker,
+};
 
 #[derive(Clone, Debug)]
 pub struct Scale {
@@ -23,28 +26,33 @@ pub struct Scheduling {
 
 pub(crate) struct Plan<A> {
     pub(crate) placement: Placement<A>,
-    pub(crate) age: Age,
+    pub(crate) age: Option<Age>,
 }
 
 pub(crate) struct Fleet<A> {
     peers: Arc<Peers<A>>,
     scaling: Option<Arc<Scaling>>,
-    age: Age,
+    age: Option<Age>,
 }
 
 impl<A: Send + 'static> Fleet<A> {
-    pub(crate) fn new(scheduling: &Scheduling, wakes: Vec<Waker>) -> io::Result<Self> {
+    pub(crate) fn of(config: &Config, wakes: Vec<Waker>) -> io::Result<Option<Self>> {
+        let balances = config.driver == Driver::Epoll && wakes.len() > 1;
+        if config.scheduling.is_none() && !balances {
+            return Ok(None);
+        }
         let threads = wakes.len();
-        let scaling = scheduling
-            .scale
+        let scaling = config
+            .scheduling
             .as_ref()
+            .and_then(|scheduling| scheduling.scale.as_ref())
             .filter(|scale| threads > scale.policy.min_active)
             .map(|scale| Arc::new(Scaling::new(&scale.name, scale.policy, threads)));
-        Ok(Self {
+        Ok(Some(Self {
             peers: Arc::new(Peers::new(wakes)?),
             scaling,
-            age: scheduling.age,
-        })
+            age: config.scheduling.as_ref().map(|scheduling| scheduling.age),
+        }))
     }
 
     pub(crate) fn plan(&self, thread: usize) -> Plan<A> {
