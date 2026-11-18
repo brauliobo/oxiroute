@@ -207,7 +207,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install CPU emulator
-        run: sudo apt-get update && sudo apt-get install --yes qemu-user
+        run: |
+          sudo apt-get update -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          sudo apt-get install --yes --no-install-recommends qemu-user
 
       - name: Verify the dispatch tests on baseline, SSSE3, AVX2 and native CPUs
         run: ./scripts/test/cpu-targets.sh
