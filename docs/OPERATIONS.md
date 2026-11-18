@@ -508,6 +508,8 @@ HAProxy-style export and `GET <prefix>` the table that needs no script. The cont
 - One snapshot is built per second and shared by every client (rebuilt at once after a page
   administration change), so viewers cost no more than one build per second. Poll no faster than
   `intervalHintMs` (the configured `refresh_ms`, at least 1000). Responses are `no-store`.
+- The management API serves the same document at `GET /api/v1/stats` (bearer token, built per request,
+  `admin` always `false`); `oxiroute top` reads it.
 - `schemaVersion` (1) changes only for incompatible changes. Keys are camelCase. Counters are decimal
   strings (`"12345"`); gauges and timestamps (`...UnixMs`, `...Ms`) are numbers.
 - A key is absent when the proxy does not know the value; nothing is reported as zero because it is

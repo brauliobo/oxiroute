@@ -16,6 +16,7 @@ use crate::{
 pub(super) enum Route {
     Topology,
     Monitoring,
+    Stats,
     Metrics,
     Readiness,
     Status,
@@ -27,6 +28,7 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     match path {
         "/api/v1/topology" => Some(Route::Topology),
         "/api/v1/monitoring" => Some(Route::Monitoring),
+        "/api/v1/stats" => Some(Route::Stats),
         "/api/v1/capabilities" => Some(Route::Capabilities),
         "/ready" => Some(Route::Readiness),
         "/status.json" => Some(Route::StatusJson),
@@ -49,6 +51,7 @@ pub(super) fn handle(
     match route {
         Route::Topology => topology_response(metrics, topology),
         Route::Monitoring => monitoring_response(metrics, control),
+        Route::Stats => stats_response(generations),
         Route::Metrics => metrics_response(metrics, control, generations),
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
@@ -196,6 +199,16 @@ pub(super) fn candidate_topology(topology: &TopologySnapshot, now_unix_ms: u64) 
     let response = TopologyResponse::candidate(topology, now_unix_ms)
         .expect("compiled candidate topology has valid API attributes");
     serde_json::to_value(response).expect("topology DTO serialization cannot fail")
+}
+
+fn stats_response(generations: Option<&GenerationManager>) -> ApiResponse {
+    let Some(generations) = generations else {
+        return ApiResponse::error(503, "stats_unavailable", "generation state is unavailable");
+    };
+    match crate::observability::stats_page::management_document(generations) {
+        Ok(body) => ApiResponse::bytes(200, body, "application/json"),
+        Err(error) => ApiResponse::error(503, "stats_unavailable", error.to_string()),
+    }
 }
 
 fn monitoring_response(metrics: &RuntimeMetrics, control: &RtmpControlHandle) -> ApiResponse {

@@ -12,6 +12,7 @@ mod generation;
 mod management;
 mod shared;
 mod shutdown;
+mod snapshot;
 mod startup;
 mod stats;
 mod unix;

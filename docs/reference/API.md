@@ -16,7 +16,7 @@ are migrated.
 | --- | --- | --- |
 | Configuration | `GET /api/v1/config`, `POST /api/v1/config/validate`, `PUT /api/v1/config` | Management bearer token; typed drafts, preflight, revision-safe write |
 | Native import reports | `GET /api/v1/import-reports`, `GET /api/v1/import-reports/{index}` | Management bearer token; bounded redacted evidence and read-only finalized KDL preview |
-| Observability | `GET /api/v1/monitoring`, `/topology`, `/status` | Management bearer token; redacted active state |
+| Observability | `GET /api/v1/monitoring`, `/topology`, `/status`, `/stats` | Management bearer token; redacted active state; `/stats` is the stats page snapshot (see "Stats page API" in OPERATIONS.md) |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
 | Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections`, `PUT /api/v1/servers/weight` | Management bearer token and active-generation revision |
 | Evacuate | `POST /api/v1/servers/evacuate`, `POST /api/v1/pools/evacuate` | Management bearer token; drain plus a one-shot cancel and re-dispatch of in-flight HTTP requests (see below) |
