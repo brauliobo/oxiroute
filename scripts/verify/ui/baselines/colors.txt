@@ -1,5 +1,4 @@
 42 ui/src/AuditWorkspace.vue
-45 ui/src/CertificatesWorkspace.vue
 2 ui/src/ConfigurationWorkspace.vue
 32 ui/src/EventsWorkspace.vue
 31 ui/src/HaproxyStatsDashboard.vue

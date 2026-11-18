@@ -17,6 +17,7 @@ import {
   managementTlsInventory,
 } from './test/managementFixtures'
 import { importReportResponse } from './test/importFixtures'
+import { pendingConfirm, settleConfirm } from './shell/confirm'
 
 const token = 'management-ui-test-token'
 
@@ -196,7 +197,7 @@ describe('local management workspaces', () => {
     const wrapper = mount(CertificatesWorkspace, { props: { token } })
     await flushPromises()
 
-    expect(wrapper.get('.certificates-workspace').text()).toContain('managed-edge')
+    expect(wrapper.text()).toContain('managed-edge')
     expect(wrapper.text()).not.toContain('privateKey')
     expect(wrapper.text()).not.toContain('accountUrl')
     expect(wrapper.text()).not.toContain('orderUrl')
@@ -285,9 +286,7 @@ describe('local management workspaces', () => {
       }
       throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`)
     })
-    const confirm = vi.fn(() => true)
     vi.stubGlobal('fetch', fetch)
-    vi.stubGlobal('confirm', confirm)
 
     const wrapper = mount(CertificatesWorkspace, { props: { token } })
     await flushPromises()
@@ -296,9 +295,11 @@ describe('local management workspaces', () => {
 
     await revokeButton.trigger('click')
     await flushPromises()
+    expect(pendingConfirm.value?.message).toContain('Active revision')
+    settleConfirm(true)
+    await flushPromises()
 
     const request = requests.find(({ url, init }) => url === '/api/v1/tls/revoke' && init?.method === 'POST')
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Active revision'))
     expect(request).toBeDefined()
     expect(JSON.parse(String(request?.init?.body))).toEqual({
       expectedActiveRevision: 'active-revision',

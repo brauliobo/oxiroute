@@ -1,0 +1,33 @@
+@layer ox.page {
+  .ox-cert-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+    gap: var(--ox-gap);
+  }
+
+  .ox-cert {
+    display: grid;
+    align-content: start;
+    gap: var(--ox-gap);
+    min-width: 0;
+  }
+
+  .ox-cert-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-4);
+  }
+
+  .ox-cert-head h3 {
+    overflow-wrap: anywhere;
+    font-size: var(--ox-text-lg);
+  }
+
+  .ox-cert-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-3);
+  }
+}

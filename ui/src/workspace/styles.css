@@ -1,0 +1,107 @@
+@layer ox.page {
+  .ox-workspace {
+    display: grid;
+    gap: var(--ox-gap);
+    align-content: start;
+    margin-top: var(--ox-gap);
+  }
+
+  .ox-workspace-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ox-space-5) var(--ox-space-7);
+  }
+
+  .ox-workspace-head h2 {
+    font-size: var(--ox-text-xl);
+  }
+
+  .ox-workspace-head p {
+    max-width: 60rem;
+    margin-top: var(--ox-space-2);
+  }
+
+  .ox-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--ox-space-4) var(--ox-space-5);
+  }
+
+  .ox-toolbar:empty {
+    display: none;
+  }
+
+  .ox-filter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ox-stack {
+    display: grid;
+    gap: var(--ox-gap);
+  }
+
+  .ox-scroll {
+    overflow-x: auto;
+  }
+
+  .ox-mono {
+    font-family: var(--ox-mono);
+    font-size: var(--ox-text-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .ox-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: var(--ox-space-5) var(--ox-gap);
+  }
+
+  .ox-fact {
+    display: grid;
+    gap: var(--ox-space-1);
+    min-width: 0;
+  }
+
+  .ox-fact dt {
+    color: var(--ox-muted);
+    font-size: var(--ox-text-xs);
+  }
+
+  .ox-fact dd {
+    overflow-wrap: anywhere;
+    font-weight: var(--ox-weight-strong);
+  }
+
+  .ox-fact dd.ox-mono {
+    font-weight: var(--ox-weight-normal);
+  }
+
+  .ox-panel-note {
+    margin-bottom: var(--ox-space-5);
+    color: var(--ox-muted);
+  }
+
+  .ox-more {
+    display: flex;
+    justify-content: flex-start;
+    padding-top: var(--ox-space-5);
+  }
+
+  .ox-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-4);
+    margin-top: var(--ox-space-5);
+  }
+
+  @media (max-width: 45rem) {
+    .ox-toolbar > * {
+      flex: 1 1 100%;
+    }
+
+  }
+}
