@@ -340,6 +340,7 @@ describe('production API client against the built management process', () => {
       diskRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       candidateRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       activeRevision: snapshot.activeRevision,
+      written: true,
       outcome: 'unchanged_active',
       activationState: 'active',
       restartRequired: false,
