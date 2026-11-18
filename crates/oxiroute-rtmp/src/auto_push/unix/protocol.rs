@@ -243,7 +243,7 @@ pub(in super::super) fn decode_event(
     let event = match kind {
         0 => MediaEvent::from_wire(MediaEventKind::Metadata, timestamp, payload, None)
             .map_err(|_| RtmpAutoPushError::TransportUnavailable),
-        1..=8 => {
+        1..=9 => {
             let event = if kind == 1 || kind == 2 {
                 MediaEvent::audio(timestamp, payload)
             } else {
@@ -271,6 +271,7 @@ const fn event_kind(kind: MediaEventKind) -> u8 {
         MediaEventKind::VideoKeyframe => 6,
         MediaEventKind::VideoInterframe => 7,
         MediaEventKind::VideoDisposable => 8,
+        MediaEventKind::VideoMetadata => 9,
     }
 }
 

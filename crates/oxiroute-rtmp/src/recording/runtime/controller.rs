@@ -53,7 +53,8 @@ impl RecorderBootstrap {
             }
             MediaEventKind::Audio
             | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {}
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {}
         }
     }
 

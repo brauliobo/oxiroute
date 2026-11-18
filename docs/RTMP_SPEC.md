@@ -621,6 +621,14 @@ and has its configured 1-60000 ms shutdown deadline; the reaper requests cancell
 deadline, retains ownership, and joins instead of detaching. Reaper shutdown cancels outstanding
 tasks and waits for their completion.
 
+Live publish accepts legacy AVC and Enhanced RTMP `ExVideoTagHeader` video with FourCC `avc1`,
+`hvc1`, or `av01`. Supported packet types are sequence start (0), coded frames (1), coded frames
+without composition time (3), and metadata (4). A metadata packet carries its FourCC even when its
+frame type is the video command frame (5), as ffmpeg writes `colorInfo`; it is classified as
+`VideoMetadata`, forwarded to mixed viewers and relays like an interframe, never cached for late
+joiners, and ignored by HLS and DASH output. Any other packet type, and every command frame other
+than metadata, fails the publish with `unsupported enhanced video packet type N`.
+
 FLV recording supports legacy AVC video and AAC audio. Enhanced RTMP AVC (`avc1`), HEVC (`hvc1`),
 and AV1 (`av01`) can be observed and fanned out by the live path but are explicitly
 `recording_supported: false`; a configured recorder that encounters those video events fails with

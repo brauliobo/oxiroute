@@ -177,6 +177,7 @@ impl Segment {
             | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
             | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata
             | MediaEventKind::HevcSequenceHeader
             | MediaEventKind::Av1SequenceHeader => self.muxer.projected_video_size(event.payload()),
             MediaEventKind::Metadata => self.muxer.projected_metadata_size(event.payload()),
@@ -247,7 +248,8 @@ fn write_to_muxer(
         | MediaEventKind::Av1SequenceHeader
         | MediaEventKind::VideoKeyframe
         | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => muxer
+        | MediaEventKind::VideoDisposable
+        | MediaEventKind::VideoMetadata => muxer
             .write_video(event.timestamp_ms(), event.payload())
             .map_err(write_failure),
         MediaEventKind::Metadata => muxer.write_metadata(event.payload()).map_err(write_failure),

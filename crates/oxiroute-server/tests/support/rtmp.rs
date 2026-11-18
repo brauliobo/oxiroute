@@ -118,6 +118,18 @@ impl RtmpWireClient {
         self.write_results(vec![packet]).await;
     }
 
+    pub async fn publish_video(&mut self, timestamp_ms: u32, payload: &[u8]) {
+        let packet = self
+            .session
+            .publish_video_data(
+                Bytes::copy_from_slice(payload),
+                RtmpTimestamp::new(timestamp_ms),
+                false,
+            )
+            .expect("publish RTMP video");
+        self.write_results(vec![packet]).await;
+    }
+
     pub fn wait_for_event<'a, P>(
         &'a mut self,
         initial: Vec<ClientSessionResult>,

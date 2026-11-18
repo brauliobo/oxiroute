@@ -255,6 +255,7 @@ impl DashSegmenter {
                     self.append_audio(event, event.timestamp_ms());
                 }
             }
+            MediaEventKind::VideoMetadata => {}
             MediaEventKind::HevcSequenceHeader | MediaEventKind::Av1SequenceHeader => {
                 self.failed = true;
             }

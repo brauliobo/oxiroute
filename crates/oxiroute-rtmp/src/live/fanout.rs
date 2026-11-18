@@ -14,7 +14,8 @@ pub(super) fn validate_cache_size(
         MediaEventKind::Audio
         | MediaEventKind::VideoKeyframe
         | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => return Ok(()),
+        | MediaEventKind::VideoDisposable
+        | MediaEventKind::VideoMetadata => return Ok(()),
     };
     if event.payload_len() > maximum {
         return Err(LiveHubError::CachedEventTooLarge {
@@ -48,7 +49,8 @@ pub(super) fn fanout_event(
             | MediaEventKind::HevcSequenceHeader
             | MediaEventKind::Av1SequenceHeader
             | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {}
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {}
         },
         SubscriberState::AwaitingKeyframe => {
             if event.kind() == MediaEventKind::VideoKeyframe {
@@ -124,7 +126,8 @@ fn fanout_audio_event(
         | MediaEventKind::HevcSequenceHeader
         | MediaEventKind::Av1SequenceHeader
         | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => {}
+        | MediaEventKind::VideoDisposable
+        | MediaEventKind::VideoMetadata => {}
         MediaEventKind::Metadata | MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => {
             if enqueue(
                 subscriber,
@@ -163,7 +166,10 @@ fn fanout_mixed_event(
         report.queued_events += 1;
         return;
     }
-    if event.kind() == MediaEventKind::VideoDisposable {
+    if matches!(
+        event.kind(),
+        MediaEventKind::VideoDisposable | MediaEventKind::VideoMetadata
+    ) {
         report.dropped_events += 1;
         return;
     }

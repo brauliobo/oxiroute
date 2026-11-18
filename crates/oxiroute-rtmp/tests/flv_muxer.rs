@@ -84,6 +84,7 @@ fn writes_supported_enhanced_video_payloads_without_legacy_relabeling() {
         let header = enhanced_video_payload(0x90, four_cc, 0x01);
         let keyframe = enhanced_video_payload(0x91, four_cc, 0x02);
         let interframe = enhanced_video_payload(0xa1, four_cc, 0x03);
+        let metadata = enhanced_video_payload(0xd4, four_cc, 0x04);
         let mut muxer = FlvMuxer::new(Cursor::new(Vec::new())).expect("create muxer");
         muxer
             .write_video(0, &header)
@@ -92,6 +93,9 @@ fn writes_supported_enhanced_video_payloads_without_legacy_relabeling() {
         muxer
             .write_video(20, &interframe)
             .expect("enhanced interframe");
+        muxer
+            .write_video(30, &metadata)
+            .expect("enhanced color info metadata");
 
         let output = muxer.close().expect("close muxer").into_inner();
         assert_eq!(&output[..3], b"FLV");
@@ -110,6 +114,11 @@ fn writes_supported_enhanced_video_payloads_without_legacy_relabeling() {
             output
                 .windows(interframe.len())
                 .any(|window| window == interframe.as_slice())
+        );
+        assert!(
+            output
+                .windows(metadata.len())
+                .any(|window| window == metadata.as_slice())
         );
     }
 }

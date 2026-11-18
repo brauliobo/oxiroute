@@ -4,6 +4,11 @@ use super::*;
 const AAC_CODEC_ID: u8 = 10;
 pub(super) const AVC_CODEC_ID: u8 = 7;
 const ENHANCED_VIDEO_HEADER: u8 = 0x80;
+const VIDEO_COMMAND_FRAME: u8 = 5;
+const PACKET_SEQUENCE_START: u8 = 0;
+const PACKET_CODED_FRAMES: u8 = 1;
+const PACKET_CODED_FRAMES_X: u8 = 3;
+const PACKET_METADATA: u8 = 4;
 
 /// Immutable classification of one RTMP media message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,6 +22,7 @@ pub enum MediaEventKind {
     VideoKeyframe,
     VideoInterframe,
     VideoDisposable,
+    VideoMetadata,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -250,6 +256,8 @@ pub enum MediaEventError {
     MalformedAudio,
     #[error("malformed FLV video payload")]
     MalformedVideo,
+    #[error("unsupported enhanced video packet type {0}")]
+    UnsupportedEnhancedVideoPacket(u8),
     #[error("unsupported video codec {0}")]
     UnsupportedVideoCodec(VideoCodecIdentifier),
     #[error("RTMP metadata cannot be encoded: {0}")]
@@ -283,10 +291,14 @@ fn classify_enhanced_video(
     payload: &[u8],
     video_header: u8,
 ) -> Result<(MediaEventKind, VideoCodec, VideoCodecIdentifier), MediaEventError> {
+    let frame_type = (video_header >> 4) & 0x07;
+    let packet_type = video_header & 0x0f;
+    if frame_type == VIDEO_COMMAND_FRAME && packet_type != PACKET_METADATA {
+        return Err(MediaEventError::UnsupportedEnhancedVideoPacket(packet_type));
+    }
     if payload.len() <= 5 {
         return Err(MediaEventError::MalformedVideo);
     }
-    let frame_kind = classify_video_frame((video_header >> 4) & 0x07)?;
     let four_cc: [u8; 4] = payload[1..5]
         .try_into()
         .expect("the enhanced video header length was checked");
@@ -300,14 +312,20 @@ fn classify_enhanced_video(
             ));
         }
     };
-    let kind = match video_header & 0x0f {
-        0 if frame_kind == MediaEventKind::VideoKeyframe => match codec {
-            VideoCodec::Avc => MediaEventKind::AvcSequenceHeader,
-            VideoCodec::Hevc => MediaEventKind::HevcSequenceHeader,
-            VideoCodec::Av1 => MediaEventKind::Av1SequenceHeader,
-        },
-        1 | 3 => frame_kind,
-        _ => return Err(MediaEventError::MalformedVideo),
+    let kind = match packet_type {
+        PACKET_METADATA => MediaEventKind::VideoMetadata,
+        PACKET_SEQUENCE_START
+            if classify_video_frame(frame_type)? == MediaEventKind::VideoKeyframe =>
+        {
+            match codec {
+                VideoCodec::Avc => MediaEventKind::AvcSequenceHeader,
+                VideoCodec::Hevc => MediaEventKind::HevcSequenceHeader,
+                VideoCodec::Av1 => MediaEventKind::Av1SequenceHeader,
+            }
+        }
+        PACKET_CODED_FRAMES | PACKET_CODED_FRAMES_X => classify_video_frame(frame_type)?,
+        PACKET_SEQUENCE_START => return Err(MediaEventError::MalformedVideo),
+        other => return Err(MediaEventError::UnsupportedEnhancedVideoPacket(other)),
     };
     Ok((kind, codec, VideoCodecIdentifier::FourCc(four_cc)))
 }
@@ -407,3 +425,6 @@ fn decode_metadata(payload: &[u8]) -> Option<StreamMetadata> {
     metadata.apply_metadata_values(std::mem::take(properties));
     Some(metadata)
 }
+
+#[cfg(test)]
+mod tests;

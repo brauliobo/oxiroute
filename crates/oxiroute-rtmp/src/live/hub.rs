@@ -136,7 +136,8 @@ impl MediaCache {
             | MediaEventKind::Av1SequenceHeader
             | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {
                 Some(CurrentVideoTrack::Present(event.video_codec()))
             }
             MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => None,
@@ -163,7 +164,8 @@ impl MediaCache {
             MediaEventKind::Audio
             | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {}
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {}
         }
     }
 

@@ -323,7 +323,9 @@ impl RelayCache {
             }
             MediaEventKind::VideoKeyframe => self.keyframe = Some(event.clone()),
             MediaEventKind::Audio => self.latest_audio = Some(event.clone()),
-            MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {}
+            MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {}
         }
         codec_header_changed
     }
@@ -621,7 +623,8 @@ fn publish_event(
         | MediaEventKind::Av1SequenceHeader
         | MediaEventKind::VideoKeyframe
         | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => session.publish_video_data(
+        | MediaEventKind::VideoDisposable
+        | MediaEventKind::VideoMetadata => session.publish_video_data(
             Bytes::copy_from_slice(event.payload()),
             RtmpTimestamp::new(event.timestamp_ms()),
             event.kind() == MediaEventKind::VideoDisposable,

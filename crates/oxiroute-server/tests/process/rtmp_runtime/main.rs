@@ -13,6 +13,7 @@ mod revision_support;
 mod rtmp_support;
 
 mod ended;
+mod hevc;
 mod inventory;
 mod quota;
 mod recording;

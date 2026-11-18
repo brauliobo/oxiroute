@@ -477,7 +477,7 @@ fn classify_enhanced_video(
     match video_header & 0x0f {
         0 if frame_type == KEYFRAME_TYPE => Ok(VideoPacketKind::SequenceHeader),
         1 | 3 if frame_type == KEYFRAME_TYPE => Ok(VideoPacketKind::Keyframe),
-        1 | 3 => Ok(VideoPacketKind::Other),
+        1 | 3 | 4 => Ok(VideoPacketKind::Other),
         _ => Err(FlvMuxerError::MalformedPayload {
             tag_type: FlvTagType::Video,
         }),

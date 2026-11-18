@@ -37,7 +37,8 @@ impl MediaSnapshotAccumulator {
             | MediaEventKind::Av1SequenceHeader
             | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {
                 self.video.video_codec = event.video_codec_identifier();
                 self.video.flv_codec_id = self
                     .video

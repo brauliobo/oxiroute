@@ -793,6 +793,7 @@ const fn media_event_kind(kind: MediaEventKind) -> u8 {
         MediaEventKind::VideoKeyframe => 6,
         MediaEventKind::VideoInterframe => 7,
         MediaEventKind::VideoDisposable => 8,
+        MediaEventKind::VideoMetadata => 9,
     }
 }
 

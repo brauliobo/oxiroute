@@ -278,6 +278,11 @@ chunked upstream responses are rejected.
 
 - Legacy AVC video and AAC audio are recordable. Enhanced AVC, HEVC, and AV1 can be observed/fanned
   out but fail recording with an explicit unsupported-codec state.
+- Enhanced RTMP video (`avc1`, `hvc1`, `av01` FourCC) is accepted from publishers, including the
+  `colorInfo` metadata packet that ffmpeg sends ahead of the first keyframe, and fanned out as
+  received. Other enhanced packet types (sequence end, MPEG-2 TS, multitrack, ModEx, command frames)
+  end the publish with an `unsupported enhanced video packet type` error instead of being dropped
+  silently.
 - Publisher fanout is bounded per subscriber; saturated viewers resynchronize instead of growing an
   unbounded queue.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder

@@ -54,9 +54,9 @@ impl RecorderMediaMask {
             | MediaEventKind::HevcSequenceHeader
             | MediaEventKind::Av1SequenceHeader
             | MediaEventKind::VideoKeyframe => self.video,
-            MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {
-                self.video && !self.keyframes
-            }
+            MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => self.video && !self.keyframes,
         }
     }
 }

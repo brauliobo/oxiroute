@@ -334,7 +334,8 @@ pub(super) fn serialize_event(
         | MediaEventKind::Av1SequenceHeader
         | MediaEventKind::VideoKeyframe
         | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => protocol.send_video_data(
+        | MediaEventKind::VideoDisposable
+        | MediaEventKind::VideoMetadata => protocol.send_video_data(
             stream_id,
             Bytes::copy_from_slice(event.payload()),
             RtmpTimestamp::new(event.timestamp_ms()),

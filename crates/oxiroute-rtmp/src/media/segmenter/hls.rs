@@ -141,6 +141,7 @@ impl HlsSegmenter {
                 }
             }
             MediaEventKind::Metadata
+            | MediaEventKind::VideoMetadata
             | MediaEventKind::HevcSequenceHeader
             | MediaEventKind::Av1SequenceHeader => {}
         }

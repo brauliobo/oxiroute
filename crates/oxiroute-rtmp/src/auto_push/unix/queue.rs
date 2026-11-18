@@ -152,7 +152,9 @@ impl AutoPushCache {
             }
             MediaEventKind::VideoKeyframe => self.keyframe = Some(frame),
             MediaEventKind::Audio => self.latest_audio = Some(frame),
-            MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {}
+            MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::VideoMetadata => {}
         }
     }
 
