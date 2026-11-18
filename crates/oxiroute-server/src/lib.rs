@@ -37,6 +37,7 @@ mod test_ports;
 pub use config::coordinator as config_coordinator;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
+pub use continuity::ProcessSecrets;
 pub use doorbell::Doorbell;
 pub use forward_proxy::{
     ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,
@@ -104,8 +105,8 @@ pub use observability::stats_page::HaproxyStatsPage;
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
-    PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
-    ServerAdminState, ServerOrigin,
+    PoolHealthCarry, PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable,
+    RuntimeEndpoint, ServerAdminState, ServerHealthCarry, ServerOrigin, fit_health_carry,
 };
 pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
 pub use service_plan::{

@@ -28,7 +28,7 @@ use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
 };
 use crate::listener::inventory::{ListenerId, ListenerInventory};
-use crate::routing::ServerAdminState;
+use crate::routing::{PoolHealthCarry, ServerAdminState};
 use crate::rtmp::generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 use crate::service_plan::acquire_runtime_services;
 use crate::{

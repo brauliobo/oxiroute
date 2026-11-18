@@ -325,3 +325,37 @@ fn a_changed_counter_or_event_is_a_new_observation() {
     assert!(is_new_observation(Some(&last), &traffic));
     assert!(is_new_observation(Some(&last), &event));
 }
+
+#[test]
+fn a_hand_over_carries_secrets_and_health_and_reads_one_without_them() {
+    let carried = HandOver {
+        revision: Some("revision".into()),
+        servers: Vec::new(),
+        secrets: ProcessSecrets::export(),
+        health: vec![PoolHealthCarry {
+            pool: "origin".into(),
+            servers: vec![oxiroute_server::ServerHealthCarry {
+                server: "a".into(),
+                identity: 7,
+                state: oxiroute_server::EndpointHealthState::Healthy,
+                checked_at: std::num::NonZeroU64::new(1_700_000_000_000),
+                transitioned_at: None,
+                successes: None,
+                failures: None,
+                last_failure: None,
+                passive: None,
+                breaker: None,
+            }],
+        }],
+    };
+
+    let decoded = HandOver::decode(&serde_json::to_vec(&carried).unwrap()).unwrap();
+    let older = HandOver::decode(br#"{"revision":"r","servers":[]}"#).unwrap();
+
+    assert_eq!(decoded.secrets, carried.secrets);
+    assert_eq!(decoded.health, carried.health);
+    assert_eq!(older.revision.as_deref(), Some("r"));
+    assert!(older.health.is_empty());
+    assert_eq!(older.secrets, ProcessSecrets::default());
+    assert!(serde_json::to_vec(&carried).unwrap().len() < MAX_ATTACHMENT_BYTES);
+}

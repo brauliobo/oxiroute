@@ -227,6 +227,7 @@ oxiroute::process_cache_revalidation_wire             planes
 oxiroute::process_check                               planes
 oxiroute::process_cli                                 core
 oxiroute::process_connection_limit                    planes
+oxiroute::process_continuity                          core
 oxiroute::process_environment_settings                core
 oxiroute::process_generation_retirement               planes
 oxiroute::process_h1_arrival                          planes

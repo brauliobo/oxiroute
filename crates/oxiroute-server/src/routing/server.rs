@@ -2,6 +2,8 @@
 use super::*;
 use crate::upstream_peer::ReusePeer;
 
+mod carry;
+
 const LOAD_SCALE: u64 = 1000;
 
 #[derive(Clone, Debug)]
@@ -130,6 +132,10 @@ impl ServerHandle {
 
     pub(crate) fn passively_ejected(&self) -> bool {
         self.0.passively_ejected_at(now_unix_ms())
+    }
+
+    pub(crate) fn last_checked_at_unix_ms(&self) -> u64 {
+        self.0.last_checked_at_unix_ms.load(Ordering::Relaxed)
     }
 }
 

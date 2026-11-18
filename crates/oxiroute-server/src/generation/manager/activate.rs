@@ -257,6 +257,7 @@ impl GenerationManager {
         let active = Arc::clone(&candidate.generation);
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
             active.restore_administrative_states(&previous.administrative_states());
+            active.inherit_warm_state(&previous);
             state.retired.retire(Arc::clone(&previous), Instant::now());
             let evicted = state.previous.replace(previous);
             if let Some(evicted) = &evicted {
@@ -269,6 +270,7 @@ impl GenerationManager {
         }
         self.apply_overlay(&active);
         self.registry.on_activate(&active, self);
+        active.release_health_checks();
         active.start_accepting();
         state.last_failure = None;
         self.counters.activations.fetch_add(1, Ordering::Relaxed);

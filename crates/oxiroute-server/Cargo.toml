@@ -185,6 +185,10 @@ name = "process_connection_limit"
 path = "tests/process/connection_limit.rs"
 
 [[test]]
+name = "process_continuity"
+path = "tests/process/continuity/main.rs"
+
+[[test]]
 name = "process_environment_settings"
 path = "tests/process/environment_settings.rs"
 

@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::routing::carry::BreakerCarry;
 
 const BUCKETS: usize = 10;
 const CLOSED: u8 = 0;
@@ -97,6 +98,25 @@ impl Breaker {
     /// When an open breaker starts allowing trial requests again.
     pub(super) fn reopens_at(&self) -> Option<u64> {
         (self.state() == OPEN).then(|| self.open_until_unix_ms.load(Ordering::Acquire))
+    }
+
+    pub(super) fn carry(&self) -> Option<BreakerCarry> {
+        let state = self.state();
+        (state != CLOSED).then(|| BreakerCarry {
+            half_open: state == HALF_OPEN,
+            open_until: self.open_until_unix_ms.load(Ordering::Acquire),
+            trial_successes: self.lock().trial_successes,
+        })
+    }
+
+    pub(super) fn restore(&self, carried: &BreakerCarry) {
+        self.open_until_unix_ms
+            .store(carried.open_until, Ordering::Release);
+        self.lock().trial_successes = carried.trial_successes;
+        self.state.store(
+            if carried.half_open { HALF_OPEN } else { OPEN },
+            Ordering::Release,
+        );
     }
 
     /// Whether the server may be selected; an expired open period turns half-open on first look.

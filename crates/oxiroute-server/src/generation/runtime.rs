@@ -20,6 +20,7 @@ pub struct RuntimeGeneration {
     /// What the previous generation's operators changed, kept to re-apply to registered servers
     /// that only join this generation's pools at activation.
     carried_states: Mutex<Vec<ServerAdminState>>,
+    carried_health: Mutex<Vec<PoolHealthCarry>>,
     retired: tokio::sync::watch::Sender<bool>,
     /// `retired` as a plain load: the request path asks for it more than once per request.
     retired_flag: AtomicBool,
@@ -32,6 +33,9 @@ const RUNTIME_CANCELLED: u8 = 3;
 
 impl RuntimeGeneration {
     pub(super) fn activate(prepared: PreparedGeneration) -> Self {
+        if let Some(supervisor) = prepared.resources.health_supervisor() {
+            supervisor.hold();
+        }
         Self {
             accept_gate: AcceptGate::closed(),
             control_gate: AcceptGate::closed(),
@@ -46,6 +50,7 @@ impl RuntimeGeneration {
             runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
             carried_states: Mutex::new(Vec::new()),
+            carried_health: Mutex::new(Vec::new()),
             retired: tokio::sync::watch::channel(false).0,
             retired_flag: AtomicBool::new(false),
         }
@@ -84,6 +89,24 @@ impl RuntimeGeneration {
             .collect()
     }
 
+    #[must_use]
+    pub fn health_carry(&self) -> Vec<PoolHealthCarry> {
+        self.pools()
+            .iter()
+            .map(|pool| pool.health_carry())
+            .collect()
+    }
+
+    pub fn restore_health(&self, carried: &[PoolHealthCarry]) {
+        for pool in self.pools() {
+            pool.restore_health(carried);
+        }
+        *self
+            .carried_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = carried.to_vec();
+    }
+
     pub fn restore_administrative_states(&self, states: &[ServerAdminState]) {
         for pool in self.pools() {
             pool.restore_administrative_states(states);
@@ -92,6 +115,17 @@ impl RuntimeGeneration {
             .carried_states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = states.to_vec();
+    }
+
+    pub(crate) fn inherit_warm_state(&self, previous: &Self) {
+        self.resources.warm().inherit(previous.resources.warm());
+        self.restore_health(&previous.health_carry());
+    }
+
+    pub(crate) fn release_health_checks(&self) {
+        if let Some(supervisor) = self.resources.health_supervisor() {
+            supervisor.release();
+        }
     }
 
     /// Fills the servers and listeners the overlay keeps with its settings, wherever the carried
@@ -119,6 +153,14 @@ impl RuntimeGeneration {
             .clone();
         for pool in self.pools() {
             pool.restore_administrative_states(&states);
+        }
+        let health = self
+            .carried_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for pool in self.pools() {
+            pool.restore_health(&health);
         }
     }
 

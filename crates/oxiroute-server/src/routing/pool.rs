@@ -211,6 +211,7 @@ impl EndpointPool {
 
 mod admin;
 mod affinity;
+mod carry;
 mod eligibility;
 mod evacuate;
 mod pick;

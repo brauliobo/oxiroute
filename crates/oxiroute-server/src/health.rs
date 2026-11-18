@@ -21,7 +21,7 @@ use pingora::{
     services::{ServiceReadyNotifier, background::BackgroundService},
 };
 use tokio::{
-    sync::{Mutex, Semaphore},
+    sync::{Mutex, Semaphore, watch},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -87,6 +87,16 @@ impl HealthTarget {
             .await
             .map_err(|_| HealthFailure::ConnectFailed)?;
         self.run_probe_addresses(&addresses).await
+    }
+
+    fn first_probe_delay(&self) -> Duration {
+        let checked = self.server.last_checked_at_unix_ms();
+        if checked == 0 {
+            return Duration::ZERO;
+        }
+        let interval = u64::try_from(self.next_interval().as_millis()).unwrap_or(u64::MAX);
+        let due = checked.saturating_add(interval);
+        Duration::from_millis(due.saturating_sub(unix_time_ms().unwrap_or(due)))
     }
 
     fn next_interval(&self) -> Duration {
@@ -325,6 +335,7 @@ pub struct HealthSupervisor {
 
 struct SupervisorInner {
     semaphore: Arc<Semaphore>,
+    gate: watch::Sender<bool>,
     state: StdMutex<SupervisorState>,
 }
 
@@ -345,12 +356,18 @@ struct RunningTarget {
 }
 
 impl SupervisorState {
-    fn spawn(&self, target: &HealthTarget, semaphore: &Arc<Semaphore>) -> Option<JoinHandle<()>> {
+    fn spawn(
+        &self,
+        target: &HealthTarget,
+        semaphore: &Arc<Semaphore>,
+        gate: &watch::Sender<bool>,
+    ) -> Option<JoinHandle<()>> {
         let (runtime, shutdown) = self.running.as_ref()?;
         Some(runtime.spawn(run_target(
             target.clone(),
             shutdown.clone(),
             Arc::clone(semaphore),
+            gate.subscribe(),
         )))
     }
 }
@@ -371,6 +388,7 @@ impl HealthSupervisor {
         Self {
             inner: Arc::new(SupervisorInner {
                 semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
+                gate: watch::channel(true).0,
                 state: StdMutex::new(SupervisorState {
                     groups,
                     canaries,
@@ -378,6 +396,14 @@ impl HealthSupervisor {
                 }),
             }),
         }
+    }
+
+    pub(crate) fn hold(&self) {
+        self.inner.gate.send_replace(false);
+    }
+
+    pub(crate) fn release(&self) {
+        self.inner.gate.send_replace(true);
     }
 
     #[must_use]
@@ -423,7 +449,7 @@ impl HealthSupervisor {
             return;
         };
         let target = state.groups[index].template.target(server, endpoint);
-        let task = state.spawn(&target, &self.inner.semaphore);
+        let task = state.spawn(&target, &self.inner.semaphore, &self.inner.gate);
         state.groups[index]
             .targets
             .push(RunningTarget { target, task });
@@ -469,6 +495,7 @@ impl HealthSupervisor {
                     member.target.clone(),
                     watch.clone(),
                     Arc::clone(&self.inner.semaphore),
+                    self.inner.gate.subscribe(),
                 )));
             }
         }
@@ -506,7 +533,23 @@ impl BackgroundService for HealthSupervisor {
     }
 }
 
-async fn run_target(target: HealthTarget, mut shutdown: ShutdownWatch, semaphore: Arc<Semaphore>) {
+async fn run_target(
+    target: HealthTarget,
+    mut shutdown: ShutdownWatch,
+    semaphore: Arc<Semaphore>,
+    mut gate: watch::Receiver<bool>,
+) {
+    tokio::select! {
+        released = gate.wait_for(|open| *open) => if released.is_err() { return },
+        _ = shutdown.changed() => return,
+    }
+    let delay = target.first_probe_delay();
+    if !delay.is_zero() {
+        tokio::select! {
+            () = sleep(delay) => {}
+            _ = shutdown.changed() => return,
+        }
+    }
     loop {
         if *shutdown.borrow() {
             return;

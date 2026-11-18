@@ -16,20 +16,20 @@ use std::{
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, AdmissionClose, Doorbell, ExclusiveStores, GenerationManager,
-    GenerationStatus, ListenerRuntimeState, RuntimeGeneration, ServerAdminState, StartupOnly,
-    TrafficSnapshot, WorkerEventSnapshot, WorkerNotice,
+    GenerationStatus, ListenerRuntimeState, PoolHealthCarry, ProcessSecrets, RuntimeGeneration,
+    ServerAdminState, StartupOnly, TrafficSnapshot, WorkerEventSnapshot, WorkerNotice,
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
     },
-    worker_event_page,
+    fit_health_carry, worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
-    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlRequest, MAX_STATUS_EVENTS,
-    WorkerAdministrativeState, WorkerControl, WorkerEventRecord, WorkerGenerationStatus,
-    WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerRtmpDetail,
-    WorkerStatus,
+    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlRequest, MAX_ATTACHMENT_BYTES,
+    MAX_STATUS_EVENTS, WorkerAdministrativeState, WorkerControl, WorkerEventRecord,
+    WorkerGenerationStatus, WorkerLifecycle, WorkerListenerState, WorkerListenerStatus,
+    WorkerMetrics, WorkerRtmpDetail, WorkerStatus,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
 use serde::{Deserialize, Serialize};
@@ -272,6 +272,8 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     .map_err(Box::<dyn Error>::from)
                     .and_then(|previous| {
                         generation.restore_administrative_states(&previous.servers);
+                        previous.secrets.import();
+                        generation.restore_health(&previous.health);
                         let replaced = previous.revision.map(|revision| revision.parse());
                         manager.set_supervised_lineage(
                             identity.generation.get(),
@@ -387,6 +389,10 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
 struct HandOver {
     revision: Option<String>,
     servers: Vec<ServerAdminState>,
+    #[serde(default)]
+    secrets: ProcessSecrets,
+    #[serde(default)]
+    health: Vec<PoolHealthCarry>,
 }
 
 impl HandOver {
@@ -398,22 +404,33 @@ impl HandOver {
     }
 }
 
-/// Reports the revision and runtime administrative state the next worker starts with. State too
-/// large for the control channel refuses the replacement, so the old generation keeps serving
-/// with its state.
 fn hand_over(
     control: &mut WorkerControl,
     manager: &GenerationManager,
     generation: &RuntimeGeneration,
 ) -> ControlOutcome {
-    let state = serde_json::to_vec(&HandOver {
+    let mut state = HandOver {
         revision: manager
             .status()
             .active_revision
             .map(|revision| revision.to_string()),
         servers: generation.administrative_states(),
-    })
-    .expect("hand-over serializes");
+        secrets: ProcessSecrets::export(),
+        health: Vec::new(),
+    };
+    let room = MAX_ATTACHMENT_BYTES.saturating_sub(
+        serde_json::to_vec(&state)
+            .expect("hand-over serializes")
+            .len(),
+    );
+    let (health, left_out) = fit_health_carry(generation.health_carry(), room);
+    if left_out > 0 {
+        log::warn!(
+            "{left_out} servers did not fit the health state this worker hands to its replacement and are checked again"
+        );
+    }
+    state.health = health;
+    let state = serde_json::to_vec(&state).expect("hand-over serializes");
     match control.report_state(&state) {
         Ok(_) => ControlOutcome::Accepted,
         Err(_) => ControlOutcome::Rejected(REJECT_RUNTIME),
