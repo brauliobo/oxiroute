@@ -291,7 +291,8 @@ pending journal for recovery, while confirmed cleanup removes it exactly once.
 
 ## Readiness
 
-`GET /ready` returns 200 only when an active non-degraded generation exists and all configured
+`GET /ready` returns 200 only when an active non-degraded generation exists that admits traffic (an operator
+`generation drain` makes it return 503 until a reload replaces the generation) and all configured
 traffic listeners report `listening`; otherwise it returns 503. `GET /api/v1/status` reports the
 build version, disk/candidate/active/previous revisions, active-generation age, listener states,
 component states, certificate expiry data, and audit component degradation. Process/host sampling

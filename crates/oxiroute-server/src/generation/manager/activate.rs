@@ -72,7 +72,7 @@ impl GenerationManager {
         let previous_close = reservation
             .previous
             .as_ref()
-            .map(|previous| previous.accept_gate.close());
+            .map(|previous| previous.close_admission());
         #[cfg(test)]
         self.run_activation_hook(ActivationHookPoint::GateClosed);
         let quiesced = previous_close
@@ -168,7 +168,7 @@ impl GenerationManager {
         &self,
         candidate: &GenerationCandidate,
         reservation: &ActivationReservation,
-        previous_close: Option<AcceptGateClose>,
+        previous_close: Option<AdmissionClose>,
         quiesced: bool,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
         let operation = self.operations.acquire();
@@ -186,7 +186,7 @@ impl GenerationManager {
         let previous_current = active_matches_reservation(&state, reservation);
         let close_current = previous_close
             .as_ref()
-            .is_none_or(AcceptGateClose::is_current);
+            .is_none_or(AdmissionClose::is_current);
         let failure = if state.shutting_down {
             Some(GenerationError::MutationInProgress)
         } else if !owns_reservation || !candidate_current || !previous_current {

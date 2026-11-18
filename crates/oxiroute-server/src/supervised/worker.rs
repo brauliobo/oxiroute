@@ -15,8 +15,8 @@ use std::{
 
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    AdministrativeState, Doorbell, GenerationManager, GenerationStatus, ListenerRuntimeState,
-    RuntimeGeneration, ServerAdminState, TrafficSnapshot, WorkerNotice,
+    AdministrativeState, AdmissionClose, Doorbell, GenerationManager, GenerationStatus,
+    ListenerRuntimeState, RuntimeGeneration, ServerAdminState, TrafficSnapshot, WorkerNotice,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
 };
@@ -28,7 +28,6 @@ use oxiroute_supervisor_master::{
     WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
-use pingora::apps::AcceptGateClose;
 use serde::{Deserialize, Serialize};
 
 use self::status::{BUSY_TICK, StatusReporter};
@@ -558,12 +557,12 @@ fn nibble(byte: u8) -> Result<u8, io::Error> {
 
 fn quiesce_active(
     manager: &GenerationManager,
-    quiesced: &mut Option<AcceptGateClose>,
+    quiesced: &mut Option<AdmissionClose>,
 ) -> ControlOutcome {
     let Some(generation) = manager.active() else {
         return ControlOutcome::Rejected(REJECT_RUNTIME);
     };
-    let close = generation.accept_gate().close();
+    let close = generation.close_admission();
     let complete = close.wait(LIFECYCLE_PHASE_TIMEOUT);
     *quiesced = Some(close);
     if complete {
@@ -582,8 +581,8 @@ fn start_drain(manager: &GenerationManager) -> bool {
     })
 }
 
-fn reactivate_active(quiesced: &mut Option<AcceptGateClose>) -> ControlOutcome {
-    if quiesced.take().is_some_and(AcceptGateClose::reopen) {
+fn reactivate_active(quiesced: &mut Option<AdmissionClose>) -> ControlOutcome {
+    if quiesced.take().is_some_and(AdmissionClose::reopen) {
         ControlOutcome::Accepted
     } else {
         ControlOutcome::Rejected(REJECT_RUNTIME)

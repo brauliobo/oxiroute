@@ -89,22 +89,22 @@ impl ListenerRuntime {
 
     /// Acquires generation ownership and listener/process capacity for a control connection.
     ///
-    /// Control admission intentionally bypasses process administrative drain so local management
-    /// remains available to inspect and reverse a drain. Listener drain and capacity still apply.
+    /// Control admission intentionally bypasses process administrative drain and the operator drain of
+    /// the generation's traffic, so local management remains available to inspect and reverse a drain.
+    /// Listener drain and capacity still apply.
     ///
     /// # Errors
     ///
-    /// Returns an error when the generation is not accepting or connection capacity is unavailable.
+    /// Returns an error when the generation is replaced or connection capacity is unavailable.
     pub fn admit_control(
         &self,
         generation: &std::sync::Arc<RuntimeGeneration>,
-        kind: RuntimeReferenceKind,
     ) -> Result<TrafficLease, AdmissionError> {
         let generation_admission = generation
-            .begin_admission()
+            .begin_control_admission()
             .ok_or(AdmissionError::GenerationNotAccepting)?;
         let generation_reference = generation
-            .begin_reference(kind)
+            .begin_control_reference()
             .ok_or(AdmissionError::GenerationNotAccepting)?;
         let mut connection = self
             .metrics
@@ -126,9 +126,8 @@ impl ListenerRuntime {
     pub fn admit_owned_control(
         &self,
         generation: &std::sync::Arc<RuntimeGeneration>,
-        kind: RuntimeReferenceKind,
     ) -> Result<TrafficLease, AdmissionError> {
-        let generation_reference = generation.begin_owned_reference(kind);
+        let generation_reference = generation.begin_owned_control_reference();
         let mut connection = self
             .metrics
             .begin_control_connection()

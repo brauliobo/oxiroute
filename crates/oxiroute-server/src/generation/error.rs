@@ -30,10 +30,11 @@ pub struct GenerationStatus {
 impl GenerationStatus {
     /// Whether the active generation can take traffic.
     ///
-    /// A refused configuration file leaves the active generation serving, so it does not count.
+    /// A refused configuration file leaves the active generation serving, so it does not count. A generation
+    /// whose traffic an operator drained is not serving, whatever the state of its management listener.
     #[must_use]
     pub const fn serving(&self) -> bool {
-        self.active_revision.is_some() && self.last_failure.is_none()
+        self.active_revision.is_some() && self.active_accepting && self.last_failure.is_none()
     }
 }
 

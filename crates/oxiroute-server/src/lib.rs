@@ -45,7 +45,7 @@ pub use generation::retirement::{
     WorkerNotice,
 };
 pub use generation::{
-    GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
+    AdmissionClose, GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
     GenerationMutation, GenerationReference, GenerationRevision, GenerationStatus,
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };

@@ -2,20 +2,51 @@
 use super::*;
 
 pub struct GenerationAdmission {
-    pub(super) generation: Arc<RuntimeGeneration>,
+    pub(super) gate: AcceptGate,
     pub(super) _ownership: AcceptOwnership,
 }
 
 impl GenerationAdmission {
     #[must_use]
     pub fn accepting(&self) -> bool {
-        self.generation.accepting()
+        self.gate.accepting()
+    }
+}
+
+/// The closing of both admission gates of a generation, which a replacement completes or undoes as one.
+pub struct AdmissionClose {
+    pub(super) traffic: AcceptGateClose,
+    pub(super) control: AcceptGateClose,
+}
+
+impl AdmissionClose {
+    /// Whether every admission claimed before the close has ended within `timeout`.
+    #[must_use]
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        self.traffic.wait(timeout)
+            && self
+                .control
+                .wait(deadline.saturating_duration_since(Instant::now()))
+    }
+
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.traffic.is_current() && self.control.is_current()
+    }
+
+    /// Opens both gates again; `false` when a later close or open superseded this one.
+    #[must_use]
+    pub fn reopen(self) -> bool {
+        let traffic = self.traffic.reopen();
+        let control = self.control.reopen();
+        traffic && control
     }
 }
 
 pub struct GenerationReference {
     pub(super) generation: Arc<RuntimeGeneration>,
-    pub(super) kind: RuntimeReferenceKind,
+    pub(super) slot: usize,
 }
 
 pub struct GenerationMutation {
@@ -55,7 +86,7 @@ impl GenerationCandidate {
 
 impl Drop for GenerationReference {
     fn drop(&mut self) {
-        let before = self.generation.references[self.kind.index()].fetch_sub(1, Ordering::AcqRel);
+        let before = self.generation.references[self.slot].fetch_sub(1, Ordering::AcqRel);
         if before == 1 && self.generation.retired() {
             Doorbell::process().ring();
         }

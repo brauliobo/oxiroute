@@ -114,9 +114,9 @@ impl DirectLifecycleControl {
             return Err(LifecycleError::InvalidDrainTimeout);
         }
         let active = mutation.generation();
-        active.stop_accepting();
+        active.stop_admitting_traffic();
         Ok(LifecycleOutcome::Drained {
-            drained: active.drained(),
+            drained: active.traffic_drained(),
             active_references: active_reference_count(active),
         })
     }

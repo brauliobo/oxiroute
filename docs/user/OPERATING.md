@@ -44,6 +44,13 @@ oxiroute server drain --pool web endpoint-1
 oxiroute generation drain --timeout-ms 5000
 ```
 
+`generation drain` stops the active generation from admitting new connections on every traffic listener
+(HTTP, TCP, UDP, RTMP, forward proxy); the management listener and the statistics listeners keep serving, so
+`status`, `ready` (`503` while drained), `generation status` and the rest of the API still answer. The answer
+reports `activeReferences`, the traffic connections and streams still open, and the outcome is `drained` once
+none remain. A drained generation stays drained until it is replaced: `oxiroute generation reload` activates a
+fresh generation of the persisted file, which takes traffic again, and the drained one retires.
+
 Restore admission explicitly:
 
 ```sh

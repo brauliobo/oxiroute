@@ -325,19 +325,15 @@ where
     A: ServerApp + Send + Sync + 'static,
 {
     fn accept_gate(&self) -> Option<AcceptGate> {
-        Some(self.generation.accept_gate())
+        Some(self.generation.control_gate())
     }
 
     fn accepting(&self) -> bool {
-        // Control listeners intentionally stay reachable during process administrative drain.
-        self.generation.accepting() && self.inner.accepting()
+        self.generation.control_accepting() && self.inner.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let lease = match self
-            .listener
-            .admit_control(&self.generation, RuntimeReferenceKind::Http1)
-        {
+        let lease = match self.listener.admit_control(&self.generation) {
             Ok(lease) => lease,
             Err(error) => {
                 warn!("rejected management connection: {error}");
@@ -349,10 +345,7 @@ where
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let lease = match self
-            .listener
-            .admit_owned_control(&self.generation, RuntimeReferenceKind::Http1)
-        {
+        let lease = match self.listener.admit_owned_control(&self.generation) {
             Ok(lease) => lease,
             Err(error) => {
                 warn!("rejected management connection: {error}");

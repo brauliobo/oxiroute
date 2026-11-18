@@ -50,6 +50,10 @@ fn default_max_retired_generations() -> usize {
         .expect("the default retirement cap fits usize")
 }
 
+/// The reference counter of management and statistics connections follows those of the traffic kinds.
+const CONTROL_SLOT: usize = RuntimeReferenceKind::ALL.len();
+const REFERENCE_SLOTS: usize = CONTROL_SLOT + 1;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RuntimeReferenceKind {
     ForwardHttp1,

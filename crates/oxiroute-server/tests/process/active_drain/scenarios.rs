@@ -52,7 +52,7 @@ pub(super) async fn http_reload_closes_the_idle_keepalive_and_drain_rejects_new_
     let revision = active_revision(management_address, &authorization).await;
     let drain = generation_drain(management_address, &authorization, &revision).await;
     assert_eq!(drain.status, 202, "{}", drain.text());
-    assert_eq!(drain.json()["outcome"], "draining");
+    assert_eq!(drain.json()["outcome"], "drained");
     assert_no_http_response(listener_address).await;
     server.shutdown();
     assert_listener_released([management_address, listener_address]);
@@ -437,4 +437,89 @@ pub(super) async fn event_sse_closes_with_a_bounded_shutdown_frame_and_releases_
     .expect("SSE process shutdown exceeded its bounded close window")
     .expect("SSE process wait task");
     assert_listener_released([management_address]);
+}
+
+#[tokio::test]
+pub(super) async fn generation_drain_keeps_management_reachable_until_a_reload_restores_traffic() {
+    let _test_guard = process_drain_test_guard().await;
+    let management_address = reserve_tcp_address();
+    let listener_address = reserve_tcp_address();
+    let (upstream_address, upstream_task) = start_echo_upstream().await;
+    let config = tcp_config(management_address, listener_address, upstream_address);
+    let mut server = ServerProcess::start(&config.validate().unwrap(), Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(listener_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let revision = active_revision(management_address, &authorization).await;
+    let mut held = TcpStream::connect(listener_address)
+        .await
+        .expect("held TCP relay connection");
+    assert_echo(&mut held, b"tcp-before-drain").await;
+
+    let drain = generation_drain(management_address, &authorization, &revision).await;
+    assert_eq!(drain.status, 202, "{}", drain.text());
+    assert_eq!(drain.json()["outcome"], "draining", "{}", drain.text());
+    assert_eq!(drain.json()["activeReferences"], 1, "{}", drain.text());
+    assert_echo(&mut held, b"tcp-during-drain").await;
+    assert_no_tcp_echo(listener_address, b"tcp-new-during-drain").await;
+    drop(held);
+
+    let ready = timeout(
+        WIRE_TIMEOUT,
+        http_request(management_address, "GET", "/ready", &[], &[]),
+    )
+    .await
+    .expect("readiness during the drain");
+    assert_eq!(ready.status, 503);
+    let generations = timeout(
+        WIRE_TIMEOUT,
+        http_request(
+            management_address,
+            "GET",
+            "/api/v1/generations",
+            &[("Authorization", &authorization)],
+            &[],
+        ),
+    )
+    .await
+    .expect("generation status during the drain");
+    assert_eq!(generations.status, 200);
+    assert_eq!(generations.json()["generation"]["activeAccepting"], false);
+
+    let reload = http_request(
+        management_address,
+        "POST",
+        "/api/v1/generations/reload",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({ "expectedActiveRevision": revision })).unwrap(),
+    )
+    .await;
+    assert_eq!(reload.status, 202, "{}", reload.text());
+    timeout(WIRE_TIMEOUT, async {
+        loop {
+            let echoed = timeout(Duration::from_millis(300), async {
+                let mut stream = TcpStream::connect(listener_address).await.ok()?;
+                stream.write_all(b"tcp-after-reload").await.ok()?;
+                let mut response = [0_u8; 16];
+                stream.read_exact(&mut response).await.ok()
+            })
+            .await;
+            if matches!(echoed, Ok(Some(_))) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the reload did not restore the admission of traffic");
+    let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
+    assert_eq!(ready.status, 200);
+
+    server.shutdown();
+    upstream_task.abort();
+    let _ = upstream_task.await;
+    assert_listener_released([management_address, listener_address]);
 }

@@ -119,22 +119,15 @@ fn control_admission_rolls_back_and_bypasses_only_process_drain() {
     metrics
         .set_listener_administrative_state("management", crate::AdministrativeState::Drain)
         .expect("listener drain");
-    assert!(
-        runtime
-            .admit_control(&generation, crate::RuntimeReferenceKind::Http1)
-            .is_err()
-    );
-    assert_eq!(
-        generation.active_references(crate::RuntimeReferenceKind::Http1),
-        0
-    );
+    assert!(runtime.admit_control(&generation).is_err());
+    assert!(generation.drained());
 
     metrics
         .set_listener_administrative_state("management", crate::AdministrativeState::Ready)
         .expect("listener ready");
     metrics.set_process_administrative_state(crate::AdministrativeState::Drain);
     let lease = runtime
-        .admit_control(&generation, crate::RuntimeReferenceKind::Http1)
+        .admit_control(&generation)
         .expect("control admission during process drain");
     generation.stop_accepting();
     assert!(!generation.drain(std::time::Duration::ZERO));
@@ -145,4 +138,46 @@ fn control_admission_rolls_back_and_bypasses_only_process_drain() {
     assert_eq!(snapshot.process.active_connections, 0);
     assert_eq!(snapshot.listeners[0].active_connections, 0);
     assert!(snapshot.access_records.is_empty());
+}
+
+#[test]
+fn control_admission_outlives_the_traffic_drain_and_ends_with_the_generation() {
+    let generation = generation();
+    let metrics = crate::RuntimeMetrics::with_max_connections(None);
+    let traffic = ListenerRuntime::new(
+        metrics
+            .register_listener("web", "http", "127.0.0.1:8080", None)
+            .expect("traffic listener"),
+    );
+    let control = ListenerRuntime::new(
+        metrics
+            .register_listener("management", "http", "127.0.0.1:8081", None)
+            .expect("control listener"),
+    );
+    let lease = control
+        .admit_control(&generation)
+        .expect("control admission");
+
+    generation.stop_admitting_traffic();
+
+    assert!(
+        traffic
+            .admit(&generation, crate::RuntimeReferenceKind::Http1)
+            .is_err()
+    );
+    assert!(!generation.accepting());
+    assert!(generation.control_accepting());
+    assert!(generation.traffic_drained());
+    assert!(!generation.drained());
+    drop(
+        control
+            .admit_control(&generation)
+            .expect("control admission after the drain"),
+    );
+
+    generation.stop_accepting();
+
+    assert!(control.admit_control(&generation).is_err());
+    drop(lease);
+    assert!(generation.drained());
 }

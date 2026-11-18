@@ -50,7 +50,7 @@ Status meanings:
 | Generation | validate/prepare | Supported | `oxiroute config validate FILE`; performs complete runtime preparation without publication. |
 | Generation | reload/activate | Supported | `oxiroute generation reload`; loads and fully prepares persisted canonical config, then queues an opaque candidate. The supervisor publishes it only after the replacement runtime reports ready. |
 | Generation | rollback | Supported | `oxiroute generation rollback`; prepares the retained previous configuration as a new candidate and uses the same readiness-before-publication path. |
-| Generation | drain | Supported | `oxiroute generation drain --timeout-ms N`; closes the generation admission gate and immediately reports remaining references. The request does not block a Pingora worker for the timeout. |
+| Generation | drain | Supported | `oxiroute generation drain --timeout-ms N`; stops the active generation from admitting new connections on its traffic listeners and immediately reports the traffic references that remain (`drained` when none do). The management and statistics listeners keep serving, `ready` answers `503` while the generation is drained, and `generation reload` ends the drain by activating a fresh generation. The request does not block a Pingora worker for the timeout. |
 | Generation | status | Supported | `oxiroute generation status` |
 | Generation | events | Supported | `oxiroute events list` and `events follow`; bounded cursor polling over a 2,048-event in-memory ring. A partial page advances only to its last returned event and reports `hasMore`, so backlog pages are not skipped. |
 | Config | get | Supported | `oxiroute config get` |

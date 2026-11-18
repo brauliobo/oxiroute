@@ -203,7 +203,7 @@ fn supersession_precedes_runtime_failure_and_quiesce_timeout() {
     let reservation = manager
         .reserve_activation(&second, None)
         .expect("activation reservation");
-    let close = first.generation().accept_gate().close();
+    let close = first.generation().close_admission();
     let third = manager
         .prepare(document_with_max_connections(Some(3)))
         .expect("third candidate");
@@ -237,7 +237,7 @@ fn runtime_failure_precedes_quiesce_timeout_and_uses_runtime_start_quarantine() 
     let reservation = manager
         .reserve_activation(&second, Some(startup.reservation_token))
         .expect("activation reservation");
-    let close = first.generation().accept_gate().close();
+    let close = first.generation().close_admission();
     second.generation().mark_runtime_failed();
 
     assert!(matches!(
@@ -357,7 +357,7 @@ fn publication_failure_does_not_undo_a_later_shutdown_close() {
     let reservation = manager
         .reserve_activation(&second, None)
         .expect("activation reservation");
-    let activation_close = first.generation().accept_gate().close();
+    let activation_close = first.generation().close_admission();
     first.generation().stop_accepting();
 
     assert!(matches!(

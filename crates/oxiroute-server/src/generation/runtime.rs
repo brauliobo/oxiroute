@@ -3,13 +3,16 @@ use super::*;
 
 pub struct RuntimeGeneration {
     pub(super) accept_gate: AcceptGate,
+    /// What the management and statistics listeners accept through: an operator drain leaves it open so the
+    /// generation stays reachable, and only the generation's replacement or the process's end closes it.
+    pub(super) control_gate: AcceptGate,
     pub(super) config: Arc<ValidatedConfig>,
     /// The mutex counts the threads blocked in `drain`, so releasing a reference only notifies when one waits.
     pub(super) drain: (Mutex<usize>, Condvar),
     pub(super) metrics: RuntimeMetrics,
     inventory: ListenerInventory,
     resources: GenerationResources,
-    pub(super) references: [AtomicU64; 9],
+    pub(super) references: [AtomicU64; REFERENCE_SLOTS],
     pub(super) mutations: AtomicU64,
     pub(super) revision: GenerationRevision,
     runtime_lifecycle: AtomicU8,
@@ -31,6 +34,7 @@ impl RuntimeGeneration {
     pub(super) fn activate(prepared: PreparedGeneration) -> Self {
         Self {
             accept_gate: AcceptGate::closed(),
+            control_gate: AcceptGate::closed(),
             config: prepared.config,
             drain: (Mutex::new(0), Condvar::new()),
             metrics: prepared.metrics,
@@ -296,19 +300,32 @@ impl RuntimeGeneration {
         self: &Arc<Self>,
         kind: RuntimeReferenceKind,
     ) -> Option<GenerationReference> {
-        if !self.accept_gate.accepting() {
+        self.begin_gated_reference(&self.accept_gate, kind.index())
+    }
+
+    /// A reference of a management or statistics connection, refused once the generation is replaced.
+    pub fn begin_control_reference(self: &Arc<Self>) -> Option<GenerationReference> {
+        self.begin_gated_reference(&self.control_gate, CONTROL_SLOT)
+    }
+
+    fn begin_gated_reference(
+        self: &Arc<Self>,
+        gate: &AcceptGate,
+        slot: usize,
+    ) -> Option<GenerationReference> {
+        if !gate.accepting() {
             return None;
         }
-        let counter = &self.references[kind.index()];
+        let counter = &self.references[slot];
         counter.fetch_add(1, Ordering::AcqRel);
-        if !self.accept_gate.accepting() {
+        if !gate.accepting() {
             counter.fetch_sub(1, Ordering::AcqRel);
             self.wake_drain();
             return None;
         }
         Some(GenerationReference {
             generation: Arc::clone(self),
-            kind,
+            slot,
         })
     }
 
@@ -317,20 +334,44 @@ impl RuntimeGeneration {
         self: &Arc<Self>,
         kind: RuntimeReferenceKind,
     ) -> GenerationReference {
-        self.references[kind.index()].fetch_add(1, Ordering::AcqRel);
+        self.begin_owned_slot(kind.index())
+    }
+
+    #[must_use]
+    pub fn begin_owned_control_reference(self: &Arc<Self>) -> GenerationReference {
+        self.begin_owned_slot(CONTROL_SLOT)
+    }
+
+    fn begin_owned_slot(self: &Arc<Self>, slot: usize) -> GenerationReference {
+        self.references[slot].fetch_add(1, Ordering::AcqRel);
         GenerationReference {
             generation: Arc::clone(self),
-            kind,
+            slot,
         }
     }
 
-    pub fn begin_admission(self: &Arc<Self>) -> Option<GenerationAdmission> {
-        self.accept_gate
-            .claim()
-            .map(|ownership| GenerationAdmission {
-                generation: Arc::clone(self),
-                _ownership: ownership,
-            })
+    pub fn begin_admission(&self) -> Option<GenerationAdmission> {
+        Self::claim_admission(&self.accept_gate)
+    }
+
+    pub fn begin_control_admission(&self) -> Option<GenerationAdmission> {
+        Self::claim_admission(&self.control_gate)
+    }
+
+    fn claim_admission(gate: &AcceptGate) -> Option<GenerationAdmission> {
+        gate.claim().map(|ownership| GenerationAdmission {
+            gate: gate.clone(),
+            _ownership: ownership,
+        })
+    }
+
+    /// Closes the traffic and the control gate together, as the replacement of the generation does.
+    #[must_use]
+    pub fn close_admission(&self) -> AdmissionClose {
+        AdmissionClose {
+            traffic: self.accept_gate.close(),
+            control: self.control_gate.close(),
+        }
     }
 
     #[must_use]
@@ -338,20 +379,43 @@ impl RuntimeGeneration {
         self.accept_gate.clone()
     }
 
+    #[must_use]
+    pub fn control_gate(&self) -> AcceptGate {
+        self.control_gate.clone()
+    }
+
+    /// Ends the generation's admissions of every kind: traffic and control.
     pub fn stop_accepting(&self) {
+        self.stop_admitting_traffic();
+        self.close_control();
+    }
+
+    /// Ends the admission of traffic only; the management and statistics listeners keep serving.
+    pub fn stop_admitting_traffic(&self) {
         let _ = self.accept_gate.close_and_wait(Duration::ZERO);
+        Doorbell::process().ring();
+    }
+
+    pub(super) fn close_control(&self) {
+        let _ = self.control_gate.close_and_wait(Duration::ZERO);
         Doorbell::process().ring();
     }
 
     pub(super) fn start_accepting(&self) {
         self.metrics.activate_limits(self.plan().max_connections);
         self.accept_gate.enable();
+        self.control_gate.enable();
         Doorbell::process().ring();
     }
 
     #[must_use]
     pub fn accepting(&self) -> bool {
         self.accept_gate.accepting()
+    }
+
+    #[must_use]
+    pub fn control_accepting(&self) -> bool {
+        self.control_gate.accepting()
     }
 
     #[must_use]
@@ -424,9 +488,18 @@ impl RuntimeGeneration {
             .all(|counter| counter.load(Ordering::Acquire) == 0)
     }
 
+    /// Whether no traffic connection or stream of this generation remains; management connections do not count.
+    #[must_use]
+    pub fn traffic_drained(&self) -> bool {
+        self.references[..CONTROL_SLOT]
+            .iter()
+            .all(|counter| counter.load(Ordering::Acquire) == 0)
+    }
+
     #[must_use]
     pub fn drain(&self, timeout: Duration) -> bool {
         let started = Instant::now();
+        self.close_control();
         if !self.accept_gate.close_and_wait(timeout) {
             return false;
         }
