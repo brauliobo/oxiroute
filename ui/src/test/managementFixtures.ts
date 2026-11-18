@@ -96,6 +96,7 @@ export function managementStatus(): RuntimeStatus {
     },
     listeners: monitoring.listeners,
     tlsProfiles: [],
+    restartRequired: { required: false, candidateRevision: null, since: null, reasons: [] },
   }
 }
 
@@ -121,6 +122,7 @@ export function managementGeneration(): GenerationResponse {
       retiredGenerations: [],
       maxRetiredGenerations: 4,
       pendingApply: null,
+      restartRequired: { required: false, candidateRevision: null, since: null, reasons: [] },
     },
   }
 }
