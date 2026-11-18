@@ -283,7 +283,9 @@ import { computed } from 'vue'
 import type {
   HttpCookiePathRewriteConfig,
   HttpProxyActionConfig,
+  HttpRequestHeaderMutationConfig,
   HttpRequestHeaderValueConfig,
+  HttpResponseHeaderMutationConfig,
   HttpRoutePolicyConfig,
   HttpRetryTrigger,
 } from '../config'
@@ -455,13 +457,15 @@ type HeaderMutation<T> =
   | { operation: 'set'; name: string; value: T }
   | { operation: 'remove'; name: string }
 
-function addHeader<T>(headers: HeaderMutation<T>[]): void {
+type HeaderMutations = HttpRequestHeaderMutationConfig[] | HttpResponseHeaderMutationConfig[]
+
+function addHeader(headers: HeaderMutations): void {
   if (headers.length >= 32) return
   headers.push({ operation: 'remove', name: '' })
   emit('changed')
 }
 
-function removeHeader<T>(headers: HeaderMutation<T>[], index: number): void {
+function removeHeader(headers: HeaderMutations, index: number): void {
   headers.splice(index, 1)
   emit('changed')
 }

@@ -581,9 +581,9 @@ function toggleTargetCredentials(target: RtmpPushTargetConfig | RtmpPullTargetCo
   target.credentials = target.credentials === null ? { username: '', secret_file: '' } : null
 }
 
-function setNullableTargetField(
-  target: RtmpPushTargetConfig | RtmpPullTargetConfig,
-  field: 'tc_url' | 'flash_version',
+function setNullableTargetField<Field extends 'stream_name' | 'tc_url' | 'flash_version'>(
+  target: Record<Field, string | null>,
+  field: Field,
   event: Event,
 ): void {
   const value = (event.target as HTMLInputElement).value

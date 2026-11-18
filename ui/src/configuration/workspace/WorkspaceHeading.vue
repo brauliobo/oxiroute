@@ -1,5 +1,5 @@
 <template lang="pug">
-header.workspace-heading(:inert="reviewOpen ? '' : null")
+header.workspace-heading(:inert="reviewOpen || undefined")
   div
     p.eyebrow Canonical control plane
     h2#configuration-heading Configuration workspace

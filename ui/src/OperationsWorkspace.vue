@@ -1,5 +1,5 @@
 <template lang="pug">
-section.operations-workspace(aria-labelledby="operations-heading" :aria-busy="loading || mutating")
+section.operations-workspace(aria-labelledby="operations-heading" :aria-busy="loading || mutating !== null")
   header.workspace-heading
     div
       p.eyebrow Local control plane

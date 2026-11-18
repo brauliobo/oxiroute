@@ -1,5 +1,5 @@
 <template lang="pug">
-section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy="loading || mutating")
+section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy="loading || mutating !== null")
   header.workspace-heading
     div
       p.eyebrow Certificate operations

@@ -56,7 +56,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       @discard="discardAndReload"
     )
 
-    .config-layout(:inert="reviewOpen ? '' : null")
+    .config-layout(:inert="reviewOpen || undefined")
       ObjectRail(
         v-model="selectedKey"
         :config="draft"
@@ -67,7 +67,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       )
 
       main.editor-surface
-        form.editor-form(:inert="snapshot.compositional ? '' : null" :aria-readonly="snapshot.compositional" @submit.prevent @input="markDraftChanged" @change="markDraftChanged")
+        form.editor-form(:inert="snapshot.compositional || undefined" @submit.prevent @input="markDraftChanged" @change="markDraftChanged")
           GeneralSection(v-if="selectedKey === 'general'" :config="draft")
           ManagementSection(v-else-if="selectedKey === 'management'" :config="draft")
           StatsSection(v-else-if="selectedKey === 'stats'" :config="draft")

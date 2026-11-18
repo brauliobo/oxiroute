@@ -7,9 +7,18 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
+    "paths": { "#design/*": ["./src/design/*"] },
     "strict": true,
     "target": "ES2023",
     "types": ["node", "vite/client", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts", "vite.stats.config.ts", "vitest.config.ts"]
+  "vueCompilerOptions": { "plugins": ["@vue/language-plugin-pug"] },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "vite.config.ts",
+    "vite.stats.config.ts",
+    "vite.shared.ts",
+    "vitest.config.ts"
+  ]
 }

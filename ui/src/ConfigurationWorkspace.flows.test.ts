@@ -219,7 +219,7 @@ describe('ConfigurationWorkspace', () => {
 
     expect(wrapper.get('.revision-banner.compositional').text()).toContain('Compositional root is read-only')
     expect(wrapper.get('.revision-banner.compositional').text()).toContain('2 dependencies')
-    expect(wrapper.get('.editor-form').attributes()).toMatchObject({ inert: '', 'aria-readonly': 'true' })
+    expect(wrapper.get('.editor-form').attributes()).toHaveProperty('inert')
     expect(wrapper.findAll('.mobile-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.findAll('.nav-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 

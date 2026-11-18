@@ -1,5 +1,5 @@
 <template lang="pug">
-section.revision-board(:inert="reviewOpen ? '' : null" aria-label="Configuration revisions")
+section.revision-board(:inert="reviewOpen || undefined" aria-label="Configuration revisions")
   .revision-cell
     span.revision-label Disk revision
     code {{ shortRevision(diskRevision) }}

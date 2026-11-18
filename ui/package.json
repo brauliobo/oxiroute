@@ -29,6 +29,7 @@
     "@playwright/test": "1.65.0",
     "@types/node": "^26.6.6",
     "@vitejs/plugin-vue": "6.0.10",
+    "@vue/language-plugin-pug": "3.3.14",
     "@vue/test-utils": "^2.5.1",
     "jsdom": "^31.0.0",
     "pug": "^3.0.4",

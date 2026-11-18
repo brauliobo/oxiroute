@@ -1,5 +1,5 @@
 <template lang="pug">
-section.validation-output(:inert="reviewOpen ? '' : null" aria-label="Validated candidate output")
+section.validation-output(:inert="reviewOpen || undefined" aria-label="Validated candidate output")
   article.preview-panel
     header.output-heading
       div

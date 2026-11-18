@@ -23,6 +23,11 @@ const revision = computed(() => model.value?.generation.wire.activeRevision)
 
 watchEffect(() => applyTheme(view.value.theme))
 
+function onBannerAction(action: 'retry' | 'reload'): void {
+  if (action === 'retry') refresh()
+  else location.reload()
+}
+
 const SHORTCUT_HANDLERS: Readonly<Record<ShortcutAction, () => void>> = {
   search: () => document.getElementById(SEARCH_ID)?.focus(),
   help: () => { helpOpen.value = true },
@@ -51,7 +56,7 @@ onScopeDispose(() => document.removeEventListener('keydown', onKeydown))
       a(:href="csvHref" download="stats.csv") CSV
       a(:href="jsonHref") JSON
   StatsToolbar
-  StatusBanner(:banner="banner" @action="(action) => (action === 'retry' ? refresh() : location.reload())")
+  StatusBanner(:banner="banner" @action="onBannerAction")
   AdminActions(v-if="model?.admin && revision" :pools="model.pools" :revision="revision" @changed="refresh")
   main#ox-main(tabindex="-1")
     StatsDashboard

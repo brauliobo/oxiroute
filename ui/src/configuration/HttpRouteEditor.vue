@@ -51,21 +51,21 @@ article.route-card.http-route-card
     label.enable-row
       input(type="checkbox" :checked="route.access_policy !== null" @change="toggleAccess")
       span Require a bearer token loaded from a server file
-    .field-grid(v-if="route.access_policy")
+    .field-grid(v-if="bearerPolicy")
       label.field(data-field="http_services[].routes[].access_policy.type")
         span Policy type
-        select(v-model="route.access_policy.type" disabled title="Bearer token file is the only supported route access policy.")
+        select(:value="bearerPolicy.type" disabled title="Bearer token file is the only supported route access policy.")
           option(value="bearer_token_file") Bearer token file
       label.field(data-field="http_services[].routes[].access_policy.token_file_path")
         span Token file path
-        input(type="text" v-model="route.access_policy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
+        input(type="text" v-model="bearerPolicy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
         small Authenticated configuration only; this path is suppressed from topology views.
       label.field(data-field="http_services[].routes[].access_policy.header_name")
         span Request header name
-        input(type="text" v-model="route.access_policy.header_name" placeholder="authorization")
+        input(type="text" v-model="bearerPolicy.header_name" placeholder="authorization")
       label.field(data-field="http_services[].routes[].access_policy.realm")
         span Bearer realm
-        input(type="text" :value="route.access_policy.realm ?? ''" placeholder="Optional" @input="setRealm")
+        input(type="text" :value="bearerPolicy.realm ?? ''" placeholder="Optional" @input="setRealm")
 
   fieldset.object-block(data-field="http_services[].routes[].action")
     legend Route action
@@ -114,6 +114,8 @@ const routeSummary = computed(() => {
   return `${host} ${props.route.path.value} / ${props.route.action.type.replaceAll('_', ' ')}${cache}`
 })
 
+const bearerPolicy = computed(() => (props.route.access_policy?.type === 'bearer_token_file' ? props.route.access_policy : null))
+
 function toggleHost(event: Event): void {
   props.route.host = (event.target as HTMLInputElement).checked
     ? { kind: 'normalized_host', value: '' }
@@ -127,9 +129,7 @@ function toggleAccess(event: Event): void {
 }
 
 function setRealm(event: Event): void {
-  if (props.route.access_policy) {
-    props.route.access_policy.realm = (event.target as HTMLInputElement).value || null
-  }
+  if (bearerPolicy.value) bearerPolicy.value.realm = (event.target as HTMLInputElement).value || null
 }
 
 function changeAction(event: Event): void {

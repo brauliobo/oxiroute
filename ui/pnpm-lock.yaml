@@ -21,6 +21,9 @@ importers:
       '@vitejs/plugin-vue':
         specifier: 6.0.10
         version: 6.0.10(vite@8.3.6(@types/node@26.6.6))(vue@3.6.0-rc.14(typescript@6.0.3))
+      '@vue/language-plugin-pug':
+        specifier: 3.3.14
+        version: 3.3.14
       '@vue/test-utils':
         specifier: ^2.5.1
         version: 2.5.1(@vue/compiler-dom@3.6.0-rc.14)(vue@3.6.0-rc.14(typescript@6.0.3))
@@ -269,6 +272,9 @@ packages:
 
   '@vue/language-core@3.3.14':
     resolution: {integrity: sha512-kRB+3hHg0c+BdD1XLAvwjVMQd5pC05zijSlPDRI3ERvC/s04JlRs5upy2KjeMg/9m9oD5zuMVh9yVvkKfZqoJg==}
+
+  '@vue/language-plugin-pug@3.3.14':
+    resolution: {integrity: sha512-3vuVfS0skMzcynrGjFSQRYtcis9thntvaTO2DCQJsN2Q9CYVs6r1Fk3YeBkLNr9q1tbytcZKDiu8qBpwrFmAgw==}
 
   '@vue/reactivity@3.6.0-rc.14':
     resolution: {integrity: sha512-unXYFdF+dewQAvu8jGYJdoOajAhiVKrSl0Em3KcNeOQ97pCBWlunlPFHwsO23ZOpTe8FA7LN4luMua6Zgw8LLg==}
@@ -772,6 +778,7 @@ packages:
 
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
+    deprecated: Partial release, see https://github.com/remusao/tldts/issues/2735. Use >=7.4.22.
 
   tldts@7.4.19:
     resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
@@ -1149,6 +1156,14 @@ snapshots:
       muggle-string: 0.4.1
       path-browserify: 1.0.1
       picomatch: 4.0.7
+
+  '@vue/language-plugin-pug@3.3.14':
+    dependencies:
+      '@volar/source-map': 2.4.30
+      muggle-string: 0.4.1
+      pug-lexer: 5.0.1
+      pug-parser: 6.0.0
+      vscode-languageserver-textdocument: 1.0.16
 
   '@vue/reactivity@3.6.0-rc.14':
     dependencies:

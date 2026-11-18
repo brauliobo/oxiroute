@@ -1,5 +1,5 @@
 <template lang="pug">
-section.diagnostics-section(:inert="reviewOpen ? '' : null" aria-labelledby="diagnostics-heading")
+section.diagnostics-section(:inert="reviewOpen || undefined" aria-labelledby="diagnostics-heading")
   header.output-heading
     div
       p.eyebrow Server analysis

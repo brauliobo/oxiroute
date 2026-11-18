@@ -127,7 +127,7 @@ section.provenance-workspace(aria-labelledby="provenance-heading" :aria-busy="lo
             code {{ entry.path }}
             div
               strong {{ entry.origins.length }} {{ entry.origins.length === 1 ? 'origin' : 'origins' }}
-              small(v-if="entry.origins.length") {{ originLabel(entry.origins[0]) }}
+              small(v-if="entry.origins[0]") {{ originLabel(entry.origins[0]) }}
         p.empty-list(v-else) No canonical field provenance was retained.
 
       section.overlays-panel.panel(v-if="report.overlays.length" aria-labelledby="overlays-heading")

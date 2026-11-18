@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import type { Plugin } from 'vite'
+import { designAlias, statsContentSecurityPolicy } from './vite.shared'
 
 // The stats page: its own entry (stats.html), built to dist-stats/. stats.html is the single source of the shell the
 // page listener serves: the build only adds the hashed script and stylesheet links, and scripts/generate/stats/assets.sh
@@ -10,17 +11,6 @@ import type { Plugin } from 'vite'
 // `vite preview` serves the build with the policy the listener sends and answers the prefix token as the site root
 // (the page is at /stats.html); tests/browser/stats fails on any violation.
 const PREFIX_TOKEN = '/__stats_prefix__'
-const statsContentSecurityPolicy = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  "connect-src 'self'",
-  "img-src 'self' data:",
-  "font-src 'self'",
-  "form-action 'self'",
-  "base-uri 'none'",
-  "frame-ancestors 'none'",
-].join('; ')
 
 const prefixTokenIsRoot: Plugin = {
   name: 'stats-prefix-token-is-root',
@@ -35,6 +25,7 @@ const prefixTokenIsRoot: Plugin = {
 export default defineConfig({
   plugins: [vue(), prefixTokenIsRoot],
   base: `${PREFIX_TOKEN}/`,
+  resolve: { alias: designAlias },
   build: {
     outDir: 'dist-stats',
     emptyOutDir: true,
