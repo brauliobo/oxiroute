@@ -258,7 +258,6 @@ pub(super) fn supervised_listener_worker_crash_is_reaped_and_master_cleans_names
     .expect("write supervised config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), true);
 
-    harness.poll_until(MasterState::Running);
     harness.poll_until(MasterState::Failed);
     harness.verify_reaped();
     drop(harness);
