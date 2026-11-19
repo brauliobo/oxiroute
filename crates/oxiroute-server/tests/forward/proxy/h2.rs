@@ -197,8 +197,8 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
     );
 
     drop(client);
-    server.shutdown_gracefully();
-    origin_task.await.expect("origin task");
     driver.abort();
     let _ = driver.await;
+    server.shutdown_gracefully();
+    origin_task.await.expect("origin task");
 }

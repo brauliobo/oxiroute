@@ -29,7 +29,7 @@ async fn rtmp_file_access_log_emits_fixed_lifecycle_records_and_flushes_on_shutd
     viewer.play("camera?viewer=wire-viewer-secret").await;
     viewer.close().await;
     publisher.close().await;
-    server.shutdown();
+    server.shutdown_gracefully();
 
     let contents = fs::read_to_string(access_log_path).expect("flushed RTMP access log");
     let events = contents
@@ -170,7 +170,7 @@ async fn process_shutdown_waits_for_stalled_recorder_cleanup_without_exceeding_t
     sleep(Duration::from_millis(50)).await;
 
     let started = Instant::now();
-    server.shutdown();
+    server.shutdown_gracefully();
     let elapsed = started.elapsed();
 
     assert!(
@@ -259,7 +259,7 @@ async fn evicted_generation_keeps_recording_live_connections_until_final_shutdow
 
     let shutdown = tokio::task::spawn_blocking(move || {
         let started = Instant::now();
-        server.shutdown();
+        server.terminate();
         started.elapsed()
     });
     sleep(Duration::from_millis(250)).await;

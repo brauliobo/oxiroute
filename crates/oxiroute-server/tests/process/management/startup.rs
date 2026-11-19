@@ -28,7 +28,7 @@ fn sigterm_during_runtime_startup_is_bounded() {
     std::thread::sleep(Duration::from_millis(10));
     let started = Instant::now();
 
-    server.shutdown();
+    server.terminate();
 
     assert!(started.elapsed() < Duration::from_secs(6));
 }

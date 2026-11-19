@@ -54,7 +54,7 @@ pub(super) async fn http_reload_closes_the_idle_keepalive_and_drain_rejects_new_
     assert_eq!(drain.status, 202, "{}", drain.text());
     assert_eq!(drain.json()["outcome"], "drained");
     assert_no_http_response(listener_address).await;
-    server.shutdown();
+    server.shutdown_gracefully();
     assert_listener_released([management_address, listener_address]);
 }
 
@@ -87,7 +87,7 @@ pub(super) async fn generation_drain_does_not_leave_process_admission_draining_f
         b"replacement"
     );
     drop(connection);
-    server.shutdown();
+    server.shutdown_gracefully();
     assert_listener_released([management_address, listener_address]);
 }
 
@@ -155,7 +155,7 @@ pub(super) async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connec
     new_connection.finish().await;
     old_connection.finish().await;
 
-    server.shutdown();
+    server.shutdown_gracefully();
     assert_listener_released([management_address, listener_address]);
 }
 

@@ -385,6 +385,7 @@ async fn h2_client_leaves(lane: bool, leave: Leave) {
         pool.queued == 0 && pool.cancelled == 1
     })
     .await;
+    holder.finish().await;
     let served = farm.finish(1);
     assert_eq!(served > 0, lane, "lane served {served} requests");
 }

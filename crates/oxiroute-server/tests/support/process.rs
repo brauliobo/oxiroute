@@ -27,6 +27,8 @@ static UI_BUILD: OnceLock<()> = OnceLock::new();
 
 #[path = "accept_queue.rs"]
 pub mod accept_queue;
+#[path = "descendants.rs"]
+pub mod descendants;
 #[path = "ports.rs"]
 pub mod ports;
 
@@ -176,7 +178,7 @@ impl ServerProcess {
     /// Stops the server and starts it again on the same files and with the same environment.
     #[allow(dead_code)]
     pub fn restart(&mut self) {
-        self.stop();
+        self.stop_gracefully();
         let stderr = fs::OpenOptions::new()
             .append(true)
             .open(&self.stderr_path)
@@ -330,7 +332,13 @@ impl ServerProcess {
     }
 
     pub fn shutdown(mut self) {
-        self.stop();
+        self.kill();
+    }
+
+    /// Asks the server to stop and waits for it to end, however it ends.
+    #[allow(dead_code)]
+    pub fn terminate(mut self) {
+        self.stop_gracefully();
     }
 
     #[allow(dead_code)]
@@ -360,7 +368,7 @@ impl ServerProcess {
     /// Stops the server and returns what it wrote to standard error.
     #[allow(dead_code)]
     pub fn shutdown_output(mut self) -> String {
-        self.stop();
+        self.stop_gracefully();
         self.stderr()
     }
 
@@ -378,7 +386,14 @@ impl ServerProcess {
         assert!(self.child.wait().expect("server exit").success());
     }
 
-    fn stop(&mut self) {
+    fn kill(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            descendants::kill_tree(self.child.id());
+        }
+        let _ = self.child.wait();
+    }
+
+    fn stop_gracefully(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
             let _ = Command::new("kill")
                 .arg("-TERM")
@@ -398,7 +413,7 @@ impl ServerProcess {
 
 impl Drop for ServerProcess {
     fn drop(&mut self) {
-        self.stop();
+        self.kill();
     }
 }
 
