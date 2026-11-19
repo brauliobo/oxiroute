@@ -337,7 +337,7 @@ def bench_lock():
 
 
 def port_offsets(lane):
-    return [*range(1 if lane.servers > 2 else lane.servers), 10, 20, 21, 22, *(30 + index for index in range(1, lane.listeners))]
+    return [*range(1 if lane.servers > 2 else lane.servers), 10, 20, 21, 22, 23, *(30 + index for index in range(1, lane.listeners))]
 
 
 def pick_ports(lane):
