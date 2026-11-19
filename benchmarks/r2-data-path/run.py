@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import htpasswd  # noqa: E402
 from gen_config import server_address  # noqa: E402
 from hits import cache_hit_lanes, cpu_pressure, require_only_hits, served_probe  # noqa: E402
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
@@ -456,12 +457,8 @@ class Env:
         token = self.work / "token"
         token.write_text(BEARER_TOKEN + "\n")
         token.chmod(0o600)
-        htpasswd = self.work / "htpasswd"
-        cost = ["-B", "-C", str(next((int(name[12:]) for name in self.lane.features if name.startswith("bcrypt_cost_")), 5))]
-        hashed = subprocess.run(["htpasswd", "-nb", *(cost if "auth_basic_bcrypt" in self.lane.features else ["-m"]), "bench", "benchpass"],
-                                check=True, capture_output=True, text=True).stdout
-        htpasswd.write_text(hashed)
-        htpasswd.chmod(0o600)
+        cost = next((int(name[12:]) for name in self.lane.features if name.startswith("bcrypt_cost_")), 5)
+        htpasswd.write(self.work / "htpasswd", cost if "auth_basic_bcrypt" in self.lane.features else None)
 
     def handshake_threads(self):
         """`--tls-handshake-threads` overrides the lane's setting (-1: automatic, 0: handshakes inline)."""
