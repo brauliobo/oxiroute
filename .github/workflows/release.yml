@@ -368,6 +368,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_DEV_DEBUG: none
+      CARGO_PROFILE_DEV_STRIP: symbols
     steps:
       - name: Check out the ref
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -391,13 +392,15 @@ jobs:
           save-if: false
 
       - name: Archive every workspace test binary
-        run: cargo nextest archive --workspace --locked --build-jobs 4 --archive-file "${RUNNER_TEMP}/tests.tar.zst"
+        env:
+          CARGO_BUILD_JOBS: 4
+        run: ./scripts/ci/archive.sh "${RUNNER_TEMP}" all
 
       - name: Share the archive with the binary tests
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-test-archive
-          path: ${{ runner.temp }}/tests.tar.zst
+          path: ${{ runner.temp }}/all.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -459,7 +462,7 @@ jobs:
 
       - name: Run the tests that start oxiroute against the shipped binary
         env:
-          OXIROUTE_TEST_ARCHIVE: ${{ runner.temp }}/archive/tests.tar.zst
+          OXIROUTE_TEST_ARCHIVE: ${{ runner.temp }}/archive/all.tar.zst
         run: |
           stem="$(scripts/package/main.sh stem "${{ needs.changes.outputs.version }}" x86_64 "${{ matrix.flavour }}")"
           tar --directory dist --extract --file "dist/${stem}.tar.gz" "${stem}/bin/oxiroute"

@@ -53,23 +53,32 @@ themselves (`epoll_safety`, `epoll_responses`) run all of them in every lane and
 binary, run it with `OXIROUTE_TEST_HTTP_DATA_PLANE=epoll`; when a suite starts the real binary on plain HTTP it is
 `planes`, when it uses the TLS harness of `tests/support/proxy.rs` it is also `tls`.
 
-CI (`.github/workflows/ci.yml`) builds every test binary once (`cargo nextest archive`), shares the archive, and runs
-`core`, the three `planes` legs and the two `tls` legs from it in parallel; `.github/workflows/nightly.yml` runs `slow`.
+CI (`.github/workflows/ci.yml`) moves no test binary to a lane that does not run it. The `core` job builds only the `core`
+binaries (`tiers.sh targets`) and runs them where it built them. The `archive` job (`scripts/ci/archive.sh`) builds the
+binaries of the `planes` and `tls` tiers beside it and writes one `cargo nextest archive` per lane family, `planes` (with
+the `engine`, `epoll` and `uring` tiers) and `tls`, each holding exactly the binaries `tiers.sh archive-tiers` names, so
+a binary of `tiers.txt` lands in the right archive without a second list; the three `planes` legs fetch the first
+(about 100 MB) and the two `tls` legs the second (about 160 MB), and a lane fails when its archive lacks a binary of its
+tiers. `.github/workflows/nightly.yml` runs `slow`, and `release.yml` archives every tier (`archive.sh DIR all`) for the
+shipped binary tests. Test binaries are built without debug information and with symbols stripped
+(`CARGO_PROFILE_DEV_STRIP`; a panic still names its file and line), and the archives use zstd level 12 with the
+long-distance window, which finds the server code that every binary links.
 The documentation tests (`doc`) and the UI, browser and lint jobs run beside the archive job and need nothing from it;
-only `ui-api` takes a product of it (the debug `oxiroute` binary, shared as the small `oxiroute-debug` artifact, not the
-1.3 GB archive). The io_uring leg raises `RLIMIT_MEMLOCK` to unlimited (`OXIROUTE_RAISE_MEMLOCK`, checked by
-`planes.sh`) and runs as many tests at once as the other legs; only the locked-memory accounting test runs alone.
+only `ui-api` takes a product of it (the debug `oxiroute` binary, shared as the small `oxiroute-debug` artifact). The
+io_uring leg raises `RLIMIT_MEMLOCK` to unlimited (`OXIROUTE_RAISE_MEMLOCK`, checked by `planes.sh`) and runs as many
+tests at once as the other legs; only the locked-memory accounting test runs alone.
 
-The CI Rust caches count against the 10 GB repository cap and are saved from `main` only. The `archive` job saves the
-`tests` cache (restored read-only by `doc`), `lint` saves its own `lint` cache (a `cargo clippy` build is a check build
-that shares no dependency artifacts with the test build, so it cannot restore `tests`), and `cpu-targets` saves one cache
-per runner CPU (release objects built with `-C target-cpu`). No other job of `ci.yml` saves Rust build output.
+The CI Rust caches count against the 10 GB repository cap and are saved from `main` only. The `core` job saves the
+`tests` cache (restored read-only by `archive` and `doc`), `lint` saves its own `lint` cache (a `cargo clippy` build is a
+check build that shares no dependency artifacts with the test build, so it cannot restore `tests`), and `cpu-targets`
+saves one cache per runner CPU (release objects built with `-C target-cpu`). No other job of `ci.yml` saves Rust build
+output.
 A test whose wait is the behavior under test (a default read limit, a drain deadline) moves to the `slow` tier instead
 of being deleted; every other wait is a short configurable one or an event.
 
 The dev profile builds line tables only, and the CPU-bound scanners (`oxiroute-cpu`, `oxiroute-h1-head`) with
-optimization, because their corpus tests run for minutes unoptimized; CI builds without debug information, which keeps
-the archive small.
+optimization, because their corpus tests run for minutes unoptimized; CI builds without debug information and strips
+the symbols, which keeps the archives small.
 
 Security and release dependency gates can be run directly when the pinned tools are installed:
 

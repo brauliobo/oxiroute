@@ -17,6 +17,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: none
+  CARGO_PROFILE_DEV_STRIP: symbols
 
 jobs:
   lint:
@@ -67,15 +68,15 @@ jobs:
         run: ./scripts/test/ci_green.sh
 
       - name: Lint the test lane scripts
-        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,ci_green,core,doc,planes,slow,tls}.sh scripts/test/release/shipped.sh scripts/ci/{ci_green,plane_use,probe,test_budget,tiers}.sh scripts/lib/nextest.sh
+        run: shellcheck -x -P SCRIPTDIR scripts/test/{all,ci_green,core,doc,planes,slow,tls}.sh scripts/test/release/shipped.sh scripts/ci/{archive,ci_green,plane_use,probe,test_budget,tiers}.sh scripts/lib/nextest.sh
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 
   archive:
-    name: Build the workspace tests once
+    name: Build the plane and TLS tests once
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -88,20 +89,28 @@ jobs:
         with:
           tool: nextest@0.9.150
 
-      - name: Cache Cargo dependencies
+      - name: Restore the Cargo dependencies the core job built
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: tests
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
 
-      - name: Archive every workspace test binary
-        run: cargo nextest archive --workspace --locked --build-jobs 4 --archive-file "${RUNNER_TEMP}/tests.tar.zst"
+      - name: Archive the test binaries of the plane legs and of the TLS legs
+        run: ./scripts/ci/archive.sh "${RUNNER_TEMP}/archives" planes tls
 
-      - name: Share the archive with the test jobs
+      - name: Share the plane archive with the plane legs
         uses: actions/upload-artifact@v4
         with:
-          name: test-archive
-          path: ${{ runner.temp }}/tests.tar.zst
+          name: test-archive-planes
+          path: ${{ runner.temp }}/archives/planes.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      - name: Share the TLS archive with the TLS legs
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-archive-tls
+          path: ${{ runner.temp }}/archives/tls.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -135,17 +144,27 @@ jobs:
 
   core:
     name: Plane-independent tests
-    needs: archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Fetch the test archive
-        uses: ./.github/actions/archive
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
-      - name: Run the core tier on the default plane chain
+      - name: Install nextest 0.9.150
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: nextest@0.9.150
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build the core test binaries and run the core tier on the default plane chain
         run: ./scripts/test/core.sh
 
   planes:
@@ -161,8 +180,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Fetch the test archive
+      - name: Fetch the plane test archive
         uses: ./.github/actions/archive
+        with:
+          name: planes
 
       - name: Run the plane-sensitive tiers on ${{ matrix.plane }}
         env:
@@ -182,8 +203,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Fetch the test archive
+      - name: Fetch the TLS test archive
         uses: ./.github/actions/archive
+        with:
+          name: tls
 
       - name: Run the TLS tier on ${{ matrix.backend }}
         run: ./scripts/test/tls.sh ${{ matrix.backend }}

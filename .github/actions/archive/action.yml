@@ -1,5 +1,10 @@
 name: Fetch the test archive
-description: Installs nextest and downloads the workspace test archive that the archive job built; the scripts/test lanes extract and run it.
+description: Installs nextest and downloads one lane archive that the archive job built (scripts/ci/archive.sh); the scripts/test lanes extract and run it.
+
+inputs:
+  name:
+    description: The archive of the lane, as given to scripts/ci/archive.sh (planes or tls)
+    required: true
 
 runs:
   using: composite
@@ -12,12 +17,12 @@ runs:
       with:
         tool: nextest@0.9.150
 
-    - name: Download the test archive
+    - name: Download the ${{ inputs.name }} test archive
       uses: actions/download-artifact@v4
       with:
-        name: test-archive
+        name: test-archive-${{ inputs.name }}
         path: ${{ runner.temp }}/archive
 
     - name: Point the lanes at the archive
       shell: bash
-      run: printf 'OXIROUTE_TEST_ARCHIVE=%s\n' "${RUNNER_TEMP}/archive/tests.tar.zst" >> "${GITHUB_ENV}"
+      run: printf 'OXIROUTE_TEST_ARCHIVE=%s\n' "${RUNNER_TEMP}/archive/${{ inputs.name }}.tar.zst" >> "${GITHUB_ENV}"
