@@ -34,7 +34,7 @@ const PLACED: usize = 8;
 fn dynamic(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         worker_scaling: Some(WorkerScaling::Dynamic),
-        scale_down_delay_ms: Some(5_000),
+        scale_down_delay_ms: Some(500),
         ..config(address, Some(WORKERS), AGED)
     }
 }
