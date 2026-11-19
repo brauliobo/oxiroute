@@ -389,7 +389,13 @@ async fn status_leads_with_the_build_the_active_revision_and_the_listeners() {
     let status = serde_json::from_slice::<Value>(&json.stdout).expect("status JSON");
     let revision = status["activeRevision"].as_str().expect("active revision");
     let text = stdout(&daemon.run(&["status"]));
+    let build_id = status["buildId"].as_str().expect("build id");
     assert!(text.starts_with("build "), "{text}");
+    assert!(
+        text.contains(&format!("\nbuild id        {build_id}\n")),
+        "{text}"
+    );
+    assert!(!text.contains("master build id"), "{text}");
     assert!(text.contains("state           healthy"), "{text}");
     assert!(text.contains(&revision[..12]), "{text}");
     assert!(text.contains("\n\nNAME     PROTOCOL  BIND"), "{text}");

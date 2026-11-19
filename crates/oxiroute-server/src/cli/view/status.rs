@@ -19,10 +19,14 @@ pub(super) fn show(value: &Value) -> Document {
     let supervision = value
         .pointer("/capabilities/supervision/mode")
         .and_then(Value::as_str);
+    let master_build_id =
+        text(value, "masterBuildId").map(|id| Field::text("master_build_id", Some(id)));
     let mut fields = vec![
         Field::text("build", text(value, "buildVersion")),
         Field::text("build_id", text(value, "buildId")),
-        Field::text("master_build_id", text(value, "masterBuildId")),
+    ];
+    fields.extend(master_build_id);
+    fields.extend([
         Field::text("state", overall),
         Field::revision("active", text(value, "activeRevision")),
         Field::revision("previous", text(value, "previousRevision")),
@@ -34,7 +38,7 @@ pub(super) fn show(value: &Value) -> Document {
         Field::text("host", component("host")),
         Field::text("generation", component("generation")),
         Field::text("audit", component("audit")),
-    ];
+    ]);
     with_restart_banner(&mut fields, value);
     Document::new(vec![
         Block::Record {

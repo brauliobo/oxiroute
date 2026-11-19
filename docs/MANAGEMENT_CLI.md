@@ -265,6 +265,10 @@ the live one replaced; informational in supervised mode, where `generation rollb
 `reasons`) and print a first `RESTART REQUIRED: <code>: <summary>` row (`restart_required` in plain
 output, with `(+N more)` for further reasons) while a setting waits for a restart.
 
+`status` leads with `build` (the version) and `build_id` (the serving process). Under the supervising
+master it adds `master_build_id`; the direct runtime has no master, so the row is not printed. The JSON
+form carries `masterBuildId` as `null` there.
+
 `generation status` reports `lastRejection` (`atUnixMs`, `revision`, `diagnostics`) and
 `configRejections` when the configuration file on disk was refused while the previous generation
 kept serving. `lastRejection` is cleared by the next file that is accepted, `degraded` is true while

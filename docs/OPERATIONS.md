@@ -145,8 +145,8 @@ reload would otherwise run a new worker under an old master. The reload is rejec
 ... worker build "gnu:..." is not the master build "gnu:..."; the executable changed under the running
 master, so hand over to it with `oxiroute upgrade` instead of reloading`, and the active worker keeps
 serving. `oxiroute status` and `GET /api/v1/status` show `build_id` (the serving worker, or the
-process in the direct runtime) and `master_build_id` (the supervising master, none in the direct
-runtime). See "Binary upgrade" for the hand-over.
+process in the direct runtime) and `master_build_id` (the supervising master; the row is left out in
+the direct runtime, where `masterBuildId` is null). See "Binary upgrade" for the hand-over.
 
 ## Binary upgrade
 

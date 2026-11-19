@@ -192,6 +192,18 @@ fn status_leads_with_build_state_and_revision_then_lists_listeners() {
 }
 
 #[test]
+fn status_names_the_master_build_only_under_a_supervising_master() {
+    let direct = json!({ "buildVersion": "7.1.0", "buildId": "gnu:ab", "masterBuildId": null });
+    let text = table(View::Status, &direct);
+    assert!(
+        text.starts_with("build           7.1.0\nbuild id        gnu:ab\n"),
+        "{text}"
+    );
+    assert!(!text.contains("master"), "{text}");
+    assert!(!plain(View::Status, &direct).contains("master_build_id"));
+}
+
+#[test]
 fn a_required_restart_is_the_first_row_of_status_and_generation_status() {
     let restart = json!({ "required": true, "candidateRevision": "b".repeat(64), "since": 1,
         "reasons": [
