@@ -2506,6 +2506,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "signal-hook 0.4.6",
  "thiserror 2.0.21",
  "time",
@@ -2762,6 +2763,7 @@ dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
  "rustix",
+ "sha2",
  "thiserror 2.0.21",
  "zeroize",
 ]
