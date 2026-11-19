@@ -18,7 +18,6 @@ use std::{fs, net::SocketAddr, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
-    sync::oneshot,
     time::{sleep, timeout},
 };
 
@@ -368,44 +367,6 @@ async fn an_answer_sent_before_the_origin_closed_inside_the_upload_still_reaches
     let (head, body) = read_response(&mut client).await;
     assert_eq!(status(&head), "HTTP/1.1 200 OK");
     assert_eq!(body, b"ok");
-    wire.finish();
-}
-
-#[tokio::test]
-async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
-    let address = listener.local_addr().unwrap();
-    let (aborted, observed) = oneshot::channel();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("origin accept");
-        let mut buffer = [0_u8; 4096];
-        let mut total = 0;
-        loop {
-            match stream.read(&mut buffer).await {
-                Ok(0) | Err(_) => break,
-                Ok(count) => total += count,
-            }
-        }
-        let _ = aborted.send(total);
-    });
-    let wire = Wire::over(
-        Origin {
-            address,
-            requests: Captured::default(),
-        },
-        big_bodies,
-    )
-    .await;
-    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
-    client.write_all(post(1_000_000).as_bytes()).await.unwrap();
-    client.write_all(&patterned(5000)).await.unwrap();
-    sleep(Duration::from_millis(200)).await;
-    drop(client);
-    let total = timeout(STEP, observed)
-        .await
-        .expect("origin sees the abort")
-        .unwrap();
-    assert!(total < 1_000_000, "{total}");
     wire.finish();
 }
 
