@@ -13,7 +13,7 @@ fresh_copy() {
   cp -- "${here}"/PKGBUILD "${here}"/.SRCINFO "${here}"/oxiroute.* "${here}"/README.md "${here}"/verify-checksums.sh \
     "${root}/pkg/"
   mkdir -- "${root}/pkg/bin"
-  cp -- "${here}"/bin/PKGBUILD "${here}"/bin/.SRCINFO "${here}"/bin/oxiroute.* "${here}"/bin/README.md "${root}/pkg/bin/"
+  cp -- "${here}"/bin/PKGBUILD "${here}"/bin/.SRCINFO "${here}"/bin/oxiroute.install "${root}/pkg/bin/"
   verify=${root}/pkg/verify-checksums.sh
 }
 
@@ -48,15 +48,12 @@ rm -- "${root}/pkg/oxiroute.modules"
 expect_rejected 'a missing kernel module list'
 
 fresh_copy
-rm -- "${root}/pkg/bin/oxiroute.modules"
-expect_rejected 'a binary recipe without the kernel module list'
+rm -- "${root}/pkg/bin/oxiroute.install"
+expect_rejected 'a binary recipe without the install script'
 
 fresh_copy
-old=$(sha256sum -- "${root}/pkg/bin/oxiroute.modules")
-printf 'nf_tables\n' >>"${root}/pkg/bin/oxiroute.modules"
-new=$(sha256sum -- "${root}/pkg/bin/oxiroute.modules")
-sed -i "s/${old%% *}/${new%% *}/" "${root}/pkg/bin/PKGBUILD" "${root}/pkg/bin/.SRCINFO"
-expect_rejected 'a binary-recipe kernel module list that drifted from the source recipe with a consistent hash'
+printf '\n# diverged\n' >>"${root}/pkg/bin/oxiroute.install"
+expect_rejected 'a binary-recipe install script that drifted from the source recipe'
 
 fresh_copy
 stale=$(sha256sum -- "${root}/pkg/oxiroute.kdl")
@@ -77,14 +74,8 @@ rm -- "${root}/pkg/oxiroute.lua"
 expect_rejected 'a missing local source'
 
 fresh_copy
-old=$(sha256sum -- "${root}/pkg/bin/oxiroute.service")
-printf '\n# diverged\n' >>"${root}/pkg/bin/oxiroute.service"
-new=$(sha256sum -- "${root}/pkg/bin/oxiroute.service")
-sed -i "s/${old%% *}/${new%% *}/" "${root}/pkg/bin/PKGBUILD" "${root}/pkg/bin/.SRCINFO"
-expect_rejected 'a binary-recipe copy that drifted from the source recipe with a consistent hash'
-
-fresh_copy
-printf '\n' >>"${root}/pkg/bin/README.md"
-expect_rejected 'a stale hash in the binary recipe'
+stale=$(sed -n 's/^sha256sums=(.\(.*\).)$/\1/p' "${root}/pkg/bin/PKGBUILD")
+sed -i "s/${stale}/$(printf '1%.0s' {1..64})/" "${root}/pkg/bin/PKGBUILD"
+expect_rejected 'a binary-recipe package checksum not regenerated into .SRCINFO'
 
 printf 'verify-checksums tests passed\n'

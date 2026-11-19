@@ -16,7 +16,8 @@ the test strategy.
 - Inspect generated archives and ensure secrets, `target/`, `node_modules/`, and benchmark artifacts
   are absent. `scripts/verify/release/archive.sh` enforces this list and checks the Git-tracked file
   list when called with `--compare-worktree`.
-- Verify the Arch recipe and `.SRCINFO` only after the release asset exists.
+- Verify the Arch recipe and `.SRCINFO` only after the release asset exists; `oxiroute-bin` is pinned to the Arch package
+  asset of the release, after it is published.
 - Run `scripts/verify/rtmp/public-api.sh` only when proving the immutable RTMP Phase 0 fixture against
   the matching current 0.4.1 API. Its command semantics are exact equality between the current
   `oxiroute-rtmp` rustdoc graph and `docs/developer/fixtures/rtmp-public-api-phase0.snapshot`. It is
@@ -92,7 +93,7 @@ recording roots, or package files.
 `.github/workflows/release.yml` builds ONE binary set per architecture (`oxiroute`, the `oxr` alias and
 `oxiroute-worker-launcher`) with the reusable workflow `.github/workflows/release-binary.yml`: `binary-x86_64` and
 `binary-aarch64` run in parallel on a native runner each, do not wait for the archive job, and every tarball and every
-`.deb` and `.rpm` of the architecture is that one binary repackaged. The `x86_64-unknown-linux-gnu` binary is
+`.deb`, `.rpm` and Arch package of the architecture is that one binary repackaged. The `x86_64-unknown-linux-gnu` binary is
 profile-guided, which cuts user-space instructions per request by 14 to 27%, and laid out by BOLT only on request (BOLT is
 opt-in, see below); the `aarch64-unknown-linux-gnu` binary is profile-guided and not laid out by BOLT.
 `scripts/package/main.sh binary ARCH VERSION OUT_DIR` builds it inside an `almalinux:9` container, the oldest glibc of every
@@ -348,16 +349,21 @@ it. A release carries, for the version `V` (no leading `v`):
 | `oxiroute-V.tar.gz`, `SOURCE-PROVENANCE.json` | `archive` | Deterministic source archive and provenance |
 | `oxiroute-V-x86_64-unknown-linux-gnu.tar.gz` | `binary-x86_64` | PGO and BOLT, glibc 2.34; also `-abort` (`binary-extras`, a tag always) and `-x86-64-v3` (dispatch only) |
 | `oxiroute-V-aarch64-unknown-linux-gnu.tar.gz` | `binary-aarch64` | PGO, no BOLT, glibc 2.34 |
-| each tarball's `.sha256` and `.build.json` | `binary-*` | `pin-bin-release.sh` reads the `.sha256` |
+| each tarball's `.sha256` and `.build.json` | `binary-*` | The checksum of a download |
 | `oxiroute_V_amd64.deb`, `oxiroute_V_arm64.deb` | `packages-*` | Repackages the tarball binary with dpkg-buildpackage on Debian 12 |
 | `oxiroute-V-1.el9.x86_64.rpm`, `oxiroute-V-1.el9.aarch64.rpm` | `packages-*` | Repackages it with rpmbuild on AlmaLinux 9 |
 | `oxiroute-V-1.amzn2023.x86_64.rpm`, `oxiroute-V-1.amzn2023.aarch64.rpm` | `packages-*` | Repackages it with rpmbuild on Amazon Linux 2023 |
+| `oxiroute-V-1-x86_64.pkg.tar.zst` and its `.sha256` | `packages-x86_64` | Repackages the x86_64 binary with makepkg on Arch Linux (x86_64 only); `pin-bin-release.sh` reads the `.sha256` |
 | `<package>.build.json` | `packages-*` | The build record of the binary inside the package: identical to the record of the tarball of its architecture, which `publish` checks |
 | `SHA256SUMS` | `publish` | One file for every asset above |
 
 The `.deb` installs on Debian 12 and 13 and Ubuntu 22.04 and 24.04; the `el9` `.rpm` on AlmaLinux 9 and Rocky Linux 9, and
 the test matrix also installs it on AlmaLinux 10 (a reported result, not a promise of the recipe); the `amzn2023` `.rpm` on
-Amazon Linux 2023. They carry the same binary, so the families differ only in packaging metadata.
+Amazon Linux 2023; the Arch package on Arch Linux (`archlinux:latest`, a rolling release: the job installs it with `pacman -U`
+after a full upgrade). They carry the same binary, so the families differ only in packaging metadata. Pre-release versions are
+`7.0.0_rc.1` in the Arch package (a pkgver cannot hold a hyphen). `scripts/package/families.sh` lists the architectures of a family
+(`family_arches`), and `scripts/package/matrix.sh assemble|install ARCH` lists the jobs of an architecture, so the aarch64
+release has no Arch package.
 
 A pre-release version `7.0.0-rc.1` is `7.0.0~rc.1` in the package versions, so it sorts below `7.0.0`.
 
@@ -370,9 +376,9 @@ A pre-release version `7.0.0-rc.1` is `7.0.0~rc.1` in the package versions, so i
    `--manifest-path fuzz/Cargo.toml`; both only change workspace versions), the `info.version` of
    `contracts/*.openapi.json` and of `crates/oxiroute-server/src/registry/contract.rs` and
    `src/rtmp/api/contract.rs`, `ui/package.json`, `remotion/package.json`, `website/index.html`, the Arch recipes and
-   their READMEs under `packaging/arch/` (the local README copy is checksummed in both recipes), the version lines of
+   their READMEs under `packaging/arch/` (the local README copy is checksummed in the source recipe, and the release Arch package ships it), the version lines of
    `README.md`, `docs/COMPATIBILITY.md` and `docs/PRODUCT_SPEC.md`, and the notes link of `docs/README.md`. The
-   checksum of the Arch binary tarball is the one thing the release flow fills afterwards (step 4).
+   checksum of the Arch package asset in `oxiroute-bin` is the one thing the release flow fills afterwards (step 4).
 2. A version bump on `main` changes `Cargo.toml` and `Cargo.lock`, which starts `Profile refresh`
    ([the profile](#the-profile-reuse-cache-keys-refresh-and-retrain-triggers)): rustc hashes the version into every workspace
    symbol, so the profile of the previous version matches nothing and the three profiles of the new version (x86_64
@@ -390,7 +396,15 @@ A pre-release version `7.0.0-rc.1` is `7.0.0~rc.1` in the package versions, so i
    that does not match its `.sha256`, writes the one `SHA256SUMS` and checks it. A new release is created as a
    draft, receives every asset and is published last, so no visitor sees a partial release. The release text is the notes
    file plus the generated "Assets" section.
-4. After the assets are public, run `packaging/arch/pin-bin-release.sh V` and commit it.
+4. After the assets are public, run `packaging/arch/pin-bin-release.sh V` and commit it: it pins `bin/PKGBUILD` and `bin/.SRCINFO`
+   to the checksum in `oxiroute-V-1-x86_64.pkg.tar.zst.sha256` and runs `verify-checksums.sh`. Until it runs for the first release
+   that carries the Arch package, `bin/PKGBUILD` holds a placeholder checksum (all zeros) and `publish-aur.sh` refuses it; the
+   version published on the AUR before that keeps its older recipe.
+5. Update the AUR packages with `packaging/arch/publish-aur.sh V` (the workflow cannot: the push needs the maintainer's key). It
+   refuses recipes that are not at `V`, are not pinned or whose `.SRCINFO` is not what `makepkg --printsrcinfo` prints, clones
+   `oxiroute` and `oxiroute-bin` from `ssh://aur@aur.archlinux.org` with whatever ssh authentication the current user has
+   (`AUR_REMOTE_BASE` changes the remote base; a second argument keeps the clones), copies each recipe, commits `Update to V-1`
+   and pushes both only after both are ready. `oxiroute` is pinned before the tag (step 1), `oxiroute-bin` after step 4.
 
 Re-publishing an existing tag: run the workflow manually with the tag and `publish: true`. The source archive and its
 provenance are verified byte for byte and not uploaded again; every other asset and `SHA256SUMS` are replaced.
@@ -405,7 +419,9 @@ replaces; a tag or a manual run is never cancelled. Any other change ends after 
 ### What a package installs
 
 The installed layout is `packaging/arch/oxiroute.{service,sysusers,tmpfiles,modules,env,kdl,lua}`, copied unchanged
-into the Debian recipe (`packaging/deb/debian`, debhelper 13) and the RPM spec (`packaging/rpm/oxiroute.spec`): the
+into the Debian recipe (`packaging/deb/debian`, debhelper 13), the RPM spec (`packaging/rpm/oxiroute.spec`) and the Arch
+recipe (`packaging/pacman/PKGBUILD`, run by makepkg as an unprivileged user in `archlinux:base-devel`, with the install
+script `packaging/arch/oxiroute.install`): the
 test compares every installed file with the file of `packaging/arch`. Also installed: `/usr/bin/oxiroute`, the `oxr`
 symlink, `/usr/lib/oxiroute/oxiroute-worker-launcher`, and `/usr/share/doc/oxiroute/` (install guide, management CLI guide,
 `BUILD-INFO.json`, license). The three files in `/etc/oxiroute` are conffiles (deb) and `%config(noreplace)` (rpm). The
@@ -416,8 +432,18 @@ directory from tmpfiles. `remove` keeps configuration and state; `apt purge` als
 `/var/lib/oxiroute` and `/run/oxiroute` and keeps the system user. RPM has no purge: a modified configuration file stays as
 `.rpmsave` and `/var/lib/oxiroute` stays. Dependencies: `ca-certificates`, `systemd`, and what the dependency
 tool computes from the binary (glibc, libgcc); OpenSSL is linked statically, kTLS and io_uring need kernel features.
-`certbot` is suggested. No `Provides` or `Conflicts`: the Arch `oxiroute-bin` conflicts with the Arch `oxiroute`
-because both own the same Arch package name, and nothing else ships the `oxiroute` name on Debian or RPM systems.
+`certbot` is suggested. No `Provides` or `Conflicts`: the release Arch package is named `oxiroute`, like the AUR source
+package, so a pacman repository that serves it and the AUR source package replace each other as versions of one package; the AUR
+`oxiroute-bin` provides and conflicts with `oxiroute`, and nothing else ships the `oxiroute` name on Debian or RPM systems. The
+Arch package installs the same files as the others (plus `arch-packaging.md` instead of `INSTALL.md` in the documentation
+directory), and an upgrade or reinstall keeps modified configuration (`.pacnew`, `.pacsave` on remove; no purge).
+
+`oxiroute-bin` (`packaging/arch/bin`) is a thin recipe: its one source is the release's `oxiroute-V-1-x86_64.pkg.tar.zst`,
+`package()` extracts it into `$pkgdir` without the `.PKGINFO`, `.BUILDINFO`, `.MTREE` and `.INSTALL` of makepkg, so the AUR
+package holds exactly the files that CI installed and tested, and `options` stop makepkg from stripping, compressing or purging
+them. What a recipe cannot take from the package is declared again and checked against it at build time: `depends`,
+`optdepends` and `backup` against `.PKGINFO`, the version, and `oxiroute.install` (a byte-identical copy that
+`verify-checksums.sh` also checks against `packaging/arch/oxiroute.install`) against `.INSTALL`.
 
 ### Local commands
 
@@ -430,6 +456,7 @@ seconds to assemble, the binary build is the one slow step:
 PGO=0 scripts/package/main.sh binary x86_64 7.1.0 dist       # the one binary, on the el9 glibc; plain: ONLY for local smoke tests
 scripts/package/main.sh binary x86_64 7.1.0 dist             # profile-guided (the release build; STAGE=pgo leaves dist/stage for BOLT)
 scripts/package/main.sh build el9 x86_64 7.1.0 dist          # assembles the package from dist/oxiroute-7.1.0-x86_64-unknown-linux-gnu.tar.gz
+scripts/package/main.sh all arch x86_64 7.1.0 dist           # the Arch package, its .sha256, and the pacman -U test in archlinux:latest
 PGO=0 scripts/package/main.sh test el9 x86_64 dist/oxiroute-7.1.0-1.el9.x86_64.rpm
 PGO=0 scripts/package/main.sh all amzn2023 x86_64 7.1.0 dist # assemble, then test
 PACKAGE_IMAGES=ubuntu:22.04 PGO=0 scripts/package/main.sh test deb x86_64 dist/oxiroute_7.1.0_amd64.deb   # one image only

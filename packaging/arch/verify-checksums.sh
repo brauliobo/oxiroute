@@ -7,8 +7,8 @@
 # list the same pkgver, pkgrel, sources and checksums. makepkg --printsrcinfo must reproduce .SRCINFO exactly when
 # makepkg is installed (VERIFY_CHECKSUMS_NO_MAKEPKG=1 forces the shell-only comparison). Remote sources are pinned by
 # their sha256sums entry and checked by makepkg --verifysource at build time, not here. A package directory other than
-# this one (the oxiroute-bin recipe) must carry byte-identical copies of the files it shares with this directory, so
-# the source and binary packages install the same service, configuration and hooks.
+# this one (the oxiroute-bin recipe) must carry a byte-identical copy of the install script (the one thing the release
+# package cannot hand to the recipe), so the source and binary packages run the same hooks.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -23,8 +23,25 @@ pkgbuild_fields() {
   )
 }
 
+pkgbuild_install() { (source "$1/PKGBUILD" && printf '%s' "${install:-}"); }
+
 srcinfo_fields() {
   sed -n -E 's/^[[:space:]]*(pkgver|pkgrel|source|sha256sums) = (.*)$/\1\t\2/p' "$1/.SRCINFO"
+}
+
+require_copy_of_source_recipe() {
+  [[ $1 == "${here}" || ! -f ${here}/$2 ]] || cmp -s -- "${here}/$2" "$1/$2" || {
+    printf '%s: %s differs from the copy in %s\n' "$1" "$2" "${here}" >&2
+    return 1
+  }
+}
+
+verify_install_script() {
+  local install
+  install=$(pkgbuild_install "$1")
+  [[ -n ${install} ]] || return 0
+  [[ -f $1/${install} ]] || { printf '%s: install script %s is missing\n' "$1" "${install}" >&2; return 1; }
+  require_copy_of_source_recipe "$1" "${install}"
 }
 
 verify_local_sources() {
@@ -36,10 +53,7 @@ verify_local_sources() {
     [[ ${sources[i]} == *://* ]] && continue
     file=${sources[i]}
     [[ -f ${dir}/${file} ]] || { printf '%s: local source %s is missing\n' "${dir}" "${file}" >&2; return 1; }
-    [[ ${dir} == "${here}" || ! -f ${here}/${file} ]] || cmp -s -- "${here}/${file}" "${dir}/${file}" || {
-      printf '%s: %s differs from the copy in %s\n' "${dir}" "${file}" "${here}" >&2
-      return 1
-    }
+    require_copy_of_source_recipe "${dir}" "${file}"
     actual=$(sha256sum -- "${dir}/${file}")
     [[ ${actual%% *} == "${sums[i]}" ]] || {
       printf '%s: stale sha256 for %s\n  PKGBUILD: %s\n  actual:   %s\n' "${dir}" "${file}" "${sums[i]}" "${actual%% *}" >&2
@@ -60,6 +74,7 @@ verify_srcinfo() {
 for dir in "$@"; do
   dir=$(cd -- "${dir}" && pwd)
   verify_local_sources "${dir}"
+  verify_install_script "${dir}"
   verify_srcinfo "${dir}"
   printf 'verified package checksums in %s\n' "${dir}"
 done

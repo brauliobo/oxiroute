@@ -48,9 +48,10 @@ declare their variables in the configuration already.
 
 | File | Variables | Decision |
 | --- | --- | --- |
-| `packaging/arch/oxiroute.env` (and `bin/`) | `RUST_LOG`, `OXIROUTE_AUDIT_*`, commented `OXIROUTE_MANAGEMENT_TOKEN_FILE` and `OXIROUTE_RELOAD_DRAIN_SECONDS` | Still valid fallbacks, so installed conffiles keep working. The package files (`oxiroute.env`, `oxiroute.kdl`, `README.md`) are checksum-pinned and byte-identical in `bin/`, so moving the defaults into the packaged configuration and updating the README wording is a packaging change for the release that re-pins them. |
+| `packaging/arch/oxiroute.env` | `RUST_LOG`, `OXIROUTE_AUDIT_*`, commented `OXIROUTE_MANAGEMENT_TOKEN_FILE` and `OXIROUTE_RELOAD_DRAIN_SECONDS` | Still valid fallbacks, so installed conffiles keep working. The package files (`oxiroute.env`, `oxiroute.kdl`, `README.md`) are checksum-pinned in the source recipe, and the release package (and so `oxiroute-bin`) is built from them, so moving the defaults into the packaged configuration and updating the README wording is a packaging change for the release that re-pins them. |
 | `packaging/arch/oxiroute.service` | `EnvironmentFile=-/etc/oxiroute/oxiroute.env` only | No variable of its own. |
-| `packaging/arch/pin-bin-release.sh` | `OXIROUTE_RELEASE_URL`, `OXIROUTE_RAW_URL` | Maintainer tooling (b). |
+| `packaging/arch/pin-bin-release.sh` | `OXIROUTE_RELEASE_URL` | Maintainer tooling (b). |
+| `packaging/arch/publish-aur.sh` | `AUR_REMOTE_BASE` | Maintainer tooling (b). |
 | `scripts/` | `OXIROUTE_ACME_STAGING_*`, `OXIROUTE_API_TARGET`, `OXIROUTE_API_TOOLCHAIN`, `OXIROUTE_GENERATION_BASELINE_*`, `OXIROUTE_BIN` | Test and release tooling, never read by the daemon (b). |
 
 ## Variables of the 6.4 performance work

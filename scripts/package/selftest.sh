@@ -229,6 +229,17 @@ test_arch_release_workflow_wiring() {
   ! grep -Eq "${recipe_paths_re}" <<< packaging/arch/bin/PKGBUILD || fail 'the AUR recipe starts the package build'
 }
 
+test_oxiroute_bin_installs_the_release_package() {
+  local bin_version bin_package bin_source
+  bin_version=$(source "${repo}/packaging/arch/bin/PKGBUILD" && printf '%s' "${pkgver}")
+  bin_package=$(source "${repo}/packaging/arch/bin/PKGBUILD" && printf '%s' "${_package}")
+  bin_source=$(source "${repo}/packaging/arch/bin/PKGBUILD" && printf '%s' "${source[0]%%::*}")
+  [[ ${bin_package} == "$(package_file arch x86_64 "${bin_version}")" ]] || fail 'oxiroute-bin does not name the release package'
+  [[ ${bin_source} == "${bin_package}" ]] || fail 'oxiroute-bin downloads a file other than the release package'
+  [[ $(OXIROUTE_PACKAGE_VERSION=${bin_version} OXIROUTE_STAGE=/stage; source "${repo}/packaging/pacman/PKGBUILD" && printf '%s' "${pkgname}") == oxiroute ]] ||
+    fail 'the release package is not named oxiroute'
+}
+
 test_first_release_with_packages_has_no_upgrade_source() {
   mkdir -p "${scratch}/bin"
   printf '%s\n' '#!/usr/bin/env bash' \
@@ -245,6 +256,7 @@ test_first_release_with_packages_has_no_upgrade_source() {
 test_complete_release_is_accepted_and_summed
 test_arch_package_is_an_x86_64_asset_with_a_checksum
 test_arch_release_workflow_wiring
+test_oxiroute_bin_installs_the_release_package
 test_first_release_with_packages_has_no_upgrade_source
 test_every_missing_asset_is_refused
 test_plain_build_is_refused

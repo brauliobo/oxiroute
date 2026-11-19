@@ -210,10 +210,17 @@ checksums, sources and `makepkg` behaviour are unchanged.
 
 ## Binary package
 
-`bin/` holds the `oxiroute-bin` recipe. It installs the profile-guided release tarball
-`oxiroute-<version>-x86_64-unknown-linux-gnu.tar.gz` (checksum: its `.sha256` release asset) instead of building, and
-provides and conflicts with `oxiroute`. It ships the same launcher, service, sysusers, tmpfiles, modules-load, environment, KDL, Lua,
-`.install` hook and documentation as the source package; the shared files in `bin/` are byte-identical copies and
-`verify-checksums.sh` rejects any drift. The release tarball cannot exist before the tag, so `bin/PKGBUILD` is pinned
-after the release workflow has published it (`pin-bin-release.sh <version>`), while the source recipe is pinned before.
-`verify-checksums.sh` checks the local-file checksums and `.SRCINFO` of both recipes.
+Every release attaches `oxiroute-<version>-1-x86_64.pkg.tar.zst` (and its `.sha256`), the package named `oxiroute`: the
+profile-guided release binary repackaged by `makepkg` in an Arch Linux container with the files of this directory (the
+launcher, service, sysusers, tmpfiles, modules-load, environment, KDL, Lua, `oxiroute.install` hook and these notes), and
+installed in a fresh `archlinux` container with `pacman -U` before it is published. Install it with
+`sudo pacman -U oxiroute-<version>-1-x86_64.pkg.tar.zst`, or serve it from a pacman repository; being named `oxiroute` it
+replaces the AUR source package, which has the same name.
+
+`bin/` holds the `oxiroute-bin` AUR recipe: it downloads that package file (checksum: its `.sha256` release asset), checks
+that its metadata and install script are the ones the recipe declares, and extracts it unchanged, so the AUR package is the
+tested package. It provides and conflicts with `oxiroute`. The release package cannot exist before the tag, so
+`bin/PKGBUILD` is pinned after the release workflow has published it (`pin-bin-release.sh <version>`), while the source recipe
+is pinned before; until the first release with the Arch package it holds a placeholder checksum. `oxiroute.install` is the one
+file `bin/` copies from this directory, and `verify-checksums.sh` rejects any drift; it also checks the local-file checksums and
+`.SRCINFO` of both recipes. `publish-aur.sh <version>` then updates both AUR repositories with the maintainer's ssh key.

@@ -33,6 +33,6 @@ pkgbase = oxiroute
 	sha256sums = d56db017915b82ad6204bb4de1aa268cc41586eafcbbf35194366b32ed02f19a
 	sha256sums = 57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9
 	sha256sums = f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564
-	sha256sums = a6aba7b89182befdfe5aada05a34c741d101dff1c5d9b4e5e6d7401e9114faa6
+	sha256sums = d2830de98415795f426dafe879dc671ccdd48e48bca736508c415bf0e3681832
 
 pkgname = oxiroute
