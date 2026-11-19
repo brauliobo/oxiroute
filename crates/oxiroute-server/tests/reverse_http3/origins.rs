@@ -52,6 +52,12 @@ pub(super) enum Reply {
         pieces: Vec<(Duration, Vec<u8>)>,
         close: bool,
     },
+    /// Writes `first`, holds `rest` until `release` is notified, writes it, then waits for the next request.
+    Held {
+        first: Vec<u8>,
+        release: Arc<tokio::sync::Notify>,
+        rest: Vec<u8>,
+    },
 }
 
 type Script = Arc<dyn Fn(&Seen) -> Reply + Send + Sync>;
@@ -187,6 +193,17 @@ async fn serve<S>(
                     return;
                 }
                 true
+            }
+            Reply::Held {
+                first,
+                release,
+                rest,
+            } => {
+                if stream.write_all(&first).await.is_err() {
+                    return;
+                }
+                release.notified().await;
+                stream.write_all(&rest).await.is_ok()
             }
             Reply::After(pause, bytes) => {
                 let mut probe = [0_u8; 1];

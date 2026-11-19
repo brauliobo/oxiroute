@@ -235,15 +235,18 @@ const SLOW_CHUNKED_HEAD: &[u8] =
 
 #[tokio::test]
 pub(super) async fn h3_delivers_what_an_unfinished_answer_has_before_the_origin_ends_it() {
-    let (origin, address) = ScriptedOrigin::tcp(|_| Reply::Paced {
-        pieces: vec![
-            (
-                Duration::ZERO,
-                [SLOW_CHUNKED_HEAD, b"5\r\nfirst\r\n"].concat(),
-            ),
-            (Duration::from_secs(2), b"6\r\nsecond\r\n0\r\n\r\n".to_vec()),
-        ],
-        close: false,
+    let release = Arc::new(tokio::sync::Notify::new());
+    let held = Arc::clone(&release);
+    let (origin, address) = ScriptedOrigin::tcp(move |request| {
+        if request.target == "/events" {
+            Reply::Held {
+                first: [SLOW_CHUNKED_HEAD, b"5\r\nfirst\r\n"].concat(),
+                release: Arc::clone(&held),
+                rest: b"6\r\nsecond\r\n0\r\n\r\n".to_vec(),
+            }
+        } else {
+            ok(b"again")
+        }
     })
     .await;
     let mut daemon = daemon_for(&[address], HttpProxyPolicy::default()).await;
@@ -251,10 +254,11 @@ pub(super) async fn h3_delivers_what_an_unfinished_answer_has_before_the_origin_
     let response = stream.recv_response().await.expect("the head");
     assert_eq!(response.status(), 200);
     assert!(response.headers().get("content-length").is_none());
-    let first = timeout(Duration::from_millis(1500), recv_chunk(&mut stream))
+    let first = timeout(Duration::from_secs(10), recv_chunk(&mut stream))
         .await
         .expect("the first piece arrives while the origin still holds the rest");
     assert_eq!(first.as_ref(), b"first");
+    release.notify_one();
     assert_eq!(recv_body(&mut stream).await.as_ref(), b"second");
     assert_eq!(origin.connections(), 1);
     // The origin connection went back to the pool when the body ended.
