@@ -90,6 +90,8 @@ pub enum MasterState {
     DrainingRetired,
     /// Retired worker remains owned until it is reaped.
     StoppingRetired,
+    /// The listeners belong to a successor master; the workers left here drain their connections.
+    HandedOver,
     /// All workers are being shut down.
     ShuttingDown,
     /// Serving failed closed and remaining workers are being reaped.
@@ -251,6 +253,8 @@ pub enum MasterEvent {
         instance_id: InstanceId,
         reason: RetiredForce,
     },
+    /// The active worker was retired for a successor master.
+    HandedOver { instance_id: InstanceId },
     /// Bounded shutdown began.
     ShutdownStarted,
     /// Shutdown deadline forced at least one remaining process group.

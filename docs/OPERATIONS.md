@@ -148,6 +148,79 @@ serving. `oxiroute status` and `GET /api/v1/status` show `build_id` (the serving
 process in the direct runtime) and `master_build_id` (the supervising master, none in the direct
 runtime). See "Binary upgrade" for the hand-over.
 
+## Binary upgrade
+
+`oxiroute upgrade [--config PATH] [--binary PATH] [--wait]` replaces the running master and its
+workers with another executable without closing a listener and without refusing or resetting a
+connection. `--config` names the configuration the daemon runs with (default
+`/etc/oxiroute/oxiroute.kdl`), which is how the command finds the master: it talks to an abstract
+socket named after the resolved path, owned by the master's user (root may use it too). `--binary`
+is the executable to hand over to and defaults to the path the master started from, which is what a
+package upgrade has just replaced. It returns when the new master serves; `--wait` also waits until
+the replaced worker has finished its connections.
+
+How it runs, in the master that serves (the predecessor):
+
+1. It refuses unless it runs with no reload in progress, the service unit can change its main
+   process (below) and the configuration has no Unix socket listener.
+2. It starts the executable as the successor master, handing it the listening sockets (TCP, UDP and
+   QUIC) as descriptors over a private channel, with the manifest that describes them. The
+   successor loads the configuration from disk, checks that its listeners match the handed ones
+   exactly, starts its own worker and has it adopt and activate them. A configuration on disk that
+   no longer describes the running listeners fails here; reload first, or restart.
+3. The successor reports ready when its master reports `Running`. A successor that exits, reports
+   a failure or is not ready within 60 seconds is ended with SIGTERM; the predecessor keeps serving,
+   and the command fails with the reason (`the successor exited before it was ready: ...`).
+   Nothing has moved at that point: the successor's worker takes connections from the same sockets
+   only once it is active, and the predecessor's worker never stopped.
+4. On ready, the predecessor tells systemd that the successor is the main process
+   (`MAINPID=` with a `BARRIER=1` acknowledgement), retires its own worker (it stops accepting and
+   serves the connections it holds until they end or the retirement window, `retirement`, passes) and
+   lets the successor take over the upgrade socket. The command reports `serving`.
+5. When the retired worker is gone the predecessor exits. With `--wait` the command reports
+   `drained` then.
+
+Until step 4 both workers accept from the same listeners, so no connection waits for either. A
+second `oxiroute upgrade` while the first one runs is answered `a configuration reload is in
+progress`, and configuration reloads wait while an upgrade runs. A successor is a master like
+any other: it serves, reloads and can be upgraded again, and the predecessor that is still draining
+neither takes requests nor reloads.
+
+Systemd. The packaged unit sets `NotifyAccess=main`, which is all the hand-over needs: the master
+may change the main process, and `systemctl reload` (`ExecReload=/bin/kill -HUP $MAINPID`) reaches
+the successor afterwards. A unit without it makes the upgrade fail up front with `add
+NotifyAccess=main to its [Service] section`, because the service manager would otherwise end the
+service, successor included, when the predecessor exits. Package upgrades run it after the files are
+replaced (`oxiroute upgrade --wait` from the post-upgrade hook or a `systemctl` drop-in). Outside a
+service manager there is nobody to tell, and the successor is left running when the predecessor
+exits. The hand-over was exercised with real processes and sockets, not against a real systemd.
+
+What a successor starts with and why:
+
+| Item | Across a binary upgrade |
+| --- | --- |
+| Listening sockets (TCP, UDP, QUIC) | kept, never closed |
+| Connections of the predecessor's worker | finished by that worker; it exits when they end |
+| Configuration and startup-only settings | read again from disk, so settings that wait for a restart apply |
+| Environment of the master (`RUST_LOG`, `OXIROUTE_CPU_LEVEL`, `_RJEM_MALLOC_CONF`, `SSL_CERT_*`, audit and token variables) | inherited from the predecessor: it does not see the environment of the `oxiroute upgrade` process or of the unit as it is now; use a restart for those |
+| Memory caches, TLS session tickets and cache, health and ejection state, administrative server state | start empty: the state of one build is not a format another build is bound to read; a reload keeps them (see "State that survives a reload") |
+| Operation and audit event cursors | start again at 1 |
+| Registry and overlay files, disk cache stores, certificates | files: the successor reads what the predecessor wrote |
+
+Limits, each with its reason:
+
+- Listeners bound to a Unix socket path refuse the upgrade: the socket file and the ownership
+  marker that keeps a second daemon from taking it belong to the process that bound it, and the
+  hand-over of that ownership is not implemented, so the predecessor would remove the file when it
+  exits. Restart the service for those.
+- The direct runtime (no supervising master, used when the launcher is not installed) cannot be
+  upgraded this way: one process both owns the sockets and serves them, so nothing can hold the
+  listeners while a new process starts. The command answers that no master serves the configuration.
+  Restart it, or run the supervised runtime.
+- The listeners are the running ones: a configuration on disk with other listeners fails the
+  upgrade (step 2). Apply listener changes with a reload first (a supervised reload binds the new
+  listeners), or restart.
+
 ## Idle behaviour
 
 An instance with no traffic does no periodic work and takes no wakeups of its own. The supervising master sleeps

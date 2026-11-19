@@ -32,7 +32,9 @@ use oxiroute_supervision::{
     CatalogError, GenerationId, GenerationLaunchDocument, GenerationRole, InstanceId,
     SupervisedGenerationCatalog,
 };
-use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
+use oxiroute_supervision_unix::{
+    DescriptorManifest, InstanceToken, ListenerChanges, SeqpacketEndpoint,
+};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, MAX_AGGREGATED_EVENTS, Master, MasterConfig, MasterEvent,
     MasterState, RetiredWorker, WorkerInput, WorkerRole,
@@ -104,6 +106,7 @@ pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>>
 }
 
 mod catalog;
+mod handover;
 mod monitors;
 mod plan;
 mod retired;
@@ -113,6 +116,9 @@ mod wake;
 
 #[allow(clippy::wildcard_imports)]
 use catalog::*;
+#[allow(clippy::wildcard_imports)]
+use handover::*;
+pub(super) use handover::{SUCCESSOR_MARKER, run_successor};
 #[allow(clippy::wildcard_imports)]
 use monitors::*;
 #[allow(clippy::wildcard_imports)]

@@ -39,6 +39,7 @@ use oxiroute_supervisor_process::{
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 
 mod faults;
+mod handover;
 mod lifecycle;
 mod replacement;
 mod retired;

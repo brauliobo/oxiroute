@@ -199,6 +199,12 @@ impl ServerProcess {
         self.child.id()
     }
 
+    /// How the server ended, or `None` while it runs.
+    #[allow(dead_code)]
+    pub fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().expect("inspect server process")
+    }
+
     pub async fn wait_for_tcp(&mut self, address: SocketAddr) {
         self.connect_when_bound(address).await;
     }

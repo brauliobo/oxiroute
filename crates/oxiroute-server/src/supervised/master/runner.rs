@@ -51,9 +51,19 @@ impl MasterRunner {
         coordinator: &CanonicalConfigCoordinator,
         document: &ResolvedConfigDocument,
     ) -> Result<(), Box<dyn Error>> {
+        let reservations = ListenerReservations::prepare(&document.validated_config, None)?;
+        self.run_with(coordinator, document, reservations, None)
+    }
+
+    pub(super) fn run_with(
+        &self,
+        coordinator: &CanonicalConfigCoordinator,
+        document: &ResolvedConfigDocument,
+        reservations: ListenerReservations,
+        predecessor: Option<SeqpacketEndpoint>,
+    ) -> Result<(), Box<dyn Error>> {
         let config = &document.validated_config;
         oxiroute_server::apply_log_filter(config.as_draft().log_filter.as_deref());
-        let reservations = ListenerReservations::prepare(config, None)?;
         let listeners = reservations.clone().into_stable_listeners(config)?;
         let mut book = ListenerBook::new(reservations, listeners.manifest().clone());
         let mut reports = ConfigReports::default();
@@ -77,6 +87,11 @@ impl MasterRunner {
             &document.dependencies,
             Arc::clone(&waker),
         )?;
+        let mut upgrades = Upgrades::start(
+            coordinator.canonical_path(),
+            Arc::clone(&waker),
+            predecessor,
+        )?;
         let signals = SignalMonitor::new(waker)?;
         let launch = Master::launch(
             master_config,
@@ -95,6 +110,7 @@ impl MasterRunner {
                 &mut reload,
                 &mut book,
                 &mut reports,
+                &mut upgrades,
             ),
             Err(error) => Err(error.into()),
         };
@@ -187,6 +203,7 @@ impl MasterRunner {
         reload: &mut ConfigReloadMonitor,
         book: &mut ListenerBook,
         reports: &mut ConfigReports,
+        upgrades: &mut Upgrades,
     ) -> Result<(), Box<dyn Error>> {
         let result = self.drive_inner(
             master,
@@ -197,6 +214,7 @@ impl MasterRunner {
             reload,
             book,
             reports,
+            upgrades,
         );
         if result.is_err() && !matches!(master.state(), MasterState::Stopped | MasterState::Failed)
         {
@@ -216,6 +234,7 @@ impl MasterRunner {
         reload: &mut ConfigReloadMonitor,
         book: &mut ListenerBook,
         reports: &mut ConfigReports,
+        upgrades: &mut Upgrades,
     ) -> Result<(), Box<dyn Error>> {
         while master.state() != MasterState::Running {
             if master.state() == MasterState::Failed {
@@ -227,6 +246,7 @@ impl MasterRunner {
             master.poll(Instant::now())?;
             signals.wait(master, None)?;
         }
+        upgrades.report_ready()?;
         oxiroute_server::announce_ready(
             &catalog.active().payload().config,
             catalog.active().revision(),
@@ -236,6 +256,7 @@ impl MasterRunner {
             if signals.stop.load(Ordering::Acquire) || shutdown_requested_by_worker(master) {
                 return shutdown_master(master);
             }
+            upgrades.take_over_service()?;
             let now = Instant::now();
             let mut due = None;
             match master.state() {
@@ -245,12 +266,16 @@ impl MasterRunner {
                     reports.observe(master, catalog, &events, book)?;
                     reports.retired.observe(&events);
                     reports.retired.report(master, now);
-                    let forced_reload = catalog.candidate().is_none() && {
+                    if let Some(handed) = self.advance_upgrade(master, upgrades, catalog, now)? {
+                        return Self::finish_handover(master, signals, handed);
+                    }
+                    let reloading = catalog.candidate().is_none() && !upgrades.is_pending();
+                    let forced_reload = reloading && {
                         let signalled = signals.reload.swap(false, Ordering::AcqRel);
                         let queued = reports.take_queued_reload();
                         reports.reload_requested(master) || signalled || queued
                     };
-                    if catalog.candidate().is_none() {
+                    if reloading {
                         if forced_reload || reload.next_trigger(now) {
                             self.reconcile(
                                 master,
@@ -263,7 +288,11 @@ impl MasterRunner {
                         }
                         due = Some(reload.next_deadline());
                     }
-                    due = due.into_iter().chain(reports.retired.next_due()).min();
+                    due = due
+                        .into_iter()
+                        .chain(reports.retired.next_due())
+                        .chain(upgrades.next_due())
+                        .min();
                 }
                 MasterState::Failed => return Err(master_failure("runtime").into()),
                 MasterState::Stopped => {
@@ -440,7 +469,7 @@ fn begin_retirement(master: &mut Master, catalog: &GenerationCatalog) {
     master.set_retired_limit(catalog.active().payload().config.retired_generation_limit());
 }
 
-fn log_master_events(events: &[MasterEvent]) {
+pub(super) fn log_master_events(events: &[MasterEvent]) {
     if events
         .iter()
         .any(|event| !matches!(event, MasterEvent::WorkerStatusUpdated { .. }))

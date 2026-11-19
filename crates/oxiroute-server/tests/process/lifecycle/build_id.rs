@@ -1,5 +1,3 @@
-use std::{os::unix::fs::PermissionsExt as _, path::Path};
-
 use super::*;
 
 #[tokio::test]
@@ -13,22 +11,6 @@ async fn status_shows_the_master_and_worker_build_ids() {
     daemon.stop();
 }
 
-/// The executable with the build id its linker recorded altered, so that it names another build.
-fn another_build_of(executable: &Path, build_id: &str) -> Vec<u8> {
-    let recorded = build_id.strip_prefix("gnu:").expect("a GNU build id");
-    let id = (0..recorded.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&recorded[at..at + 2], 16).expect("hex build id"))
-        .collect::<Vec<_>>();
-    let mut image = fs::read(executable).expect("read the executable");
-    let at = image
-        .windows(id.len())
-        .position(|window| window == id)
-        .expect("the build id is recorded in the image");
-    image[at] ^= 0xff;
-    image
-}
-
 #[tokio::test]
 async fn a_binary_replaced_under_the_master_is_refused_until_it_is_upgraded() {
     let _guard = process_test_guard().await;
@@ -39,12 +21,8 @@ async fn a_binary_replaced_under_the_master_is_refused_until_it_is_upgraded() {
 
     let original = daemon.directory.path().join("oxiroute.original");
     fs::rename(&daemon.binary, &original).expect("set the original aside");
-    let changed = another_build_of(&original, build.as_str().expect("master build id"));
-    let staged = daemon.directory.path().join("oxiroute.staged");
-    fs::write(&staged, changed).expect("write the changed executable");
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
-        .expect("make the changed executable runnable");
-    fs::rename(&staged, &daemon.binary).expect("replace the executable");
+    let changed = another_build_of(&original, build.as_str().expect("master build id"), 0xff);
+    daemon.install_executable(&changed);
 
     daemon.write_next_revision();
     let rejected = wait_until("the reload is refused", || async {

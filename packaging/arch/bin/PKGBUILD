@@ -32,7 +32,7 @@ source=("oxiroute-${pkgver}-${_target}.tar.gz::${_release}/oxiroute-${pkgver}-${
         'README.md')
 sha256sums=('5081e6aadad4cee8b29017e5cd14a5c3c8f9790eae9c6c409e78801d351a506c'
             'ffb543ff6043239bd1ceb86395a5de51a6571438485ab3f3b027893baee5884b'
-            '574eab59174656b0813499ed1c9bca8be5a6e2cf69a98e8327f376e1c0b83b1b'
+            '1bb18eb30e49f9b4eae546094ca57bf2796a0660bd3811c25f551f76ca9bd86b'
             '167ec612cbdedb8a4e1ea92b181badb77042a0303e276b8181f14cf1956dc13f'
             '502dbc96a4f316ff7375cf90da32457b6003723a744825f04cec8a624974a356'
             'c23385c6ee614b2b91e8fcd1c535038fc2dd9a115b77db368fa2fda4d9d698a1'

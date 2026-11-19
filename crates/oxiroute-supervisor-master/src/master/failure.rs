@@ -349,6 +349,11 @@ impl<E: ActionExecutor> Master<E> {
                 self.events
                     .push_back(MasterEvent::ShutdownCompleted { forced });
             }
+            Stage::HandedOver => {
+                self.stage = Stage::Stopped { forced: false };
+                self.events
+                    .push_back(MasterEvent::ShutdownCompleted { forced: false });
+            }
             Stage::Failing { phase } => {
                 self.stage = Stage::Failed;
                 self.events.push_back(MasterEvent::Failed { phase });

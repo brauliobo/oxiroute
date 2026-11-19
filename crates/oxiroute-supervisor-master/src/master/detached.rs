@@ -101,7 +101,11 @@ impl<E: ActionExecutor> Master<E> {
         Ok(())
     }
 
-    fn kill_detached(&mut self, index: usize, phase: FailurePhase) -> Result<(), MasterError> {
+    pub(super) fn kill_detached(
+        &mut self,
+        index: usize,
+        phase: FailurePhase,
+    ) -> Result<(), MasterError> {
         let worker = &mut self.detached[index];
         worker.process.request_kill()?;
         worker.pending = None;

@@ -48,6 +48,7 @@ mod tls;
 mod token;
 mod top;
 mod units;
+mod upgrade;
 mod version;
 mod view;
 mod wait;

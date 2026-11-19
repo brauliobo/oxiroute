@@ -38,6 +38,7 @@ pub(super) enum Stage {
     BootAdopting,
     BootActivating,
     Operational,
+    HandedOver,
     ShuttingDown { deadline: Instant, forced: bool },
     Failing { phase: FailurePhase },
     Stopped { forced: bool },

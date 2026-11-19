@@ -360,6 +360,16 @@ reload closes the oldest draining worker (its `reason` is `retired_limit`, and t
 rather than waiting; raise the setting when that cuts connections you want to keep. `check` warns when one
 drains longer than `--max-retired-age` (default 1 h).
 
+**A reload is refused after a package upgrade.** The master spawns workers from the path it started
+from, and that path now holds another build, so `lastRejection` says `worker build "gnu:..." is not the
+master build "gnu:..."` and the old worker keeps serving. Run `oxiroute upgrade --config
+/etc/oxiroute/oxiroute.kdl --wait`: the new master takes the listeners and the old worker drains
+behind it. If the command fails it says why (the successor exited, did not become ready in 60 s, or
+the configuration on disk no longer matches the running listeners) and the old master keeps
+serving. `oxiroute status` shows `master_build_id` and `build_id` of what runs. A daemon with a
+Unix socket listener, or one running without the supervising master, is restarted instead
+(`systemctl restart oxiroute`); see "Binary upgrade" in [OPERATIONS.md](../OPERATIONS.md).
+
 **The daemon exited after its serving worker died.** Under the supervising master the serving worker
 (the child that owns the listeners, RTMP sessions and recorders) is not restarted by the master. If it is
 killed (`kill -9`, the OOM killer) or its control channel closes, the master fails closed: it terminates

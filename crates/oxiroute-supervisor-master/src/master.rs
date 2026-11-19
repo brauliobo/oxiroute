@@ -42,6 +42,7 @@ mod detached;
 mod dispatch;
 mod executor;
 mod failure;
+mod handover;
 mod model;
 mod query;
 mod replacement;

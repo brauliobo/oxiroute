@@ -30,6 +30,7 @@ impl<E: ActionExecutor> Master<E> {
                 ReplacementPhase::DrainingRetired => MasterState::DrainingRetired,
                 ReplacementPhase::StoppingRetired => MasterState::StoppingRetired,
             },
+            Stage::HandedOver => MasterState::HandedOver,
             Stage::ShuttingDown { .. } => MasterState::ShuttingDown,
             Stage::Failing { .. } => MasterState::Failing,
             Stage::Stopped { .. } => MasterState::Stopped,

@@ -11,6 +11,15 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
     let mut arguments = env::args_os();
     let _program = arguments.next();
     let marker = arguments.next()?;
+    if marker == OsStr::new(master::SUCCESSOR_MARKER) {
+        return Some(match master::run_successor(arguments) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("OxiRoute successor master failed: {error}");
+                ExitCode::FAILURE
+            }
+        });
+    }
     if marker != OsStr::new(MARKER) {
         return marker.as_bytes().starts_with(RESERVED_PREFIX).then(|| {
             eprintln!("OxiRoute supervised process failed: invalid reserved worker marker");

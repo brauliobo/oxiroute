@@ -139,6 +139,37 @@ fn global_flags_are_accepted_before_and_after_every_subcommand() {
 }
 
 #[test]
+fn upgrade_names_its_configuration_its_binary_and_whether_to_wait() {
+    let named = Cli::try_parse_process_from([
+        "oxiroute",
+        "upgrade",
+        "--config",
+        "edge.kdl",
+        "--binary",
+        "/opt/oxiroute/bin/oxiroute",
+        "--wait",
+    ])
+    .expect("upgrade");
+    let Command::Upgrade(args) = named.subcommand() else {
+        panic!("upgrade command");
+    };
+    assert_eq!(args.config, PathBuf::from("edge.kdl"));
+    assert_eq!(
+        args.binary,
+        Some(PathBuf::from("/opt/oxiroute/bin/oxiroute"))
+    );
+    assert!(args.wait);
+
+    let plain = Cli::try_parse_process_from(["oxiroute", "upgrade"]).expect("upgrade");
+    let Command::Upgrade(args) = plain.subcommand() else {
+        panic!("upgrade command");
+    };
+    assert_eq!(args.config, PathBuf::from("/etc/oxiroute/oxiroute.kdl"));
+    assert_eq!(args.binary, None);
+    assert!(!args.wait);
+}
+
+#[test]
 fn offline_and_management_commands_parse_beside_serve() {
     let check = Cli::try_parse_process_from(["oxiroute", "config", "check", "edge.lua"])
         .expect("config check");

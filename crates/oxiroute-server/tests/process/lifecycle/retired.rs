@@ -19,7 +19,7 @@ fn retired_revisions(generation: &Value) -> Vec<Value> {
 
 impl Daemon {
     /// Writes the next revision and returns once it is the active one.
-    async fn apply(&mut self) -> Value {
+    pub(super) async fn apply(&mut self) -> Value {
         let before = self.generation().await["activeRevision"].clone();
         self.write_next_revision();
         wait_until("the new revision activates", || async {

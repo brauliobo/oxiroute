@@ -29,6 +29,8 @@ mod sharded;
 mod shutdown;
 pub mod tls;
 mod topology;
+#[cfg(target_os = "linux")]
+pub mod upgrade;
 mod upstream_peer;
 mod wire;
 

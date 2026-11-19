@@ -622,6 +622,20 @@ impl ListenerReservations {
         Self::adopt_inventory(&ListenerInventory::compile(config), descriptors)
     }
 
+    /// Takes the listeners another master serves, as the descriptors it handed over, into the
+    /// reservations of this one. They must match the listeners `config` describes exactly.
+    ///
+    /// Unix socket listeners come without the ownership of their socket file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptors do not match the listeners of `config`.
+    #[doc(hidden)]
+    #[cfg(target_os = "linux")]
+    pub fn inherit(config: &ValidatedConfig, descriptors: DescriptorSet) -> io::Result<Self> {
+        Self::adopt(config, descriptors)
+    }
+
     #[cfg(target_os = "linux")]
     fn adopt_inventory(
         inventory: &ListenerInventory,

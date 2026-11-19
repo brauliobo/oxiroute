@@ -165,7 +165,8 @@ fn a_reload_waiting_for_a_draining_worker_shows_its_connections() {
 #[test]
 fn status_leads_with_build_state_and_revision_then_lists_listeners() {
     let value = json!({
-        "buildVersion": "7.1.0", "degraded": false, "activeRevision": "f".repeat(64), "previousRevision": null,
+        "buildVersion": "7.1.0", "buildId": "gnu:ab", "masterBuildId": "gnu:cd", "degraded": false,
+        "activeRevision": "f".repeat(64), "previousRevision": null,
         "candidateRevision": null, "diskRevision": "e".repeat(64), "activeGenerationAgeMs": 3_725_000,
         "components": { "process": { "state": "healthy" }, "host": { "state": "healthy" },
             "generation": { "state": "healthy" }, "audit": { "state": "degraded" } },
@@ -176,19 +177,18 @@ fn status_leads_with_build_state_and_revision_then_lists_listeners() {
     let text = table(View::Status, &value);
     assert!(
         text.starts_with(
-            "build           7.1.0\nstate           healthy\nactive          ffffffffffff\n"
+            "build            7.1.0\nbuild id         gnu:ab\nmaster build id  gnu:cd\nstate            healthy\nactive           ffffffffffff\n"
         ),
         "{text}"
     );
-    assert!(text.contains("generation age  1h02m\n"), "{text}");
+    assert!(text.contains("generation age   1h02m\n"), "{text}");
     assert!(
-        text.contains("audit           degraded\n\nNAME  PROTOCOL"),
+        text.contains("audit            degraded\n\nNAME  PROTOCOL"),
         "{text}"
     );
-    assert!(
-        plain(View::Status, &value)
-            .starts_with("record=status build=7.1.0 state=healthy active=ffff")
-    );
+    assert!(plain(View::Status, &value).starts_with(
+        "record=status build=7.1.0 build_id=gnu:ab master_build_id=gnu:cd state=healthy active=ffff"
+    ));
 }
 
 #[test]

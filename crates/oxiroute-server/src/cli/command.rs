@@ -30,6 +30,7 @@ use super::{
     tls::{self, TlsCommand},
     token::TokenCommand,
     top::TopArgs,
+    upgrade::UpgradeArgs,
     version::VersionArgs,
 };
 
@@ -37,6 +38,7 @@ use super::{
 pub(crate) enum Command {
     /// Run the proxy and reconcile changes to its canonical configuration.
     Serve(ServeArgs),
+    Upgrade(UpgradeArgs),
     #[command(flatten)]
     Process(ProcessCommand),
     /// Read the management events: generation changes, administrative actions and their outcomes.
@@ -180,6 +182,7 @@ impl Command {
             } => return Ok(tls::check(context, args)),
             Self::Doctor(args) => return Ok(doctor::run(context, args)),
             Self::Serve(args) => args.run(context),
+            Self::Upgrade(args) => args.run(context),
             Self::Process(command) => command.run(context),
             Self::Events { command } => command.run(context),
             Self::Audit { command } => command.run(context),
