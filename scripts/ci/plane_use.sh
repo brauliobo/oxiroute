@@ -7,7 +7,10 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-(($# >= 2)) && [[ $1 == check ]] || { printf 'usage: plane_use.sh check REPORT JUNIT...\n' >&2; exit 2; }
+if (($# < 2)) || [[ $1 != check ]]; then
+  printf 'usage: plane_use.sh check REPORT JUNIT...\n' >&2
+  exit 2
+fi
 shift
 
 python3 - "${repo_dir}/scripts/ci/tiers.txt" "$@" <<'PY'
