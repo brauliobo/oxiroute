@@ -258,6 +258,7 @@ async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
     let address = listener.local_addr().unwrap();
     let (aborted, observed) = tokio::sync::oneshot::channel();
+    let (progress, mut received) = tokio::sync::watch::channel(0_usize);
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("origin accept");
         let mut buffer = [0_u8; 4096];
@@ -265,7 +266,10 @@ async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
         loop {
             match stream.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
-                Ok(count) => total += count,
+                Ok(count) => {
+                    total += count;
+                    progress.send_replace(total);
+                }
             }
         }
         let _ = aborted.send(total);
@@ -281,7 +285,10 @@ async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
     let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
     client.write_all(post(1_000_000).as_bytes()).await.unwrap();
     client.write_all(&patterned(20_000)).await.unwrap();
-    sleep(Duration::from_millis(200)).await;
+    timeout(STEP, received.wait_for(|total| *total >= 20_000))
+        .await
+        .expect("the origin receives the upload before the client leaves")
+        .unwrap();
     drop(client);
     let total = timeout(STEP, observed)
         .await
