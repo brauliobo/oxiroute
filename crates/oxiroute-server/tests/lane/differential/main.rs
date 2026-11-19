@@ -221,11 +221,12 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
     let mut bytes = Vec::new();
     let mut unanswered = Vec::new();
     let mut closed = false;
-    for write in script {
+    for (index, write) in script.iter().enumerate() {
         let _ = stream.write_all(write).await;
         unanswered.extend_from_slice(write);
         let answered = bytes.len();
-        closed = reading::read_step(&mut stream, &unanswered, &mut bytes).await;
+        let last = index + 1 == script.len();
+        closed = reading::read_step(&mut stream, &unanswered, &mut bytes, last).await;
         if bytes.len() > answered {
             unanswered.clear();
         }
