@@ -4,8 +4,9 @@
 #
 #   assets.sh list VERSION         the expected assets, one per line, SHA256SUMS last
 #   assets.sh verify DIR VERSION   fail unless every expected asset is in DIR, every build record says
-#                                  profile-guided (ALLOW_PLAIN=1 accepts the plain builds of a dry run) and the record of
-#                                  every package is the one of the tarball of its architecture (one binary per architecture)
+#                                  profile-guided (ALLOW_PLAIN=1 accepts the plain builds of a dry run), every .sha256
+#                                  matches its file and the record of every package is the one of the tarball of its
+#                                  architecture (one binary per architecture)
 #   assets.sh sums DIR VERSION     verify, then write DIR/SHA256SUMS over every other asset and check it
 #   assets.sh notes DIR VERSION    the "Assets" section of the release text: the build line of every tarball (the
 #                                  pgo-note-*.md files of DIR) and the packages
@@ -36,29 +37,27 @@ require_records() {
   ((${#bad[@]} == 0)) || { printf 'refusing the release:\n' >&2; printf '  %s\n' "${bad[@]}" >&2; return 1; }
 }
 
-require_tarball_checksums() {
+require_checksums() {
   local dir=$1 version=$2 sidecar
   while IFS= read -r sidecar; do
-    (cd "${dir}" && sha256sum --check --status "${sidecar}") || { printf '%s does not match its tarball\n' "${sidecar}" >&2; return 1; }
-  done < <(release_assets "${version}" | grep '\.tar\.gz\.sha256$')
+    (cd "${dir}" && sha256sum --check --status "${sidecar}") || { printf '%s does not match its file\n' "${sidecar}" >&2; return 1; }
+  done < <(release_assets "${version}" | grep '\.sha256$')
 }
 
 require_one_binary_per_arch() {
   local dir=$1 version=$2 family arch bad=() record
-  for arch in "${package_arches[@]}"; do
+  while read -r family arch; do
     record=${dir}/$(tarball_stem "${version}" "$(package_target "${arch}")" unwind).build.json
-    for family in "${package_families[@]}"; do
-      cmp -s -- "${record}" "${dir}/$(package_file "${family}" "${arch}" "${version}").build.json" ||
-        bad+=("$(package_file "${family}" "${arch}" "${version}"): not the binary of the ${arch} tarball")
-    done
-  done
+    cmp -s -- "${record}" "${dir}/$(package_file "${family}" "${arch}" "${version}").build.json" ||
+      bad+=("$(package_file "${family}" "${arch}" "${version}"): not the binary of the ${arch} tarball")
+  done < <(package_pairs)
   ((${#bad[@]} == 0)) || { printf 'refusing the release:\n' >&2; printf '  %s\n' "${bad[@]}" >&2; return 1; }
 }
 
 verify() {
   require_complete "$1" "$2"
   require_records "$1" "$2"
-  require_tarball_checksums "$1" "$2"
+  require_checksums "$1" "$2"
   require_one_binary_per_arch "$1" "$2"
 }
 
@@ -74,9 +73,7 @@ notes() {
   printf '## Assets\n\nEvery file of this release is listed with its SHA-256 in `SHA256SUMS`; the workflow attests the archive, the\ntarballs and the packages.\n\n'
   for note in "${dir}"/pgo-note-*.md; do printf -- '- %s\n' "$(cat -- "${note}")"; done
   printf '\nPackages (each repackages the binary of the tarball of its architecture, which is built once on glibc %s, and is\ninstalled in fresh containers of every supported image of its family before it is published):\n\n' "${glibc_floor}"
-  for family in "${package_families[@]}"; do
-    for arch in "${package_arches[@]}"; do printf -- '- `%s`\n' "$(package_file "${family}" "${arch}" "${version}")"; done
-  done
+  while read -r family arch; do printf -- '- `%s`\n' "$(package_file "${family}" "${arch}" "${version}")"; done < <(package_pairs)
 }
 
 case ${1:-} in

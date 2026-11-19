@@ -14,7 +14,7 @@ source "${here}/families.sh"
 family=${1:-} arch=${2:-} current=${3:-} out=${4:-}
 [[ $# == 4 ]] || { echo "usage: $0 FAMILY ARCH CURRENT_TAG OUT_DIR" >&2; exit 2; }
 require_member family "${family}" "${package_families[@]}"
-require_member architecture "${arch}" "${package_arches[@]}"
+require_family_arch "${family}" "${arch}"
 mkdir -p -- "${out}"
 
 pattern=$(package_glob "${family}" "${arch}")

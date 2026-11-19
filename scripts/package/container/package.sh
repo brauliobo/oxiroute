@@ -2,7 +2,8 @@
 # Runs inside the package container of a family (scripts/package/build.sh): assembles the family's package from the
 # binary tarball of the release. Nothing is compiled here: the binary is the one the release publishes as a tarball.
 #
-# Environment: FAMILY, ARCH, RELEASE_VERSION, SOURCE_DATE_EPOCH, HOST_UID.
+# Environment: FAMILY, ARCH, RELEASE_VERSION, SOURCE_DATE_EPOCH, HOST_UID. The Arch package is built by makepkg as an
+# unprivileged user from packaging/pacman/PKGBUILD.
 # Mounts: /src.tar (the source: recipes and layout files), /package (scripts/package), /out (the tarball in, the
 # package out).
 set -euo pipefail
@@ -23,6 +24,7 @@ install_packaging_tools() {
   refresh_index
   case ${FAMILY} in
     deb) install_packages dpkg-dev debhelper fakeroot binutils ;;
+    arch) install_packages base-devel ;;
     *) install_packages rpm-build systemd-rpm-macros tar gzip binutils ;;
   esac
 }
@@ -34,16 +36,17 @@ stage_files() {
   tar --directory "${stage}/payload" --strip-components=1 --extract --gzip --file "${tarball}"
   for file in "${layout_files[@]}"; do cp -- "${src}/packaging/arch/${file}" "${stage}/layout/"; done
   cp -- "${src}/docs/MANAGEMENT_CLI.md" "${src}/docs/user/INSTALL.md" "${stage}/docs/"
+  cp -- "${src}/packaging/arch/README.md" "${stage}/docs/arch-packaging.md"
 }
 
 package_deb() {
-  local tree=${work}/deb/oxiroute-$(package_version "${RELEASE_VERSION}") kind
+  local tree=${work}/deb/oxiroute-$(package_version "${FAMILY}" "${RELEASE_VERSION}") kind
   mkdir -p "${tree}"
   cp -a "${src}/packaging/deb/debian" "${tree}/debian"
   cp -a "${stage}" "${tree}/stage"
   for kind in service sysusers tmpfiles; do cp -- "${stage}/layout/oxiroute.${kind}" "${tree}/debian/"; done
   printf 'oxiroute (%s) unstable; urgency=medium\n\n  * Release %s.\n\n -- OxiRoute maintainers <noreply@example.invalid>  %s\n' \
-    "$(package_version "${RELEASE_VERSION}")" "${RELEASE_VERSION}" "$(date -R -d "@${SOURCE_DATE_EPOCH}")" > "${tree}/debian/changelog"
+    "$(package_version "${FAMILY}" "${RELEASE_VERSION}")" "${RELEASE_VERSION}" "$(date -R -d "@${SOURCE_DATE_EPOCH}")" > "${tree}/debian/changelog"
   (cd "${tree}" && dpkg-buildpackage --build=binary --no-sign --no-check-builddeps)
   cp -- "${work}/deb/$(package_file "${FAMILY}" "${ARCH}" "${RELEASE_VERSION}")" "${out}/"
 }
@@ -52,9 +55,21 @@ package_rpm() {
   local topdir=${work}/rpm
   mkdir -p "${topdir}"
   rpmbuild -bb "${src}/packaging/rpm/oxiroute.spec" --define "_topdir ${topdir}" --define "stage ${stage}" \
-    --define "pkg_version $(package_version "${RELEASE_VERSION}")" --define 'use_source_date_epoch_as_buildtime 1' \
+    --define "pkg_version $(package_version "${FAMILY}" "${RELEASE_VERSION}")" --define 'use_source_date_epoch_as_buildtime 1' \
     --define 'clamp_mtime_to_source_date_epoch 1'
   cp -- "${topdir}/RPMS/${ARCH}/$(package_file "${FAMILY}" "${ARCH}" "${RELEASE_VERSION}")" "${out}/"
+}
+
+package_pacman() {
+  local builder=${work}/pacman
+  useradd --create-home builder
+  mkdir -p "${builder}" "${work}/pkgdest"
+  cp -- "${src}/packaging/pacman/PKGBUILD" "${src}/packaging/arch/oxiroute.install" "${builder}/"
+  chmod -R a+rX "${stage}"
+  chown -R builder "${builder}" "${work}/pkgdest"
+  (cd "${builder}" && runuser -u builder -- env PKGDEST="${work}/pkgdest" OXIROUTE_STAGE="${stage}" \
+    OXIROUTE_PACKAGE_VERSION="$(package_version "${FAMILY}" "${RELEASE_VERSION}")" makepkg)
+  cp -- "${work}/pkgdest/$(package_file "${FAMILY}" "${ARCH}" "${RELEASE_VERSION}")" "${out}/"
 }
 
 report_glibc_floor() {
@@ -66,7 +81,8 @@ export_assets() {
   local file
   file=$(package_file "${FAMILY}" "${ARCH}" "${RELEASE_VERSION}")
   cp -- "${stage}/payload/BUILD-INFO.json" "${out}/${file}.build.json"
-  chown "${HOST_UID}" "${out}/${file}" "${out}/${file}.build.json"
+  [[ $(package_format "${FAMILY}") != pacman ]] || (cd "${out}" && sha256sum -- "${file}" > "${file}.sha256")
+  chown "${HOST_UID}" "${out}/${file}"*
 }
 
 install_packaging_tools

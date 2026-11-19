@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The release packages of oxiroute: .deb and .rpm of every family and architecture, assembled from the one binary of the
-# architecture and tested in containers.
+# The release packages of oxiroute: .deb, .rpm and Arch Linux packages of every family and architecture, assembled from the
+# one binary of the architecture and tested in containers.
 #
 #   main.sh binary ARCH VERSION OUT_DIR       build the binary tarball of an architecture on the oldest supported glibc
 #   main.sh layout ARCH VERSION OUT_DIR       the BOLT layout and the tarball of a binary built with STAGE=pgo (host)
@@ -12,14 +12,15 @@
 #   main.sh all FAMILY ARCH VERSION OUT_DIR   build, then test
 #   main.sh name FAMILY ARCH VERSION          the file name of the package
 #   main.sh stem VERSION ARCH FLAVOUR         the name of the binary tarball, without .tar.gz
-#   main.sh matrix assemble|install|extras|tests|flavours|any
+#   main.sh matrix assemble ARCH|install ARCH|extras|tests|flavours|any MATRIX [ARCH]
 #                                             the job matrices of the release workflow (JSON) and the x86_64 flavours
 #   main.sh assets list|verify|sums|notes ... the release asset set, its SHA256SUMS and its notes
 #   main.sh changed BASE                      whether a file the packages depend on changed since BASE
 #   main.sh previous FAMILY ARCH TAG OUT_DIR  the package of the previous release, for the upgrade test
 #   main.sh selftest                          the offline checks of these scripts
 #
-# FAMILY is deb, el9 or amzn2023; ARCH is x86_64 or aarch64; VERSION is the release version without the leading v.
+# FAMILY is deb, el9, amzn2023 or arch (x86_64 only); ARCH is x86_64 or aarch64; VERSION is the release version without
+# the leading v.
 # The VERSION is an input: nothing here reads or changes the version of the workspace. Each subcommand documents its
 # environment in its own file.
 set -euo pipefail

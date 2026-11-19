@@ -20,7 +20,7 @@ source "${here}/runtime.sh"
 family=${1:-} arch=${2:-} package=${3:-} previous=${4:-}
 [[ $# == 3 || $# == 4 ]] || { echo "usage: $0 FAMILY ARCH PACKAGE [PREVIOUS_PACKAGE]" >&2; exit 2; }
 require_member family "${family}" "${package_families[@]}"
-require_member architecture "${arch}" "${package_arches[@]}"
+require_family_arch "${family}" "${arch}"
 [[ -f ${package} ]] || { printf 'no such package: %s\n' "${package}" >&2; exit 1; }
 version=$(file_version "${family}" "${package}")
 [[ $(basename -- "${package}") == "$(package_file "${family}" "${arch}" "${version}")" ]] ||

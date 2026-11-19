@@ -44,25 +44,35 @@ prepare_image() {
   chmod -R a+rX /tmp/install /tmp/previous
 }
 
-install_new() { install_packages "/tmp/install/${PACKAGE}"; }
+install_new() { install_package_file "/tmp/install/${PACKAGE}"; }
 
 installed_version() {
-  if [[ ${pm} == apt ]]; then dpkg-query -W -f='${Version}' oxiroute; else rpm -q --qf '%{VERSION}' oxiroute; fi
+  case ${pm} in
+    apt) dpkg-query -W -f='${Version}' oxiroute ;;
+    dnf) rpm -q --qf '%{VERSION}' oxiroute ;;
+    pacman) pacman -Q oxiroute | cut -d' ' -f2 | sed 's/-1$//' ;;
+  esac
+}
+
+restore_kdl_migrated_by_install_hook() {
+  [[ ${pm} != pacman ]] || cp -- "${layout}/oxiroute.kdl" /etc/oxiroute/oxiroute.kdl
 }
 
 install_initial() {
   if [[ -z ${PREVIOUS:-} ]]; then install_new; return; fi
-  install_packages "/tmp/previous/${PREVIOUS}"
+  install_package_file "/tmp/previous/${PREVIOUS}"
   printf '# edited before the upgrade\n' >> /etc/oxiroute/oxiroute.env
   upgrade_package "/tmp/install/${PACKAGE}"
   cmp -s /usr/share/doc/oxiroute/BUILD-INFO.json "/out/${PACKAGE}.build.json" || fail "the upgrade did not install ${PACKAGE}"
   grep -qx '# edited before the upgrade' /etc/oxiroute/oxiroute.env || fail 'the upgrade overwrote a modified configuration'
   sed -i '/^# edited before the upgrade$/d' /etc/oxiroute/oxiroute.env
+  restore_kdl_migrated_by_install_hook
   pass "upgraded from ${PREVIOUS}, the modified configuration is kept"
 }
 
 check_files() {
-  local entry
+  local entry guide
+  case ${pm} in pacman) guide='arch-packaging.md' ;; *) guide='INSTALL.md' ;; esac
   for entry in "${shared_files[@]}"; do
     cmp -- "${entry%%:*}" "${layout}/${entry#*:}" || fail "${entry%%:*} differs from packaging/arch/${entry#*:}"
   done
@@ -77,17 +87,17 @@ check_files() {
   for asset in oxiroute oxr; do
     compgen -G "/usr/share/man/man1/${asset}.1*" > /dev/null || fail "the ${asset} manual page is missing"
   done
-  compgen -G '/usr/share/doc/oxiroute/INSTALL.md*' > /dev/null && [[ -f /usr/share/doc/oxiroute/BUILD-INFO.json ]] ||
+  compgen -G "/usr/share/doc/oxiroute/${guide}*" > /dev/null && [[ -f /usr/share/doc/oxiroute/BUILD-INFO.json ]] ||
     fail 'documentation is missing'
   pass 'the files of the layout are installed and equal the ones of packaging/arch'
 }
 
 marked_config_files() {
-  if [[ ${pm} == apt ]]; then
-    dpkg-query -W -f='${Conffiles}\n' oxiroute | awk 'NF { print $1 }'
-  else
-    rpm -q --qf '[%{FILEFLAGS:fflags}|%{FILENAMES}\n]' oxiroute | awk -F'|' '$1 ~ /c/ && $1 ~ /n/ { print $2 }'
-  fi | sort
+  case ${pm} in
+    apt) dpkg-query -W -f='${Conffiles}\n' oxiroute | awk 'NF { print $1 }' ;;
+    dnf) rpm -q --qf '[%{FILEFLAGS:fflags}|%{FILENAMES}\n]' oxiroute | awk -F'|' '$1 ~ /c/ && $1 ~ /n/ { print $2 }' ;;
+    pacman) pacman -Qii oxiroute | grep -oE '/etc/[^ ]+' ;;
+  esac | sort
 }
 
 check_config_marking() {
@@ -125,7 +135,7 @@ check_build_record() {
 
 check_commands() {
   [[ $(oxiroute version) == "${RELEASE_VERSION}" && $(oxr version) == "${RELEASE_VERSION}" ]] || fail "version is not ${RELEASE_VERSION}"
-  [[ $(installed_version) == "$(package_version "${RELEASE_VERSION}")" ]] || fail 'the package version is not the release version'
+  [[ $(installed_version) == "$(package_version "${FAMILY}" "${RELEASE_VERSION}")" ]] || fail 'the package version is not the release version'
   setpriv --reuid oxiroute --regid oxiroute --clear-groups oxiroute config check /etc/oxiroute/oxiroute.kdl \
     || fail 'the shipped default configuration does not check'
   pass "oxiroute ${RELEASE_VERSION} checks the shipped default configuration as the oxiroute user"
@@ -212,6 +222,11 @@ check_remove_config_apt() {
   pass 'remove keeps the configuration'
 }
 
+check_remove_config_pacman() {
+  grep -qx '# edited after the install' /etc/oxiroute/oxiroute.env.pacsave || fail 'remove did not keep the modified configuration'
+  pass 'remove keeps the modified configuration as oxiroute.env.pacsave'
+}
+
 check_remove_config_dnf() {
   grep -qx '# edited after the install' /etc/oxiroute/oxiroute.env.rpmsave || fail 'remove did not keep the modified configuration'
   pass 'remove keeps the modified configuration as oxiroute.env.rpmsave'
@@ -239,5 +254,5 @@ check_proxy
 check_reinstall_keeps_config
 check_remove
 "check_remove_config_${pm}"
-[[ ${pm} == dnf ]] || check_purge
+[[ ${pm} != apt ]] || check_purge
 printf 'PASS %s on %s\n' "${PACKAGE}" "${PRETTY_NAME}"

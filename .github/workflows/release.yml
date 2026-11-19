@@ -10,9 +10,10 @@ name: Release archive, binaries and packages
 #     tarballs only. test-archive builds the workspace tests once beside them and binary-tests runs the test binaries that start
 #     oxiroute against the shipped x86_64 binaries (the others run in ci.yml);
 #   - .deb (Debian 12 and 13, Ubuntu 22.04 and 24.04), .rpm for the RHEL family 9 (AlmaLinux 9, Rocky Linux 9, AlmaLinux 10)
-#     and Amazon Linux 2023, each on x86_64 and aarch64: the reusable workflow release-packages.yml repackages the binary of
-#     the architecture (no compilation) and installs it in a fresh container of every image of its family. packages-ARCH
-#     starts the moment binary-ARCH is done;
+#     and Amazon Linux 2023, each on x86_64 and aarch64, and the Arch Linux .pkg.tar.zst (x86_64, the file the AUR package
+#     oxiroute-bin installs): the reusable workflow release-packages.yml repackages the binary of the architecture (no
+#     compilation) and installs it in a fresh container of every image of its family. packages-ARCH starts the moment
+#     binary-ARCH is done;
 #   - publish: refuses a release that lacks one of them, that was not profile-guided, whose packages are not the binary of the
 #     tarball of their architecture, whose notes file is missing (docs/RELEASE_NOTES_<version>.md), or whose commit has no passing
 #     ci.yml run (ci-gate: that is why a tag run skips the checks ci.yml already ran).
@@ -102,8 +103,6 @@ jobs:
       bolt: ${{ steps.what.outputs.bolt }}
       attest: ${{ steps.what.outputs.attest }}
       flavours: ${{ steps.what.outputs.flavours }}
-      assemble_matrix: ${{ steps.what.outputs.assemble_matrix }}
-      install_matrix: ${{ steps.what.outputs.install_matrix }}
       extras_matrix: ${{ steps.what.outputs.extras_matrix }}
       has_extras: ${{ steps.what.outputs.has_extras }}
       tests_matrix: ${{ steps.what.outputs.tests_matrix }}
@@ -143,7 +142,7 @@ jobs:
           {
             printf 'version=%s\nbuild=%s\npgo=%s\nbolt=%s\nattest=%s\n' "${version}" "${build}" "${PGO}" "${BOLT}" "${PUBLISH}"
             printf 'flavours=%s\n' "$(scripts/package/main.sh matrix flavours)"
-            for matrix in assemble install extras tests; do
+            for matrix in extras tests; do
               printf '%s_matrix=%s\nhas_%s=%s\n' "${matrix}" "$(scripts/package/main.sh matrix "${matrix}")" \
                 "${matrix}" "$(scripts/package/main.sh matrix any "${matrix}")"
             done
@@ -485,8 +484,6 @@ jobs:
       runner: ubuntu-24.04
       pgo: ${{ needs.changes.outputs.pgo }}
       attest: ${{ needs.changes.outputs.attest }}
-      assemble_matrix: ${{ needs.changes.outputs.assemble_matrix }}
-      install_matrix: ${{ needs.changes.outputs.install_matrix }}
 
   packages-aarch64:
     name: Packages aarch64
@@ -505,8 +502,6 @@ jobs:
       runner: ubuntu-24.04-arm
       pgo: ${{ needs.changes.outputs.pgo }}
       attest: ${{ needs.changes.outputs.attest }}
-      assemble_matrix: ${{ needs.changes.outputs.assemble_matrix }}
-      install_matrix: ${{ needs.changes.outputs.install_matrix }}
 
   publish:
     name: Publish the release assets

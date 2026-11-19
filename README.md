@@ -58,14 +58,15 @@ prerequisites described in the guide. Linux provides the fullest monitoring and 
 
 ## Install a release
 
-Each [GitHub release](https://github.com/brauliobo/oxiroute/releases) attaches Debian and RPM packages, binary
-tarballs for `x86_64` and `aarch64`, and one `SHA256SUMS`. There is no hosted apt or yum repository yet; install the
+Each [GitHub release](https://github.com/brauliobo/oxiroute/releases) attaches Debian, RPM and Arch Linux packages,
+binary tarballs for `x86_64` and `aarch64`, and one `SHA256SUMS`. There is no hosted apt, yum or pacman repository yet; install the
 file you downloaded, after `sha256sum --check --ignore-missing SHA256SUMS`:
 
 ```sh
 sudo apt install ./oxiroute_<version>_amd64.deb                   # Debian 12/13, Ubuntu 22.04/24.04
 sudo dnf install ./oxiroute-<version>-1.el9.x86_64.rpm            # AlmaLinux and Rocky Linux 9
 sudo dnf install ./oxiroute-<version>-1.amzn2023.x86_64.rpm       # Amazon Linux 2023
+sudo pacman -U ./oxiroute-<version>-1-x86_64.pkg.tar.zst          # Arch Linux
 ```
 
 The packages enable and start nothing; [Install a release package](docs/user/INSTALL.md) has the aarch64 names, the

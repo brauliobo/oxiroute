@@ -1,0 +1,35 @@
+pkgname=oxiroute
+pkgver=${OXIROUTE_PACKAGE_VERSION:?}
+pkgrel=1
+pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime (prebuilt, profile-guided release binaries)'
+arch=('x86_64')
+url='https://github.com/brauliobo/oxiroute'
+license=('Apache-2.0')
+depends=('ca-certificates' 'gcc-libs' 'glibc' 'systemd>=257')
+optdepends=('certbot: provide certificate lineages consumed by configured Certbot sources')
+options=('!debug')
+backup=('etc/oxiroute/oxiroute.env'
+        'etc/oxiroute/oxiroute.kdl'
+        'etc/oxiroute/oxiroute.lua')
+install=oxiroute.install
+_stage=${OXIROUTE_STAGE:?}
+
+package() {
+  install -Dm755 "${_stage}/payload/bin/oxiroute" "${pkgdir}/usr/bin/oxiroute"
+  ln -s oxiroute "${pkgdir}/usr/bin/oxr"
+  install -Dm644 -t "${pkgdir}/usr/share/bash-completion/completions" "${_stage}"/payload/share/bash-completion/completions/*
+  install -Dm644 -t "${pkgdir}/usr/share/zsh/site-functions" "${_stage}"/payload/share/zsh/site-functions/*
+  install -Dm644 -t "${pkgdir}/usr/share/fish/vendor_completions.d" "${_stage}"/payload/share/fish/vendor_completions.d/*
+  install -Dm644 -t "${pkgdir}/usr/share/man/man1" "${_stage}"/payload/share/man/man1/*
+  install -Dm755 "${_stage}/payload/lib/oxiroute/oxiroute-worker-launcher" "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
+  install -Dm644 "${_stage}/payload/LICENSE" "${pkgdir}/usr/share/licenses/oxiroute/LICENSE"
+
+  install -Dm644 "${_stage}/layout/oxiroute.service" "${pkgdir}/usr/lib/systemd/system/oxiroute.service"
+  install -Dm644 "${_stage}/layout/oxiroute.sysusers" "${pkgdir}/usr/lib/sysusers.d/oxiroute.conf"
+  install -Dm644 "${_stage}/layout/oxiroute.tmpfiles" "${pkgdir}/usr/lib/tmpfiles.d/oxiroute.conf"
+  install -Dm644 "${_stage}/layout/oxiroute.modules" "${pkgdir}/usr/lib/modules-load.d/oxiroute.conf"
+  install -Dm644 -t "${pkgdir}/etc/oxiroute" "${_stage}"/layout/oxiroute.{env,kdl,lua}
+  install -Dm644 "${_stage}/docs/arch-packaging.md" "${pkgdir}/usr/share/doc/oxiroute/arch-packaging.md"
+  install -Dm644 "${_stage}/docs/MANAGEMENT_CLI.md" "${pkgdir}/usr/share/doc/oxiroute/management-cli.md"
+  install -Dm644 "${_stage}/payload/BUILD-INFO.json" "${pkgdir}/usr/share/doc/oxiroute/BUILD-INFO.json"
+}

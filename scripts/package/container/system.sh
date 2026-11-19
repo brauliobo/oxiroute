@@ -2,11 +2,13 @@
 # Sourced inside a container: the package manager of the image, whichever family it belongs to.
 
 . /etc/os-release
-if command -v apt-get > /dev/null; then pm=apt; else pm=dnf; fi
+if command -v apt-get > /dev/null; then pm=apt; elif command -v dnf > /dev/null; then pm=dnf; else pm=pacman; fi
 
 apt_network=(-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
 
 dnf_network=(--setopt=retries=10 --setopt=timeout=60)
+
+pacman_install=(--noconfirm --noprogressbar)
 
 refresh_dnf_metadata() {
   local attempt
@@ -19,20 +21,33 @@ refresh_dnf_metadata() {
 }
 
 refresh_index() {
-  if [[ ${pm} == apt ]]; then apt-get update -qq "${apt_network[@]}"; else refresh_dnf_metadata; fi
+  case ${pm} in
+    apt) apt-get update -qq "${apt_network[@]}" ;;
+    dnf) refresh_dnf_metadata ;;
+    pacman) pacman -Syu "${pacman_install[@]}" ;;
+  esac
 }
 
 install_documentation() {
-  if [[ ${pm} == apt ]]; then rm -f /etc/dpkg/dpkg.cfg.d/excludes; else sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf; fi
+  case ${pm} in
+    apt) rm -f /etc/dpkg/dpkg.cfg.d/excludes ;;
+    dnf) sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf ;;
+    pacman) sed -i '/^NoExtract/d' /etc/pacman.conf ;;
+  esac
 }
 
 install_packages() {
-  if [[ ${pm} == apt ]]; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${apt_network[@]}" \
-      -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
-  else
-    dnf -y -q install "${dnf_network[@]}" "$@"
-  fi
+  case ${pm} in
+    apt)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${apt_network[@]}" \
+        -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" ;;
+    dnf) dnf -y -q install "${dnf_network[@]}" "$@" ;;
+    pacman) pacman -S --needed "${pacman_install[@]}" "$@" ;;
+  esac
+}
+
+install_package_file() {
+  if [[ ${pm} == pacman ]]; then pacman -U "${pacman_install[@]}" "$1"; else install_packages "$1"; fi
 }
 
 install_test_tools() {
@@ -40,7 +55,11 @@ install_test_tools() {
 }
 
 remove_packages() {
-  if [[ ${pm} == apt ]]; then apt-get remove -y -qq "$@"; else dnf -y -q remove "$@"; fi
+  case ${pm} in
+    apt) apt-get remove -y -qq "$@" ;;
+    dnf) dnf -y -q remove "$@" ;;
+    pacman) pacman -R "${pacman_install[@]}" "$@" ;;
+  esac
 }
 
 purge_packages() {
@@ -48,7 +67,11 @@ purge_packages() {
 }
 
 reinstall_package() {
-  if [[ ${pm} == apt ]]; then install_packages --reinstall "$1"; else dnf -y -q reinstall "${dnf_network[@]}" "$1"; fi
+  case ${pm} in
+    apt) install_packages --reinstall "$1" ;;
+    dnf) dnf -y -q reinstall "${dnf_network[@]}" "$1" ;;
+    pacman) install_package_file "$1" ;;
+  esac
 }
 
 dnf_upgrade_verb() {
@@ -59,9 +82,9 @@ dnf_upgrade_verb() {
 }
 
 upgrade_package() {
-  if [[ ${pm} == apt ]]; then
-    install_packages --reinstall "$1"
-  else
-    dnf -y -q "$(dnf_upgrade_verb "$1")" "${dnf_network[@]}" "$1"
-  fi
+  case ${pm} in
+    apt) install_packages --reinstall "$1" ;;
+    dnf) dnf -y -q "$(dnf_upgrade_verb "$1")" "${dnf_network[@]}" "$1" ;;
+    pacman) install_package_file "$1" ;;
+  esac
 }

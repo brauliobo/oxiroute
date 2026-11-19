@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Assembles the package of one family and architecture from the binary tarball of the release, inside a container of
-# the family (dpkg-buildpackage or rpmbuild), and writes OUT_DIR/PACKAGE and OUT_DIR/PACKAGE.build.json (the build record
-# of the binary inside it). Nothing is compiled: OUT_DIR must already hold oxiroute-VERSION-TARGET.tar.gz, the tarball
-# of binary.sh or of the release workflow, and the package is that binary repackaged, in seconds.
+# the family (dpkg-buildpackage, rpmbuild or makepkg), and writes OUT_DIR/PACKAGE and OUT_DIR/PACKAGE.build.json (the
+# build record of the binary inside it; an Arch package also gets OUT_DIR/PACKAGE.sha256, which the AUR recipe pins).
+# Nothing is compiled: OUT_DIR must already hold oxiroute-VERSION-TARGET.tar.gz, the tarball of binary.sh or of the
+# release workflow, and the package is that binary repackaged, in seconds.
 #
 #   build.sh FAMILY ARCH VERSION OUT_DIR
 #
@@ -17,7 +18,7 @@ source "${here}/runtime.sh"
 family=${1:-} arch=${2:-} version=${3:-} out=${4:-}
 [[ $# == 4 ]] || { echo "usage: $0 FAMILY ARCH VERSION OUT_DIR" >&2; exit 2; }
 require_member family "${family}" "${package_families[@]}"
-require_member architecture "${arch}" "${package_arches[@]}"
+require_family_arch "${family}" "${arch}"
 require_version "${version}"
 [[ ${arch} == "$(host_arch)" ]] || { echo "an ${arch} package is assembled natively; this host is $(host_arch)" >&2; exit 1; }
 tarball=${out}/$(tarball_stem "${version}" "$(package_target "${arch}")" unwind).tar.gz

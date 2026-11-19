@@ -20,11 +20,11 @@ fake_release() {
   while IFS= read -r asset; do
     case ${asset} in
       *.build.json) printf '{\n  "version": "%s",\n  "pgo": true\n}\n' "${version}" > "${dir}/${asset}" ;;
-      *.tar.gz.sha256) ;;
+      *.tar.gz.sha256 | *.pkg.tar.zst.sha256) ;;
       *) printf '%s\n' "${asset}" > "${dir}/${asset}" ;;
     esac
   done < <("${assets}" list "${version}" | grep -v '^SHA256SUMS$')
-  for asset in "${dir}"/*.tar.gz; do (cd "${dir}" && sha256sum -- "$(basename -- "${asset}")" > "$(basename -- "${asset}").sha256"); done
+  for asset in "${dir}"/*.tar.gz "${dir}"/*.pkg.tar.zst; do (cd "${dir}" && sha256sum -- "$(basename -- "${asset}")" > "$(basename -- "${asset}").sha256"); done
 }
 
 refused() { ! "$@" 2> "${scratch}/refusal"; }
@@ -53,7 +53,7 @@ test_every_missing_asset_is_refused() {
 test_plain_build_is_refused() {
   fake_release "${scratch}/plain"
   sed -i 's/"pgo": true/"pgo": false/' "${scratch}/plain/$(tarball_stem "${version}" "$(package_target x86_64)" unwind).build.json" \
-    "${scratch}"/plain/*x86_64.rpm.build.json "${scratch}"/plain/*_amd64.deb.build.json
+    "${scratch}"/plain/*x86_64.rpm.build.json "${scratch}"/plain/*_amd64.deb.build.json "${scratch}"/plain/*.pkg.tar.zst.build.json
   refused "${assets}" verify "${scratch}/plain" "${version}" || fail 'a plain-built package is accepted'
   ALLOW_PLAIN=1 "${assets}" verify "${scratch}/plain" "${version}" || fail 'ALLOW_PLAIN does not accept a dry run'
 }
@@ -62,6 +62,23 @@ test_stale_checksum_is_refused() {
   fake_release "${scratch}/stale"
   printf 'changed\n' >> "${scratch}/stale/oxiroute-${version}-aarch64-unknown-linux-gnu.tar.gz"
   refused "${assets}" verify "${scratch}/stale" "${version}" || fail 'a tarball that does not match its checksum is accepted'
+  fake_release "${scratch}/stale-package"
+  printf 'changed\n' >> "${scratch}/stale-package/$(package_file arch x86_64 "${version}")"
+  refused "${assets}" verify "${scratch}/stale-package" "${version}" || fail 'an Arch package that does not match its checksum is accepted'
+  grep -q 'pkg.tar.zst.sha256' "${scratch}/refusal" || fail 'the refusal does not name the checksum of the Arch package'
+}
+
+test_arch_package_is_an_x86_64_asset_with_a_checksum() {
+  local list
+  list=$("${assets}" list "${version}")
+  grep -qx "oxiroute-${version}-1-x86_64.pkg.tar.zst" <<< "${list}" || fail 'no Arch package'
+  grep -qx "oxiroute-${version}-1-x86_64.pkg.tar.zst.sha256" <<< "${list}" || fail 'no checksum of the Arch package'
+  grep -qx "oxiroute-${version}-1-x86_64.pkg.tar.zst.build.json" <<< "${list}" || fail 'no build record of the Arch package'
+  ! grep -q 'aarch64.*pkg.tar.zst' <<< "${list}" || fail 'an Arch package for aarch64'
+  fake_release "${scratch}/notes"
+  printf "build line\n" > "${scratch}/notes/pgo-note-x86_64.md"
+  grep -q "oxiroute-${version}-1-x86_64.pkg.tar.zst" <<< "$("${assets}" notes "${scratch}/notes" "${version}")" ||
+    fail 'the release notes do not list the Arch package'
 }
 
 test_release_assets_per_target() {
@@ -78,14 +95,19 @@ test_release_assets_per_target() {
 matrix_size() { python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))'; }
 
 test_matrices() {
-  [[ $("${here}/matrix.sh" assemble | matrix_size) == 3 ]] || fail 'the assemble matrix is not one job per family'
-  [[ $("${here}/matrix.sh" install | matrix_size) == 8 ]] || fail 'the install matrix is not one job per image of every family'
+  [[ $("${here}/matrix.sh" assemble x86_64 | matrix_size) == 4 ]] || fail 'the x86_64 assemble matrix is not one job per family'
+  [[ $("${here}/matrix.sh" assemble aarch64 | matrix_size) == 3 ]] || fail 'the aarch64 assemble matrix has a family that is not released for it'
+  [[ $("${here}/matrix.sh" install x86_64 | matrix_size) == 9 ]] || fail 'the x86_64 install matrix is not one job per image of every family'
+  [[ $("${here}/matrix.sh" install aarch64 | matrix_size) == 8 ]] || fail 'the aarch64 install matrix is not one job per image of its families'
+  grep -q '"family":"arch","image":"archlinux:latest"' <<< "$("${here}/matrix.sh" install x86_64)" || fail 'Arch Linux is not tested'
+  ! grep -q '"family":"arch"' <<< "$("${here}/matrix.sh" assemble aarch64)" || fail 'the Arch package is assembled for aarch64'
+  refused "${here}/matrix.sh" assemble || fail 'an assemble matrix without an architecture is accepted'
   [[ $("${here}/matrix.sh" any extras) == true && $(ABORT=0 "${here}/matrix.sh" any extras) == false ]] || fail 'ABORT does not select the extras'
   [[ $(ABORT=0 V3=1 "${here}/matrix.sh" extras) == '{"include":[{"flavour":"v3"}]}' ]] || fail 'V3 is not an extra flavour'
   [[ $(ABORT=0 BOLT=0 "${here}/matrix.sh" any tests) == false ]] || fail 'a dry run runs the workspace tests'
   [[ $(BOLT=0 "${here}/matrix.sh" tests) == '{"include":[{"flavour":"abort"}]}' ]] || fail 'the abort flavour is not tested'
   [[ $("${here}/matrix.sh" tests | matrix_size) == 2 ]] || fail 'the BOLT layout is not tested'
-  grep -q '"image":"rockylinux/rockylinux:9"' <<< "$("${here}/matrix.sh" install)" || fail 'Rocky Linux 9 is not tested'
+  grep -q '"image":"rockylinux/rockylinux:9"' <<< "$("${here}/matrix.sh" install x86_64)" || fail 'Rocky Linux 9 is not tested'
   refused "${here}/matrix.sh" bogus || fail 'an unknown matrix is accepted'
 }
 
@@ -105,15 +127,16 @@ test_one_binary_per_architecture() {
 
 test_file_names_round_trip() {
   local family arch name
-  for family in "${package_families[@]}"; do
-    for arch in "${package_arches[@]}"; do
-      name=$(package_file "${family}" "${arch}" 7.0.0-rc.1)
-      [[ $(file_version "${family}" "${name}") == 7.0.0-rc.1 ]] || fail "${name} does not give its version back"
-    done
-  done
+  while read -r family arch; do
+    name=$(package_file "${family}" "${arch}" 7.0.0-rc.1)
+    [[ $(file_version "${family}" "${name}") == 7.0.0-rc.1 ]] || fail "${name} does not give its version back"
+  done < <(package_pairs)
   [[ $(package_file deb x86_64 7.0.0) == oxiroute_7.0.0_amd64.deb ]] || fail 'deb file name'
   [[ $(package_file el9 aarch64 7.0.0) == oxiroute-7.0.0-1.el9.aarch64.rpm ]] || fail 'el9 file name'
   [[ $(package_file amzn2023 x86_64 7.0.0) == oxiroute-7.0.0-1.amzn2023.x86_64.rpm ]] || fail 'amzn2023 file name'
+  [[ $(package_file arch x86_64 7.0.0) == oxiroute-7.0.0-1-x86_64.pkg.tar.zst ]] || fail 'arch file name'
+  [[ $(package_file arch x86_64 7.0.0-rc.1) == oxiroute-7.0.0_rc.1-1-x86_64.pkg.tar.zst ]] || fail 'arch pre-release file name'
+  [[ $(package_glob arch x86_64) == oxiroute-*-1-x86_64.pkg.tar.zst ]] || fail 'arch glob'
 }
 
 test_workflows_are_pinned() {
@@ -172,7 +195,7 @@ test_profile_keys_name_architecture_and_flavour() {
 test_recipes_carry_no_version() {
   local current
   current=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${repo}/Cargo.toml" | head -n 1)
-  ! grep -rnwF -e "${current}" -e 7.0.0 "${repo}/packaging/deb" "${repo}/packaging/rpm" "${repo}/scripts/package/container" \
+  ! grep -rnwF -e "${current}" -e 7.0.0 "${repo}/packaging/deb" "${repo}/packaging/rpm" "${repo}/packaging/pacman" "${repo}/scripts/package/container" \
     "${repo}/scripts/package/build.sh" "${repo}/scripts/package/test.sh" || fail 'a literal release version in a recipe or script'
 }
 
@@ -189,9 +212,21 @@ test_layout_comes_from_packaging_arch() {
   for file in $(sed -n 's/^layout_files=(\(.*\))/\1/p' "${here}/container/package.sh"); do
     [[ -f ${repo}/packaging/arch/${file} ]] || fail "packaging/arch/${file} does not exist"
     grep -q "${file}" "${repo}/packaging/rpm/oxiroute.spec" "${repo}/packaging/deb/debian/rules" || fail "${file} is in no recipe"
+    grep -q "${file}" "${repo}/packaging/pacman/PKGBUILD" || fail "${file} is not in the Arch recipe"
   done
   [[ $(grep -c '%config(noreplace)' "${repo}/packaging/rpm/oxiroute.spec") == 3 ]] || fail 'the rpm does not mark the 3 configuration files'
   ! grep -rn 'enable\|restart' "${repo}/packaging/deb/debian/rules" | grep -v 'no-enable' || fail 'the deb enables a service'
+}
+
+test_arch_release_workflow_wiring() {
+  local packages=${repo}/.github/workflows/release-packages.yml
+  [[ $(grep -c 'dist/\*\.pkg\.tar\.zst$' "${packages}") == 2 ]] || fail 'the Arch package is not both uploaded and attested'
+  grep -q 'dist/\*\.pkg\.tar\.zst\.sha256$' "${packages}" || fail 'the checksum of the Arch package is not uploaded'
+  grep -q 'matrix assemble "${{ inputs.arch }}"' "${packages}" || fail 'the assemble matrix does not depend on the architecture'
+  grep -q 'matrix install "${{ inputs.arch }}"' "${packages}" || fail 'the install matrix does not depend on the architecture'
+  grep -Eq "${recipe_paths_re}" <<< packaging/pacman/PKGBUILD || fail 'the Arch recipe does not start the package build'
+  grep -Eq "${recipe_paths_re}" <<< packaging/arch/oxiroute.install || fail 'the install script does not start the package build'
+  ! grep -Eq "${recipe_paths_re}" <<< packaging/arch/bin/PKGBUILD || fail 'the AUR recipe starts the package build'
 }
 
 test_first_release_with_packages_has_no_upgrade_source() {
@@ -208,6 +243,8 @@ test_first_release_with_packages_has_no_upgrade_source() {
 }
 
 test_complete_release_is_accepted_and_summed
+test_arch_package_is_an_x86_64_asset_with_a_checksum
+test_arch_release_workflow_wiring
 test_first_release_with_packages_has_no_upgrade_source
 test_every_missing_asset_is_refused
 test_plain_build_is_refused

@@ -1,8 +1,8 @@
 # Install a release package
 
-Every release attaches Debian and RPM packages and per-architecture binary tarballs to its
+Every release attaches Debian, RPM and Arch Linux packages and per-architecture binary tarballs to its
 [GitHub release](https://github.com/brauliobo/oxiroute/releases), with one `SHA256SUMS` for all assets.
-There is no hosted apt or yum repository: download the file, verify it, install it from disk.
+There is no hosted apt, yum or pacman repository: download the file, verify it, install it from disk.
 
 ## Choose an asset
 
@@ -11,6 +11,7 @@ There is no hosted apt or yum repository: download the file, verify it, install 
 | Debian 12 and 13, Ubuntu 22.04 and 24.04 | `oxiroute_<version>_<arch>.deb` | `amd64`, `arm64` |
 | RHEL-family 9 (AlmaLinux, Rocky Linux; also installs on AlmaLinux 10) | `oxiroute-<version>-1.el9.<arch>.rpm` | `x86_64`, `aarch64` |
 | Amazon Linux 2023 | `oxiroute-<version>-1.amzn2023.<arch>.rpm` | `x86_64`, `aarch64` |
+| Arch Linux | `oxiroute-<version>-1-x86_64.pkg.tar.zst` | `x86_64` |
 | Any other glibc Linux | `oxiroute-<version>-<arch>-unknown-linux-gnu.tar.gz` | `x86_64`, `aarch64` |
 
 Replace `<version>` with the release version without the leading `v` (for example `7.0.0`).
@@ -44,6 +45,16 @@ sudo dnf install ./oxiroute-<version>-1.amzn2023.x86_64.rpm
 ```
 
 `yum install` takes the same file names on these systems. Use the `aarch64` file on 64-bit Arm hosts.
+
+## Arch Linux
+
+```sh
+sudo pacman -U ./oxiroute-<version>-1-x86_64.pkg.tar.zst
+```
+
+The package is named `oxiroute`, so a pacman repository that serves the file replaces and upgrades it like any other
+package. The AUR package `oxiroute-bin` installs this same file (`oxiroute` on the AUR builds from source and has the same
+name, so the two replace each other). The Arch package is x86_64 only.
 
 ## Binary tarball
 

@@ -1,9 +1,10 @@
 name: Release packages
 
-# The .deb and .rpm packages of one architecture (called by release.yml as soon as that architecture's binary tarball exists).
-# Nothing is compiled: every package repackages the one binary of the architecture. A package is assembled in a container of
-# its family (dpkg-buildpackage, rpmbuild), then installed, upgraded, removed and purged in a fresh container of every image
-# it is promised to run on, one job per image (scripts/package/matrix.sh).
+# The .deb, .rpm and Arch Linux packages of one architecture (called by release.yml as soon as that architecture's binary
+# tarball exists). Nothing is compiled: every package repackages the one binary of the architecture. A package is assembled
+# in a container of its family (dpkg-buildpackage, rpmbuild, makepkg), then installed, upgraded, removed and purged in a
+# fresh container of every image it is promised to run on, one job per image (scripts/package/matrix.sh, which knows the
+# families released for each architecture).
 
 on:
   workflow_call:
@@ -36,21 +37,35 @@ on:
         description: true attests the provenance of the packages
         required: true
         type: string
-      assemble_matrix:
-        description: Matrix of the families (scripts/package/matrix.sh assemble)
-        required: true
-        type: string
-      install_matrix:
-        description: Matrix of the family and image rows (scripts/package/matrix.sh install)
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Plan ${{ inputs.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      assemble_matrix: ${{ steps.matrices.outputs.assemble_matrix }}
+      install_matrix: ${{ steps.matrices.outputs.install_matrix }}
+    steps:
+      - name: Check out the ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Select the families and images released for the architecture
+        id: matrices
+        run: |
+          {
+            printf 'assemble_matrix=%s\n' "$(scripts/package/main.sh matrix assemble "${{ inputs.arch }}")"
+            printf 'install_matrix=%s\n' "$(scripts/package/main.sh matrix install "${{ inputs.arch }}")"
+          } >> "${GITHUB_OUTPUT}"
+
   assemble:
     name: Assemble ${{ matrix.family }} ${{ inputs.arch }}
+    needs: plan
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 20
     permissions:
@@ -59,7 +74,7 @@ jobs:
       attestations: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.assemble_matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.assemble_matrix) }}
     steps:
       - name: Check out the ref
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -82,8 +97,11 @@ jobs:
           path: |
             dist/*.deb
             dist/*.rpm
+            dist/*.pkg.tar.zst
             dist/*.deb.build.json
             dist/*.rpm.build.json
+            dist/*.pkg.tar.zst.build.json
+            dist/*.pkg.tar.zst.sha256
           if-no-files-found: error
 
       - name: Attest the provenance of the package
@@ -93,17 +111,18 @@ jobs:
           subject-path: |
             dist/*.deb
             dist/*.rpm
+            dist/*.pkg.tar.zst
 
   install:
     name: Install ${{ matrix.family }} ${{ inputs.arch }} on ${{ matrix.image }}
-    needs: assemble
+    needs: [plan, assemble]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.install_matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.install_matrix) }}
     steps:
       - name: Check out the ref
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
