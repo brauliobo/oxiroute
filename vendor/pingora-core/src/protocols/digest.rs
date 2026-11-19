@@ -90,6 +90,7 @@ pub struct SocketDigest {
     /// Original destination address
     pub original_dst: OnceCell<Option<SocketAddr>>,
     connection_lifetime: OnceCell<Arc<dyn ConnectionLifetime>>,
+    tracking: OnceCell<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl SocketDigest {
@@ -101,6 +102,7 @@ impl SocketDigest {
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
             connection_lifetime: OnceCell::new(),
+            tracking: OnceCell::new(),
         }
     }
 
@@ -112,7 +114,27 @@ impl SocketDigest {
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
             connection_lifetime: OnceCell::new(),
+            tracking: OnceCell::new(),
         }
+    }
+
+    /// The application state tied to this connection, created by `init` the first time it is asked for. It is
+    /// dropped with the last reference to the digest, that is with the connection.
+    pub fn tracking_or_init(
+        &self,
+        init: impl FnOnce() -> Option<Arc<dyn std::any::Any + Send + Sync>>,
+    ) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        if self.tracking.get().is_none() {
+            if let Some(tracking) = init() {
+                let _ = self.tracking.set(tracking);
+            }
+        }
+        self.tracking.get()
+    }
+
+    /// The application state tied to this connection, if any.
+    pub fn tracking(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.tracking.get()
     }
 
     pub(crate) fn attach_connection_lifetime(

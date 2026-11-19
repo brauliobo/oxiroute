@@ -460,6 +460,8 @@ impl RuntimeGeneration {
 
     pub(super) fn start_accepting(&self) {
         self.metrics.activate_limits(self.plan().max_connections);
+        self.metrics
+            .activate_client_tracking(self.config.as_draft().client_tracking().into());
         self.accept_gate.enable();
         self.control_gate.enable();
         Doorbell::process().ring();

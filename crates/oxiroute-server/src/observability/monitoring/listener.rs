@@ -247,6 +247,24 @@ impl ListenerMetrics {
         }
     }
 
+    /// Starts tracking an accepted connection of this listener for the client views; `None` for a
+    /// control listener and while client tracking is disabled.
+    pub(crate) fn track(
+        &self,
+        peer: std::net::SocketAddr,
+        protocol: crate::clients::Protocol,
+    ) -> Option<crate::clients::Connection> {
+        if self.state.metric_policy != ListenerMetricPolicy::Public {
+            return None;
+        }
+        self.process.clients.open(crate::clients::Arrival {
+            peer,
+            listener: Arc::clone(&self.state.name),
+            protocol,
+            now: Instant::now(),
+        })
+    }
+
     /// Adds bytes read across this listener to its traffic total.
     ///
     /// # Errors
@@ -491,6 +509,7 @@ pub(super) struct ProcessAdmissionState {
     limit: AtomicU64,
     pub(super) rejected: AtomicU64,
     pub(super) retry_attempts: AtomicU64,
+    pub(super) clients: Arc<crate::clients::Registry>,
     rescues: Mutex<BTreeMap<(String, u16), u64>>,
     pool_selections: Mutex<BTreeMap<(String, String), u64>>,
 }
@@ -503,6 +522,9 @@ impl ProcessAdmissionState {
             limit: AtomicU64::new(encode_limit(limit)),
             rejected: AtomicU64::new(0),
             retry_attempts: AtomicU64::new(0),
+            clients: Arc::new(crate::clients::Registry::new(
+                crate::clients::Settings::default(),
+            )),
             rescues: Mutex::new(BTreeMap::new()),
             pool_selections: Mutex::new(BTreeMap::new()),
         }

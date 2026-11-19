@@ -205,6 +205,14 @@ impl RuntimeMetrics {
         }
     }
 
+    pub(crate) fn activate_client_tracking(&self, settings: crate::clients::Settings) {
+        self.inner.process_admission.clients.activate(settings);
+    }
+
+    pub(crate) fn clients(&self) -> &Arc<crate::clients::Registry> {
+        &self.inner.process_admission.clients
+    }
+
     /// Registers the immutable upstream pools in canonical definition order.
     ///
     /// # Errors

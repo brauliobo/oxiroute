@@ -2,6 +2,7 @@ mod atomic_file;
 mod build_id;
 mod capsule;
 pub mod cli;
+mod clients;
 mod clock;
 pub mod config;
 mod continuity;
