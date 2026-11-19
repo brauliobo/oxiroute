@@ -60,6 +60,7 @@ oxiroute-config::cipher_list                          core
 oxiroute-config::compression                          core
 oxiroute-config::config_history                         core
 oxiroute-config::connection_scheduling                core
+oxiroute-config::cpu_level                            core
 oxiroute-config::h2_windows                           core
 oxiroute-config::http                                 core
 oxiroute-config::http3_transport                      core
@@ -78,6 +79,7 @@ oxiroute-config::worker_scaling                       core
 oxiroute-cpu                                          core
 oxiroute-cpu::env                                     core
 oxiroute-cpu::guard_pages                             core
+oxiroute-cpu::init                                    core
 oxiroute-cpu::lanes                                   core
 oxiroute-cpu::scan                                    core
 oxiroute-cpu::shared                                  core

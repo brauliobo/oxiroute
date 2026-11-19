@@ -723,6 +723,7 @@ of the setting and a one-line `summary`:
 | --- | --- | --- | --- |
 | `listener_ipv6_only` | `/config/listeners/<name>/bind/ipv6_only` | both | `IPV6_V6ONLY` is fixed once the socket is bound |
 | `registry_settings` | `/config/registry` | direct | the direct runtime opens the registry once |
+| `cpu_level` | `/config/cpu_level` | direct | the instruction-set level is fixed once for the process; a supervised reload applies it in the new worker |
 
 The applied generation's revision is the revision of the file with those settings left as they run, so
 `activeRevision` differs from the file's `candidateRevision` while a restart is required; editing the
