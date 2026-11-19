@@ -205,6 +205,11 @@ impl Pair {
         self.classic.finish();
         self.lane.finish();
     }
+
+    fn finish_gracefully(self) {
+        self.classic.finish_gracefully();
+        self.lane.finish_gracefully();
+    }
 }
 
 /// What a client and the origin saw for a script of writes on one connection.
@@ -344,6 +349,10 @@ impl Fleet {
 
     fn finish(self) {
         self.0.into_iter().for_each(Pair::finish);
+    }
+
+    fn finish_gracefully(self) {
+        self.0.into_iter().for_each(Pair::finish_gracefully);
     }
 }
 

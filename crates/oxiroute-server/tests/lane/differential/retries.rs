@@ -91,8 +91,8 @@ async fn scenario_after(
     let pair = Pair { classic, lane }.warmed().await;
     tokio::time::sleep(pause).await;
     let (classic, lane) = pair.play(script).await;
-    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
-    pair.finish();
+    pair.finish_gracefully();
+    let (classic_lines, lane_lines) = (log_lines(&classic_log), log_lines(&lane_log));
     Outcomes {
         classic,
         lane,

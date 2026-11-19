@@ -410,6 +410,11 @@ impl Wire {
     pub fn finish(self) {
         self.server.shutdown();
     }
+
+    /// Stops the proxy the way an operator does, so that what it queued for its logs is written.
+    pub fn finish_gracefully(self) {
+        self.server.shutdown_gracefully();
+    }
 }
 
 pub fn status(response: &str) -> &str {

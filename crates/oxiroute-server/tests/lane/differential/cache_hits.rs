@@ -150,8 +150,8 @@ async fn access_lines_of_cached_hits_are_identical_on_both_paths() {
     .await;
     let fleet = Fleet(vec![Pair { classic, lane }.warmed().await]);
     compare(&fleet, &corpus::cache_requests("/r")).await;
-    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
-    fleet.finish();
+    fleet.finish_gracefully();
+    let (classic_lines, lane_lines) = (log_lines(&classic_log), log_lines(&lane_log));
     assert_ne!(classic_lines.len(), 0);
     assert_eq!(classic_lines, lane_lines);
 }

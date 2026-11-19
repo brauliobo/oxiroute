@@ -623,19 +623,11 @@ async fn header_rules_are_applied_as_the_classic_path_applies_them() {
     }
 }
 
-/// The lines of an access log once it stops growing, with what differs by construction left out: times, durations and
-/// ids.
-async fn log_lines(path: &std::path::Path) -> Vec<String> {
-    let read = || std::fs::read_to_string(path).unwrap_or_default();
-    let mut text = read();
-    loop {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let next = read();
-        if next == text {
-            return text.lines().map(volatile_fields_masked).collect();
-        }
-        text = next;
-    }
+/// The lines of an access log of a server that stopped, with what differs by construction left out: times, durations
+/// and ids.
+fn log_lines(path: &std::path::Path) -> Vec<String> {
+    let text = std::fs::read_to_string(path).expect("the access log of a stopped server");
+    text.lines().map(volatile_fields_masked).collect()
 }
 
 fn volatile_fields_masked(line: &str) -> String {
@@ -689,7 +681,8 @@ async fn a_service_with_an_access_log_is_served_by_the_lane_and_logs_as_the_clas
     assert_eq!(run(&mut l, &requests).await, run(&mut c, &requests).await);
     c.finish().await;
     l.finish().await;
-    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
+    let (classic_served, lane_served) = (classic.served(), lane.served());
+    let (classic_lines, lane_lines) = (log_lines(&classic_log), log_lines(&lane_log));
     assert_eq!(classic_lines.len(), requests.len());
     assert!(
         classic_lines
@@ -697,6 +690,6 @@ async fn a_service_with_an_access_log_is_served_by_the_lane_and_logs_as_the_clas
             .all(|line| line.contains(r#""protocol":"h2""#))
     );
     assert_eq!(lane_lines, classic_lines);
-    assert_eq!(classic.served(), 0, "the classic side took the lane");
-    assert_eq!(lane.served(), requests.len(), "streams the lane served");
+    assert_eq!(classic_served, 0, "the classic side took the lane");
+    assert_eq!(lane_served, requests.len(), "streams the lane served");
 }

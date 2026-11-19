@@ -244,19 +244,11 @@ async fn a_tls_origin_with_an_untrusted_certificate_is_a_bad_gateway_on_both_pat
     assert_eq!(classic, lane);
 }
 
-/// The lines of an access log once it stops growing, with what differs by construction left out: times, durations and
-/// ids.
-pub(super) async fn log_lines(path: &std::path::Path) -> Vec<String> {
-    let read = || std::fs::read_to_string(path).unwrap_or_default();
-    let mut text = read();
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let next = read();
-        if next == text {
-            return text.lines().map(volatile_fields_masked).collect();
-        }
-        text = next;
-    }
+/// The lines of an access log of a proxy that stopped, with what differs by construction left out: times, durations
+/// and ids.
+pub(super) fn log_lines(path: &std::path::Path) -> Vec<String> {
+    let text = std::fs::read_to_string(path).expect("the access log of a stopped proxy");
+    text.lines().map(volatile_fields_masked).collect()
 }
 
 fn volatile_fields_masked(line: &str) -> String {
@@ -312,15 +304,13 @@ async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases
     })
     .await;
     compare(&fleet, cases).await;
-    let read = (0..SHARDS).map(|shard| async move {
+    fleet.finish_gracefully();
+    for shard in 0..SHARDS {
         let [classic_log, lane_log] = logs(shard);
-        tokio::join!(log_lines(&classic_log), log_lines(&lane_log))
-    });
-    for (shard, (classic_lines, lane_lines)) in join_all(read).await.into_iter().enumerate() {
+        let (classic_lines, lane_lines) = (log_lines(&classic_log), log_lines(&lane_log));
         assert!(!classic_lines.is_empty());
         assert_eq!(classic_lines, lane_lines, "shard {shard}");
     }
-    fleet.finish();
 }
 
 #[tokio::test]
