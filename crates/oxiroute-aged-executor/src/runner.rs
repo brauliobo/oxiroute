@@ -89,24 +89,26 @@ impl Future for Runner {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
         let now = Instant::now();
-        let polled = this.poll_batch(cx, now);
-        if this.shared.measured() {
+        let ran = this.poll_batch(cx, now);
+        if ran && this.shared.measured() {
             this.shared.add_busy(now.elapsed());
         }
-        polled
+        Poll::Pending
     }
 }
 
 impl Runner {
-    fn poll_batch(&mut self, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+    fn poll_batch(&mut self, cx: &mut Context<'_>, now: Instant) -> bool {
         let this = self;
         this.shared.register_runner(cx.waker());
         let submitted = this.shared.begin_batch(now);
         this.admit(submitted);
+        let mut ran = false;
         for _ in 0..BATCH {
             let Some(task) = this.shared.pop(now) else {
-                return Poll::Pending;
+                return ran;
             };
+            ran = true;
             this.run(&task);
             if !has_budget_remaining() {
                 break;
@@ -115,7 +117,7 @@ impl Runner {
         if this.shared.has_ready() {
             cx.waker().wake_by_ref();
         }
-        Poll::Pending
+        ran
     }
 }
 
