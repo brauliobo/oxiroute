@@ -784,6 +784,32 @@ async fn paced_origin(pieces: Vec<(&'static [u8], Duration)>) -> Origin {
     }
 }
 
+async fn held_origin(
+    first: &'static [u8],
+    release: Arc<tokio::sync::Notify>,
+    rest: &'static [u8],
+) -> Origin {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let address = listener.local_addr().expect("origin address");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("origin accept");
+        stream.set_nodelay(true).expect("origin nodelay");
+        while h1_wire::read_request(&mut stream).await.is_some() {
+            if stream.write_all(first).await.is_err() {
+                return;
+            }
+            release.notified().await;
+            if stream.write_all(rest).await.is_err() {
+                return;
+            }
+        }
+    });
+    Origin {
+        address,
+        requests: Arc::default(),
+    }
+}
+
 async fn paced_answer(plane: HttpDataPlane, pieces: Vec<(&'static [u8], Duration)>) -> Vec<u8> {
     let wire = Wire::over(paced_origin(pieces).await, logged(plane)).await;
     let answer = answer(wire.proxy).await;
@@ -815,22 +841,28 @@ async fn a_head_that_arrives_in_pieces_is_read_whole_like_on_the_tokio_plane() {
         head.extend_from_slice(b"Content-Length: 2\r\n\r\nok");
         leaked(head)
     };
-    for (name, reply, size) in [
+    let shapes = [
         ("clean in pieces of 3000", clean, 3_000),
         ("clean in pieces of 16 KiB", clean, 16_384),
         ("clean in pieces of 16382", clean, 16_382),
         ("bare LF in pieces of 5000", bare_lf, 5_000),
         ("folded in pieces of 7000", folded, 7_000),
-        ("clean in tiny pieces", &clean[..3_000], 1_000),
-    ] {
-        let reply = if name == "clean in tiny pieces" {
-            head_of(3, 700)
-        } else {
-            reply
-        };
-        let theirs = paced_answer(HttpDataPlane::Tokio, pieces_of(reply, size)).await;
-        for plane in engine_planes() {
-            let ours = paced_answer(plane, pieces_of(reply, size)).await;
+        ("clean in tiny pieces", head_of(3, 700), 1_000),
+    ];
+    let engines = engine_planes();
+    let answers = join_all(shapes.iter().map(|(_, reply, size)| async {
+        tokio::join!(
+            paced_answer(HttpDataPlane::Tokio, pieces_of(reply, *size)),
+            join_all(
+                engines
+                    .iter()
+                    .map(|plane| paced_answer(*plane, pieces_of(reply, *size)))
+            )
+        )
+    }))
+    .await;
+    for ((name, ..), (theirs, engine_answers)) in shapes.iter().zip(answers) {
+        for (plane, ours) in engines.iter().zip(engine_answers) {
             assert!(
                 ours == theirs,
                 "{name}: tokio {:?}, {plane:?} {:?}",
@@ -849,15 +881,17 @@ const FINAL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 #[tokio::test]
 async fn an_interim_response_reaches_the_client_before_the_final_one_exists() {
     for plane in [HttpDataPlane::Tokio].into_iter().chain(engine_planes()) {
-        let pause = Duration::from_millis(600);
-        let origin = paced_origin(vec![(EARLY_HINTS, pause), (FINAL, Duration::ZERO)]).await;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let origin = held_origin(EARLY_HINTS, Arc::clone(&release), FINAL).await;
         let wire = Wire::over(origin, logged(plane)).await;
         let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
         client.write_all(GET).await.expect("write request");
         let mut first = vec![0_u8; 4096];
-        let count = timeout(pause / 2, client.read(&mut first))
+        let count = timeout(STEP, client.read(&mut first))
             .await
-            .unwrap_or_else(|_| panic!("{plane:?}: no interim response within {:?}", pause / 2))
+            .unwrap_or_else(|_| {
+                panic!("{plane:?}: no interim response while the final one is held")
+            })
             .expect("read");
         let first = normalized(&first[..count]);
         assert!(
@@ -866,6 +900,7 @@ async fn an_interim_response_reaches_the_client_before_the_final_one_exists() {
             text(&first)
         );
         assert!(!text(&first).contains("200 OK"), "{plane:?}");
+        release.notify_one();
         let rest = answer_of(&mut client).await;
         assert!(
             text(&rest).starts_with("HTTP/1.1 200 OK\r\n") && text(&rest).contains("ok<OPEN>"),
