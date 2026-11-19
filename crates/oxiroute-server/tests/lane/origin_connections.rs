@@ -36,6 +36,7 @@ const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: pool.test\r\n\r\n";
 struct CountingOrigin {
     origin: Origin,
     accepted: Arc<AtomicUsize>,
+    closed: Arc<tokio::sync::Notify>,
 }
 
 impl CountingOrigin {
@@ -44,10 +45,13 @@ impl CountingOrigin {
         let address = listener.local_addr().expect("origin address");
         let accepted = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&accepted);
+        let closed = Arc::new(tokio::sync::Notify::new());
+        let closing = Arc::clone(&closed);
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("origin accept");
                 count.fetch_add(1, Ordering::SeqCst);
+                let closing = Arc::clone(&closing);
                 tokio::spawn(async move {
                     loop {
                         let request = match idle_close {
@@ -58,6 +62,8 @@ impl CountingOrigin {
                             None => read_request(&mut stream).await,
                         };
                         if request.is_none() || stream.write_all(REPLY).await.is_err() {
+                            drop(stream);
+                            closing.notify_one();
                             return;
                         }
                     }
@@ -70,6 +76,7 @@ impl CountingOrigin {
                 requests: Arc::default(),
             },
             accepted,
+            closed,
         }
     }
 
@@ -138,14 +145,14 @@ async fn classic_requests_share_an_origin_connection() {
 
 /// An origin connection the origin closed while it was idle is never used for a request.
 async fn a_connection_closed_while_idle_is_not_reused(lane: bool) {
-    let (wire, accepted) = proxy_for(
-        CountingOrigin::start(Some(Duration::from_millis(150))).await,
-        lane,
-    )
-    .await;
+    let origin = CountingOrigin::start(Some(Duration::from_millis(150))).await;
+    let closed = Arc::clone(&origin.closed);
+    let (wire, accepted) = proxy_for(origin, lane).await;
     let mut stream = client(&wire).await;
     serve(&mut stream, REQUEST).await;
-    sleep(Duration::from_millis(600)).await;
+    timeout(STEP, closed.notified())
+        .await
+        .expect("the origin closes the idle connection");
     serve(&mut stream, REQUEST).await;
     serve(&mut stream, REQUEST).await;
     assert_eq!(accepted.load(Ordering::SeqCst), 2, "lane: {lane}");
