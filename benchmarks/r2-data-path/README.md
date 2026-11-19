@@ -19,6 +19,7 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
 | `soak.py` | Mixed-traffic soak of one process (keep-alive, new connection, POST, 1 MiB upload, slow response, WebSocket-style upgrade over plain and TLS, TLS HTTP/1.1, HTTP/2, TCP echo, paced) with RSS, descriptor and thread samples, a configuration reload through the management API in the middle, an origin stop and a SIGTERM at the end. |
 | `memcpy_profile.py` | Copies of 48 bytes or more per request, by caller (`tool/memcpy_profile.c` preloaded): shows async state machines moved to the heap or into another future. |
+| `reload_memory.py` | PSS of OxiRoute, nginx and HAProxy after 1, 10 and 50 configuration reloads of a 1,001-route configuration, one worker each (management API, `SIGHUP`, `SIGUSR2`); needs `nginx` and `haproxy` on `PATH` and takes `--bin`, `--tool`, `--counts`, `--proxy-cpus`, `--origin-cpus`. |
 | `heapsum.py` | Live bytes of a jemalloc heap profile dump grouped by allocation site (what an idle connection holds); its header says how to take the profile. |
 
 ## Method
