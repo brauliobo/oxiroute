@@ -55,6 +55,11 @@ fn compose_drafts(
             config.config_history.as_ref(),
         )?;
         merge_optional(
+            "client_tracking",
+            &mut composed.client_tracking,
+            config.client_tracking.as_ref(),
+        )?;
+        merge_optional(
             "log_filter",
             &mut composed.log_filter,
             config.log_filter.as_ref(),

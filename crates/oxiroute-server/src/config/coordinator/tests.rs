@@ -71,6 +71,7 @@ fn minimal_config() -> ConfigDraft {
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }

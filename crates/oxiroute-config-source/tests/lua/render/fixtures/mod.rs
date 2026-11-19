@@ -48,6 +48,7 @@ pub(crate) fn complete_config() -> ConfigDraft {
         l4_services: test_l4_services(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }
@@ -84,6 +85,7 @@ pub(crate) fn minimal_config() -> ConfigDraft {
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }

@@ -77,6 +77,9 @@ declare their variables in the configuration already.
 | `audit.max_rotated_files` | 7 | 1 to 7 | same |
 | `config_history.max_entries` | 20 | 1 to 1000 | read at each configuration save |
 | `config_history.max_total_bytes` | 16 MiB | 4 MiB to 1 GiB | same |
+| `client_tracking.enabled` | true | boolean | read when a generation starts |
+| `client_tracking.max_clients` | 10000 | 1 to 1000000 | same |
+| `client_tracking.ipv6_prefix` | 128 | 64 or 128 | same |
 | `log_filter` | none (falls back to `RUST_LOG`, then errors only) | `RUST_LOG` syntax without regex, at most 1024 bytes | master: start and each committed replacement; worker: start; direct runtime: each generation |
 | `cpu_level` | none (falls back to `OXIROUTE_CPU_LEVEL`, then the CPU's level) | `scalar`, `sse2`, `sse42`, `avx2` or `avx512`, lowered to the CPU | master: start; worker: start, so the next reload that starts a worker applies it; direct runtime: process start only, a change is reported as `cpu_level` waiting for a restart |
 

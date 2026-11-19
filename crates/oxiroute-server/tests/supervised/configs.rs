@@ -153,6 +153,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }
@@ -233,6 +234,7 @@ pub(super) fn udp_only_config(
         }],
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }
@@ -260,6 +262,7 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
         stats: None,
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
         certificates: vec![Certificate {

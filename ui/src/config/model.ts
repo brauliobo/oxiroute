@@ -819,6 +819,12 @@ export interface ConfigHistoryConfig {
   max_total_bytes?: number
 }
 
+export interface ClientTrackingConfig {
+  enabled?: boolean
+  max_clients?: number
+  ipv6_prefix?: number
+}
+
 export interface CanonicalConfig {
   version: number
   max_connections: number | null
@@ -840,6 +846,7 @@ export interface CanonicalConfig {
   cpu_level?: string
   audit?: AuditConfig
   config_history?: ConfigHistoryConfig
+  client_tracking?: ClientTrackingConfig
   registry?: RegistryConfig | null
   stats?: StatsConfig | null
   certificates: CertificateConfig[]

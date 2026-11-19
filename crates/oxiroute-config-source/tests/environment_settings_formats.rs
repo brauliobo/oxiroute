@@ -62,6 +62,34 @@ fn config_history_bounds_round_trip_through_every_source_format() {
 }
 
 #[test]
+fn client_tracking_settings_round_trip_through_every_source_format() {
+    assert_round_trips(&validated(&json!({"client_tracking": {
+        "enabled": false,
+        "max_clients": 250,
+        "ipv6_prefix": 64,
+    }})));
+    assert_round_trips(&validated(
+        &json!({"client_tracking": {"ipv6_prefix": 128}}),
+    ));
+    assert_round_trips(&validated(&json!({"client_tracking": {"max_clients": 1}})));
+}
+
+#[test]
+fn an_out_of_range_client_tracking_value_names_its_pointer_in_every_source_format() {
+    let config = validated(&json!({"client_tracking": {"max_clients": 777_777}}));
+    for format in FORMATS {
+        let rendered = render_config(format, &config).expect("render");
+        let tampered = rendered.replace("777777", "2000000");
+        let error = resolve_source_with_format(Path::new("config"), tampered.as_bytes(), format)
+            .expect_err("out-of-range max_clients");
+        assert!(
+            error.to_string().contains("/client_tracking/max_clients"),
+            "{format:?}: {error}"
+        );
+    }
+}
+
+#[test]
 fn a_partial_audit_block_round_trips_through_every_source_format() {
     assert_round_trips(&validated(&json!({"audit": {"max_records": 500}})));
 }

@@ -81,6 +81,9 @@ pub struct ConfigDraft {
     /// Earlier versions of the configuration file the daemon keeps for rollback: count and size bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_history: Option<ConfigHistory>,
+    /// Per-client and per-connection tracking behind the management client and connection endpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_tracking: Option<ClientTracking>,
     /// Runtime server registration: state directory, tokens, and registry-only endpoints.
     #[serde(default)]
     pub registry: Option<Registry>,
@@ -118,6 +121,21 @@ impl ConfigDraft {
     pub const DEFAULT_SCALE_DOWN_DELAY_MS: u64 = 5_000;
     pub const MAX_TLS_HANDSHAKE_THREADS: u64 = 64;
     pub const MAX_LOG_FILTER_BYTES: usize = 1024;
+
+    /// The client tracking settings with the defaults applied.
+    #[must_use]
+    pub fn client_tracking(&self) -> ClientTrackingSettings {
+        let tracking = self.client_tracking.clone().unwrap_or_default();
+        ClientTrackingSettings {
+            enabled: tracking.enabled.unwrap_or(true),
+            max_clients: tracking
+                .max_clients
+                .unwrap_or(ClientTracking::DEFAULT_MAX_CLIENTS),
+            ipv6_prefix: tracking
+                .ipv6_prefix
+                .unwrap_or(ClientTracking::DEFAULT_IPV6_PREFIX),
+        }
+    }
 
     /// Whether the HTTP/1.1 fast lane serves the requests it can: on unless `http_fast_lane` says `false`.
     #[must_use]
@@ -332,6 +350,38 @@ impl ConfigHistory {
     pub const MAX_ENTRIES: u64 = 1_000;
     pub const MIN_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
     pub const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+}
+
+/// Per-client and per-connection tracking exposed only by the authenticated management endpoints.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClientTracking {
+    /// Omitted means on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Clients kept with their closed-connection history (default 10000); the least recently active beyond it
+    /// fold into the `other` bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_clients: Option<u64>,
+    /// IPv6 peers aggregate by this prefix length, 64 or 128 (default 128).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv6_prefix: Option<u8>,
+}
+
+impl ClientTracking {
+    pub const DEFAULT_MAX_CLIENTS: u64 = 10_000;
+    pub const MIN_MAX_CLIENTS: u64 = 1;
+    pub const MAX_MAX_CLIENTS: u64 = 1_000_000;
+    pub const DEFAULT_IPV6_PREFIX: u8 = 128;
+    pub const IPV6_PREFIXES: [u8; 2] = [64, 128];
+}
+
+/// Client tracking with its defaults applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientTrackingSettings {
+    pub enabled: bool,
+    pub max_clients: u64,
+    pub ipv6_prefix: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

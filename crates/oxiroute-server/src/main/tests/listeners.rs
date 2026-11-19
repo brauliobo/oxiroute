@@ -81,6 +81,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
         }],
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     };

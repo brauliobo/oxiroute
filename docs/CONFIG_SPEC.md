@@ -46,6 +46,10 @@ return {
   config_history = {
     max_entries = 20,
   },
+  client_tracking = {
+    max_clients = 10000,
+    ipv6_prefix = 64,
+  },
   stats = {
     binds = { "127.0.0.1:8404", "[::1]:8404" },
     admin_token_file = "/etc/oxiroute/stats-admin.token",
@@ -471,6 +475,14 @@ Current constraints:
   in `<configuration file>.history/`, a `0700` directory of `0600` files, and removes the oldest entries once
   either bound is exceeded. The bounds of the saved configuration apply at each save. An empty block
   normalizes away.
+- `client_tracking` is optional and sets the per-client and per-connection tracking behind the management-only
+  `GET /api/v1/clients` and `GET /api/v1/connections` endpoints. `enabled` (default `true`); `max_clients`
+  (1 to 1000000, default 10000) bounds the retained closed-connection history of clients, and the least
+  recently active clients beyond it are folded into the `other` bucket; `ipv6_prefix` (64 or 128, default
+  128) aggregates IPv6 peers by that prefix. A reload applies the new values to the new generation. When
+  `enabled` is `false` the two endpoints answer an error and the data path does nothing. IP addresses are
+  exposed only by those two authenticated endpoints, never on the public stats page, in `/metrics` or in
+  events. An empty block normalizes away.
 - RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
   single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
   resolved and checked against the RTMP service outbound policy before activation.

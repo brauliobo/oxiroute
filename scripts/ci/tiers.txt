@@ -57,6 +57,7 @@ oxiroute-config-source::uci                           core
 oxiroute-config::audit                                core
 oxiroute-config::canary                               core
 oxiroute-config::cipher_list                          core
+oxiroute-config::client_tracking                      core
 oxiroute-config::compression                          core
 oxiroute-config::config_history                         core
 oxiroute-config::connection_scheduling                core

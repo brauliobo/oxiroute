@@ -270,6 +270,7 @@ fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
         }],
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }

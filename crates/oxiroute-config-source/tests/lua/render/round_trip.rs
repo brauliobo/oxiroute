@@ -118,6 +118,7 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
   management = nil,
   audit = nil,
   config_history = nil,
+  client_tracking = nil,
   registry = nil,
   stats = nil,
   certificates = {

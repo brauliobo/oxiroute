@@ -77,6 +77,7 @@ use crate::{
 };
 
 mod audit;
+mod client_tracking;
 mod config_history;
 mod cpu_level;
 mod h2_windows;
@@ -90,6 +91,7 @@ mod upstream;
 mod worker_scaling;
 
 use audit::validate_audit;
+use client_tracking::validate_client_tracking;
 use config_history::validate_config_history;
 use cpu_level::validate_cpu_level;
 use log_filter::validate_log_filter;
@@ -162,6 +164,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
     validate_management(config.management.as_ref())?;
     validate_audit(&mut config.audit)?;
     validate_config_history(&mut config.config_history)?;
+    validate_client_tracking(&mut config.client_tracking)?;
     validate_log_filter(config.log_filter.as_mut())?;
     validate_cpu_level(config.cpu_level.as_ref())?;
     validate_stats(config.stats.as_ref())?;

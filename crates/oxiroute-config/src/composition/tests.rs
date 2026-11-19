@@ -1,8 +1,8 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use crate::{
-    DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service, Listener,
-    ListenerBind, Protocol, StatsPage, StatsPageAdminPolicy, UpstreamAlgorithm,
+    ClientTracking, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service,
+    Listener, ListenerBind, Protocol, StatsPage, StatsPageAdminPolicy, UpstreamAlgorithm,
     UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 
@@ -62,6 +62,29 @@ fn rejects_conflicting_process_fields() {
         compose_validated_configs(vec![first, second]),
         Err(ConfigCompositionError::ProcessFieldConflict {
             field: "max_connections"
+        })
+    ));
+}
+
+#[test]
+fn composes_client_tracking_from_one_fragment_and_rejects_differing_ones() {
+    let tracking = |max_clients| ClientTracking {
+        max_clients: Some(max_clients),
+        ..ClientTracking::default()
+    };
+    let mut first = empty_config();
+    first.client_tracking = Some(tracking(50));
+
+    let composed = compose_validated_configs(vec![first.clone(), empty_config()])
+        .expect("one fragment sets client tracking");
+    assert_eq!(composed.as_draft().client_tracking, Some(tracking(50)));
+
+    let mut second = empty_config();
+    second.client_tracking = Some(tracking(60));
+    assert!(matches!(
+        compose_validated_configs(vec![first, second]),
+        Err(ConfigCompositionError::ProcessFieldConflict {
+            field: "client_tracking"
         })
     ));
 }
@@ -129,6 +152,7 @@ fn empty_config() -> ConfigDraft {
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }

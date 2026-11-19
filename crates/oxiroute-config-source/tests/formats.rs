@@ -88,6 +88,7 @@ fn typed_configs_render_in_every_supported_format() {
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     }

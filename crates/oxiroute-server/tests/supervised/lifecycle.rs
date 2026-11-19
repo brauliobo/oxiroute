@@ -289,6 +289,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     };
@@ -407,6 +408,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         l4_services: Vec::new(),
         audit: None,
         config_history: None,
+        client_tracking: None,
         log_filter: None,
         cpu_level: None,
     };

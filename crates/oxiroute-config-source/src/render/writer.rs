@@ -102,6 +102,14 @@ impl Renderer {
         }
     }
 
+    fn present_integer_fields<const N: usize>(&mut self, fields: [(&str, &Option<u64>); N]) {
+        for (name, value) in fields {
+            if let Some(value) = value {
+                self.integer_field(name, value);
+            }
+        }
+    }
+
     fn optional_string_field(&mut self, name: &str, value: Option<&str>) {
         match value {
             Some(value) => self.string_field(name, value),

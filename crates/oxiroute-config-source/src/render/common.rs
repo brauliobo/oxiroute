@@ -41,6 +41,7 @@ impl Renderer {
             l4_services,
             audit,
             config_history,
+            client_tracking,
             log_filter,
             cpu_level,
         } = config;
@@ -70,15 +71,11 @@ impl Renderer {
         if let Some(scaling) = worker_scaling {
             self.string_field("worker_scaling", scaling.as_str());
         }
-        for (name, value) in [
+        self.present_integer_fields([
             ("min_active_workers", min_active_workers),
             ("target_busy_percent", target_busy_percent),
             ("scale_down_delay_ms", scale_down_delay_ms),
-        ] {
-            if let Some(value) = value {
-                self.integer_field(name, value);
-            }
-        }
+        ]);
         if let Some(threads) = tls_handshake_threads {
             self.integer_field("tls_handshake_threads", threads);
         }
@@ -93,6 +90,7 @@ impl Renderer {
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
         self.fallible_optional_table_field("audit", audit.as_ref(), Self::audit)?;
         self.optional_table_field("config_history", config_history.as_ref(), Self::history);
+        self.optional_table_field("client_tracking", client_tracking.as_ref(), Self::tracking);
         self.fallible_optional_table_field("registry", registry.as_ref(), Self::registry)?;
         self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
@@ -187,6 +185,24 @@ impl Renderer {
             if let Some(limit) = limit {
                 self.integer_field(name, limit);
             }
+        }
+    }
+
+    fn tracking(&mut self, tracking: &ClientTracking) {
+        let ClientTracking {
+            enabled,
+            max_clients,
+            ipv6_prefix,
+        } = tracking;
+
+        if let Some(enabled) = enabled {
+            self.boolean_field("enabled", *enabled);
+        }
+        if let Some(max_clients) = max_clients {
+            self.integer_field("max_clients", max_clients);
+        }
+        if let Some(prefix) = ipv6_prefix {
+            self.integer_field("ipv6_prefix", prefix);
         }
     }
 
