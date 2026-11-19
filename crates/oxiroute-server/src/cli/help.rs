@@ -44,7 +44,7 @@ pub(crate) const ENVIRONMENT: [(&str, &str); 3] = [
     ),
 ];
 
-pub(crate) const FILES: [(&str, &str); 5] = [
+pub(crate) const FILES: [(&str, &str); 6] = [
     (
         "/etc/oxiroute/oxiroute.kdl",
         "packaged configuration; its management bind is the default endpoint",
@@ -60,6 +60,10 @@ pub(crate) const FILES: [(&str, &str); 5] = [
     (
         "$XDG_CONFIG_HOME/oxiroute/contexts",
         "named contexts (mode 0600), managed with `oxiroute context`; ~/.config is used when XDG_CONFIG_HOME is unset",
+    ),
+    (
+        "$XDG_STATE_HOME/oxiroute/top.json",
+        "the `oxiroute top` layout: panels, views, columns, density, theme, window; `top --reset-layout` forgets it",
     ),
     (
         "<configuration file>.overlay.json",

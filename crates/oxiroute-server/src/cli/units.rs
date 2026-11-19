@@ -12,6 +12,11 @@ pub(crate) const fn as_f64(value: u64) -> f64 {
     value as f64
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn saturating_u64(value: f64) -> u64 {
+    value.max(0.0).round() as u64
+}
+
 fn scaled(value: f64, base: f64, suffixes: &[&str; 5]) -> String {
     let mut value = value;
     let mut step = 0;

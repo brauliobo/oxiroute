@@ -72,11 +72,14 @@ pub(crate) enum Command {
     ///
     /// Exit codes like `check`: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN (the options are wrong).
     Doctor(DoctorArgs),
-    /// Live read-only dashboard of listeners, pools, servers and in-flight requests.
+    /// Live read-only dashboard of listeners, upstreams, clients, connections, requests, RTMP and generations.
     ///
-    /// Reads the management API with the management token. Without a terminal, or with `--once`
-    /// or `--json`, it prints one snapshot and exits. Keys: Tab or 1-4 switch view, `<` `>` pick the
-    /// sort column, r reverses it, / filters by name, p pauses, j k select, q quits.
+    /// Reads the management API with the management token. Without a terminal, or with `--once`,
+    /// `--json` or `--csv`, it samples twice one rate window apart, prints the measured view and exits.
+    /// Keys: Tab or 1-9 switch view, `<` `>` pick the sort column, r reverses it, / filters, Enter or
+    /// Space expands a group, p pauses, w picks the rate window, c columns, V views, h s i collapse
+    /// panels (H S I hide them), ? lists every key, q quits. The mouse works on tabs, headers, rows and the footer. The
+    /// layout is remembered in `$XDG_STATE_HOME/oxiroute/top.json`; `--reset-layout` forgets it.
     Top(TopArgs),
     /// Inspect the requests currently inside the router.
     #[command(after_help = help::REQUESTS_EXAMPLES)]

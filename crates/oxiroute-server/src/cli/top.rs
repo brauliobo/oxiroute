@@ -1,17 +1,22 @@
-//! `oxiroute top`: a live, read-only dashboard of listeners, pools, servers and in-flight requests, or one
-//! snapshot for scripts. It reads `GET /api/v1/stats` and `GET /api/v1/requests` and computes rates itself.
+//! `oxiroute top`: a live, read-only dashboard of listeners, upstreams, clients, connections, in-flight requests,
+//! RTMP sessions and generations, or one measured snapshot as text, JSON or CSV for scripts.
 
 mod app;
 mod args;
 mod draw;
-mod keys;
-mod once;
-mod rates;
-mod rows;
+mod export;
+mod headline;
+mod history;
+mod layout;
+mod model;
+mod prefs;
 mod run;
+mod scene;
 mod session;
 mod source;
-mod summary;
+mod theme;
+mod totals;
+mod views;
 
 #[cfg(test)]
 mod tests;

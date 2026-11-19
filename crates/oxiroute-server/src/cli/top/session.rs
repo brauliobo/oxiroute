@@ -1,22 +1,26 @@
-use std::{
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    thread,
-    time::Duration,
+mod sampler;
+mod terminal;
+
+use std::{io::stdout, sync::mpsc, thread, time::Duration};
+
+use ratatui::{
+    crossterm::{
+        event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+        execute,
+    },
+    layout::Rect,
 };
 
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
-
 use super::{
-    app::{App, Control, Effect},
+    app::{App, Effect, Key},
     draw,
-    keys::Key,
-    source::{self, Sample},
+    prefs::Store,
+    source::Sample,
 };
 use crate::cli::{error::CliError, net::Client};
 
 enum Message {
-    Key(Key),
-    Redraw,
+    Input(Event),
     Sample(Result<Box<Sample>, String>),
 }
 
@@ -24,84 +28,98 @@ struct Restore;
 
 impl Drop for Restore {
     fn drop(&mut self) {
+        let _ = execute!(stdout(), DisableMouseCapture);
         ratatui::restore();
     }
 }
 
-pub(super) fn run(mut app: App, client: Client, first: Sample) -> Result<(), CliError> {
+fn local(error: impl std::fmt::Display) -> CliError {
+    CliError::Local(error.to_string())
+}
+
+fn capture(on: bool) -> Result<(), CliError> {
+    if on {
+        execute!(stdout(), EnableMouseCapture).map_err(local)
+    } else {
+        execute!(stdout(), DisableMouseCapture).map_err(local)
+    }
+}
+
+fn persist(app: &mut App, store: &Store) {
+    if std::mem::take(&mut app.prefs_dirty)
+        && let Err(error) = store.save(&app.prefs)
+    {
+        app.message = Some(error.to_string());
+    }
+}
+
+fn handle(app: &mut App, message: Message) -> Result<bool, CliError> {
+    let effect = match message {
+        Message::Sample(sample) => {
+            app.sample(sample.map(|sample| *sample));
+            Effect::Idle
+        }
+        Message::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+            Key::from_event(key).map_or(Effect::Idle, |key| app.key(key))
+        }
+        Message::Input(Event::Mouse(mouse)) => app.mouse(mouse),
+        Message::Input(_) => Effect::Idle,
+    };
+    match effect {
+        Effect::Quit => return Ok(true),
+        Effect::Mouse(on) => capture(on)?,
+        Effect::Idle => {}
+    }
+    Ok(false)
+}
+
+pub(crate) fn run(
+    mut app: App,
+    client: Client,
+    first: Sample,
+    interval: Duration,
+    store: &Store,
+) -> Result<(), CliError> {
     app.sample(Ok(first));
-    let mut terminal = ratatui::try_init().map_err(|error| CliError::Local(error.to_string()))?;
+    let mut terminal = ratatui::try_init().map_err(local)?;
     let _restore = Restore;
+    if app.switches.mouse {
+        capture(true)?;
+    }
     let (messages, inbox) = mpsc::channel();
     let (control, controls) = mpsc::channel();
-    let interval = app.interval;
-    let initial = app.control();
+    let mut sent = app.control();
+    let initial = sent.clone();
     let sampler = messages.clone();
-    thread::spawn(move || sample_loop(&client, interval, initial, &controls, &sampler));
-    thread::spawn(move || read_terminal(&messages));
+    thread::spawn(move || sampler::run(&client, interval, initial, &controls, &sampler));
+    thread::spawn(move || terminal::read(&messages));
     loop {
-        let table = app.table();
-        app.clamp(table.as_ref().map_or(0, |table| table.rows.len()));
+        let size = terminal.size().map_err(local)?;
+        app.prepare(Rect::new(0, 0, size.width, size.height));
         terminal
-            .draw(|frame| draw::frame(frame, &app, table.as_ref()))
-            .map_err(|error| CliError::Local(error.to_string()))?;
-        match inbox.recv() {
-            Ok(Message::Key(key)) => match app.key(key) {
-                Effect::Quit => return Ok(()),
-                Effect::Retarget => {
-                    if control.send(app.control()).is_err() {
-                        return Ok(());
-                    }
-                }
-                Effect::Idle => {}
-            },
-            Ok(Message::Sample(sample)) => app.sample(sample.map(|sample| *sample)),
-            Ok(Message::Redraw) => {}
-            Err(_) => return Ok(()),
-        }
-    }
-}
-
-fn sample_loop(
-    client: &Client,
-    interval: Duration,
-    mut control: Control,
-    controls: &Receiver<Control>,
-    messages: &Sender<Message>,
-) {
-    loop {
-        let next = if control.paused {
-            controls.recv().map_err(|_| RecvTimeoutError::Disconnected)
-        } else {
-            controls.recv_timeout(interval)
+            .draw(|frame| draw::frame(frame, &app))
+            .map_err(local)?;
+        persist(&mut app, store);
+        let Ok(message) = inbox.recv() else {
+            return Ok(());
         };
-        match next {
-            Ok(next) => control = next,
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+        let mut quit = handle(&mut app, message)?;
+        while !quit {
+            let Ok(message) = inbox.try_recv() else {
+                break;
+            };
+            quit = handle(&mut app, message)?;
         }
-        if !control.paused {
-            let sample = source::sample(client, control.requests)
-                .map(Box::new)
-                .map_err(|error| error.to_string());
-            if messages.send(Message::Sample(sample)).is_err() {
-                return;
-            }
+        persist(&mut app, store);
+        if quit {
+            return Ok(());
         }
-    }
-}
-
-fn read_terminal(messages: &Sender<Message>) {
-    while let Ok(event) = event::read() {
-        let message = match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                Key::from_event(key).map(Message::Key)
+        let wanted = app.control();
+        if wanted != sent {
+            sent = wanted.clone();
+            if control.send(wanted).is_err() {
+                return Ok(());
             }
-            Event::Resize(..) => Some(Message::Redraw),
-            _ => None,
-        };
-        if message.is_some_and(|message| messages.send(message).is_err()) {
-            return;
         }
     }
 }
