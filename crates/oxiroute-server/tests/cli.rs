@@ -203,9 +203,9 @@ fn authentication_failure_does_not_expose_token() {
 }
 
 #[test]
-fn unowned_rtmp_controls_are_explicitly_unsupported() {
+fn rtmp_relay_reconnect_is_explicitly_unsupported() {
     let output = cli()
-        .args(["rtmp", "stream", "disconnect", "stream-id"])
+        .args(["rtmp", "relay", "reconnect", "stream-id", "relay-name"])
         .output()
         .expect("CLI");
     assert_eq!(output.status.code(), Some(9));
