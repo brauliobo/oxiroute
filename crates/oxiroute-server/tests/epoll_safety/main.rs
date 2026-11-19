@@ -550,6 +550,7 @@ fn evacuation_report(forced: bool, moved: u64, cut: u64, left: &Value) -> Value 
         "cancelledAndRedispatched": moved,
         "forced": cut,
         "leftRunning": left,
+        "persistence": "runtime",
     })
 }
 
