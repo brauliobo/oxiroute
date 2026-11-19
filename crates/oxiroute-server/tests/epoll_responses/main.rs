@@ -15,6 +15,7 @@ mod process_support;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use futures_util::future::join_all;
 use oxiroute_config::{ConfigDraft, HttpDataPlane};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -171,15 +172,33 @@ fn engine_planes() -> Vec<HttpDataPlane> {
         .collect()
 }
 
+async fn through_planes(
+    cases: &[Case],
+) -> (
+    (Vec<Vec<u8>>, usize),
+    Vec<(HttpDataPlane, (Vec<Vec<u8>>, usize))>,
+) {
+    let engines = engine_planes();
+    let (tokio, engine_answers) = tokio::join!(
+        through(HttpDataPlane::Tokio, cases),
+        join_all(engines.iter().map(|plane| through(*plane, cases)))
+    );
+    (tokio, engines.into_iter().zip(engine_answers).collect())
+}
+
 async fn agree(cases: &[Case]) {
-    let (theirs, _) = through(HttpDataPlane::Tokio, cases).await;
-    for plane in engine_planes() {
-        agree_on(plane, cases, &theirs).await;
+    let ((theirs, _), engines) = through_planes(cases).await;
+    for (plane, ours) in engines {
+        agree_on(plane, cases, &theirs, ours);
     }
 }
 
-async fn agree_on(plane: HttpDataPlane, cases: &[Case], theirs: &[Vec<u8>]) {
-    let (ours, served) = through(plane, cases).await;
+fn agree_on(
+    plane: HttpDataPlane,
+    cases: &[Case],
+    theirs: &[Vec<u8>],
+    (ours, served): (Vec<Vec<u8>>, usize),
+) {
     if oxiroute_epoll_h1::supported() {
         assert_eq!(served, cases.len(), "requests the {plane:?} plane served");
     }
@@ -659,10 +678,9 @@ async fn a_chunk_size_that_is_not_hex_is_a_bad_gateway_where_the_tokio_plane_clo
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nok\r\n0\r\n\r\n",
         BAD_GATEWAY,
     );
-    let (theirs, _) = through(HttpDataPlane::Tokio, std::slice::from_ref(&chunked)).await;
+    let ((theirs, _), engines) = through_planes(std::slice::from_ref(&chunked)).await;
     assert_eq!(text(&theirs[0]), "<EOF>");
-    for plane in engine_planes() {
-        let (ours, _) = through(plane, std::slice::from_ref(&chunked)).await;
+    for (_, (ours, _)) in engines {
         assert!(
             text(&ours[0]).starts_with(BAD_GATEWAY),
             "{}",
