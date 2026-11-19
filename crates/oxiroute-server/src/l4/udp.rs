@@ -449,8 +449,11 @@ async fn serve(
                     },
                     None => (payload, Some(client)),
                 };
-                let traffic_lease =
-                    match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::Udp) {
+                let traffic_lease = match listener.admit_tracked_connection(
+                    &generation,
+                    RuntimeReferenceKind::Udp,
+                    (logical_client.unwrap_or(client), crate::clients::Protocol::Udp),
+                ) {
                     Ok(lease) => lease,
                     Err(error) => {
                         UdpAccounting::increment(&accounting.datagrams_dropped);
@@ -482,12 +485,14 @@ async fn serve(
                         queue_receiver,
                         service_for_task,
                         generation_for_task,
-                        traffic_lease,
+                        &traffic_lease,
                         listener_is_ipv4,
                         logical_client,
                         shutdown_for_task,
                     )
                     .await;
+                    traffic_lease.record_completed(result.as_ref().is_err_and(SessionEnd::is_failure));
+                    drop(traffic_lease);
                     let mut table = table_for_task
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -578,6 +583,13 @@ impl std::fmt::Display for SessionEnd {
 }
 
 impl SessionEnd {
+    const fn is_failure(&self) -> bool {
+        !matches!(
+            self,
+            Self::Cancelled | Self::IdleTimeout | Self::LifetimeTimeout
+        )
+    }
+
     fn passive_failure(&self) -> Option<HealthFailure> {
         match self {
             Self::UpstreamConnect(error) => classify_upstream_io(error, true),
@@ -629,7 +641,7 @@ async fn run_session(
     queue_receiver: mpsc::Receiver<QueuedDatagram>,
     service: Arc<L4ServicePlan>,
     generation: Arc<RuntimeGeneration>,
-    traffic_lease: TrafficLease,
+    traffic_lease: &TrafficLease,
     listener_is_ipv4: bool,
     logical_client: Option<std::net::SocketAddr>,
     mut shutdown: watch::Receiver<bool>,
@@ -649,7 +661,7 @@ async fn run_session(
         initial,
         queue_receiver,
         &service,
-        &traffic_lease,
+        traffic_lease,
         listener_is_ipv4,
         logical_client,
         &mut shutdown,
@@ -695,6 +707,9 @@ async fn relay_session(
         }
     };
 
+    if let Some(stats) = traffic_lease.stats() {
+        stats.set_upstream(Arc::from(destination.to_string()));
+    }
     let mut session_bytes = 0_u64;
     account_received(traffic_lease, &mut session_bytes, initial.len(), policy)?;
     let outbound_proxy = service.proxy_protocol().zip(logical_client);

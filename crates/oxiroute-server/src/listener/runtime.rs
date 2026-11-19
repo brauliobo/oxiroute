@@ -1,8 +1,9 @@
-use std::fmt;
+use std::{fmt, net::SocketAddr, sync::Arc, time::Instant};
 
 use crate::{
     ConnectionGuard, GenerationAdmission, GenerationReference, ListenerMetrics, MetricsError,
     RuntimeGeneration, RuntimeReferenceKind,
+    clients::{Concurrent, ConnStats, Connection, Protocol},
 };
 
 #[derive(Debug)]
@@ -61,6 +62,7 @@ impl ListenerRuntime {
             connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: Some(generation_admission),
+            tracked: None,
         })
     }
 
@@ -84,6 +86,7 @@ impl ListenerRuntime {
             connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: None,
+            tracked: None,
         })
     }
 
@@ -115,6 +118,7 @@ impl ListenerRuntime {
             connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: Some(generation_admission),
+            tracked: None,
         })
     }
 
@@ -137,7 +141,19 @@ impl ListenerRuntime {
             connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: None,
+            tracked: None,
         })
+    }
+
+    pub(crate) fn admit_tracked_connection(
+        &self,
+        generation: &std::sync::Arc<RuntimeGeneration>,
+        kind: RuntimeReferenceKind,
+        (peer, protocol): (SocketAddr, Protocol),
+    ) -> Result<TrafficLease, AdmissionError> {
+        let mut lease = self.admit_runtime_connection(generation, kind)?;
+        lease.tracked = self.metrics.track(peer, protocol);
+        Ok(lease)
     }
 
     pub(crate) fn admit_runtime_connection(
@@ -157,22 +173,40 @@ impl ListenerRuntime {
             connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: None,
+            tracked: None,
         })
     }
 }
 
 pub struct TrafficLease {
+    tracked: Option<Connection>,
     connection: ConnectionGuard,
     _generation_reference: Option<GenerationReference>,
     _generation_admission: Option<GenerationAdmission>,
 }
 
 impl TrafficLease {
+    pub(crate) fn stats(&self) -> Option<&Arc<ConnStats>> {
+        self.tracked.as_ref().map(Connection::stats)
+    }
+
+    pub(crate) fn record_completed(&self, failed: bool) {
+        if let Some(stats) = self.stats() {
+            stats.completed::<Concurrent>(failed, Instant::now());
+        }
+    }
+
     pub(crate) fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
+        if let Some(stats) = self.stats() {
+            stats.received::<Concurrent>(bytes, Instant::now());
+        }
         self.connection.record_bytes_received(bytes)
     }
 
     pub(crate) fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
+        if let Some(stats) = self.stats() {
+            stats.sent::<Concurrent>(bytes, Instant::now());
+        }
         self.connection.record_bytes_sent(bytes)
     }
 

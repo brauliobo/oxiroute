@@ -1,6 +1,11 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+struct H3Reply<'a> {
+    challenge: Option<&'a HeaderValue>,
+    traffic: &'a crate::http3::Traffic,
+}
+
 impl ForwardHttp1ServicePlan {
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_h3<S>(
@@ -9,10 +14,14 @@ impl ForwardHttp1ServicePlan {
         mut stream: h3::server::RequestStream<S, Bytes>,
         client_addr: Option<SocketAddr>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
-        listener: crate::ListenerMetrics,
+        traffic: crate::http3::Traffic,
     ) where
         S: h3::quic::BidiStream<Bytes> + Send,
     {
+        let reply = H3Reply {
+            challenge: self.challenge.as_ref(),
+            traffic: &traffic,
+        };
         let AuthorizedRequest {
             approved,
             authenticated,
@@ -25,19 +34,14 @@ impl ForwardHttp1ServicePlan {
         {
             Ok(request) => request,
             Err(error) => {
-                let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                let _ = send_h3_failure(&mut stream, error, &reply).await;
                 return;
             }
         };
 
         match parsed {
             ParsedTarget::UdpTunnel(_) => {
-                let _ = send_h3_failure(
-                    &mut stream,
-                    RequestFailure::BadRequest,
-                    self.challenge.as_ref(),
-                )
-                .await;
+                let _ = send_h3_failure(&mut stream, RequestFailure::BadRequest, &reply).await;
             }
             ParsedTarget::Tunnel(_) => {
                 let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
@@ -49,16 +53,13 @@ impl ForwardHttp1ServicePlan {
                 {
                     Ok(Ok(upstream)) => upstream,
                     Ok(Err(error)) => {
-                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                        let _ = send_h3_failure(&mut stream, error, &reply).await;
                         return;
                     }
                     Err(_) => {
-                        let _ = send_h3_failure(
-                            &mut stream,
-                            RequestFailure::GatewayTimeout,
-                            self.challenge.as_ref(),
-                        )
-                        .await;
+                        let _ =
+                            send_h3_failure(&mut stream, RequestFailure::GatewayTimeout, &reply)
+                                .await;
                         return;
                     }
                 };
@@ -79,50 +80,47 @@ impl ForwardHttp1ServicePlan {
                 }) else {
                     return;
                 };
+                traffic.upstream(approved.destination().authority().as_str().into());
                 let relay = tunnel.relay_h3(stream, upstream);
                 tokio::pin!(relay);
                 let outcome = tokio::select! {
                     outcome = &mut relay => Some(outcome),
                     _ = shutdown.changed() => None,
                 };
-                match outcome {
-                    Some(outcome) => {
-                        log::info!(
-                            target: "oxiroute::forward_proxy",
-                            "event=forward_tunnel protocol=h3 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
-                            approved.destination().authority(),
-                            outcome.kind().as_str(),
-                            outcome.stats().left_to_right,
-                            outcome.stats().right_to_left,
-                        );
-                    }
-                    None => log::info!(
+                if let Some(outcome) = outcome {
+                    traffic.received(outcome.stats().left_to_right);
+                    traffic.sent(outcome.stats().right_to_left);
+                    traffic.completed(
+                        outcome.kind() != oxiroute_forward_proxy::TunnelOutcomeKind::Eof,
+                    );
+                    log::info!(
+                        target: "oxiroute::forward_proxy",
+                        "event=forward_tunnel protocol=h3 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
+                        approved.destination().authority(),
+                        outcome.kind().as_str(),
+                        outcome.stats().left_to_right,
+                        outcome.stats().right_to_left,
+                    );
+                } else {
+                    traffic.completed(true);
+                    log::info!(
                         target: "oxiroute::forward_proxy",
                         "event=forward_tunnel protocol=h3 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
                         approved.destination().authority(),
-                    ),
+                    );
                 }
             }
             ParsedTarget::Forward(target) => {
                 let body_limit = u64::try_from(self.max_request_body_bytes).unwrap_or(u64::MAX);
                 let Ok(expected_length) = crate::http3::request_content_length(request.headers())
                 else {
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::BadRequest,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
+                    let _ = send_h3_failure(&mut stream, RequestFailure::BadRequest, &reply).await;
                     return;
                 };
                 if expected_length.is_some_and(|length| length > body_limit) {
                     stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::PayloadTooLarge,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
+                    let _ =
+                        send_h3_failure(&mut stream, RequestFailure::PayloadTooLarge, &reply).await;
                     return;
                 }
                 let body = match recv_h3_body(
@@ -136,10 +134,11 @@ impl ForwardHttp1ServicePlan {
                 {
                     Ok(body) => body,
                     Err(error) => {
-                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                        let _ = send_h3_failure(&mut stream, error, &reply).await;
                         return;
                     }
                 };
+                traffic.received(u64::try_from(body.len()).unwrap_or(u64::MAX));
                 let request_method = request.method().clone();
                 if request_method.as_str().eq_ignore_ascii_case("PURGE")
                     && self
@@ -155,7 +154,7 @@ impl ForwardHttp1ServicePlan {
                         &request_method,
                         response,
                         lifetime_deadline,
-                        self.challenge.as_ref(),
+                        &reply,
                     )
                     .await;
                     return;
@@ -166,7 +165,7 @@ impl ForwardHttp1ServicePlan {
                         &target,
                         authenticated,
                         body.is_empty(),
-                        &listener,
+                        traffic.metrics(),
                     )
                     .await
                 {
@@ -178,18 +177,15 @@ impl ForwardHttp1ServicePlan {
                             &request_method,
                             response,
                             lifetime_deadline,
-                            self.challenge.as_ref(),
+                            &reply,
                         )
                         .await;
                         return;
                     }
                     H3ForwardCacheDecision::OnlyIfCached => {
-                        let _ = send_h3_failure(
-                            &mut stream,
-                            RequestFailure::GatewayTimeout,
-                            self.challenge.as_ref(),
-                        )
-                        .await;
+                        let _ =
+                            send_h3_failure(&mut stream, RequestFailure::GatewayTimeout, &reply)
+                                .await;
                         return;
                     }
                     H3ForwardCacheDecision::Continue(transaction) => Some(*transaction),
@@ -216,7 +212,7 @@ impl ForwardHttp1ServicePlan {
                                 &mut cache_transaction,
                                 error,
                                 lifetime_deadline,
-                                self.challenge.as_ref(),
+                                &reply,
                             )
                             .await;
                             return;
@@ -228,7 +224,7 @@ impl ForwardHttp1ServicePlan {
                         response,
                         &mut cache_transaction,
                         lifetime_deadline,
-                        self.challenge.as_ref(),
+                        &reply,
                     )
                     .await;
                     return;
@@ -237,12 +233,7 @@ impl ForwardHttp1ServicePlan {
                     if let Some(transaction) = cache_transaction.as_mut() {
                         transaction.complete_without_store();
                     }
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::BadGateway,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
+                    let _ = send_h3_failure(&mut stream, RequestFailure::BadGateway, &reply).await;
                     return;
                 }
                 let Some(h3_upstream) = self.h3_upstream() else {
@@ -252,7 +243,7 @@ impl ForwardHttp1ServicePlan {
                         &mut cache_transaction,
                         RequestFailure::BadGateway,
                         lifetime_deadline,
-                        self.challenge.as_ref(),
+                        &reply,
                     )
                     .await;
                     return;
@@ -263,12 +254,7 @@ impl ForwardHttp1ServicePlan {
                     if let Some(transaction) = cache_transaction.as_mut() {
                         transaction.complete_without_store();
                     }
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::BadRequest,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
+                    let _ = send_h3_failure(&mut stream, RequestFailure::BadRequest, &reply).await;
                     return;
                 };
                 apply_header_policy(&mut headers, &self.header_policy);
@@ -290,12 +276,7 @@ impl ForwardHttp1ServicePlan {
                     if let Some(transaction) = cache_transaction.as_mut() {
                         transaction.complete_without_store();
                     }
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::BadRequest,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
+                    let _ = send_h3_failure(&mut stream, RequestFailure::BadRequest, &reply).await;
                     return;
                 };
                 parts.uri = uri;
@@ -356,7 +337,7 @@ impl ForwardHttp1ServicePlan {
                         &mut cache_transaction,
                         failure,
                         lifetime_deadline,
-                        self.challenge.as_ref(),
+                        &reply,
                     )
                     .await;
                     return;
@@ -377,7 +358,7 @@ impl ForwardHttp1ServicePlan {
                     },
                     &mut cache_transaction,
                     lifetime_deadline,
-                    self.challenge.as_ref(),
+                    &reply,
                 )
                 .await;
             }
@@ -424,7 +405,7 @@ where
 async fn send_h3_failure<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     failure: RequestFailure,
-    challenge: Option<&HeaderValue>,
+    reply: &H3Reply<'_>,
 ) -> Result<(), h3::error::StreamError>
 where
     S: h3::quic::BidiStream<Bytes> + Send,
@@ -432,12 +413,13 @@ where
     let mut response = Response::new(());
     *response.status_mut() = failure.status();
     if failure == RequestFailure::Authentication
-        && let Some(challenge) = challenge
+        && let Some(challenge) = reply.challenge
     {
         response
             .headers_mut()
             .insert(header::PROXY_AUTHENTICATE, challenge.clone());
     }
+    reply.traffic.completed(true);
     stream.send_response(response).await?;
     stream.finish().await
 }
@@ -490,7 +472,7 @@ async fn send_h3_forward_failure<S>(
     cache_transaction: &mut Option<CacheTransaction>,
     failure: RequestFailure,
     deadline: Instant,
-    challenge: Option<&HeaderValue>,
+    reply: &H3Reply<'_>,
 ) where
     S: h3::quic::BidiStream<Bytes> + Send,
 {
@@ -508,14 +490,13 @@ async fn send_h3_forward_failure<S>(
         transaction.complete_without_store();
         transaction.record_hit();
         let response = h3_cached_forward_response(response);
-        let _ =
-            send_h3_forward_response(stream, request.method(), response, deadline, challenge).await;
+        let _ = send_h3_forward_response(stream, request.method(), response, deadline, reply).await;
         return;
     }
     if let Some(transaction) = cache_transaction.as_mut() {
         transaction.complete_without_store();
     }
-    let _ = send_h3_failure(stream, failure, challenge).await;
+    let _ = send_h3_failure(stream, failure, reply).await;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -525,7 +506,7 @@ async fn finish_h3_forward_response<S>(
     mut response: H3ForwardResponse,
     cache_transaction: &mut Option<CacheTransaction>,
     deadline: Instant,
-    challenge: Option<&HeaderValue>,
+    reply: &H3Reply<'_>,
 ) where
     S: h3::quic::BidiStream<Bytes> + Send,
 {
@@ -546,7 +527,7 @@ async fn finish_h3_forward_response<S>(
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.complete_without_store();
         }
-        let _ = send_h3_failure(stream, RequestFailure::BadGateway, challenge).await;
+        let _ = send_h3_failure(stream, RequestFailure::BadGateway, reply).await;
         return;
     }
     if cache_transaction
@@ -567,8 +548,7 @@ async fn finish_h3_forward_response<S>(
                 .await;
             let response = h3_cached_forward_response(cached);
             let _ =
-                send_h3_forward_response(stream, request.method(), response, deadline, challenge)
-                    .await;
+                send_h3_forward_response(stream, request.method(), response, deadline, reply).await;
             return;
         }
         if response.status.is_server_error()
@@ -581,8 +561,7 @@ async fn finish_h3_forward_response<S>(
             transaction.record_hit();
             let response = h3_cached_forward_response(stale);
             let _ =
-                send_h3_forward_response(stream, request.method(), response, deadline, challenge)
-                    .await;
+                send_h3_forward_response(stream, request.method(), response, deadline, reply).await;
             return;
         }
     }
@@ -624,8 +603,7 @@ async fn finish_h3_forward_response<S>(
         }
     }
 
-    let sent =
-        send_h3_forward_response(stream, request.method(), response, deadline, challenge).await;
+    let sent = send_h3_forward_response(stream, request.method(), response, deadline, reply).await;
     if !sent {
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.cancel();
@@ -753,7 +731,7 @@ async fn send_h3_forward_response<S>(
     method: &Method,
     mut response: H3ForwardResponse,
     deadline: Instant,
-    challenge: Option<&HeaderValue>,
+    reply: &H3Reply<'_>,
 ) -> bool
 where
     S: h3::quic::BidiStream<Bytes> + Send,
@@ -767,9 +745,25 @@ where
     )
     .is_err()
     {
-        let _ = send_h3_failure(stream, RequestFailure::BadGateway, challenge).await;
+        let _ = send_h3_failure(stream, RequestFailure::BadGateway, reply).await;
         return false;
     }
+    let status = response.status;
+    let sent = write_h3_forward_response(stream, head, response, deadline, reply.traffic).await;
+    reply.traffic.completed(!sent || status.is_server_error());
+    sent
+}
+
+async fn write_h3_forward_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    head: bool,
+    response: H3ForwardResponse,
+    deadline: Instant,
+    traffic: &crate::http3::Traffic,
+) -> bool
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
     let body_forbidden = matches!(
         response.status,
         StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
@@ -784,15 +778,15 @@ where
     ) {
         return false;
     }
-    if !head
-        && !body_forbidden
-        && !response.body.is_empty()
-        && !matches!(
+    if !head && !body_forbidden && !response.body.is_empty() {
+        let length = u64::try_from(response.body.len()).unwrap_or(u64::MAX);
+        if !matches!(
             timeout_at(deadline, stream.send_data(response.body)).await,
             Ok(Ok(()))
-        )
-    {
-        return false;
+        ) {
+            return false;
+        }
+        traffic.sent(length);
     }
     if !head && let Some(mut trailers) = response.trailers {
         if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {

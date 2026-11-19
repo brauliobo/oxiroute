@@ -6,7 +6,7 @@ use crate::observability::access_record::{Correlation, Count, Http3Access, SafeI
 pub(super) async fn handle_reverse_request(
     mut stream: H3Stream,
     service: Arc<HttpServicePlan>,
-    metrics: ListenerMetrics,
+    traffic: Traffic,
     client_addr: Option<SocketAddr>,
     downstream_timeouts: DownstreamTimeoutPolicy,
     origin: Arc<OriginClient>,
@@ -60,7 +60,7 @@ pub(super) async fn handle_reverse_request(
                 &request,
                 &authority,
                 &service,
-                &metrics,
+                &traffic,
                 client_addr,
                 &origin,
                 deadline,
@@ -95,9 +95,13 @@ pub(super) async fn handle_reverse_request(
     {
         warn!("reverse HTTP/3 access log write failed: {error}");
     }
-    if let Err(error) = metrics.record_http_operation(result, started_at.elapsed()) {
+    if let Err(error) = traffic
+        .metrics()
+        .record_http_operation(result, started_at.elapsed())
+    {
         warn!("reverse HTTP/3 operation metrics failed: {error}");
     }
+    traffic.completed(response_status.is_none_or(|status| status >= 500));
 }
 
 #[allow(
@@ -111,7 +115,7 @@ async fn dispatch_reverse_request(
     request: &Request<()>,
     authority: &Authority,
     service: &HttpServicePlan,
-    metrics: &ListenerMetrics,
+    traffic: &Traffic,
     client_addr: Option<SocketAddr>,
     origin: &OriginClient,
     deadline: Instant,
@@ -304,14 +308,14 @@ async fn dispatch_reverse_request(
                 }
                 Err(ReverseBodyError::Cancelled) => return None,
             };
-            let _ = metrics.record_bytes_received(u64::try_from(body.len()).unwrap_or(u64::MAX));
+            traffic.received(u64::try_from(body.len()).unwrap_or(u64::MAX));
             let mut cache_transaction = None;
             if body.is_empty()
                 && let Some(cache) = proxy.policy.cache.as_ref()
                 && cache.allows_method(method)
                 && !cache_request_bypasses_cache(request.headers())
             {
-                match start_h3_cache(cache, request, authority, metrics).await {
+                match start_h3_cache(cache, request, authority, traffic.metrics()).await {
                     H3CacheDecision::Bypass => {}
                     H3CacheDecision::Respond(response) => {
                         let status = conditional_h3_cache_status(request, &response);
@@ -342,7 +346,7 @@ async fn dispatch_reverse_request(
                 &upstream,
                 &request_header_decisions,
                 body,
-                metrics,
+                traffic,
                 deadline,
                 shutdown,
                 cache_transaction,

@@ -11,7 +11,7 @@ pub(super) async fn dispatch_h3_upstream_request(
     upstream: &Upstream<'_>,
     request_header_decisions: &[RequestHeaderDecision],
     body: Bytes,
-    metrics: &ListenerMetrics,
+    traffic: &Traffic,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
     mut cache_transaction: Option<CacheTransaction>,
@@ -106,6 +106,7 @@ pub(super) async fn dispatch_h3_upstream_request(
             transaction.apply_validators(upstream_request.headers_mut());
         }
         attempted.push(selected.server_label().clone());
+        traffic.upstream(selected.server_label().shared());
         let mut response = None;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -160,7 +161,7 @@ pub(super) async fn dispatch_h3_upstream_request(
                                 request,
                                 response,
                                 proxy,
-                                metrics,
+                                traffic,
                                 deadline,
                                 &mut cache_transaction,
                             )
@@ -187,7 +188,7 @@ pub(super) async fn dispatch_h3_upstream_request(
                 request,
                 response,
                 proxy,
-                metrics,
+                traffic,
                 deadline,
                 &mut cache_transaction,
             )
@@ -249,7 +250,7 @@ async fn send_h3_upstream_response(
     request: &Request<()>,
     answer: Answer<'_>,
     proxy: &ProxyActionPlan,
-    metrics: &ListenerMetrics,
+    traffic: &Traffic,
     deadline: Instant,
     cache_transaction: &mut Option<CacheTransaction>,
 ) -> Option<u16> {
@@ -260,14 +261,14 @@ async fn send_h3_upstream_response(
                 request,
                 *response,
                 proxy,
-                metrics,
+                traffic,
                 deadline,
                 cache_transaction,
             )
             .await
         }
         Answer::Open(open) => {
-            send_h3_streamed_response(stream, *open, proxy, metrics, deadline).await
+            send_h3_streamed_response(stream, *open, proxy, traffic, deadline).await
         }
     }
 }
@@ -278,7 +279,7 @@ async fn send_h3_whole_response(
     request: &Request<()>,
     response: crate::http3::upstream_plan::H3UpstreamResponse,
     proxy: &ProxyActionPlan,
-    metrics: &ListenerMetrics,
+    traffic: &Traffic,
     deadline: Instant,
     cache_transaction: &mut Option<CacheTransaction>,
 ) -> Option<u16> {
@@ -380,7 +381,7 @@ async fn send_h3_whole_response(
     let head = request.method() == Method::HEAD;
     let send_body = !head && !body_forbidden(status) && !body.is_empty();
     if send_body {
-        let _ = metrics.record_bytes_sent(body_length);
+        traffic.sent(body_length);
     }
     let trailers = trailers.filter(|_| !head);
     if !send_h3_upstream_parts(stream, response_head, body, !send_body, trailers, deadline).await {
@@ -404,7 +405,7 @@ async fn send_h3_streamed_response(
     stream: &mut H3Stream,
     mut open: OpenAnswer<'_>,
     proxy: &ProxyActionPlan,
-    metrics: &ListenerMetrics,
+    traffic: &Traffic,
     deadline: Instant,
 ) -> Option<u16> {
     let status = open.status;
@@ -442,7 +443,7 @@ async fn send_h3_streamed_response(
             return Some(status.as_u16());
         }
     }
-    let _ = metrics.record_bytes_sent(sent);
+    traffic.sent(sent);
     if declared.is_some_and(|declared| sent != declared) {
         return Some(status.as_u16());
     }

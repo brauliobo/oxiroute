@@ -30,19 +30,26 @@ pub(super) async fn run_reverse_connection(
             return;
         }
     };
-    let traffic_lease =
-        match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::Http3) {
-            Ok(lease) => lease,
-            Err(error) => {
-                let reason = match &error {
-                    AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
-                    AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
-                };
-                warn!("reverse HTTP/3 connection admission failed: {error}");
-                connection.close(H3_CLOSE_CODE, reason);
-                return;
-            }
-        };
+    let traffic_lease = match listener.admit_tracked_connection(
+        &generation,
+        RuntimeReferenceKind::Http3,
+        (connection.remote_address(), crate::clients::Protocol::H3),
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let reason = match &error {
+                AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
+                AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
+            };
+            warn!("reverse HTTP/3 connection admission failed: {error}");
+            connection.close(H3_CLOSE_CODE, reason);
+            return;
+        }
+    };
+    let traffic = Traffic::new(metrics, traffic_lease.stats().cloned());
+    if let Some(stats) = traffic_lease.stats() {
+        describe_quic_tls(stats, &connection);
+    }
     let config = H3Config {
         max_field_section_size: H3_MAX_FIELD_SECTION_BYTES,
         ..H3Config::default()
@@ -78,7 +85,7 @@ pub(super) async fn run_reverse_connection(
                 requests.spawn(handle_reverse_request(
                     stream,
                     Arc::clone(&service),
-                    metrics.clone(),
+                    traffic.clone(),
                     client_addr,
                     downstream_timeouts,
                     Arc::clone(&origin),
@@ -133,19 +140,26 @@ pub(super) async fn run_connection(
         connection.close(H3_CLOSE_CODE, b"service connection limit");
         return;
     };
-    let traffic_lease =
-        match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::ForwardHttp3) {
-            Ok(lease) => lease,
-            Err(error) => {
-                let reason = match &error {
-                    AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
-                    AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
-                };
-                warn!("HTTP/3 connection admission failed: {error}");
-                connection.close(H3_CLOSE_CODE, reason);
-                return;
-            }
-        };
+    let traffic_lease = match listener.admit_tracked_connection(
+        &generation,
+        RuntimeReferenceKind::ForwardHttp3,
+        (connection.remote_address(), crate::clients::Protocol::H3),
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let reason = match &error {
+                AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
+                AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
+            };
+            warn!("HTTP/3 connection admission failed: {error}");
+            connection.close(H3_CLOSE_CODE, reason);
+            return;
+        }
+    };
+    let traffic = Traffic::new(metrics, traffic_lease.stats().cloned());
+    if let Some(stats) = traffic_lease.stats() {
+        describe_quic_tls(stats, &connection);
+    }
     let mut builder = h3::server::builder();
     builder
         .max_field_section_size(u64::try_from(service.max_header_bytes()).unwrap_or(u64::MAX))
@@ -180,10 +194,10 @@ pub(super) async fn run_connection(
                     break true;
                 }
                 let service = Arc::clone(&service);
-                let metrics = metrics.clone();
+                let traffic = traffic.clone();
                 let request_cancel = request_cancel_rx.clone();
                 requests.spawn(async move {
-                    handle_request(resolver, service, client_addr, request_cancel, metrics).await;
+                    handle_request(resolver, service, client_addr, request_cancel, traffic).await;
                 });
             }
         }
@@ -284,7 +298,7 @@ async fn handle_request<C>(
     service: Arc<ForwardHttp1ServicePlan>,
     client_addr: Option<std::net::SocketAddr>,
     shutdown: watch::Receiver<bool>,
-    metrics: ListenerMetrics,
+    traffic: Traffic,
 ) where
     C: h3::quic::Connection<bytes::Bytes> + Send + 'static,
     C::BidiStream: h3::quic::BidiStream<bytes::Bytes> + Send + 'static,
@@ -293,6 +307,6 @@ async fn handle_request<C>(
         return;
     };
     service
-        .handle_h3(request, stream, client_addr, shutdown, metrics)
+        .handle_h3(request, stream, client_addr, shutdown, traffic)
         .await;
 }

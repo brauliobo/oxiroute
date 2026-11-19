@@ -29,6 +29,7 @@ mod passive_health;
 mod proxy_protocol;
 mod queue;
 mod sessions;
+mod tracking;
 
 #[cfg(unix)]
 struct UdpHarness {

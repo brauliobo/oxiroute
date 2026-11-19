@@ -72,6 +72,7 @@ mod origin;
 mod reverse;
 mod runtime;
 mod static_files;
+mod traffic;
 mod upstream;
 pub(crate) mod upstream_plan;
 
@@ -90,6 +91,8 @@ use reverse::*;
 pub use runtime::*;
 #[allow(clippy::wildcard_imports)]
 use static_files::*;
+pub(crate) use traffic::Traffic;
+use traffic::describe_quic_tls;
 #[allow(clippy::wildcard_imports)]
 use upstream::*;
 
