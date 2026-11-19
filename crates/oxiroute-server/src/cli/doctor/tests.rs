@@ -458,23 +458,26 @@ fn a_history_directory_is_private_only_when_it_and_its_versions_are() {
 
 #[test]
 fn the_directory_the_management_api_writes_beside_the_configuration_degrades_to_a_warning() {
+    let directory = TempDir::new().expect("directory");
+    let configuration = directory.path().join("oxiroute.kdl");
     let draft = config(&json!({ "management": { "bind": "127.0.0.1:9900" } }));
-    let writes = writes::of(
-        &draft,
-        &Environment::of_process(),
-        Path::new("/etc/oxiroute/oxiroute.kdl"),
-    );
+    let writes = writes::of(&draft, &Environment::of_process(), &configuration);
     let diagnoses = writes::judge(&unit_of(PACKAGED, &[]), &writes);
     assert_eq!(severities(&diagnoses), [Severity::Warning]);
     assert!(diagnoses[0].message.contains("configuration directory"));
     assert_eq!(
         diagnoses[0].fix.as_deref(),
         Some(
-            "add ReadWritePaths=/etc/oxiroute to the unit (systemctl edit oxiroute.service) and restart it"
+            format!(
+                "add ReadWritePaths={} to the unit (systemctl edit oxiroute.service) and restart it",
+                directory.path().display()
+            )
+            .as_str()
         )
     );
 
-    let granted = unit_of(PACKAGED, &["[Service]\nReadWritePaths=/etc/oxiroute\n"]);
+    let grant = format!("[Service]\nReadWritePaths={}\n", directory.path().display());
+    let granted = unit_of(PACKAGED, &[grant.as_str()]);
     assert_eq!(
         severities(&writes::judge(&granted, &writes)),
         [Severity::Ok]
