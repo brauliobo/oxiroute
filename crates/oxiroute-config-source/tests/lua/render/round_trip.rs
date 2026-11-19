@@ -117,6 +117,7 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
   retirement = nil,
   management = nil,
   audit = nil,
+  config_history = nil,
   registry = nil,
   stats = nil,
   certificates = {
