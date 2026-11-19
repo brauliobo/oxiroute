@@ -1,6 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::test_ports::unused_tcp_address;
+use oxiroute_server::RtmpSessionTracking;
 
 #[test]
 fn rtmp_listener_admission_rolls_back_limits_and_retains_owned_drain_lifetime() {
@@ -100,9 +101,15 @@ async fn rtmp_writer_accounts_for_bytes_written_to_a_real_socket() {
     let packets = vec![b"first".to_vec(), b"-second".to_vec()];
     let mut counters = RtmpAccessCounters::default();
 
-    write_rtmp_packets(&mut server, &packets, &metrics, &mut counters)
-        .await
-        .expect("RTMP packet write");
+    write_rtmp_packets(
+        &mut server,
+        &packets,
+        &metrics,
+        &RtmpSessionTracking::untracked(),
+        &mut counters,
+    )
+    .await
+    .expect("RTMP packet write");
     drop(server);
 
     assert_eq!(client.await.expect("RTMP client task"), b"first-second");

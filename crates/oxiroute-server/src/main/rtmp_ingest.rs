@@ -4,6 +4,7 @@ use oxiroute_rtmp::{
     CatalogEvent, EndedStreamSnapshot, PublisherEndReason, RecorderTransition,
     RecorderTransitionKind, StreamId, StreamKey,
 };
+use oxiroute_server::RtmpSessionTracking;
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -144,15 +145,15 @@ impl ServerApp for RtmpIngest {
                 return None;
             };
             let session_started_at = Instant::now();
-            let peer_addr = downstream
-                .get_socket_digest()
-                .and_then(|digest| {
-                    digest
-                        .peer_addr()
-                        .and_then(|address| address.as_inet().copied())
-                })
-                .map(|address| address.ip());
-            let mut session = self.runtime.session_with_peer_addr(peer_addr);
+            let peer = downstream.get_socket_digest().and_then(|digest| {
+                digest
+                    .peer_addr()
+                    .and_then(|address| address.as_inet().copied())
+            });
+            let tracking = RtmpSessionTracking::open(&self.metrics, &downstream, peer);
+            let mut session = self
+                .runtime
+                .session_with_peer_addr(peer.map(|address| address.ip()));
             let mut previous_snapshot = session.client_snapshot();
             let mut access_counters = RtmpAccessCounters::default();
             let mut last_failure_code = None;
@@ -165,33 +166,29 @@ impl ServerApp for RtmpIngest {
             let mut publisher_liveness = interval(RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL);
             publisher_liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            loop {
+            let end_reason = loop {
                 let outbound = tokio::select! {
                     _ = shutdown.changed() => {
-                        session.set_end_reason(PublisherEndReason::Shutdown);
-                        break;
+                        break PublisherEndReason::Shutdown;
                     }
                     _ = control_poll.tick() => {
                         if session.is_publisher_active() {
                             emit_catalog_events(&self.control);
                         }
                         if session.take_control_action().is_some() {
-                            session.set_end_reason(PublisherEndReason::Dropped);
-                            break;
+                            break PublisherEndReason::Dropped;
                         }
                         Vec::new()
                     }
                     _ = publisher_liveness.tick() => {
                         let Some(now_unix_ms) = unix_time_ms() else {
                             warn!("closing RTMP session because the system clock is invalid");
-                            session.set_end_reason(PublisherEndReason::Failed);
-                            break;
+                            break PublisherEndReason::Failed;
                         };
                         at_unix_ms = now_unix_ms;
                         if session.is_publisher_stale(now_unix_ms) {
                             warn!("closing stale RTMP publisher session after media inactivity");
-                            session.set_end_reason(PublisherEndReason::Stale);
-                            break;
+                            break PublisherEndReason::Stale;
                         }
                         Vec::new()
                     }
@@ -199,26 +196,23 @@ impl ServerApp for RtmpIngest {
                         match session.drain_playback(MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN) {
                             Ok(outbound) => outbound,
                             Err(error) => {
-                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP playback serialization failed: {error}");
-                                break;
+                                break PublisherEndReason::Failed;
                             }
                         }
                     }
                     read = downstream.read(&mut buffer) => {
                         let bytes_read = match read {
-                            Ok(0) => break,
+                            Ok(0) => break PublisherEndReason::Closed,
                             Ok(bytes_read) => bytes_read,
                             Err(error) => {
-                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP transport read failed: {error}");
-                                break;
+                                break PublisherEndReason::Failed;
                             }
                         };
                         let Ok(bytes_received) = u64::try_from(bytes_read) else {
-                            session.set_end_reason(PublisherEndReason::Failed);
                             warn!("RTMP read size exceeds the supported metrics range");
-                            break;
+                            break PublisherEndReason::Failed;
                         };
                         access_counters.bytes_received = access_counters
                             .bytes_received
@@ -226,15 +220,14 @@ impl ServerApp for RtmpIngest {
                         access_counters.messages_received = access_counters
                             .messages_received
                             .saturating_add(1);
+                        tracking.received(bytes_received);
                         if let Err(error) = self.metrics.record_bytes_received(bytes_received) {
-                            session.set_end_reason(PublisherEndReason::Failed);
                             warn!("could not account for RTMP ingress: {error}");
-                            break;
+                            break PublisherEndReason::Failed;
                         }
                         let Some(now_unix_ms) = unix_time_ms() else {
                             warn!("closing RTMP session because the system clock is invalid");
-                            session.set_end_reason(PublisherEndReason::Failed);
-                            break;
+                            break PublisherEndReason::Failed;
                         };
                         at_unix_ms = now_unix_ms;
 
@@ -275,9 +268,8 @@ impl ServerApp for RtmpIngest {
                                         Some(failure_code),
                                     );
                                 }
-                                session.set_end_reason(PublisherEndReason::Failed);
                                 warn!("RTMP session failed: {error}");
-                                break;
+                                break PublisherEndReason::Failed;
                             }
                         }
                     }
@@ -302,6 +294,7 @@ impl ServerApp for RtmpIngest {
                     &mut downstream,
                     &outbound,
                     &self.metrics,
+                    &tracking,
                     &mut access_counters,
                 )
                 .await
@@ -322,11 +315,11 @@ impl ServerApp for RtmpIngest {
                             last_failure_code,
                         );
                     }
-                    session.set_end_reason(PublisherEndReason::Failed);
                     warn!("RTMP transport write failed: {error}");
-                    break;
+                    break PublisherEndReason::Failed;
                 }
-            }
+            };
+            session.set_end_reason(end_reason);
 
             let terminal_snapshot = session.client_snapshot();
             if let Some(snapshot) = terminal_snapshot.as_ref()
@@ -383,6 +376,7 @@ impl ServerApp for RtmpIngest {
                     );
                 }
             }
+            tracking.finish(close_failed || ended_in_failure(end_reason));
             None
         }
     }
@@ -652,6 +646,13 @@ fn emit_recorder_transition(transition: &RecorderTransition) {
     );
 }
 
+const fn ended_in_failure(reason: PublisherEndReason) -> bool {
+    matches!(
+        reason,
+        PublisherEndReason::Stale | PublisherEndReason::Failed
+    )
+}
+
 fn event_for_role(role: RtmpSessionRole) -> RtmpAccessEvent {
     match role {
         RtmpSessionRole::Client => RtmpAccessEvent::Connect,
@@ -730,6 +731,7 @@ pub(super) async fn write_rtmp_packets(
     downstream: &mut Stream,
     packets: &[Vec<u8>],
     metrics: &ListenerMetrics,
+    tracking: &RtmpSessionTracking,
     counters: &mut RtmpAccessCounters,
 ) -> io::Result<()> {
     timeout(RTMP_WRITE_TIMEOUT, async {
@@ -748,6 +750,7 @@ pub(super) async fn write_rtmp_packets(
                 metrics
                     .record_bytes_sent(bytes_sent)
                     .map_err(io::Error::other)?;
+                tracking.sent(bytes_sent);
                 counters.bytes_sent = counters.bytes_sent.saturating_add(bytes_sent);
                 remaining = &remaining[bytes_written..];
             }

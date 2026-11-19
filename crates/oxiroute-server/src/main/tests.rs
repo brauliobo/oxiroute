@@ -280,6 +280,8 @@ pub(super) fn outbound_rtmp_packets(results: Vec<ClientSessionResult>) -> VecDeq
         .collect()
 }
 
+#[path = "tests/clients.rs"]
+mod clients;
 #[path = "tests/generation.rs"]
 mod generation;
 #[path = "tests/listeners.rs"]
