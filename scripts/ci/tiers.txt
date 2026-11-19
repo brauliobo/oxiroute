@@ -1,6 +1,6 @@
-# BINARY  TIER[,TIER...]   (BINARY slow TEST moves the tests named TEST to the slow tier); checked by tiers.sh check
+# BINARY  TIER[,TIER...]   (BINARY TIER[,TIER...] TEST moves the tests of BINARY whose name contains TEST to those tiers); checked by tiers.sh check
 # core    plane-independent: once on the default plane chain, every pull request
-# planes  plane-sensitive: tokio, epoll and io_uring legs with OXIROUTE_TEST_HTTP_DATA_PLANE, every pull request
+# planes  plane-sensitive: tokio, epoll and io_uring legs with OXIROUTE_TEST_HTTP_DATA_PLANE, every pull request; a test that never chooses a plane fails the leg (scripts/ci/plane_use.sh): tier it core
 # engine  engine suites of oxiroute-epoll-h1 that run on every driver: epoll (edge, level) and io_uring legs
 # epoll   engine suites only the epoll driver supports (thread scheduling): epoll leg
 # uring   suites of the io_uring driver: io_uring leg
@@ -197,6 +197,30 @@ oxiroute::supervised  slow  h3_flows::supervised_worker_crash_with_active_h3_req
 oxiroute::process_management  slow  management::built_management_ui_and_authenticated_config_lifecycle_run_over_real_tcp
 oxiroute::epoll_safety  slow  a_partial_request_head_is_closed_at_the_default_read_limit
 oxiroute::epoll_safety  slow  a_response_in_flight_survives_the_replacement_of_its_generation
+oxiroute::reverse_http3  planes  the_same_service_answers_alike_on_an_https_and_an_http3_listener
+oxiroute::process_rtmp_runtime  planes  queued_connections_survive_generation_handoff_on_every_listener_kind
+oxiroute::wire_tls_idle  tls  ::classic_path
+oxiroute::queue_cancel_wire  tls  _classic_
+oxiroute::queue_cancel_wire  tls  h3_
+oxiroute::process_generation_retirement  core  a_full_retired_cap_defers_the_next_apply_until_a_slot_frees
+oxiroute::process_generation_retirement  core  a_relay_that_outlives_the_drain_deadline_is_closed
+oxiroute::process_generation_retirement  core  retired_generations_stay_listed_while_their_relays_are_open
+oxiroute::process_generation_retirement  core  supervised_relay_is_closed_when_the_drain_deadline_passes
+oxiroute::process_generation_retirement  core  supervised_relay_outlives_a_second_apply_within_the_deadline
+oxiroute::process_generation_retirement  core  supervised_reload_requested_while_a_worker_drains_is_shown_as_pending
+oxiroute::process_generation_retirement  core  supervised_retired_worker_is_listed_by_the_active_worker_until_it_drains
+oxiroute::process_active_drain  core  scenarios::event_sse_closes_with_a_bounded_shutdown_frame_and_releases_its_listener
+oxiroute::process_active_drain  core  scenarios::forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connections
+oxiroute::process_active_drain  core  scenarios::generation_drain_keeps_management_reachable_until_a_reload_restores_traffic
+oxiroute::process_active_drain  core  scenarios::rtmp_reload_and_drain_retain_the_publisher_until_bounded_shutdown
+oxiroute::process_active_drain  core  scenarios::tcp_reload_retains_the_old_relay_and_shutdown_cancels_at_the_deadline
+oxiroute::lane_origin_connections  core  classic_
+oxiroute::process_acme_webroot  core  _on_the_classic_path
+oxiroute::process_cache_revalidation_wire  core  _on_the_classic_path
+oxiroute::process_connection_limit  core  stats_page_with_one_connection_never_rejects_sequential_close_requests
+oxiroute::process_connection_limit  core  the_accept_queue_of_a_listener_counts_the_connections_nobody_accepted
+oxiroute::lane_differential  core  an_origin_settles_when_the_request_it_started_to_receive_is_noted
+oxiroute::process_socket_reload  core  udp_workers::a_kept_http3_socket_runs_the_new_worker_count_after_a_reload
 oxiroute::epoll_scheduling                            planes
 oxiroute::epoll_tls                                   planes
 oxiroute::evacuation                                  core
@@ -243,7 +267,7 @@ oxiroute::process_lifecycle                           core
 oxiroute::process_listener_workers                    planes
 oxiroute::process_management                          core
 oxiroute::process_registry                            planes
-oxiroute::process_rtmp_runtime                        planes
+oxiroute::process_rtmp_runtime                        core
 oxiroute::process_store_reload                        core
 oxiroute::process_socket_reload                       planes
 oxiroute::process_top                                 planes
@@ -251,7 +275,7 @@ oxiroute::process_udp_drain                           core
 oxiroute::process_worker_scaling                      planes
 oxiroute::queue_cancel_wire                           planes,tls
 oxiroute::reload_memory                               planes
-oxiroute::reverse_http3                               planes
+oxiroute::reverse_http3                               core
 oxiroute::reverse_http3_golden                        core
 oxiroute::rtmp_api                                    core
 oxiroute::rtmp_recording                              core

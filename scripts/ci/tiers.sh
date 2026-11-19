@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The one owner of the test tiers (scripts/ci/tiers.txt). Every test binary of the workspace is listed once with the
 # tiers it runs in, and the lanes (scripts/test/*.sh) select binaries by tier, so a binary cannot be skipped by one lane
-# and unrun by another. A line `BINARY slow TEST` moves the tests of BINARY whose name contains TEST to the slow tier.
+# and unrun by another. A line `BINARY TIER[,TIER...] TEST` moves the tests of BINARY whose name contains TEST to those tiers.
 #
 #   tiers.sh check          fail when a test binary is in no tier, a tier is unknown, or an entry names no binary
-#   tiers.sh filter TIER... print the nextest filterset that selects the binaries (and slow tests) of the tiers
+#   tiers.sh filter TIER... print the nextest filterset that selects the binaries and the moved tests of the tiers
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -60,15 +60,23 @@ filter() {
   entries | awk -v wanted="$*" '
     BEGIN { n = split(wanted, w, " "); for (i = 1; i <= n; i++) pick[w[i]] = 1 }
     function add(list, item) { return list == "" ? item : list " | " item }
+    function picked(tiers,   n, t, i) {
+      n = split(tiers, t, ",")
+      for (i = 1; i <= n; i++) if (t[i] in pick) return 1
+      return 0
+    }
     NF == 3 {
-      moved = add(moved, "(binary_id(=" $1 ") & test(~" $3 "))")
-      if ("slow" in pick) selected = add(selected, "(binary_id(=" $1 ") & test(~" $3 "))")
+      test = "(binary_id(=" $1 ") & test(~" $3 "))"
+      moved = add(moved, test)
+      if (picked($2)) rows = add(rows, test)
       next
     }
-    { n = split($2, tiers, ","); for (i = 1; i <= n; i++) if (tiers[i] in pick) { selected = add(selected, "binary_id(=" $1 ")"); break } }
+    picked($2) { binaries = add(binaries, "binary_id(=" $1 ")") }
     END {
-      if (selected == "") exit 3
-      if (moved != "" && !("slow" in pick)) selected = "(" selected ") & !(" moved ")"
+      if (binaries == "" && rows == "") exit 3
+      selected = binaries
+      if (binaries != "" && moved != "") selected = "(" binaries ") & !(" moved ")"
+      if (rows != "") selected = add(selected, rows)
       print selected
     }'
 }

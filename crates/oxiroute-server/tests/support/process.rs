@@ -2,6 +2,7 @@
 
 use std::{
     fs::{self, File},
+    io::Write as _,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -418,10 +419,9 @@ impl Drop for ServerProcess {
 }
 
 const DATA_PLANE_ENV: &str = "OXIROUTE_TEST_HTTP_DATA_PLANE";
+const PLANE_USE_ENV: &str = "OXIROUTE_TEST_PLANE_USE_FILE";
 
-/// The HTTP data plane a whole suite runs on, from the test variable: `epoll`, `io_uring` or `tokio`. Omitted leaves each
-/// configuration to its own choice, which defaults to the first available plane of the chain.
-pub fn suite_data_plane() -> Option<HttpDataPlane> {
+fn data_plane_of_suite() -> Option<HttpDataPlane> {
     match std::env::var(DATA_PLANE_ENV).ok()?.as_str() {
         "epoll" => Some(HttpDataPlane::Epoll),
         "io_uring" => Some(HttpDataPlane::IoUring),
@@ -430,24 +430,58 @@ pub fn suite_data_plane() -> Option<HttpDataPlane> {
     }
 }
 
+/// Appends the running test to the file named by the test variable `OXIROUTE_TEST_PLANE_USE_FILE`: the plane lanes
+/// check that every test of the plane tier chooses a plane (`scripts/ci/plane_use.sh`).
+fn record_plane_use() {
+    let (Some(report), Ok(binary), Ok(test)) = (
+        std::env::var_os(PLANE_USE_ENV),
+        std::env::var("NEXTEST_BINARY_ID"),
+        std::env::var("NEXTEST_TEST_NAME"),
+    ) else {
+        return;
+    };
+    let mut report = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(report)
+        .expect("the plane use report");
+    report
+        .write_all(format!("{binary} {test}\n").as_bytes())
+        .expect("write the plane use report");
+}
+
+/// The HTTP data plane a whole suite runs on, from the test variable: `epoll`, `io_uring` or `tokio`. Omitted leaves each
+/// configuration to its own choice, which defaults to the first available plane of the chain. A test that asks has a
+/// result that depends on the plane.
+pub fn suite_data_plane() -> Option<HttpDataPlane> {
+    record_plane_use();
+    data_plane_of_suite()
+}
+
 /// Whether the plain HTTP listeners of the configurations of the suite are served by the epoll data plane.
 #[allow(dead_code)]
 pub fn serves_on_epoll() -> bool {
     suite_data_plane() != Some(HttpDataPlane::Tokio) && oxiroute_epoll_h1::supported()
 }
 
-fn takes_a_data_plane(draft: &ConfigDraft, plane: HttpDataPlane) -> bool {
+fn reaches_a_data_plane(draft: &ConfigDraft) -> bool {
     draft.fast_lane_enabled()
-        && !(plane == HttpDataPlane::IoUring && draft.aged_per_worker())
         && draft
             .listeners
             .iter()
             .any(|listener| listener.protocol == Protocol::Http)
 }
 
+fn takes_a_data_plane(draft: &ConfigDraft, plane: HttpDataPlane) -> bool {
+    reaches_a_data_plane(draft) && !(plane == HttpDataPlane::IoUring && draft.aged_per_worker())
+}
+
 fn on_suite_data_plane(config: &ValidatedConfig) -> ValidatedConfig {
+    if reaches_a_data_plane(config.as_draft()) {
+        record_plane_use();
+    }
     let Some(plane) =
-        suite_data_plane().filter(|plane| takes_a_data_plane(config.as_draft(), *plane))
+        data_plane_of_suite().filter(|plane| takes_a_data_plane(config.as_draft(), *plane))
     else {
         return config.clone();
     };
