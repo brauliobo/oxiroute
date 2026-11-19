@@ -1,6 +1,6 @@
 [package]
 name = "oxiroute-forward-proxy"
-version = "7.0.0"
+version = "7.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"

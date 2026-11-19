@@ -4,7 +4,7 @@ A Rust proxy and control plane for routing HTTP, TCP, UDP, and RTMP services fro
 Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora), with a CLI and browser dashboard for
 inspecting traffic, managing backends, and applying configuration changes.
 
-**Version 7.0.0 · Apache-2.0**
+**Version 7.1.0 · Apache-2.0**
 
 Start with a local evaluation. Protocol support and migration coverage vary by feature; the
 [compatibility matrix](docs/COMPATIBILITY.md) defines the current boundaries. Broad production readiness

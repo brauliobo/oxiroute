@@ -1,6 +1,6 @@
 pkgbase = oxiroute
 	pkgdesc = Pingora-based HTTP, TCP, and RTMP proxy runtime
-	pkgver = 7.0.0
+	pkgver = 7.1.0
 	pkgrel = 1
 	url = https://github.com/brauliobo/oxiroute
 	install = oxiroute.install
@@ -16,7 +16,7 @@ pkgbase = oxiroute
 	backup = etc/oxiroute/oxiroute.env
 	backup = etc/oxiroute/oxiroute.kdl
 	backup = etc/oxiroute/oxiroute.lua
-	source = oxiroute-7.0.0.tar.gz::https://github.com/brauliobo/oxiroute/releases/download/v7.0.0/oxiroute-7.0.0.tar.gz
+	source = oxiroute-7.1.0.tar.gz::https://github.com/brauliobo/oxiroute/releases/download/v7.1.0/oxiroute-7.1.0.tar.gz
 	source = oxiroute.service
 	source = oxiroute.sysusers
 	source = oxiroute.tmpfiles
@@ -33,6 +33,6 @@ pkgbase = oxiroute
 	sha256sums = d56db017915b82ad6204bb4de1aa268cc41586eafcbbf35194366b32ed02f19a
 	sha256sums = 57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9
 	sha256sums = f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564
-	sha256sums = 4197b3c0898a607ebb8825d7587c9ad37d549790c2de85d4e9e6ac7c08a4a8d1
+	sha256sums = a6aba7b89182befdfe5aada05a34c741d101dff1c5d9b4e5e6d7401e9114faa6
 
 pkgname = oxiroute
