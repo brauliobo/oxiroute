@@ -12,7 +12,7 @@ const DIRECTORIES: [&str; 4] = [
     "/usr/lib/systemd/system",
     "/lib/systemd/system",
 ];
-const HOMES: [&str; 3] = ["/home", "/root", "/run/user"];
+const HOME_DIRECTORIES: [&str; 3] = ["home", "root", "run/user"];
 const STATE_ROOTS: [(&str, &str); 4] = [
     ("StateDirectory", "/var/lib"),
     ("CacheDirectory", "/var/cache"),
@@ -150,6 +150,12 @@ impl Settings {
     }
 }
 
+fn home_rules(access: Access) -> impl Iterator<Item = Rule> {
+    HOME_DIRECTORIES
+        .map(move |name| rule(Path::new("/").join(name), access))
+        .into_iter()
+}
+
 fn rule(path: impl AsRef<Path>, access: Access) -> Rule {
     Rule {
         path: path.as_ref().to_owned(),
@@ -182,11 +188,9 @@ impl Unit {
             _ => Vec::new(),
         };
         match settings.last("ProtectHome") {
-            Some("read-only") => rules.extend(HOMES.map(|path| rule(path, Access::ReadOnly))),
-            Some("tmpfs") => rules.extend(HOMES.map(|path| rule(path, Access::Hidden))),
-            _ if settings.enabled("ProtectHome") => {
-                rules.extend(HOMES.map(|path| rule(path, Access::Hidden)));
-            }
+            Some("read-only") => rules.extend(home_rules(Access::ReadOnly)),
+            Some("tmpfs") => rules.extend(home_rules(Access::Hidden)),
+            _ if settings.enabled("ProtectHome") => rules.extend(home_rules(Access::Hidden)),
             _ => {}
         }
         if settings.enabled("PrivateTmp") {
