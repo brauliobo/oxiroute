@@ -297,7 +297,7 @@ jobs:
         working-directory: ui
 
       - name: Run UI tests that need no management process
-        run: pnpm exec vitest run --exclude src/api.process.test.ts --maxWorkers=4
+        run: pnpm exec vitest run --exclude 'src/**/*.process.test.ts' --maxWorkers=4
         working-directory: ui
 
       - name: Build UI
@@ -347,7 +347,7 @@ jobs:
         working-directory: ui
 
       - name: Run the UI API tests against the management process
-        run: pnpm exec vitest run src/api.process.test.ts
+        run: pnpm exec vitest run '.process.test.ts'
         working-directory: ui
 
   browser:
