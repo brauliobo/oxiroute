@@ -208,6 +208,7 @@ oxiroute::process_generation_retirement  core  retired_generations_stay_listed_w
 oxiroute::process_generation_retirement  core  supervised_relay_is_closed_when_the_drain_deadline_passes
 oxiroute::process_generation_retirement  core  supervised_relay_outlives_a_second_apply_within_the_deadline
 oxiroute::process_generation_retirement  core  supervised_reload_requested_while_a_worker_drains_is_shown_as_pending
+oxiroute::process_generation_retirement  core  supervised_reload_requested_while_a_worker_drains_applies_at_once
 oxiroute::process_generation_retirement  core  supervised_retired_worker_is_listed_by_the_active_worker_until_it_drains
 oxiroute::process_active_drain  core  scenarios::event_sse_closes_with_a_bounded_shutdown_frame_and_releases_its_listener
 oxiroute::process_active_drain  core  scenarios::forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connections
@@ -221,6 +222,7 @@ oxiroute::process_connection_limit  core  stats_page_with_one_connection_never_r
 oxiroute::process_connection_limit  core  the_accept_queue_of_a_listener_counts_the_connections_nobody_accepted
 oxiroute::lane_differential  core  an_origin_settles_when_the_request_it_started_to_receive_is_noted
 oxiroute::process_socket_reload  core  udp_workers::a_kept_http3_socket_runs_the_new_worker_count_after_a_reload
+oxiroute::process_socket_reload  core  descriptor_limit::more_listeners_than_a_worker_can_take_stop_the_service_instead_of_running_direct
 oxiroute::epoll_scheduling                            planes
 oxiroute::epoll_tls                                   planes
 oxiroute::evacuation                                  core
