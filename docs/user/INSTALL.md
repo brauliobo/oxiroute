@@ -97,6 +97,9 @@ See [operations](OPERATING.md) for reloads and drains and [security](SECURITY.md
 - **Upgrading from 6.x** to 7.0.0 changes four defaults (the HTTP/1 data plane, the TLS backend, the HTTP/3
   congestion controller and the allocator's huge-page policy); each has a setting that restores the old behaviour. Read
   the [upgrade guide](../RELEASE_NOTES_7.0.0.md#upgrade-guide-from-65x) before restarting a production service.
+- **Upgrading from 7.0.x** to 7.1.0 changes a few CLI spellings (`import --emit`, `generation drain --wait`) and
+  adds `NotifyAccess=main` to the unit. Read the [upgrade notes](../RELEASE_NOTES_7.1.0.md#upgrading); a running
+  daemon can take the new binary without dropping connections with `oxiroute upgrade --wait`.
 - **Remove** (`apt remove oxiroute`, `dnf remove oxiroute`) deletes the program and keeps your
   configuration (rpm keeps a modified file as `<file>.rpmsave`) and `/var/lib/oxiroute`.
 - **Purge** (`apt purge oxiroute`) also deletes `/etc/oxiroute`, `/var/lib/oxiroute` and `/run/oxiroute`. The
