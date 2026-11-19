@@ -2,14 +2,39 @@
 use super::*;
 
 impl ForwardHttp1ServicePlan {
+    #[allow(clippy::large_futures)]
+    pub async fn handle(
+        self: &Arc<Self>,
+        request: Request<Incoming>,
+        client_addr: Option<SocketAddr>,
+        shutdown: ShutdownWatch,
+        lifecycle: Arc<ForwardConnectionLifecycle>,
+        listener: crate::ListenerMetrics,
+    ) -> Response<ForwardProxyBody> {
+        let mut exchange = lifecycle.client().exchange();
+        let response = self
+            .dispatch(
+                request,
+                client_addr,
+                (shutdown, &lifecycle, &mut exchange),
+                listener,
+            )
+            .await;
+        exchange.answered(response.status());
+        response
+    }
+
     // Keep the UDP relay future inline so cancellation remains owned by this tunnel task.
     #[allow(clippy::large_futures, clippy::too_many_lines)]
-    pub async fn handle(
+    async fn dispatch(
         self: &Arc<Self>,
         mut request: Request<Incoming>,
         client_addr: Option<SocketAddr>,
-        mut shutdown: ShutdownWatch,
-        lifecycle: Arc<ForwardConnectionLifecycle>,
+        (mut shutdown, lifecycle, exchange): (
+            ShutdownWatch,
+            &Arc<ForwardConnectionLifecycle>,
+            &mut Exchange,
+        ),
         listener: crate::ListenerMetrics,
     ) -> Response<ForwardProxyBody> {
         let AuthorizedRequest {
@@ -51,10 +76,13 @@ impl ForwardHttp1ServicePlan {
                 }
                 let tunnel_destination = approved.destination().authority();
                 let completion = lifecycle.start();
+                lifecycle.client().tcp_tunnel();
+                let exchange = exchange.detach();
                 tokio::spawn(async move {
                     let _completion = completion;
+                    let mut exchange = exchange;
                     let upgraded = tokio::select! {
-                        result = upgrade => result.ok(),
+                        result = upgrade => result.map_err(|_| exchange.fail()).ok(),
                         _ = shutdown.changed() => None,
                     };
                     if let Some(upgraded) = upgraded {
@@ -63,12 +91,19 @@ impl ForwardHttp1ServicePlan {
                             lifetime_timeout,
                             ..TunnelLimits::default()
                         }) else {
+                            exchange.fail();
                             return;
                         };
                         let outcome = tokio::select! {
                             outcome = tunnel.relay(TokioIo::new(upgraded), upstream) => Some(outcome),
                             _ = shutdown.changed() => None,
                         };
+                        if outcome
+                            .as_ref()
+                            .is_some_and(|outcome| outcome.kind() == TunnelOutcomeKind::IoError)
+                        {
+                            exchange.fail();
+                        }
                         match outcome {
                             Some(outcome) => log::info!(
                                 target: "oxiroute::forward_proxy",
@@ -105,6 +140,8 @@ impl ForwardHttp1ServicePlan {
                 }
                 let tunnel_destination = approved.destination().authority();
                 let completion = lifecycle.start();
+                lifecycle.client().udp_tunnel();
+                let exchange = exchange.detach();
                 let limits = TunnelLimits {
                     idle_timeout: self.idle_timeout,
                     lifetime_timeout,
@@ -112,14 +149,22 @@ impl ForwardHttp1ServicePlan {
                 };
                 tokio::spawn(async move {
                     let _completion = completion;
+                    let mut exchange = exchange;
                     let upgraded = tokio::select! {
-                        result = upgrade => result.ok(),
+                        result = upgrade => result.map_err(|_| exchange.fail()).ok(),
                         _ = shutdown.changed() => None,
                     };
                     let Some(upgraded) = upgraded else {
                         return;
                     };
                     let outcome = relay_udp(TokioIo::new(upgraded), socket, limits, shutdown).await;
+                    if matches!(
+                        outcome.end,
+                        crate::capsule::UdpRelayEnd::IoError
+                            | crate::capsule::UdpRelayEnd::Malformed
+                    ) {
+                        exchange.fail();
+                    }
                     log::info!(
                         target: "oxiroute::forward_proxy",
                         "event=forward_udp_tunnel protocol=h1 destination={} outcome={} bytes_client_to_udp={} bytes_udp_to_client={}",

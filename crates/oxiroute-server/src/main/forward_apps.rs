@@ -26,6 +26,7 @@ pub(super) struct ForwardHttp2App<A> {
     generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
     listener: ListenerRuntime,
+    metrics: ListenerMetrics,
     service: Arc<ForwardHttp1ServicePlan>,
 }
 
@@ -39,7 +40,8 @@ impl<A> ForwardHttp2App<A> {
         Self {
             generation,
             inner: Arc::new(inner),
-            listener: ListenerRuntime::new(metrics),
+            listener: ListenerRuntime::new(metrics.clone()),
+            metrics,
             service,
         }
     }
@@ -50,15 +52,21 @@ struct ForwardDownstream<S> {
     idle_timeout: Duration,
     inner: S,
     metrics: ConnectionGuard,
+    client: ForwardClient,
 }
 
 impl<S> ForwardDownstream<S> {
-    fn new(inner: S, idle_timeout: Duration, metrics: ConnectionGuard) -> Self {
+    fn new(
+        inner: S,
+        idle_timeout: Duration,
+        (metrics, client): (ConnectionGuard, ForwardClient),
+    ) -> Self {
         Self {
             idle: Box::pin(tokio::time::sleep(idle_timeout)),
             idle_timeout,
             inner,
             metrics,
+            client,
         }
     }
 
@@ -93,12 +101,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for ForwardDownstream<S> {
         if let Poll::Ready(Ok(())) = &result {
             let read = buffer.filled().len() - before;
             if read > 0 {
-                if let Err(error) = this
-                    .metrics
-                    .record_bytes_received(u64::try_from(read).unwrap_or(u64::MAX))
-                {
+                let read = u64::try_from(read).unwrap_or(u64::MAX);
+                if let Err(error) = this.metrics.record_bytes_received(read) {
                     return Poll::Ready(Err(io::Error::other(error)));
                 }
+                this.client.received(read);
                 this.reset_idle();
             }
         }
@@ -119,12 +126,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ForwardDownstream<S> {
         let result = Pin::new(&mut this.inner).poll_write(context, buffer);
         if let Poll::Ready(Ok(written)) = result {
             if written > 0 {
-                if let Err(error) = this
-                    .metrics
-                    .record_bytes_sent(u64::try_from(written).unwrap_or(u64::MAX))
-                {
+                let bytes = u64::try_from(written).unwrap_or(u64::MAX);
+                if let Err(error) = this.metrics.record_bytes_sent(bytes) {
                     return Poll::Ready(Err(io::Error::other(error)));
                 }
+                this.client.sent(bytes);
                 this.reset_idle();
             }
             Poll::Ready(Ok(written))
@@ -226,9 +232,10 @@ impl ServerApp for ForwardHttp1App {
                     .peer_addr()
                     .and_then(|address| address.as_inet().copied())
             });
+            let client = ForwardClient::track_http1(&self.metrics, &downstream);
             let plan = Arc::clone(&self.service);
             let request_shutdown = shutdown.clone();
-            let lifecycle = Arc::new(ForwardConnectionLifecycle::default());
+            let lifecycle = Arc::new(ForwardConnectionLifecycle::new(client.clone()));
             let request_lifecycle = Arc::clone(&lifecycle);
             let challenge_store = self.challenge_store.clone();
             let request_metrics = self.metrics.clone();
@@ -263,7 +270,7 @@ impl ServerApp for ForwardHttp1App {
             let downstream = ForwardDownstream::new(
                 downstream,
                 self.service.idle_timeout(),
-                self.metrics.traffic_accounting(),
+                (self.metrics.traffic_accounting(), client),
             );
             let connection = builder
                 .serve_connection(TokioIo::new(downstream), app)
@@ -384,6 +391,7 @@ where
         downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        ForwardClient::track_http2(&self.metrics, &downstream);
         self.inner.process_new(downstream, shutdown)
     }
 
@@ -461,6 +469,7 @@ impl ServerApp for TcpRelay {
                     .and_then(|address| address.as_inet().copied())
             });
             let connection = self.metrics.traffic_accounting();
+            let client = TrackedClient::open(&self.metrics, physical_client_address);
             if let Some(policy) = self.proxy_protocol {
                 let mut proxy_shutdown = shutdown.clone();
                 let accepted = match oxiroute_server::accept_stream(
@@ -495,10 +504,12 @@ impl ServerApp for TcpRelay {
                     warn!("TCP pool has no healthy upstream");
                     return None;
                 };
-                let relay = TcpRelayCore::new(upstream, self.service.policy()).with_proxy_protocol(
-                    self.service.proxy_protocol(),
-                    Some(accepted.header.source),
-                );
+                let relay = TcpRelayCore::new(upstream, self.service.policy())
+                    .with_proxy_protocol(
+                        self.service.proxy_protocol(),
+                        Some(accepted.header.source),
+                    )
+                    .with_client(client);
                 if let Err(error) = relay
                     .relay(accepted.stream, &connection, shutdown.clone())
                     .await
@@ -513,7 +524,8 @@ impl ServerApp for TcpRelay {
                     return None;
                 };
                 let relay = TcpRelayCore::new(upstream, self.service.policy())
-                    .with_proxy_protocol(self.service.proxy_protocol(), physical_client_address);
+                    .with_proxy_protocol(self.service.proxy_protocol(), physical_client_address)
+                    .with_client(client);
                 if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
                     warn!("TCP relay failed: {error}");
                 }
@@ -523,3 +535,7 @@ impl ServerApp for TcpRelay {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "forward_apps/tests.rs"]
+mod tests;

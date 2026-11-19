@@ -144,7 +144,13 @@ impl ForwardHttp1ServicePlan {
         response
     }
 
-    pub(super) async fn reject_h2(&self, session: &mut ServerSession, failure: RequestFailure) {
+    pub(super) async fn reject_h2(
+        &self,
+        session: &mut ServerSession,
+        failure: RequestFailure,
+        exchange: &mut Exchange,
+    ) {
+        exchange.answered(failure.status());
         let Ok(mut response_header) = pingora::http::ResponseHeader::build(failure.status(), None)
         else {
             session.shutdown().await;

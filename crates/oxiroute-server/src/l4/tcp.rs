@@ -1,7 +1,10 @@
 use std::{
     error::Error,
     fmt, io,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -16,6 +19,13 @@ use tokio::{
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
+
+mod client;
+#[cfg(test)]
+mod tracking;
+
+use client::RelayClient;
+pub use client::TrackedClient;
 
 use super::relay::{
     end::{RelayEnd, Shared},
@@ -194,6 +204,7 @@ pub struct TcpRelayCore {
     upstream: EndpointLease,
     policy: RelayPolicy,
     proxy_protocol: Option<(ProxyProtocolPolicy, Option<std::net::SocketAddr>)>,
+    client: TrackedClient,
 }
 
 impl TcpRelayCore {
@@ -203,7 +214,14 @@ impl TcpRelayCore {
             upstream,
             policy,
             proxy_protocol: None,
+            client: TrackedClient::untracked(),
         }
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client: TrackedClient) -> Self {
+        self.client = client;
+        self
     }
 
     #[must_use]
@@ -232,6 +250,7 @@ impl TcpRelayCore {
         D: RelayEnd,
     {
         let started_at = Instant::now();
+        let client = RelayClient::new(self.client.stats());
         let upstream = tokio::select! {
             biased;
             () = wait_for_shutdown(&mut shutdown) => Err(failure(RelayFailureKind::Cancelled, RelayStats::default())),
@@ -262,6 +281,7 @@ impl TcpRelayCore {
 
         let result = match upstream {
             Ok(mut upstream) => {
+                client.upstream(upstream.label(&self.upstream));
                 if let Err(error) = send_proxy_header(
                     &mut upstream.stream,
                     self.proxy_protocol,
@@ -279,10 +299,10 @@ impl TcpRelayCore {
                     if self.proxy_protocol.is_some() {
                         let _ = connection.record_proxy_protocol(ProxyProtocolResult::Sent);
                     }
-                    relay_streams(
+                    relay_tracked(
                         downstream,
                         upstream.stream,
-                        connection,
+                        (connection, client),
                         shutdown,
                         self.policy,
                     )
@@ -315,6 +335,7 @@ impl TcpRelayCore {
         if let Err(error) = connection.record_tcp_relay(category, started_at.elapsed()) {
             warn!("could not account for TCP relay metrics: {error}");
         }
+        client.completed(result.is_err());
         result
     }
 }
@@ -335,6 +356,17 @@ pub async fn select_upstream_with_shutdown(
 struct ConnectedUpstream {
     stream: Stream,
     address: Option<std::net::SocketAddr>,
+}
+
+impl ConnectedUpstream {
+    fn label(&self, lease: &EndpointLease) -> Arc<str> {
+        self.address
+            .map_or_else(
+                || lease.endpoint().to_string(),
+                |address| address.to_string(),
+            )
+            .into()
+    }
 }
 
 async fn connect_upstream(upstream: &EndpointLease) -> io::Result<ConnectedUpstream> {
@@ -434,6 +466,28 @@ pub async fn relay_streams<D, U>(
     downstream: D,
     upstream: U,
     connection: &ConnectionGuard,
+    shutdown: ShutdownWatch,
+    policy: RelayPolicy,
+) -> Result<RelayStats, RelayFailure>
+where
+    D: RelayEnd,
+    U: RelayEnd,
+{
+    let untracked = RelayClient::new(None);
+    relay_tracked(
+        downstream,
+        upstream,
+        (connection, untracked),
+        shutdown,
+        policy,
+    )
+    .await
+}
+
+async fn relay_tracked<D, U>(
+    downstream: D,
+    upstream: U,
+    (connection, client): (&ConnectionGuard, RelayClient<'_>),
     mut shutdown: ShutdownWatch,
     policy: RelayPolicy,
 ) -> Result<RelayStats, RelayFailure>
@@ -445,7 +499,7 @@ where
     let mut client_buffer = vec![0; RELAY_BUFFER_SIZE];
     let mut upstream_buffer = vec![0; RELAY_BUFFER_SIZE];
     let started_at = Instant::now();
-    let accounting = RelayAccounting::new(connection, started_at);
+    let accounting = RelayAccounting::new(connection, started_at).tracking(client);
 
     let directions = async {
         tokio::try_join!(
@@ -502,6 +556,7 @@ where
 /// everything runs in one task: the atomics are there for the `Send` bound only, and relaxed accesses are plain ones.
 pub(in crate::l4) struct RelayAccounting<'a> {
     connection: &'a ConnectionGuard,
+    client: RelayClient<'a>,
     started_at: Instant,
     received: AtomicU64,
     sent: AtomicU64,
@@ -513,11 +568,17 @@ impl<'a> RelayAccounting<'a> {
     pub(in crate::l4) fn new(connection: &'a ConnectionGuard, started_at: Instant) -> Self {
         Self {
             connection,
+            client: RelayClient::new(None),
             started_at,
             received: AtomicU64::new(0),
             sent: AtomicU64::new(0),
             last_io: AtomicU64::new(0),
         }
+    }
+
+    fn tracking(mut self, client: RelayClient<'a>) -> Self {
+        self.client = client;
+        self
     }
 
     pub(in crate::l4) fn stats(&self) -> RelayStats {
@@ -546,6 +607,7 @@ impl<'a> RelayAccounting<'a> {
             let bytes = bytes_to_u64(bytes);
             self.connection.record_bytes_received(bytes)?;
             add_traffic(&self.received, bytes);
+            self.client.received(bytes);
         }
         self.touch();
         Ok(())
@@ -561,6 +623,7 @@ impl<'a> RelayAccounting<'a> {
             let bytes = bytes_to_u64(bytes);
             self.connection.record_bytes_sent(bytes)?;
             add_traffic(&self.sent, bytes);
+            self.client.sent(bytes);
         }
         self.touch();
         Ok(())

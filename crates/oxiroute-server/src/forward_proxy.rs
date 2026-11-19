@@ -41,7 +41,8 @@ use oxiroute_config::{
 use oxiroute_forward_proxy::{
     ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,
     H2TunnelStream, Host, PolicyContext, Principal, Protocol, RuleError, TimeWindow, TunnelLimits,
-    parse_absolute_form, parse_connect_authority, parse_connect_udp_path, sanitize_request_headers,
+    TunnelOutcomeKind, parse_absolute_form, parse_connect_authority, parse_connect_udp_path,
+    sanitize_request_headers,
 };
 use pingora::{
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream},
@@ -75,6 +76,7 @@ mod app;
 mod blueprint;
 mod body;
 mod cache;
+mod client;
 mod connect;
 mod h3_forward;
 mod handle;
@@ -89,6 +91,8 @@ pub(crate) use blueprint::*;
 use body::*;
 #[allow(clippy::wildcard_imports)]
 use cache::*;
+use client::Exchange;
+pub use client::ForwardClient;
 #[allow(clippy::wildcard_imports)]
 use connect::*;
 #[allow(clippy::wildcard_imports)]

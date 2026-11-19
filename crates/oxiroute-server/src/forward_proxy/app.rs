@@ -51,13 +51,15 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             session.shutdown().await;
             return None;
         }
+        let client = ForwardClient::of_session(&session);
+        let mut exchange = client.exchange();
         if session.req_header().method != Method::CONNECT {
-            self.reject_h2(&mut session, RequestFailure::BadRequest)
+            self.reject_h2(&mut session, RequestFailure::BadRequest, &mut exchange)
                 .await;
             return None;
         }
         let Ok(request) = h2_request(&session) else {
-            self.reject_h2(&mut session, RequestFailure::BadRequest)
+            self.reject_h2(&mut session, RequestFailure::BadRequest, &mut exchange)
                 .await;
             return None;
         };
@@ -73,7 +75,7 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
         {
             Ok(request) => request,
             Err(error) => {
-                self.reject_h2(&mut session, error).await;
+                self.reject_h2(&mut session, error, &mut exchange).await;
                 return None;
             }
         };
@@ -84,7 +86,7 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             ..
         } = authorized
         else {
-            self.reject_h2(&mut session, RequestFailure::BadRequest)
+            self.reject_h2(&mut session, RequestFailure::BadRequest, &mut exchange)
                 .await;
             return None;
         };
@@ -97,17 +99,17 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
         {
             Ok(Ok(upstream)) => upstream,
             Ok(Err(error)) => {
-                self.reject_h2(&mut session, error).await;
+                self.reject_h2(&mut session, error, &mut exchange).await;
                 return None;
             }
             Err(_) => {
-                self.reject_h2(&mut session, RequestFailure::GatewayTimeout)
+                self.reject_h2(&mut session, RequestFailure::GatewayTimeout, &mut exchange)
                     .await;
                 return None;
             }
         };
         let Ok(response_header) = pingora::http::ResponseHeader::build(StatusCode::OK, None) else {
-            self.reject_h2(&mut session, RequestFailure::BadGateway)
+            self.reject_h2(&mut session, RequestFailure::BadGateway, &mut exchange)
                 .await;
             return None;
         };
@@ -116,10 +118,12 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             .await
             .is_err()
         {
+            exchange.fail();
             return None;
         }
         let lifetime_timeout = lifetime_deadline.saturating_duration_since(Instant::now());
         if lifetime_timeout.is_zero() {
+            exchange.fail();
             session.shutdown().await;
             return None;
         }
@@ -128,17 +132,24 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             lifetime_timeout,
             ..TunnelLimits::default()
         }) else {
+            exchange.fail();
             session.shutdown().await;
             return None;
         };
         let mut shutdown = shutdown.clone();
         let outcome = tokio::select! {
             outcome = tunnel.relay_h2(
-                PingoraH2Stream { session },
+                PingoraH2Stream { session, client },
                 upstream,
             ) => Some(outcome),
             _ = shutdown.changed() => None,
         };
+        if outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.kind() == TunnelOutcomeKind::IoError)
+        {
+            exchange.fail();
+        }
         match outcome.as_ref() {
             Some(outcome) => log::info!(
                 target: "oxiroute::forward_proxy",
@@ -170,6 +181,7 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
 
 struct PingoraH2Stream {
     session: ServerSession,
+    client: ForwardClient,
 }
 
 #[async_trait]
@@ -180,6 +192,9 @@ impl H2TunnelStream for PingoraH2Stream {
             .read_request_body()
             .await
             .map_err(|error| pingora_io_error(&error))?;
+        if let Some(data) = &data {
+            self.client.received_shared(data.len() as u64);
+        }
         if data
             .as_ref()
             .is_some_and(|data| data.is_empty() && self.session.is_body_done())
@@ -191,10 +206,13 @@ impl H2TunnelStream for PingoraH2Stream {
     }
 
     async fn send_data(&mut self, data: Bytes, end: bool) -> io::Result<()> {
+        let bytes = data.len() as u64;
         self.session
             .write_response_body(data, end)
             .await
-            .map_err(|error| pingora_io_error(&error))
+            .map_err(|error| pingora_io_error(&error))?;
+        self.client.sent_shared(bytes);
+        Ok(())
     }
 
     async fn wait_closed(&mut self) -> io::Result<()> {

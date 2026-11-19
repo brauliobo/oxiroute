@@ -45,7 +45,7 @@ pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStat
 pub use continuity::ProcessSecrets;
 pub use doorbell::Doorbell;
 pub use forward_proxy::{
-    ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,
+    ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardClient, ForwardConnectionLifecycle,
     ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,
     challenge_response,
 };
@@ -81,7 +81,7 @@ pub use l4::relay::end::{CopyOnly, RelayEnd};
 pub use l4::service::L4ServicePlan;
 pub use l4::tcp::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
-    RelayStats, TcpRelayCore, relay_streams, select_upstream_with_shutdown,
+    RelayStats, TcpRelayCore, TrackedClient, relay_streams, select_upstream_with_shutdown,
 };
 pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations, PendingListenerChange};

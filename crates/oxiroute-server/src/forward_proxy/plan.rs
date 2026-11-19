@@ -33,9 +33,23 @@ pub fn challenge_response(
 pub struct ForwardConnectionLifecycle {
     finished: tokio::sync::Notify,
     started: AtomicBool,
+    client: ForwardClient,
 }
 
 impl ForwardConnectionLifecycle {
+    #[must_use]
+    pub fn new(client: ForwardClient) -> Self {
+        Self {
+            finished: tokio::sync::Notify::default(),
+            started: AtomicBool::new(false),
+            client,
+        }
+    }
+
+    pub(super) const fn client(&self) -> &ForwardClient {
+        &self.client
+    }
+
     pub(super) fn start(self: &Arc<Self>) -> ForwardTunnelCompletion {
         self.started.store(true, Ordering::Release);
         ForwardTunnelCompletion(Arc::clone(self))
