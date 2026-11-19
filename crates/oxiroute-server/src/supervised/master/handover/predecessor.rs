@@ -1,4 +1,4 @@
-use std::{process::Command, sync::mpsc::TryRecvError};
+use std::{os::unix::process::ExitStatusExt as _, process::Command, sync::mpsc::TryRecvError};
 
 use oxiroute_server::upgrade::Event;
 
@@ -22,6 +22,19 @@ impl SuccessorProcess {
 
     fn id(&self) -> u32 {
         self.0.as_ref().map_or(0, Child::id)
+    }
+
+    fn lost_link(&mut self, link: &str) -> String {
+        let Some(mut child) = self.0.take() else {
+            return format!("the successor stopped answering: {link}");
+        };
+        let _ = child.kill();
+        match child.wait() {
+            Ok(status) if status.signal() != Some(rustix::process::Signal::KILL.as_raw()) => {
+                format!("the successor exited before it was ready: {status}")
+            }
+            _ => format!("the successor stopped answering: {link}"),
+        }
     }
 }
 
@@ -113,25 +126,15 @@ impl Handover {
         match self.replies.try_recv() {
             Ok(Ok(Reply::Ready)) => Progress::Ready,
             Ok(Ok(Reply::Failed { reason })) => Progress::Failed(reason),
-            Ok(Err(link)) => Progress::Failed(self.exit_reason(&link)),
-            Err(TryRecvError::Disconnected) => Progress::Failed(self.exit_reason("link closed")),
+            Ok(Err(link)) => Progress::Failed(self.process.lost_link(&link)),
+            Err(TryRecvError::Disconnected) => {
+                Progress::Failed(self.process.lost_link("link closed"))
+            }
             Err(TryRecvError::Empty) if now >= self.deadline => Progress::Failed(format!(
                 "the successor was not ready within {} seconds",
                 READY_TIMEOUT.as_secs()
             )),
             Err(TryRecvError::Empty) => Progress::Waiting,
-        }
-    }
-
-    fn exit_reason(&mut self, link: &str) -> String {
-        let status = self
-            .process
-            .0
-            .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten());
-        match status {
-            Some(status) => format!("the successor exited before it was ready: {status}"),
-            None => format!("the successor stopped answering: {link}"),
         }
     }
 
@@ -180,7 +183,7 @@ fn start(
         .stdin(Stdio::from(theirs.into_owned_fd()))
         .spawn()
         .map_err(|error| format!("cannot start `{}`: {error}", plan.binary.display()))?;
-    let process = SuccessorProcess(Some(child));
+    let mut process = SuccessorProcess(Some(child));
     let descriptor = mine.into_owned_fd();
     let reading =
         rustix::io::fcntl_dupfd_cloexec(&descriptor, 0).map_err(|error| error.to_string())?;
@@ -191,7 +194,8 @@ fn start(
         .map_err(|error| error.to_string())?;
     let borrowed: Vec<BorrowedFd<'_>> = listeners.iter().map(AsFd::as_fd).collect();
     let offer = Offer::new(master.listener_manifest().clone());
-    wire::send(&mut writer, &offer, &borrowed).map_err(|error| error.to_string())?;
+    wire::send(&mut writer, &offer, &borrowed)
+        .map_err(|error| process.lost_link(&error.to_string()))?;
     let reader = SeqpacketEndpoint::from_owned_fd(reading).map_err(|error| error.to_string())?;
     let replies = read_replies(reader, waker).map_err(|error| error.to_string())?;
     Ok(Started {
@@ -216,4 +220,41 @@ fn read_replies(
             waker.wake();
         })?;
     Ok(replies)
+}
+
+#[cfg(test)]
+mod tests {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+    use super::*;
+
+    fn spawn(script: &str) -> SuccessorProcess {
+        let child = Command::new("sh")
+            .args(["-c", script])
+            .spawn()
+            .expect("spawn sh");
+        SuccessorProcess(Some(child))
+    }
+
+    #[test]
+    fn a_successor_that_exited_is_reported_with_its_status() {
+        let mut process = spawn("exit 3");
+        let pid = Pid::from_child(process.0.as_ref().expect("child"));
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+        waitid(WaitId::Pid(pid), options).expect("wait for the exit");
+        assert_eq!(
+            process.lost_link("link closed"),
+            "the successor exited before it was ready: exit status: 3"
+        );
+    }
+
+    #[test]
+    fn a_silent_successor_is_ended_and_reported_as_not_answering() {
+        let mut process = spawn("exec sleep 60");
+        assert_eq!(
+            process.lost_link("link closed"),
+            "the successor stopped answering: link closed"
+        );
+        assert!(process.0.is_none());
+    }
 }
