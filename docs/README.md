@@ -15,7 +15,7 @@ and failure behavior. Use the
 | Publish or record media | [RTMP guide](user/RTMP.md) | [RTMP contract](RTMP_SPEC.md) |
 | Integrate the management API | [API reference](reference/API.md) | [API/UI contract](API_UI_SPEC.md), [CLI](reference/CLI.md) |
 | Contribute code | [Developer guide](developer/README.md) | [Architecture](developer/ARCHITECTURE.md), [testing](developer/TESTING.md) |
-| Evaluate speed or resource use | [Benchmarks](BENCHMARKS.md) | [7.0 report](../benchmarks/reports/7.0/README.md): workloads, run counts, and reproduction limits |
+| Evaluate speed or resource use | [Benchmarks](BENCHMARKS.md) | [7.1 report](../benchmarks/reports/7.1/README.md): workloads, run counts, and reproduction limits |
 | Package or release | [Releasing](developer/RELEASING.md) | [Arch packaging](../packaging/arch/README.md) |
 
 ## Guides and explanations
@@ -26,7 +26,7 @@ and failure behavior. Use the
 - [Testing](developer/TESTING.md): focused commands, required gates, and what each layer proves.
 - [UI design system](developer/UI_DESIGN_SYSTEM.md): tokens, primitives, density, Pug style, and the stats page budget.
 - [Environment variables](developer/ENV_TO_CONFIG.md): runtime inputs and their configuration equivalents.
-- [Benchmarks](BENCHMARKS.md): what was measured and what the results establish; the [7.0 report](../benchmarks/reports/7.0/README.md) holds the full tables.
+- [Benchmarks](BENCHMARKS.md): what was measured and what the results establish; the [7.1 report](../benchmarks/reports/7.1/README.md) holds the full tables.
 - [Documentation maintenance](developer/DOCUMENTATION.md): language, examples, and evidence policy.
 - [Documentation research and design](developer/DOCUMENTATION_DESIGN.md): rationale and external sources for this structure.
 

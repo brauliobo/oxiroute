@@ -28,6 +28,7 @@
 !/benchmarks/reports/
 /benchmarks/reports/*
 !/benchmarks/reports/7.0/
+!/benchmarks/reports/7.1/
 !/benchmarks/reports/io-uring-http1/
 /docs/ROADMAP.md
 /docs/DOCUMENTATION_PLAN.md
