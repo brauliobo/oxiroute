@@ -296,10 +296,7 @@ fn a_socket_path_in_a_missing_directory_cannot_be_bound() {
 #[test]
 fn a_pool_is_critical_when_no_server_answers_and_a_warning_when_some_do() {
     let alive = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let dead = {
-        let closed = TcpListener::bind("127.0.0.1:0").expect("bind");
-        closed.local_addr().expect("address")
-    };
+    let dead = crate::test_ports::unused_tcp_address();
     let pool = |name: &str, servers: &[(&str, std::net::SocketAddr)]| -> UpstreamPool {
         serde_json::from_value(json!({
             "name": name,
