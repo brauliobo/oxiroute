@@ -6,6 +6,8 @@ use super::*;
 pub(crate) struct StatusResponse {
     schema_version: u8,
     build_version: &'static str,
+    build_id: Option<&'static str>,
+    master_build_id: Option<&'static str>,
     disk_revision: Option<String>,
     candidate_revision: Option<String>,
     active_revision: Option<String>,
@@ -43,6 +45,8 @@ impl StatusResponse {
         Ok(Self {
             schema_version: 1,
             build_version: crate::cli::BUILD_VERSION,
+            build_id: crate::build_id(),
+            master_build_id: crate::master_build_id(),
             disk_revision: generation
                 .and_then(|status| status.disk_revision.as_ref())
                 .map(|revision| revision.as_str().to_owned()),

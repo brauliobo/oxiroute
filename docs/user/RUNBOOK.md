@@ -349,16 +349,16 @@ requests` and `oxiroute_http_inflight_overdue` is above 0. Keep short-call and l
 **Bad config.** Nothing changed after a write: see the rejected-write detection. Applied but wrong:
 [roll back](#roll-back-a-generation).
 
-**A reload stays pending behind a retired generation.** Since 6.0 an idle keep-alive connection no
+**Old generations keep draining behind a reload.** Since 6.0 an idle keep-alive connection no
 longer holds a replaced generation: it is closed when the next revision is applied. What can still
-hold one is work in progress (a long request, a WebSocket, a tunnel, a relay). Only one replaced
-worker drains at a time under the supervising master, so the next reload stays pending
-(`generation status` shows a candidate; the journal has `ReplacementCommitted` without
-`ReplacementCompleted`) until that work ends or the `retirement.drain_deadline_ms` of the replaced
-configuration passes, when the worker is stopped. Check by applying twice during a long request:
-the second apply activates when the request ends. `generation status` lists the draining generations as
-`retiredGenerations`, with their age and in-flight counts, and a full `max_retired_generations` shows
-`pendingApply`. `check` warns when one drains longer than `--max-retired-age` (default 1 h).
+hold one is work in progress (a long request, a WebSocket, a tunnel, a relay). Under the supervising
+master each replaced worker drains on its own until that work ends or the
+`retirement.drain_deadline_ms` of the replaced configuration passes, when the worker is stopped, so
+a reload applies at once however many old workers still drain. `generation status` lists them as
+`retiredGenerations`, with their age and in-flight counts. At `max_retired_generations` the next
+reload closes the oldest draining worker (its `reason` is `retired_limit`, and the master logs it)
+rather than waiting; raise the setting when that cuts connections you want to keep. `check` warns when one
+drains longer than `--max-retired-age` (default 1 h).
 
 **The daemon exited after its serving worker died.** Under the supervising master the serving worker
 (the child that owns the listeners, RTMP sessions and recorders) is not restarted by the master. If it is

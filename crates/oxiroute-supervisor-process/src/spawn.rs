@@ -7,6 +7,7 @@ pub struct WorkerSpawner {
     launcher: PathBuf,
     handshake_timeout: Duration,
     cgroup_root: PathBuf,
+    build_id: Vec<u8>,
 }
 
 impl WorkerSpawner {
@@ -27,7 +28,25 @@ impl WorkerSpawner {
             launcher: resolve_executable(launcher.as_ref())?,
             handshake_timeout,
             cgroup_root: PathBuf::from(DEFAULT_CGROUP_V2_ROOT),
+            build_id: Vec::new(),
         })
+    }
+
+    /// Makes the spawner announce `build_id` to every worker and accept only workers that report
+    /// the same one.
+    ///
+    /// A worker of another build fails its ready handshake with [`SpawnError::BuildMismatch`]
+    /// and is killed. Without a build id workers must report none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `build_id` is longer than [`MAX_BUILD_ID_BYTES`].
+    pub fn with_build_id(mut self, build_id: &str) -> Result<Self, SpawnError> {
+        if build_id.len() > MAX_BUILD_ID_BYTES {
+            return Err(SpawnError::InvalidPayload);
+        }
+        self.build_id = build_id.as_bytes().to_vec();
+        Ok(self)
     }
 
     /// Overrides the delegated cgroup-v2 root used for worker containment.
@@ -85,7 +104,7 @@ impl WorkerSpawner {
             FrameFlags::default(),
             identity.instance,
             identity.generation,
-            &authenticated_payload(identity.protocol, &nonce, &[]),
+            &authenticated_payload(identity.protocol, &nonce, &self.build_id),
             &[],
         ) {
             if let Some(status) = wait_for_early_exit(&mut starting, self.handshake_timeout)? {
@@ -96,7 +115,14 @@ impl WorkerSpawner {
 
         let frame =
             receive_startup_frame(&mut parent_endpoint, &mut starting, self.handshake_timeout)?;
-        let worker_pid = verify_startup_ready(&frame, starting.id(), pgid, identity, &nonce)?;
+        let worker_pid = verify_startup_ready(
+            &frame,
+            starting.id(),
+            pgid,
+            identity,
+            &nonce,
+            &self.build_id,
+        )?;
         let worker_pid_u32 = u32::try_from(worker_pid).map_err(|_| SpawnError::InvalidChildPid)?;
 
         let (child, cgroup) = starting.disarm();
@@ -118,6 +144,7 @@ pub struct WorkerEndpoint {
     expected_parent_pid: i32,
     identity: WorkerIdentity,
     nonce: SpawnHandshakeNonce,
+    master_build_id: String,
 }
 
 impl WorkerEndpoint {
@@ -133,6 +160,23 @@ impl WorkerEndpoint {
     /// Returns an error for late/repeated adoption, descriptor setup, transport, or challenge
     /// authentication failures.
     pub fn adopt_at_process_entry(identity: WorkerIdentity) -> Result<Self, ChildHandshakeError> {
+        Self::adopt_at_process_entry_with_build(identity, "")
+    }
+
+    /// Like [`Self::adopt_at_process_entry`], and reports `build_id` as this worker's build in the
+    /// ready frame. The parent compares it with its own and refuses a worker of another build.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::adopt_at_process_entry`], and an error for a `build_id` longer than
+    /// [`MAX_BUILD_ID_BYTES`].
+    pub fn adopt_at_process_entry_with_build(
+        identity: WorkerIdentity,
+        build_id: &str,
+    ) -> Result<Self, ChildHandshakeError> {
+        if build_id.len() > MAX_BUILD_ID_BYTES {
+            return Err(ChildHandshakeError::InvalidPayload);
+        }
         if STDIN_ADOPTED.swap(true, Ordering::AcqRel) {
             return Err(ChildHandshakeError::AlreadyAdopted);
         }
@@ -168,16 +212,17 @@ impl WorkerEndpoint {
                 actual: protocol,
             });
         }
-        if !payload.is_empty() {
-            return Err(ChildHandshakeError::UnexpectedPayload);
-        }
+        let master_build_id = String::from_utf8(payload.to_vec())
+            .ok()
+            .filter(|id| id.len() <= MAX_BUILD_ID_BYTES)
+            .ok_or(ChildHandshakeError::UnexpectedPayload)?;
         let expected_parent_pid = challenge.peer_identity().pid();
         endpoint.send(
             READY,
             FrameFlags::default(),
             identity.instance,
             identity.generation,
-            &authenticated_payload(protocol, &nonce, &[]),
+            &authenticated_payload(protocol, &nonce, build_id.as_bytes()),
             &[],
         )?;
         Ok(Self {
@@ -185,7 +230,14 @@ impl WorkerEndpoint {
             expected_parent_pid,
             identity,
             nonce,
+            master_build_id,
         })
+    }
+
+    /// The build id the parent announced in its challenge; empty when it announced none.
+    #[must_use]
+    pub fn master_build_id(&self) -> &str {
+        &self.master_build_id
     }
 
     /// Sends one frame with the authenticated per-message prefix.

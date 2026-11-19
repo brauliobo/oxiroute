@@ -69,7 +69,8 @@ impl MasterRunner {
         )?;
         let catalog = SupervisedGenerationCatalog::new(active);
         let master_config = master_config()?;
-        let mut factory = WorkerSpawner::new(&self.launcher_path, WORKER_HANDSHAKE_TIMEOUT)?;
+        let mut factory = WorkerSpawner::new(&self.launcher_path, WORKER_HANDSHAKE_TIMEOUT)?
+            .with_build_id(oxiroute_server::init_build_id()?)?;
         let waker = Waker::new()?;
         let mut reload = ConfigReloadMonitor::start(
             coordinator.canonical_path(),
@@ -238,10 +239,11 @@ impl MasterRunner {
             let now = Instant::now();
             let mut due = None;
             match master.state() {
-                MasterState::Running => {
+                _ if master.accepts_replacement() => {
                     let events = master.poll(now)?;
                     log_master_events(&events);
                     reports.observe(master, catalog, &events, book)?;
+                    reports.retired.observe(&events);
                     reports.retired.report(master, now);
                     let forced_reload = catalog.candidate().is_none() && {
                         let signalled = signals.reload.swap(false, Ordering::AcqRel);
@@ -271,6 +273,7 @@ impl MasterRunner {
                     let events = master.poll(now)?;
                     log_master_events(&events);
                     reports.observe(master, catalog, &events, book)?;
+                    reports.retired.observe(&events);
                     reports.retired.report(master, now);
                     let signalled = signals.reload.swap(false, Ordering::AcqRel);
                     if reports.reload_requested(master) || signalled || reload.next_trigger(now) {
@@ -377,7 +380,7 @@ impl MasterRunner {
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file);
         reports.accept(master);
-        begin_retirement(master, catalog, reports);
+        begin_retirement(master, catalog);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {
@@ -424,7 +427,7 @@ impl MasterRunner {
     }
 }
 
-fn begin_retirement(master: &mut Master, catalog: &GenerationCatalog, reports: &mut ConfigReports) {
+fn begin_retirement(master: &mut Master, catalog: &GenerationCatalog) {
     let window = retirement_window(
         &catalog.active().payload().config,
         std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
@@ -433,8 +436,8 @@ fn begin_retirement(master: &mut Master, catalog: &GenerationCatalog, reports: &
         "supervised master lets the replaced worker drain for up to {} seconds",
         window.as_secs()
     );
-    reports.retired.begin(window);
     master.set_retirement_deadline(window + RETIREMENT_BACKSTOP);
+    master.set_retired_limit(catalog.active().payload().config.retired_generation_limit());
 }
 
 fn log_master_events(events: &[MasterEvent]) {
@@ -446,6 +449,19 @@ fn log_master_events(events: &[MasterEvent]) {
     }
     for line in failure_lines(events) {
         error!("{line}");
+    }
+    for event in events {
+        if let MasterEvent::RetiredForced {
+            instance_id,
+            reason,
+        } = event
+        {
+            warn!(
+                "supervised master closed the oldest replaced worker {} before its drain deadline: {}",
+                instance_id.as_str(),
+                reason.as_str()
+            );
+        }
     }
 }
 

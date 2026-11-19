@@ -213,6 +213,7 @@ fn remote(revision: u64, connections: u64) -> RemoteRetired {
         age_seconds: 30,
         deadline_remaining_seconds: 90,
         connections,
+        forced: None,
     }
 }
 
@@ -246,4 +247,22 @@ fn a_report_of_a_malformed_revision_is_refused_and_keeps_the_previous_list() {
     bad.revision = "not-a-revision".to_owned();
     assert!(manager.set_remote_retired(vec![bad]).is_err());
     assert_eq!(manager.status().retired_generations.len(), 1);
+}
+
+#[test]
+fn a_retired_worker_the_master_closes_early_is_listed_as_closing_with_the_reason() {
+    let manager = GenerationManager::new();
+    activate(&manager, 1, &config(None));
+    let mut closing = remote(7, 2);
+    closing.forced = Some("retired_limit".to_owned());
+
+    manager
+        .set_remote_retired(vec![closing, remote(8, 1)])
+        .unwrap();
+    let listed = manager.status().retired_generations;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].state.as_str(), "closing");
+    assert_eq!(listed[0].reason.as_deref(), Some("retired_limit"));
+    assert_eq!(listed[1].state.as_str(), "draining");
+    assert_eq!(listed[1].reason, None);
 }

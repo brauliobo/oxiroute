@@ -279,11 +279,13 @@ pub(super) fn apply_catalog_events(
     let mut failure = None;
     for event in events {
         match event {
-            MasterEvent::SpawnFailed { instance_id } => {
+            MasterEvent::SpawnFailed { instance_id, error } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, instance_id)?;
                 catalog.quarantine_candidate()?;
                 book.discard();
-                failure = Some("the replacement worker could not be started".to_owned());
+                failure = Some(format!(
+                    "the replacement worker could not be started: {error}"
+                ));
             }
             MasterEvent::ReplacementCommitted { active, retired } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, active)?;

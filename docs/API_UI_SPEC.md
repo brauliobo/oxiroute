@@ -31,7 +31,7 @@ Implemented and recognized endpoints:
 | `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for canonical config-watcher activation. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
-| `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status. |
+| `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status; `buildId` is the build of the serving process and `masterBuildId` the one of the supervising master (null without one), equal unless the executable was replaced under a running master. |
 | `GET` | `/api/v1/capabilities` | Active UDP and HTTP/3 transport capabilities, supervision mode, limits, and listener truth. |
 | `GET` | `/api/v1/listeners`, `/api/v1/pools`, `/api/v1/servers` | Active operational inventory. |
 | `POST` | `/api/v1/listeners/administrative-state`, `/api/v1/pools/administrative-state` | Revision-checked listener or pool admission state changes. |
@@ -45,7 +45,7 @@ Implemented and recognized endpoints:
 | `DELETE` | `/api/v1/pools/{pool}/servers/{name}` | Remove a registration at once (`204`). |
 | `POST` | `/api/v1/pools/{pool}/servers/{name}/state` | Record the operator's `ready`, `drain` or `maintenance` decision for a registered server (`204`). Root token only. |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
-| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason`: `retired_cap` or, under the supervising master, `retired_draining`, and `connections`, the connections the draining worker still holds, or null). The supervising master drains one worker at a time and reports it to the active worker, so the list has at most one entry there and its `inFlightByKind` is a single `connections` total. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`, and `reason` when the master is closing the worker early, `retired_limit`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason`: `retired_cap` or, under the supervising master, `retired_draining`, and `connections`, the connections the draining worker still holds, or null). The supervising master drains every replaced worker on its own, up to `maxRetiredGenerations` (a further reload closes the oldest), and reports them to the active worker, so each entry's `inFlightByKind` is a single `connections` total. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |

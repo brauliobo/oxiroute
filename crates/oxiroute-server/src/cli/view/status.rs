@@ -21,6 +21,8 @@ pub(super) fn show(value: &Value) -> Document {
         .and_then(Value::as_str);
     let mut fields = vec![
         Field::text("build", text(value, "buildVersion")),
+        Field::text("build_id", text(value, "buildId")),
+        Field::text("master_build_id", text(value, "masterBuildId")),
         Field::text("state", overall),
         Field::revision("active", text(value, "activeRevision")),
         Field::revision("previous", text(value, "previousRevision")),

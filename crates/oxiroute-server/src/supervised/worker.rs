@@ -58,7 +58,11 @@ const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 #[allow(clippy::too_many_lines)]
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let identity = parse_identity(&mut arguments)?;
-    let mut control = WorkerControl::adopt_at_process_entry(identity)?;
+    let mut control = WorkerControl::adopt_at_process_entry_with_build(
+        identity,
+        oxiroute_server::init_build_id()?,
+    )?;
+    oxiroute_server::record_master_build_id(control.master_build_id());
     oxiroute_allocator::start_background_thread()?;
 
     oxiroute_server::init_logging();

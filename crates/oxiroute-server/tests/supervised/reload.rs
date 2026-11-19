@@ -520,8 +520,7 @@ pub(super) fn reload_that_fails_in_the_candidate_rolls_back_and_releases_the_add
         .arg(encode_token(token))
         .arg(&path)
         .arg("0".repeat(64));
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
-        .expect("production launcher implementation");
+    let mut factory = worker_spawner();
     harness
         .master
         .replace_with_listeners(

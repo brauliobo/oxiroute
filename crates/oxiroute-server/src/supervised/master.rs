@@ -35,7 +35,7 @@ use oxiroute_supervision::{
 use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, MAX_AGGREGATED_EVENTS, Master, MasterConfig, MasterEvent,
-    MasterState, WorkerInput, WorkerRole, WorkerStatus,
+    MasterState, RetiredWorker, WorkerInput, WorkerRole,
 };
 use oxiroute_supervisor_process::{
     CgroupV2ProbeStatus, WorkerCommand, WorkerIdentity, WorkerSpawner, probe_cgroup_v2,

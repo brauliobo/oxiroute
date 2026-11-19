@@ -188,6 +188,12 @@ impl<E: ActionExecutor> Master<E> {
         let Some(worker) = self.worker_mut(role) else {
             return Ok(None);
         };
+        Self::observe_worker(worker)
+    }
+
+    pub(super) fn observe_worker(
+        worker: &mut ManagedWorker,
+    ) -> Result<Option<Observed>, MasterError> {
         let instance_id = worker.instance_id.clone();
         if let Some(WorkerEvent::ProcessGroupExited(status)) = worker.process.poll_event()? {
             return Ok(Some(Observed {
@@ -260,43 +266,19 @@ impl<E: ActionExecutor> Master<E> {
         role: WorkerRole,
         status: &WorkerStatus,
     ) -> Result<(), MasterError> {
-        let (instance_id, generation, previous_sequence, previous_event_cursor) = {
-            let worker = self.worker(role).ok_or(MasterError::MissingWorker(role))?;
-            (
-                worker.instance_id.clone(),
-                worker.generation,
-                worker.status.as_ref().map_or(0, |status| status.sequence),
-                worker.last_event_cursor,
-            )
-        };
-        if status.sequence <= previous_sequence {
-            self.events.push_back(MasterEvent::StaleStatus {
-                role,
-                sequence: status.sequence,
-            });
-            return Ok(());
+        let worker = match role {
+            WorkerRole::Active => self.active.as_mut(),
+            WorkerRole::Candidate => self.candidate.as_mut(),
+            WorkerRole::Retired => self.retired.as_mut(),
         }
-        let event_cursor = self.snapshot_history.record_events(
-            generation_role(role),
-            &instance_id,
-            generation,
-            previous_event_cursor,
+        .ok_or(MasterError::MissingWorker(role))?;
+        record_status(
+            &mut self.snapshot_history,
+            &mut self.events,
+            worker,
+            role,
             status,
         );
-        let mut retained = status.clone();
-        if let Some(previous) = self.worker(role).and_then(|worker| worker.status.as_ref()) {
-            retain_monotonic_status(previous, &mut retained);
-        }
-        let worker = self
-            .worker_mut(role)
-            .ok_or(MasterError::MissingWorker(role))?;
-        worker.last_event_cursor = event_cursor;
-        worker.status = Some(retained);
-        self.events.push_back(MasterEvent::WorkerStatusUpdated {
-            role,
-            instance_id,
-            sequence: status.sequence,
-        });
         Ok(())
     }
 

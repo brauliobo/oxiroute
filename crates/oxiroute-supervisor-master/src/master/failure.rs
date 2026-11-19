@@ -211,6 +211,7 @@ impl<E: ActionExecutor> Master<E> {
         if matches!(self.stage, Stage::Failed) {
             return Ok(());
         }
+        self.kill_every_detached()?;
         if !matches!(self.stage, Stage::Failing { .. }) {
             self.stage = Stage::Failing { phase };
             self.events.push_back(MasterEvent::FailClosed { phase });
@@ -288,7 +289,7 @@ impl<E: ActionExecutor> Master<E> {
                         self.force_role(role)?;
                     }
                 }
-                Ok(())
+                self.kill_every_detached()
             }
             _ => {
                 if self.replacement_phase() == Some(ReplacementPhase::StoppingRetired) {

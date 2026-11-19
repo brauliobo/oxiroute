@@ -33,6 +33,7 @@ pub enum ReplacementEvent {
     RetiredDrained { instance_id: InstanceId },
     RetiredSnapshotCaptured { instance_id: InstanceId },
     RetiredFailed { instance_id: InstanceId },
+    RetiredDetached { instance_id: InstanceId },
     RetiredStopped { instance_id: InstanceId },
     TerminationTimedOut { instance_id: InstanceId },
 }
@@ -50,7 +51,8 @@ pub enum ReplacementPhase {
     ActivatingCandidate,
     /// Candidate termination and active reactivation are completing after failure.
     RollingBack,
-    /// The retired instance is draining or snapshotting.
+    /// The retired instance is draining or snapshotting. A draining one may be detached, which
+    /// leaves the supervisor free to replace the active instance again.
     DrainingRetired,
     /// The retired instance remains owned until it stops.
     StoppingRetired,
@@ -230,6 +232,12 @@ impl ReplacementSupervisor {
                 retired.transition(Lifecycle::Failed)?;
                 retired.transition(Lifecycle::Stopping)?;
                 Ok(vec![ReplacementAction::Kill { instance_id }])
+            }
+            ReplacementEvent::RetiredDetached { instance_id } => {
+                self.expect_retired_id(&instance_id)?;
+                self.retired_mut(Lifecycle::Draining)?;
+                self.retired = None;
+                Ok(Vec::new())
             }
             ReplacementEvent::RetiredStopped { instance_id } => {
                 self.expect_retired_id(&instance_id)?;

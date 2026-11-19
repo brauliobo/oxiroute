@@ -38,6 +38,7 @@ mod observation;
 
 use observation::{Observation, Observed};
 
+mod detached;
 mod dispatch;
 mod executor;
 mod failure;
@@ -46,6 +47,7 @@ mod query;
 mod replacement;
 mod runtime;
 
+use detached::record_status;
 pub use executor::*;
 pub use model::*;
 pub use runtime::*;

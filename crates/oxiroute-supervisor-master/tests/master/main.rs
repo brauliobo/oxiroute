@@ -29,7 +29,8 @@ use oxiroute_supervision_unix::{
 use oxiroute_supervisor_master::{
     ActionError, ActionExecutor, ActionKind, CONTROL_PROTOCOL_VERSION, ControlPhase, FailurePhase,
     Master, MasterConfig, MasterError, MasterEvent, MasterState, PreparationError, PreparationStep,
-    ShutdownProgress, StableListeners, SystemActionExecutor, WorkerInput, WorkerRole, WorkerState,
+    RetiredForce, ShutdownProgress, StableListeners, SystemActionExecutor, WorkerInput, WorkerRole,
+    WorkerState,
 };
 use oxiroute_supervisor_process::{
     DEFAULT_CGROUP_V2_ROOT, WorkerCommand, WorkerIdentity, WorkerProcess, WorkerSpawner,
@@ -40,6 +41,7 @@ use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 mod faults;
 mod lifecycle;
 mod replacement;
+mod retired;
 mod wait;
 
 #[allow(clippy::wildcard_imports)]
@@ -199,6 +201,15 @@ impl<E: ActionExecutor> Harness<E> {
 
     fn replace(&mut self, behavior: &str, generation: u64) {
         let candidate = self.candidate(generation, behavior);
+        self.master
+            .replace(&mut self.factory, candidate, self.now)
+            .unwrap();
+    }
+
+    /// Starts a replacement by a worker that has its own instance name, so that several can follow each other.
+    fn replace_as(&mut self, name: &str, behavior: &str, generation: u64) {
+        let mut candidate = worker(name, generation, behavior);
+        candidate.command = candidate.command.env(SYNC_DIRECTORY, &self.sync);
         self.master
             .replace(&mut self.factory, candidate, self.now)
             .unwrap();

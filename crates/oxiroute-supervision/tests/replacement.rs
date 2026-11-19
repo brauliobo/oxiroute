@@ -930,3 +930,61 @@ fn every_invalid_event_is_atomic_over_bounded_reachable_states() {
         assert!(reachable.iter().any(|state| state.phase() == phase));
     }
 }
+
+#[test]
+fn a_draining_retired_instance_detaches_and_frees_the_supervisor_for_the_next_replacement() {
+    let mut supervisor = ReplacementSupervisor::new(active()).unwrap();
+    supervisor
+        .apply(ReplacementEvent::Begin {
+            candidate: instance("candidate-2", 2, Lifecycle::Spawned),
+        })
+        .unwrap();
+    advance_to_activation(&mut supervisor, "candidate-2");
+    supervisor
+        .apply(ReplacementEvent::CandidateActivated {
+            instance_id: id("candidate-2"),
+        })
+        .unwrap();
+    assert_eq!(supervisor.phase(), ReplacementPhase::DrainingRetired);
+
+    assert_eq!(
+        supervisor
+            .apply(ReplacementEvent::RetiredDetached {
+                instance_id: id("active-1"),
+            })
+            .unwrap(),
+        Vec::new()
+    );
+    assert_eq!(supervisor.retired(), None);
+    assert_eq!(supervisor.phase(), ReplacementPhase::Running);
+    assert_eq!(supervisor.active().instance_id, id("candidate-2"));
+
+    assert!(
+        supervisor
+            .apply(ReplacementEvent::Begin {
+                candidate: instance("candidate-3", 3, Lifecycle::Spawned),
+            })
+            .is_ok()
+    );
+}
+
+#[test]
+fn only_a_draining_retired_instance_detaches() {
+    let mut supervisor = retired_at(Lifecycle::Stopping);
+    let before = supervisor.clone();
+    assert!(matches!(
+        supervisor.apply(ReplacementEvent::RetiredDetached {
+            instance_id: id("active-1"),
+        }),
+        Err(ReplacementError::UnexpectedLifecycle { .. })
+    ));
+    assert_eq!(supervisor, before);
+
+    let mut supervisor = ReplacementSupervisor::new(active()).unwrap();
+    assert_eq!(
+        supervisor.apply(ReplacementEvent::RetiredDetached {
+            instance_id: id("active-1"),
+        }),
+        Err(ReplacementError::MissingRole { role: "retired" })
+    );
+}

@@ -223,6 +223,12 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             wait_for_release(&mut endpoint);
             Ok(ExitCode::SUCCESS)
         }
+        build if build.starts_with("build:") => {
+            let id = &build["build:".len()..];
+            let mut endpoint = WorkerEndpoint::adopt_at_process_entry_with_build(identity(), id)?;
+            wait_for_release(&mut endpoint);
+            Ok(ExitCode::SUCCESS)
+        }
         "message" => {
             let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
             endpoint.send(

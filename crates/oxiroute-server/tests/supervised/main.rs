@@ -47,7 +47,7 @@ use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, ShutdownProgress,
     WorkerInput, WorkerRole,
 };
-use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
+use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner, build_id_of};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustix::fs::OFlags;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -151,8 +151,7 @@ impl Harness {
                     .expect("master listener descriptor target")
             })
             .collect();
-        let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
-            .expect("production launcher implementation");
+        let mut factory = worker_spawner();
         let identity = WorkerIdentity {
             instance: InstanceToken(TOKEN),
             generation: GenerationId(1),
@@ -259,8 +258,7 @@ impl Harness {
             .arg(encode_token(token))
             .arg(config_path)
             .arg(document.effective_revision.to_string());
-        let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
-            .expect("production launcher implementation");
+        let mut factory = worker_spawner();
         self.master
             .replace_with_listeners(
                 &mut factory,

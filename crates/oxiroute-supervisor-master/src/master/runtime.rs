@@ -28,6 +28,9 @@ pub(super) struct ManagedWorker {
     pub(super) last_event_cursor: u64,
     /// Opaque state the worker last reported with `report_state`.
     pub(super) reported_state: Vec<u8>,
+    /// When the worker was replaced, and the time its drain request allows it.
+    pub(super) retired: Option<(Instant, Duration)>,
+    pub(super) forced: Option<RetiredForce>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +56,9 @@ pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     pub(super) active: Option<ManagedWorker>,
     pub(super) candidate: Option<ManagedWorker>,
     pub(super) retired: Option<ManagedWorker>,
+    /// Replaced workers that still drain while a later replacement runs, oldest first.
+    pub(super) detached: Vec<ManagedWorker>,
+    pub(super) retired_limit: usize,
     pub(super) retirement_deadline: Option<Duration>,
     pub(super) deferred_active_exit: Option<ExitStatus>,
     pub(super) replacement_failure: Option<FailurePhase>,
@@ -120,6 +126,8 @@ impl<E: ActionExecutor> Master<E> {
             )),
             candidate: None,
             retired: None,
+            detached: Vec::new(),
+            retired_limit: DEFAULT_RETIRED_LIMIT,
             retirement_deadline: None,
             deferred_active_exit: None,
             replacement_failure: None,
@@ -144,6 +152,22 @@ impl<E: ActionExecutor> Master<E> {
     /// it accepted. Without it the configured drain timeout applies. It covers one replacement.
     pub fn set_retirement_deadline(&mut self, deadline: Duration) {
         self.retirement_deadline = Some(deadline);
+    }
+
+    /// Sets how many replaced workers may drain at once. A replacement that would exceed it
+    /// closes the oldest draining worker first ([`MasterEvent::RetiredForced`]).
+    pub fn set_retired_limit(&mut self, limit: usize) {
+        self.retired_limit = limit.max(1);
+    }
+
+    /// Whether [`Self::replace`] can start now: the master runs, possibly with a replaced worker
+    /// still draining.
+    #[must_use]
+    pub fn accepts_replacement(&self) -> bool {
+        matches!(
+            self.state(),
+            MasterState::Running | MasterState::DrainingRetired
+        )
     }
 
     /// Starts one replacement while the master is running.
@@ -204,10 +228,11 @@ impl<E: ActionExecutor> Master<E> {
         listeners: Option<StableListeners>,
         now: Instant,
     ) -> Result<(), MasterError> {
-        if self.state() != MasterState::Running {
+        if !self.accepts_replacement() {
             return Err(MasterError::InvalidState(self.state()));
         }
         validate_identity(candidate.identity)?;
+        self.detach_retired(now)?;
         self.pending_listeners = listeners;
         let instance = Instance {
             instance_id: candidate.instance_id.clone(),
@@ -307,6 +332,7 @@ impl<E: ActionExecutor> Master<E> {
             };
             self.handle_observation(role, item.observation, now)?;
         }
+        self.poll_detached(now)?;
         self.finish_terminal_states();
         self.release_unused_pending_listeners();
         Ok(self.events.drain(..).collect())
@@ -370,6 +396,7 @@ impl<E: ActionExecutor> Master<E> {
             self.supervisor = None;
             self.replacement_failure = None;
             self.events.push_back(MasterEvent::ShutdownStarted);
+            self.shutdown_detached(deadline)?;
             for role in [
                 WorkerRole::Active,
                 WorkerRole::Candidate,
@@ -436,6 +463,8 @@ impl ManagedWorker {
             status: None,
             last_event_cursor: 0,
             reported_state: Vec::new(),
+            retired: None,
+            forced: None,
         }
     }
 }
@@ -461,7 +490,7 @@ fn validate_identity(identity: WorkerIdentity) -> Result<(), MasterError> {
     Ok(())
 }
 
-fn deadline(now: Instant, timeout: Duration) -> Result<Instant, MasterError> {
+pub(super) fn deadline(now: Instant, timeout: Duration) -> Result<Instant, MasterError> {
     now.checked_add(timeout)
         .ok_or(MasterError::DeadlineOverflow)
 }

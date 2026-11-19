@@ -51,6 +51,7 @@ use rustix::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod build;
 mod reaper;
 
 pub mod cgroup;
@@ -93,6 +94,7 @@ mod handshake;
 mod process;
 mod spawn;
 
+pub use build::*;
 pub use command::*;
 pub use error::*;
 use handshake::{

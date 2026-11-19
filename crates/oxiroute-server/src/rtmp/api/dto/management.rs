@@ -60,6 +60,8 @@ struct RetiredGenerationDto {
     deadline_remaining_seconds: u64,
     in_flight: u64,
     in_flight_by_kind: std::collections::BTreeMap<&'static str, u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -128,6 +130,7 @@ impl From<crate::RetiredGenerationStatus> for RetiredGenerationDto {
             deadline_remaining_seconds: retired.deadline_remaining_seconds,
             in_flight: retired.in_flight,
             in_flight_by_kind: retired.in_flight_by_kind,
+            reason: retired.reason,
         }
     }
 }

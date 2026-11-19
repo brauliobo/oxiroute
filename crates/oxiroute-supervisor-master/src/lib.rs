@@ -18,8 +18,8 @@ pub use config::{ConfigError, MasterConfig};
 pub use listeners::{ListenerOwnershipError, StableListeners};
 pub use master::{
     ActionError, ActionExecutor, ActionKind, FailurePhase, Master, MasterError, MasterEvent,
-    MasterState, PreparationError, PreparationStep, ShutdownProgress, SystemActionExecutor,
-    WorkerFactory, WorkerInput, WorkerRole, WorkerState,
+    MasterState, PreparationError, PreparationStep, RetiredForce, RetiredWorker, ShutdownProgress,
+    SystemActionExecutor, WorkerFactory, WorkerInput, WorkerRole, WorkerState,
 };
 pub use protocol::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlProtocolError, ControlRequest,

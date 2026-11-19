@@ -23,6 +23,43 @@ pub enum WorkerRole {
     Retired,
 }
 
+/// Replaced workers the master lets drain at once unless told otherwise.
+pub(super) const DEFAULT_RETIRED_LIMIT: usize = 4;
+
+/// Why the master closed a replaced worker before its drain deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetiredForce {
+    /// Another replacement started while as many workers as the limit still drained.
+    RetiredLimit,
+}
+
+impl RetiredForce {
+    /// The stable name of the reason.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RetiredLimit => "retired_limit",
+        }
+    }
+}
+
+/// A replaced worker that still serves the connections it accepted.
+#[derive(Clone, Copy, Debug)]
+pub struct RetiredWorker<'a> {
+    /// Logical identity of the worker.
+    pub instance_id: &'a InstanceId,
+    /// Generation the worker serves.
+    pub generation: GenerationId,
+    /// Latest status the worker reported.
+    pub status: Option<&'a WorkerStatus>,
+    /// When the worker was replaced.
+    pub since: Instant,
+    /// How long its drain request allows it to keep serving, backstop included.
+    pub window: Duration,
+    /// Why the master is closing it early, when it is.
+    pub forced: Option<RetiredForce>,
+}
+
 /// Per-role process ownership state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerState {
@@ -157,7 +194,10 @@ pub enum MasterEvent {
     /// Initial worker adopted and activated the master-owned listeners.
     InitialActivated { instance_id: InstanceId },
     /// Candidate validation passed but process spawn failed before state mutation.
-    SpawnFailed { instance_id: InstanceId },
+    SpawnFailed {
+        instance_id: InstanceId,
+        error: String,
+    },
     /// A candidate entered the replacement transaction.
     ReplacementStarted { instance_id: InstanceId },
     /// Candidate activation acknowledged; role ownership has committed.
@@ -206,6 +246,11 @@ pub enum MasterEvent {
     TerminationRequested { role: WorkerRole, forced: bool },
     /// A committed retired worker failed; the candidate remains active.
     RetiredFailed { phase: FailurePhase },
+    /// The master closed a draining worker early.
+    RetiredForced {
+        instance_id: InstanceId,
+        reason: RetiredForce,
+    },
     /// Bounded shutdown began.
     ShutdownStarted,
     /// Shutdown deadline forced at least one remaining process group.

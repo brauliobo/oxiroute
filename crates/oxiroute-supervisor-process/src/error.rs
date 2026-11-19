@@ -94,6 +94,12 @@ pub enum SpawnError {
     /// The ready frame named a different application protocol.
     #[error("worker ready protocol {actual} did not match {expected}")]
     ProtocolMismatch { expected: u16, actual: u16 },
+    /// The worker is another build of the executable than the master.
+    #[error(
+        "worker build {actual:?} is not the master build {expected:?}; the executable changed \
+         under the running master, so hand over to it with `oxiroute upgrade` instead of reloading"
+    )]
+    BuildMismatch { expected: String, actual: String },
     /// The ready frame did not echo the private nonce.
     #[error("worker ready nonce did not match")]
     NonceMismatch,

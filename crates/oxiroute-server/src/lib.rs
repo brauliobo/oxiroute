@@ -1,4 +1,5 @@
 mod atomic_file;
+mod build_id;
 mod capsule;
 pub mod cli;
 mod clock;
@@ -34,6 +35,7 @@ mod wire;
 #[cfg(test)]
 mod test_ports;
 
+pub use build_id::{build_id, init_build_id, master_build_id, record_master_build_id};
 pub use config::coordinator as config_coordinator;
 pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};

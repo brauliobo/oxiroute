@@ -13,7 +13,7 @@ use std::{
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{FrameFlags, InstanceToken, MessageType};
 use oxiroute_supervisor_process::{
-    AuthenticatedChannelError, DEFAULT_CGROUP_V2_ROOT, ExecutableError,
+    AuthenticatedChannelError, DEFAULT_CGROUP_V2_ROOT, ExecutableError, MAX_BUILD_ID_BYTES,
     MAX_WORKER_METADATA_ITEM_BYTES, SpawnError, WorkerCommand, WorkerEvent, WorkerIdentity,
     WorkerMetadataError, WorkerProcess, WorkerSpawner, probe_cgroup_v2,
 };
@@ -236,6 +236,48 @@ fn startup_rejects_nonce_generation_protocol_and_instance_mismatches() {
         spawn("wrong-instance"),
         Err(SpawnError::InstanceMismatch)
     ));
+}
+
+#[test]
+fn a_worker_of_the_masters_build_is_accepted() {
+    let mut worker = spawner(HANDSHAKE_TIMEOUT)
+        .with_build_id("build-a")
+        .unwrap()
+        .spawn(command("build:build-a"), identity())
+        .unwrap();
+    release(&mut worker);
+    exit_status(worker.wait_event().unwrap());
+}
+
+#[test]
+fn a_worker_of_another_build_is_refused_with_both_build_ids() {
+    let refused = |spawner: WorkerSpawner, mode: &str| {
+        let Err(SpawnError::BuildMismatch { expected, actual }) =
+            spawner.spawn(command(mode), identity())
+        else {
+            panic!("a worker of another build was accepted");
+        };
+        (expected, actual)
+    };
+    let master_build = || spawner(HANDSHAKE_TIMEOUT).with_build_id("build-a").unwrap();
+    assert_eq!(
+        refused(master_build(), "build:build-b"),
+        ("build-a".to_owned(), "build-b".to_owned())
+    );
+    assert_eq!(
+        refused(master_build(), "success"),
+        ("build-a".to_owned(), String::new())
+    );
+    assert_eq!(
+        refused(spawner(HANDSHAKE_TIMEOUT), "build:build-b"),
+        (String::new(), "build-b".to_owned())
+    );
+}
+
+#[test]
+fn an_overlong_build_id_is_refused_before_any_spawn() {
+    let overlong = "x".repeat(MAX_BUILD_ID_BYTES + 1);
+    assert!(spawner(HANDSHAKE_TIMEOUT).with_build_id(&overlong).is_err());
 }
 
 #[test]

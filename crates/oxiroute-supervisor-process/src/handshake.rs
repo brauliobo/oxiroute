@@ -52,6 +52,7 @@ pub(super) fn verify_startup_ready(
     pgid: Pid,
     identity: WorkerIdentity,
     nonce: &SpawnHandshakeNonce,
+    build_id: &[u8],
 ) -> Result<i32, SpawnError> {
     let worker_pid =
         Pid::from_raw(frame.peer_identity().pid()).ok_or(SpawnError::InvalidChildPid)?;
@@ -95,8 +96,14 @@ pub(super) fn verify_startup_ready(
     if received_nonce.as_bytes() != nonce.as_bytes() {
         return Err(SpawnError::NonceMismatch);
     }
-    if !payload.is_empty() {
+    if payload.len() > MAX_BUILD_ID_BYTES {
         return Err(SpawnError::InvalidPayload);
+    }
+    if payload != build_id {
+        return Err(SpawnError::BuildMismatch {
+            expected: String::from_utf8_lossy(build_id).into_owned(),
+            actual: String::from_utf8_lossy(payload).into_owned(),
+        });
     }
     Ok(worker_pid.as_raw_pid())
 }

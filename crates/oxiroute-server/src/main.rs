@@ -136,6 +136,7 @@ fn main() -> ExitCode {
 }
 
 fn serve(config: &Path) -> Result<(), Box<dyn Error>> {
+    oxiroute_server::init_build_id()?;
     #[cfg(target_os = "linux")]
     {
         oxiroute_allocator::start_background_thread()

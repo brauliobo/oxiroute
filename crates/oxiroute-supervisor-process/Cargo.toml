@@ -12,6 +12,7 @@ close_fds = "0.3.2"
 oxiroute-supervision = { path = "../oxiroute-supervision" }
 oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
 rustix.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 

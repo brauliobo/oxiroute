@@ -131,6 +131,23 @@ daemon (`Restart=on-failure` in the packaged unit). A crashed candidate during a
 active worker and a crashed retired worker completes the reload; neither stops the daemon. This is fail-closed
 by design: a daemon whose listeners nothing serves is never left running.
 
+### Build identity
+
+Every process knows the build id of its own executable: the GNU build id the linker recorded in the
+image (`gnu:<hex>`), or for an image without one the leading 128 bits of its SHA-256
+(`sha256:<hex>`). It is read from the running image, so it names the binary that executes even
+after the file it started from was replaced. The master announces its id to each worker it spawns and
+the worker reports its own in its ready handshake; a worker of another build is refused and killed
+before it adopts a listener. This is what a package upgrade that replaces `/usr/bin/oxiroute`
+under a running master hits: the master spawns workers from the path it started with, so the next
+reload would otherwise run a new worker under an old master. The reload is rejected instead
+(`lastRejection`, and the master's error log) with `the replacement worker could not be started:
+... worker build "gnu:..." is not the master build "gnu:..."; the executable changed under the running
+master, so hand over to it with `oxiroute upgrade` instead of reloading`, and the active worker keeps
+serving. `oxiroute status` and `GET /api/v1/status` show `build_id` (the serving worker, or the
+process in the direct runtime) and `master_build_id` (the supervising master, none in the direct
+runtime). See "Binary upgrade" for the hand-over.
+
 ## Idle behaviour
 
 An instance with no traffic does no periodic work and takes no wakeups of its own. The supervising master sleeps
@@ -707,17 +724,26 @@ order, `retirement.drain_deadline_ms` of the replaced generation's own configura
 `retirement.max_retired_generations` (default 4) bounds how many replaced generations drain at
 once in the direct runtime: a further apply stays prepared (`pendingApply` with reason
 `retired_cap` in `generation status`, a `generation_retire` event with outcome `cap_reached`) until
-a slot frees. In supervised mode one replaced worker drains at a time, whatever the setting, so a
-second reload requested while a long request keeps it alive waits for it (the master applies the
-newest saved revision afterwards without further action). Until then `generation status` shows it as
-`pendingApply` with reason `retired_draining`, the revision the master will apply and the connections
-the draining worker still holds (`connections`); the entry disappears when the apply starts. At the deadline the retired worker
+a slot frees. Under the supervising master every replaced worker drains on its own, so several quick reloads
+while long connections are open leave several old workers draining at once, each with its own
+deadline, up to `retirement.max_retired_generations`. A reload that would exceed it closes the
+oldest draining worker first (its connections end, the master logs `supervised master closed the
+oldest replaced worker ... retired_limit` and `generation status` lists it as `closing` with
+`reason: "retired_limit"` until it exits) and then applies, instead of waiting for it as the direct
+runtime does with `pendingApply` reason `retired_cap`. A reload still waits (`pendingApply` with
+reason `retired_draining`, the revision the master will apply and the connections the draining worker
+still holds) only while the worker retired by the previous replacement is being stopped or a
+replacement is in progress. At the deadline a retired worker
 closes its generation and logs a `generation_retire` event with outcome `forced_close`; the master
-kills the worker 10 seconds later if it is still there. `generation status` and
+kills the worker 10 seconds later if it is still there. Each draining worker holds its own copies of the
+listener sockets and its own control channel, all released when it exits; the master keeps no
+descriptor of a worker it has reaped. `generation status` and
 `GET /api/v1/generations` list the draining generations as `retiredGenerations` (revision, state,
-age, seconds before the deadline, in-flight work by protocol). Under the supervising master the
-retired worker is listed by the active worker from what the master reports once a second, and its
-in-flight work is the connection total (`inFlightByKind` has a single `connections` entry). The
+age, seconds before the deadline, in-flight work by protocol, and `reason` while the master is
+closing one early). Under the supervising master the
+retired workers are listed by the active worker from what the master reports once a second (at
+once when one is added, closed or gone), and their in-flight work is the connection total
+(`inFlightByKind` has a single `connections` entry). The
 metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`,
 `oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
 them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.

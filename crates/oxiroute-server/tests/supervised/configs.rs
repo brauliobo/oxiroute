@@ -346,8 +346,7 @@ pub(super) fn replace_real_worker(
     if inject_runtime_failure {
         command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
     }
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
-        .expect("production launcher implementation");
+    let mut factory = worker_spawner();
     master
         .replace(
             &mut factory,
@@ -422,6 +421,15 @@ pub(super) fn config_path() -> &'static Path {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/supervised-empty.kdl"
     ))
+}
+
+/// The production spawner, which expects the build of the worker executable.
+pub(super) fn worker_spawner() -> WorkerSpawner {
+    let worker = build_id_of(Path::new(env!("CARGO_BIN_EXE_oxiroute"))).expect("worker build id");
+    WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
+        .expect("production launcher implementation")
+        .with_build_id(&worker)
+        .expect("worker build id fits the handshake")
 }
 
 pub(super) fn supervisor_launcher() -> PathBuf {

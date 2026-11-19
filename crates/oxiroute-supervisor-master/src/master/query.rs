@@ -139,6 +139,7 @@ impl<E: ActionExecutor> Master<E> {
         for worker in [&self.active, &self.candidate, &self.retired]
             .into_iter()
             .flatten()
+            .chain(&self.detached)
         {
             let channel = worker
                 .channel_open
@@ -181,6 +182,7 @@ impl<E: ActionExecutor> Master<E> {
             ]
             .into_iter()
             .flatten()
+            .chain(&self.detached)
             .filter_map(|worker| {
                 worker
                     .pending
@@ -245,6 +247,7 @@ impl<E: ActionExecutor> Master<E> {
         .into_iter()
         .flatten()
         .count()
+            + self.detached.len()
     }
 
     pub(super) fn take_request_id(&mut self) -> Result<u64, PreparationError> {

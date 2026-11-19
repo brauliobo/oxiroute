@@ -53,6 +53,8 @@ export function managementStatus(): RuntimeStatus {
   return {
     schemaVersion: 1,
     buildVersion: 'test-build',
+    buildId: 'test-build-id',
+    masterBuildId: 'test-build-id',
     diskRevision: 'disk-revision',
     candidateRevision: 'candidate-revision',
     activeRevision: 'active-revision',

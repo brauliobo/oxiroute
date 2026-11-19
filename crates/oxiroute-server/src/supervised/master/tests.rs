@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr as _};
 use oxiroute_config::{
     ConfigDraft, DownstreamTimeoutPolicy, Listener, ListenerBind, Management, Protocol, Stats,
 };
-use oxiroute_supervisor_master::FailurePhase;
+use oxiroute_supervisor_master::{FailurePhase, RetiredForce, WorkerStatus};
 use serde_json::json;
 
 use super::*;
@@ -455,6 +455,7 @@ fn catalog_quarantines_rollback_and_spawn_failure_candidates() {
         &mut spawn_catalog,
         &[MasterEvent::SpawnFailed {
             instance_id: failed.clone(),
+            error: "worker spawn failed: build mismatch".to_owned(),
         }],
         &mut spawn_book,
     )
@@ -683,6 +684,21 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
     }
 }
 
+fn retired_worker<'a>(
+    instance_id: &'a InstanceId,
+    status: &'a WorkerStatus,
+    (since, forced): (Instant, Option<RetiredForce>),
+) -> RetiredWorker<'a> {
+    RetiredWorker {
+        instance_id,
+        generation: GenerationId(2),
+        status: Some(status),
+        since,
+        window: Duration::from_secs(90) + RETIREMENT_BACKSTOP,
+        forced,
+    }
+}
+
 #[test]
 fn the_retired_worker_is_reported_with_its_age_deadline_and_connections() {
     let mut status = worker_status_for_test();
@@ -692,18 +708,41 @@ fn the_retired_worker_is_reported_with_its_age_deadline_and_connections() {
         ..Default::default()
     });
 
-    let report = remote_retired(&status, Duration::from_secs(20), Duration::from_secs(90))
-        .expect("a worker with an active revision");
+    let instance_id = InstanceId::new("retired").expect("instance id");
+    let since = Instant::now();
+
+    let report = remote_retired(
+        &retired_worker(&instance_id, &status, (since, None)),
+        since + Duration::from_secs(20),
+    )
+    .expect("a worker with an active revision");
     assert_eq!(report.revision, format!("{:064x}", 5));
     assert_eq!(report.age_seconds, 20);
     assert_eq!(report.deadline_remaining_seconds, 70);
     assert_eq!(report.connections, 7);
+    assert_eq!(report.forced, None);
 
-    let overdue = remote_retired(&status, Duration::from_secs(95), Duration::from_secs(90));
+    let overdue = remote_retired(
+        &retired_worker(&instance_id, &status, (since, None)),
+        since + Duration::from_secs(95),
+    );
     assert_eq!(overdue.expect("report").deadline_remaining_seconds, 0);
 
+    let forced = remote_retired(
+        &retired_worker(
+            &instance_id,
+            &status,
+            (since, Some(RetiredForce::RetiredLimit)),
+        ),
+        since,
+    );
+    assert_eq!(
+        forced.expect("report").forced.as_deref(),
+        Some("retired_limit")
+    );
+
     status.generation.active_revision = None;
-    assert!(remote_retired(&status, Duration::ZERO, Duration::ZERO).is_none());
+    assert!(remote_retired(&retired_worker(&instance_id, &status, (since, None)), since).is_none());
 }
 
 fn worker_status_for_test() -> WorkerStatus {
@@ -844,6 +883,35 @@ fn retired_reports_are_due_a_second_after_the_last_one() {
     reports.last_sent = Some(sent);
 
     assert_eq!(reports.next_due(), Some(sent + Duration::from_secs(1)));
+}
+
+#[test]
+fn a_report_is_due_at_once_when_the_retired_workers_change() {
+    let instance_id = InstanceId::new("retired").expect("instance id");
+    let mut reports = RetiredReports::default();
+    reports.last_sent = Some(Instant::now());
+
+    reports.observe(&[MasterEvent::StaleStatus {
+        role: WorkerRole::Retired,
+        sequence: 1,
+    }]);
+    assert!(
+        reports.last_sent.is_some(),
+        "an unrelated event changes nothing"
+    );
+
+    reports.observe(&[MasterEvent::RetiredForced {
+        instance_id: instance_id.clone(),
+        reason: RetiredForce::RetiredLimit,
+    }]);
+    assert_eq!(reports.last_sent, None);
+
+    reports.last_sent = Some(Instant::now());
+    reports.observe(&[MasterEvent::ReplacementCommitted {
+        active: InstanceId::new("active").expect("instance id"),
+        retired: instance_id,
+    }]);
+    assert_eq!(reports.last_sent, None);
 }
 
 #[test]

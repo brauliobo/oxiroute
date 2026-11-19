@@ -225,6 +225,10 @@ name = "process_hop_by_hop_wire"
 path = "tests/process/hop_by_hop_wire.rs"
 
 [[test]]
+name = "process_lifecycle"
+path = "tests/process/lifecycle/main.rs"
+
+[[test]]
 name = "process_listener_workers"
 path = "tests/process/listener_workers.rs"
 

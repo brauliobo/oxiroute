@@ -324,7 +324,7 @@ pub(super) fn begin_is_validated_before_spawn_and_spawn_failure_leaves_active_un
     let events = harness.poll();
     assert!(events.iter().any(|event| matches!(
         event,
-        MasterEvent::SpawnFailed { instance_id } if instance_id.as_str() == "b"
+        MasterEvent::SpawnFailed { instance_id, .. } if instance_id.as_str() == "b"
     )));
     assert_eq!(harness.master.state(), MasterState::Running);
     assert_served_by(&harness, 1);

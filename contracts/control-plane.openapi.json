@@ -1569,6 +1569,12 @@
             },
             "type": "object"
           },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "revision": {
             "type": "string"
           },
@@ -1761,6 +1767,12 @@
           "audit": {
             "$ref": "#/components/schemas/AuditStatusDto"
           },
+          "buildId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "buildVersion": {
             "type": "string"
           },
@@ -1797,6 +1809,12 @@
             },
             "type": "array"
           },
+          "masterBuildId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "previousRevision": {
             "type": [
               "string",
@@ -1822,6 +1840,8 @@
         "required": [
           "schemaVersion",
           "buildVersion",
+          "buildId",
+          "masterBuildId",
           "diskRevision",
           "candidateRevision",
           "activeRevision",

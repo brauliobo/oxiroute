@@ -183,6 +183,25 @@ impl WorkerControl {
         WorkerEndpoint::adopt_at_process_entry(identity).map(|endpoint| Self { endpoint })
     }
 
+    /// Like [`Self::adopt_at_process_entry`], and reports `build_id` as the build of this worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying child handshake failure.
+    pub fn adopt_at_process_entry_with_build(
+        identity: WorkerIdentity,
+        build_id: &str,
+    ) -> Result<Self, ChildHandshakeError> {
+        WorkerEndpoint::adopt_at_process_entry_with_build(identity, build_id)
+            .map(|endpoint| Self { endpoint })
+    }
+
+    /// The build id the master announced; empty when it announced none.
+    #[must_use]
+    pub fn master_build_id(&self) -> &str {
+        self.endpoint.master_build_id()
+    }
+
     /// Blocks for and decodes one bounded typed request.
     ///
     /// # Errors

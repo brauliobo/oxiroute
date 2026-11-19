@@ -410,7 +410,8 @@ Current constraints:
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at
-  once. An unset `drain_deadline_ms` is the larger of 3 hours and the longest HTTP
+  once (a further apply waits in the direct runtime; under the supervising master it closes the
+  oldest draining worker first). An unset `drain_deadline_ms` is the larger of 3 hours and the longest HTTP
   `upstream_io_timeout_ms`, so no request is cut before its own deadline. The optional
   `drain_deadline_ms` of an HTTP, forward proxy or L4 service only raises that deadline and never
   lowers it. The values are read from the generation being replaced when it retires; an apply

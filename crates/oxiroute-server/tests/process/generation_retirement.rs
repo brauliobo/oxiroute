@@ -8,6 +8,8 @@ mod fixture_support;
 mod http_support;
 #[path = "../support/process.rs"]
 mod process_support;
+#[path = "../support/relay.rs"]
+mod relay_support;
 #[path = "../support/mod.rs"]
 mod wire_support;
 
@@ -35,6 +37,7 @@ use tokio::{
 use config_support::{empty_config, socket_bind, socket_endpoint};
 use http_support::http_request;
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
+use relay_support::{assert_echo, start_echo_upstream, tcp_config};
 
 const TOKEN: &str = "7a89c4b6cefd8b4c11b6b4f9d1e6b5d0e8f1a2c3d4e5f60718293a4b5c6d7e8f";
 const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -410,101 +413,6 @@ async fn a_relay_that_outlives_the_drain_deadline_is_closed() {
     instance.stop();
 }
 
-fn tcp_config(
-    management_address: SocketAddr,
-    listener_address: SocketAddr,
-    upstream_address: SocketAddr,
-    retirement: Retirement,
-) -> ConfigDraft {
-    ConfigDraft {
-        retirement: Some(retirement),
-        management: Some(Management {
-            bind: management_address,
-            ui_dir: None,
-            token_file: None,
-        }),
-        listeners: vec![Listener {
-            name: "tcp".into(),
-            bind: socket_bind(listener_address),
-            protocol: Protocol::Tcp,
-            service: Some("relay".into()),
-            tls_profile: None,
-            proxy_protocol: None,
-            max_connections: Some(8),
-            downstream_timeouts: DownstreamTimeoutPolicy::default(),
-            h2_initial_stream_window: None,
-            h2_initial_connection_window: None,
-        }],
-        upstream_pools: vec![UpstreamPool {
-            name: "upstream".into(),
-            servers: Vec::new(),
-            endpoints: vec![socket_endpoint(upstream_address)],
-            algorithm: UpstreamAlgorithm::RoundRobin,
-            health_check: None,
-            passive_health: None,
-            tls: None,
-            http_versions: HttpVersionPolicy::default(),
-            queue_timeout_ms: None,
-            connect_timeout_ms: Some(1_000),
-            server_timeout_ms: None,
-            connection_reuse: UpstreamConnectionReuse::default(),
-            registration: None,
-            canary: None,
-            resilience: oxiroute_config::PoolResilience::default(),
-            queue: None,
-        }],
-        l4_services: vec![L4Service {
-            drain_deadline_ms: None,
-            name: "relay".into(),
-            upstream_pool: "upstream".into(),
-            connect_timeout_ms: 1_000,
-            idle_timeout_ms: 600_000,
-            lifetime_timeout_ms: None,
-            proxy_protocol: None,
-            udp: None,
-        }],
-        ..empty_config()
-    }
-}
-
-async fn start_echo_upstream() -> (SocketAddr, JoinHandle<()>) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("echo upstream bind");
-    let address = listener.local_addr().expect("echo upstream address");
-    let task = tokio::spawn(async move {
-        let mut connections = JoinSet::new();
-        loop {
-            tokio::select! {
-                accepted = listener.accept() => {
-                    let (mut stream, _) = accepted.expect("echo upstream accept");
-                    connections.spawn(async move {
-                        let mut buffer = [0_u8; 1024];
-                        loop {
-                            let Ok(count) = stream.read(&mut buffer).await else { return };
-                            if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
-                                return;
-                            }
-                        }
-                    });
-                }
-                Some(_) = connections.join_next(), if !connections.is_empty() => {}
-            }
-        }
-    });
-    (address, task)
-}
-
-async fn assert_echo(stream: &mut TcpStream, payload: &[u8]) {
-    stream.write_all(payload).await.expect("relay write");
-    let mut response = vec![0_u8; payload.len()];
-    timeout(WIRE_TIMEOUT, stream.read_exact(&mut response))
-        .await
-        .unwrap_or_else(|_| panic!("relay response timeout for {payload:?}"))
-        .expect("relay response");
-    assert_eq!(response, payload);
-}
-
 fn http_config(
     management_address: SocketAddr,
     listener_address: SocketAddr,
@@ -861,33 +769,26 @@ async fn supervised_retired_worker_is_listed_by_the_active_worker_until_it_drain
 }
 
 #[tokio::test]
-async fn supervised_reload_requested_while_a_worker_drains_is_shown_as_pending() {
+async fn supervised_reload_requested_while_a_worker_drains_applies_at_once() {
     let _guard = process_test_guard().await;
     let mut instance = Instance::start_tcp(Retirement::default(), true).await;
     let mut relay = open_relay(&instance).await;
     let first = instance.apply().await["activeRevision"].clone();
     assert!(instance.generation().await["pendingApply"].is_null());
 
-    instance.write_next_revision();
-    let status = wait_until("the reload is shown as pending", || async {
-        let status = instance.generation().await;
-        status["pendingApply"].is_object().then_some(status)
-    })
-    .await;
-    let pending = &status["pendingApply"];
-    assert_eq!(pending["reason"], "retired_draining", "{status}");
-    assert!(pending["connections"].as_u64().unwrap() >= 1, "{status}");
-    let wanted = instance.get("/api/v1/config").await["candidateRevision"].clone();
-    assert_eq!(pending["revision"], wanted, "{status}");
-    assert_eq!(status["activeRevision"], first);
+    let second = instance.apply().await;
+    assert_ne!(second["activeRevision"], first);
+    assert!(second["pendingApply"].is_null(), "{second}");
     assert_echo(&mut relay, b"still served").await;
 
     drop(relay);
-    let status = wait_until("the pending reload applies", || async {
+    wait_until("the retired workers drain", || async {
         let status = instance.generation().await;
-        (status["activeRevision"] == wanted).then_some(status)
+        status["retiredGenerations"]
+            .as_array()?
+            .is_empty()
+            .then_some(())
     })
     .await;
-    assert!(status["pendingApply"].is_null(), "{status}");
     instance.stop();
 }

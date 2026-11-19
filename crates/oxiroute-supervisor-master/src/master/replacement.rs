@@ -77,6 +77,7 @@ impl<E: ActionExecutor> Master<E> {
                         Err(error) => {
                             self.events.push_back(MasterEvent::SpawnFailed {
                                 instance_id: instance.instance_id,
+                                error: error.to_string(),
                             });
                             return Err(error);
                         }
@@ -154,6 +155,9 @@ impl<E: ActionExecutor> Master<E> {
                             .retirement_deadline
                             .take()
                             .unwrap_or_else(|| self.config.drain_timeout());
+                        if let Some(retired) = self.retired.as_mut() {
+                            retired.retired = Some((now, window));
+                        }
                         self.issue_or_compensate(
                             WorkerRole::Retired,
                             ControlPhase::Drain,

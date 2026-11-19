@@ -237,6 +237,7 @@ oxiroute::process_h1_static_wire                      planes
 oxiroute::process_h1_wire                             planes
 oxiroute::process_h2_windows                          planes,tls
 oxiroute::process_hop_by_hop_wire                     planes
+oxiroute::process_lifecycle                           core
 oxiroute::process_listener_workers                    planes
 oxiroute::process_management                          core
 oxiroute::process_registry                            planes

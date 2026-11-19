@@ -345,6 +345,7 @@ export interface RetiredGenerationDto {
   deadlineRemainingSeconds: number
   inFlight: number
   inFlightByKind: { [key: string]: number }
+  reason?: string | null
   revision: string
   state: string
 }
@@ -398,6 +399,7 @@ export interface StatusResponse {
   activeGenerationAgeMs: number
   activeRevision: string | null
   audit: AuditStatusDto
+  buildId: string | null
   buildVersion: string
   candidateRevision: string | null
   capabilities: CapabilitiesResponse
@@ -407,6 +409,7 @@ export interface StatusResponse {
   degraded: boolean
   diskRevision: string | null
   listeners: Array<ListenerDto>
+  masterBuildId: string | null
   previousRevision: string | null
   restartRequired: RestartRequired
   schemaVersion: number

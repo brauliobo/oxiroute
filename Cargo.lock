@@ -3280,6 +3280,7 @@ dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
  "rustix",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "zeroize",

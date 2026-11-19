@@ -240,6 +240,7 @@ fn a_retired_worker_notice_lists_and_then_clears_the_draining_worker() {
             age_seconds: 4,
             deadline_remaining_seconds: 100,
             connections: 2,
+            forced: None,
         }],
     };
     apply_notice(&manager, &serde_json::to_vec(&retired).unwrap()).expect("retired notice");

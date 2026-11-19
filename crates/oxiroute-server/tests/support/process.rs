@@ -59,6 +59,7 @@ pub struct ServerProcess {
     pub config_path: PathBuf,
     pub token_path: Option<PathBuf>,
     direct: bool,
+    binary: PathBuf,
     environment: Vec<(String, String)>,
     _directory: TempDir,
 }
@@ -96,10 +97,32 @@ impl ServerProcess {
         Self::launch(config, Some(token), false, environment)
     }
 
+    /// Starts the production topology from the executable at `binary`, which the test may replace later.
+    #[allow(dead_code)]
+    pub fn start_supervised_binary(
+        config: &ValidatedConfig,
+        token: &str,
+        binary: &Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        let authored = render_lua(&on_suite_data_plane(config)).expect("render process config");
+        Self::launch_text(
+            ("oxiroute.lua", &authored),
+            Some(token),
+            (false, environment),
+            binary,
+        )
+    }
+
     /// Starts the direct runtime on authored text, kept byte for byte in a file named `file_name`.
     #[allow(dead_code)]
     pub fn start_authored(file_name: &str, authored: &str, token: &str) -> Self {
-        Self::launch_text(file_name, authored, Some(token), true, &[])
+        Self::launch_text(
+            (file_name, authored),
+            Some(token),
+            (true, &[]),
+            Path::new(env!("CARGO_BIN_EXE_oxiroute")),
+        )
     }
 
     fn launch(
@@ -109,15 +132,19 @@ impl ServerProcess {
         environment: &[(&str, &str)],
     ) -> Self {
         let authored = render_lua(&on_suite_data_plane(config)).expect("render process config");
-        Self::launch_text("oxiroute.lua", &authored, token, direct, environment)
+        Self::launch_text(
+            ("oxiroute.lua", &authored),
+            token,
+            (direct, environment),
+            Path::new(env!("CARGO_BIN_EXE_oxiroute")),
+        )
     }
 
     fn launch_text(
-        file_name: &str,
-        authored: &str,
+        (file_name, authored): (&str, &str),
         token: Option<&str>,
-        direct: bool,
-        environment: &[(&str, &str)],
+        (direct, environment): (bool, &[(&str, &str)]),
+        binary: &Path,
     ) -> Self {
         let directory = TempDir::new().expect("server process directory");
         let config_path = directory.path().join(file_name);
@@ -126,10 +153,10 @@ impl ServerProcess {
         let stderr_path = directory.path().join("oxiroute.stderr");
         let stderr = File::create(&stderr_path).expect("server standard error file");
         let child = spawn_server(
+            binary,
             (&config_path, token_path.as_deref()),
             (Stdio::null(), stderr.into()),
-            direct,
-            environment,
+            (direct, environment),
         );
         Self {
             child,
@@ -137,6 +164,7 @@ impl ServerProcess {
             config_path,
             token_path,
             direct,
+            binary: binary.to_owned(),
             environment: environment
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
@@ -159,10 +187,10 @@ impl ServerProcess {
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>();
         self.child = spawn_server(
+            &self.binary,
             (&self.config_path, self.token_path.as_deref()),
             (Stdio::null(), stderr.into()),
-            self.direct,
-            &environment,
+            (self.direct, &environment),
         );
     }
 
@@ -193,7 +221,8 @@ impl ServerProcess {
             self.assert_running();
             assert!(
                 Instant::now() < deadline,
-                "server did not accept on {address}"
+                "server did not accept on {address}: {}",
+                self.stderr()
             );
             sleep(RETRY_DELAY).await;
         }
@@ -429,7 +458,8 @@ pub fn write_token(directory: &Path, token: &str, mode: u32) -> PathBuf {
 
 pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
     let piped = (Stdio::piped(), Stdio::piped());
-    let mut child = spawn_server((config_path, token_path), piped, true, &[]);
+    let binary = Path::new(env!("CARGO_BIN_EXE_oxiroute"));
+    let mut child = spawn_server(binary, (config_path, token_path), piped, (true, &[]));
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
         if child.try_wait().expect("inspect failing server").is_some() {
@@ -452,12 +482,12 @@ pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
 }
 
 fn spawn_server(
+    binary: &Path,
     (config_path, token_path): (&Path, Option<&Path>),
     (stdout, stderr): (Stdio, Stdio),
-    direct: bool,
-    environment: &[(&str, &str)],
+    (direct, environment): (bool, &[(&str, &str)]),
 ) -> Child {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_oxiroute"));
+    let mut command = Command::new(binary);
     command
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")

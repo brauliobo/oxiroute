@@ -53,6 +53,8 @@ pub struct RetiredGenerationStatus {
     pub deadline_remaining_seconds: u64,
     pub in_flight: u64,
     pub in_flight_by_kind: BTreeMap<&'static str, u64>,
+    /// Why the generation is being closed before its deadline, when it is.
+    pub reason: Option<String>,
 }
 
 /// What the supervising master tells its active worker about the worker it replaced.
@@ -79,6 +81,9 @@ pub struct RemoteRetired {
     pub age_seconds: u64,
     pub deadline_remaining_seconds: u64,
     pub connections: u64,
+    /// Why the master is closing the worker before its deadline, when it is.
+    #[serde(default)]
+    pub forced: Option<String>,
 }
 
 impl RemoteRetired {
@@ -90,13 +95,18 @@ impl RemoteRetired {
     ) -> RetiredGenerationStatus {
         RetiredGenerationStatus {
             revision: revision.clone(),
-            state: RetiredState::Draining,
+            state: if self.forced.is_some() {
+                RetiredState::Closing
+            } else {
+                RetiredState::Draining
+            },
             age_seconds: self.age_seconds + elapsed.as_secs(),
             deadline_remaining_seconds: self
                 .deadline_remaining_seconds
                 .saturating_sub(elapsed.as_secs()),
             in_flight: self.connections,
             in_flight_by_kind: BTreeMap::from([("connections", self.connections)]),
+            reason: self.forced.clone(),
         }
     }
 }
@@ -142,6 +152,7 @@ impl Retired {
             deadline_remaining_seconds: self.deadline.saturating_sub(age).as_secs(),
             in_flight: self.generation.in_flight(),
             in_flight_by_kind: self.generation.in_flight_by_kind(),
+            reason: None,
         }
     }
 }
