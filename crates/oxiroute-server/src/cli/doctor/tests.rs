@@ -192,6 +192,15 @@ fn a_read_write_path_that_does_not_exist_stops_the_unit_unless_it_is_optional() 
 }
 
 #[test]
+fn a_read_write_path_the_unit_creates_itself_need_not_exist_before_it_starts() {
+    let unit = unit_of(
+        "[Service]\nStateDirectory=oxiroute\nRuntimeDirectory=oxiroute\nReadWritePaths=/run/oxiroute /var/lib/oxiroute\n",
+        &[],
+    );
+    assert_eq!(unit.missing_required().count(), 0);
+}
+
+#[test]
 fn the_report_lists_the_worst_first_and_exits_by_severity() {
     let mixed = report(vec![
         Diagnosis::ok(Check::Config, "a", "fine"),

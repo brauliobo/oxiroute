@@ -192,17 +192,20 @@ impl Unit {
         if settings.enabled("PrivateTmp") {
             rules.extend(["/tmp", "/var/tmp"].map(|path| rule(path, Access::Writable)));
         }
+        let mut created = Vec::new();
         for (key, root) in STATE_ROOTS {
             for name in settings.list(key) {
                 let name = name.split(':').next().unwrap_or(name);
-                rules.push(rule(Path::new(root).join(name), Access::Writable));
+                created.push(Path::new(root).join(name));
             }
         }
+        rules.extend(created.iter().map(|path| rule(path, Access::Writable)));
         let writable = settings.list("ReadWritePaths");
         let required = writable
             .iter()
             .filter(|path| !path.starts_with('-'))
             .map(|path| PathBuf::from(path.trim_start_matches('+')))
+            .filter(|path| !created.contains(path))
             .collect();
         rules.extend(listed(writable, Access::Writable));
         rules.extend(listed(settings.list("ReadOnlyPaths"), Access::ReadOnly));
