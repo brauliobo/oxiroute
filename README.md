@@ -107,14 +107,18 @@ regressions; the [7.0 report](benchmarks/reports/7.0/README.md) has the earlier 
 The matrix below lists every scope measured for 7.1.0: the shipped PGO x86_64 binary on a 16-core desktop CPU, pinned
 CPUs, loopback, 4-second runs after 2-second warm-ups, measured 2026-11-19 ([7.1
 report](benchmarks/reports/7.1/README.md); ranges, PSI and run counts in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
-Every number is the median of at least two clean runs of the same method, except four single-run cells noted below.
+Every number is the median of at least two clean runs of the same method, except the single-run cells noted below.
 **Clean** means PSI `some` avg10 below 10% with no request errors and a valid scheduler trace; foreign CPU work was
 recorded but not used to separate runs, so these rows are not strictly comparable with the 7.0 rows. Cells are
 requests/second / p99 µs unless a row says otherwise. `n/a` means the lane does not apply to that column; the row label
-or a note gives the reason. `not measured` means the lane was not run for 7.1.
+or a note gives the reason.
 
 Single-run cells (one clean run): two workers with 256 connections (all columns), HTTP/2 over TLS POST 1 KiB (all
-columns, and the nginx HTTP/2 over TCP value in the HTTP/3 POST row), and TCP relay echo of 1 KiB and 64 KiB.
+columns, and the nginx HTTP/2 over TCP value in the HTTP/3 POST row), TCP relay echo of 1 KiB and 64 KiB, the eight
+feature rows from 2 KiB request headers to basic authentication, the four instruction-count harness rows, the lossy-path
+download, and the reload memory row. These late rows were measured on the same host with the same pinned CPUs and one
+4-second run after a 2-second warm-up per cell (PSI `some` avg10 at most 0.4%, no request errors; valid scheduler trace
+for the comparison-harness rows; foreign work on the pinned CPUs reached 0.9 CPUs).
 
 HTTP/1.1, 1 KiB response and 32 connections unless stated:
 
@@ -214,7 +218,8 @@ neither has a brotli or zstd encoder in the measured builds, so those rows are `
 | 64 KiB gzip level 1, no cache | 30,464 / 1,914 | 30,924 / 2,176 | 32,676 / 1,411 | 34,090 / 1,924 | 21,773 / 3,787 |
 
 HTTP/3, one worker, loopback, comparison harness. The `cubic` column is the same OxiRoute listener with
-`http3_congestion_control = "cubic"`. The lossy-path 10 MiB download was not measured for 7.1:
+`http3_congestion_control = "cubic"`. The lossy-path row is the time of one 10 MiB download in seconds (lower is better;
+single run, one fresh connection, user and network namespace with `netem`, QUIC segmentation offload off):
 
 | Test | OxiRoute `bbr` (default) | OxiRoute `cubic` | nginx HTTP/3 | nginx HTTP/2 over TCP |
 | --- | ---: | ---: | ---: | ---: |
@@ -222,9 +227,11 @@ HTTP/3, one worker, loopback, comparison harness. The `cubic` column is the same
 | Direct 1 KiB response | 174,649 / 444 | 177,235 / 354 | 117,212 / 578 | 165,690 / 404 |
 | Proxy POST 1 KiB | 62,298 / 831 | 55,711 / 1,790 | 57,158 / 998 | 67,226 / 1,116 |
 | New QUIC (HTTP/2: new TLS) connection per request, direct | 4,908 / 4,140 | 5,018 / 3,771 | 3,240 / 4,868 | 5,192 / 2,434 |
+| Lossy path, 40 ms round trip, 0.5% loss, 10 MiB download, seconds | 0.357 | 13.112 | 30.967 | 2.664 |
 
 Static files, other protocols and features, 32 connections unless stated. HAProxy does not serve files from disk, so the
-static rows are `n/a` for it. The rows marked `not measured` were not run for 7.1 (see Not measured):
+static rows are `n/a` for it. nginx and HAProxy verify the bcrypt hash on every request, which is why the basic
+authentication row shows 26 requests per second for both:
 
 | Test | OxiRoute default | nginx | HAProxy |
 | --- | ---: | ---: | ---: |
@@ -237,29 +244,30 @@ static rows are `n/a` for it. The rows marked `not measured` were not run for 7.
 | Pool `least_connections`, 8 servers | 170,064 / 348 | 132,066 / 394 | 113,108 / 492 |
 | Pool `weighted_round_robin`, 8 servers | 179,268 / 316 | 126,428 / 457 | 107,705 / 672 |
 | HTTP/1.1 keep-alive, 1 connection | 38,276 / 47 | 35,296 / 54 | 32,088 / 60 |
-| HTTP/1.1, 2 KiB request headers | not measured | not measured | not measured |
-| Access log on | not measured | not measured | not measured |
-| Request id on | not measured | not measured | not measured |
-| Request and response header rules | not measured | not measured | not measured |
-| 1,000 exact routes plus a catch-all | not measured | not measured | not measured |
-| 4 origin servers, round robin | not measured | not measured | not measured |
-| Literal 301 redirect, no upstream | not measured | not measured | not measured |
-| Basic authentication, bcrypt cost 10, same credentials every request (OxiRoute does not run bcrypt per request) | not measured | not measured | not measured |
-| Reverse proxy with 7 production features on (instruction-count harness, 16 connections; no nginx or HAProxy equivalent of breaker, outlier ejection and capacity admission) | not measured | n/a | n/a |
-| Forward proxy, HTTP/1.1 absolute-URI request, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | not measured | n/a | n/a |
-| Forward proxy, CONNECT tunnel echo, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; nginx answers CONNECT with 405) | not measured | n/a | n/a |
-| Forward proxy, new CONNECT tunnel per request (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | not measured | n/a | n/a |
+| HTTP/1.1, 2 KiB request headers | 138,878 / 389 | 99,170 / 424 | 104,974 / 428 |
+| Access log on | 173,218 / 316 | 92,536 / 388 | 79,786 / 491 |
+| Request id on | 187,179 / 220 | 126,170 / 447 | 106,459 / 424 |
+| Request and response header rules | 187,342 / 207 | 140,287 / 257 | 115,243 / 383 |
+| 1,000 exact routes plus a catch-all | 187,168 / 211 | 140,877 / 262 | 119,250 / 382 |
+| 4 origin servers, round robin | 187,035 / 212 | 140,047 / 277 | 120,160 / 373 |
+| Literal 301 redirect, no upstream | 397,412 / 107 | 302,965 / 171 | 264,907 / 232 |
+| Basic authentication, bcrypt cost 10, same credentials every request (OxiRoute does not run bcrypt per request) | 88,168 / 520 | 26 / 1,213,719 | 26 / 2,226,800 |
+| Reverse proxy with 7 production features on (instruction-count harness, 16 connections; no nginx or HAProxy equivalent of breaker, outlier ejection and capacity admission) | 154,355 / 193 | n/a | n/a |
+| Forward proxy, HTTP/1.1 absolute-URI request, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | 39,742 / 517 | n/a | n/a |
+| Forward proxy, CONNECT tunnel echo, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; nginx answers CONNECT with 405) | 173,693 / 137 | n/a | n/a |
+| Forward proxy, new CONNECT tunnel per request (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | 25,291 / 844 | n/a | n/a |
 
 Memory, one worker (PSS in MB from the comparison harness, medians of three processes; incremental resident memory per
-idle connection in bytes, 5,000 connections, HTTP/2 1,000, medians of two runs). Memory after configuration reloads was
-not measured for 7.1:
+idle connection in bytes, 5,000 connections, HTTP/2 1,000, medians of two runs). The reload row is one run per proxy
+(`benchmarks/r2-data-path/reload_memory.py`: summed PSS of the process tree, one worker, OxiRoute through the management
+API, nginx `SIGHUP`, HAProxy `SIGUSR2`; the idle values of that configuration are 33.1, 12.8 and 27.0 MB):
 
 | Test | OxiRoute | nginx | HAProxy |
 | --- | ---: | ---: | ---: |
 | PSS idle, MB | 11.5 | 11.0 | 31.2 |
 | PSS, 32 connections held / drained, MB | 12.1 / 12.1 | 11.2 / 11.2 | 31.6 / 31.7 |
 | PSS, 1,024 connections held / drained, MB | 13.8 / 13.8 | 20.4 / 20.4 | 41.8 / 40.4 |
-| PSS after 1 / 10 / 50 configuration reloads, 1,001-route configuration, MB | not measured | not measured | not measured |
+| PSS after 1 / 10 / 50 configuration reloads, 1,001-route configuration, MB | 36.3 / 37.1 / 33.8 | 20.4 / 20.7 / 21.3 | 24.8 / 26.2 / 25.0 |
 | Per idle HTTP/1.1 keep-alive connection, bytes | 1,777 | 9,903 | 10,944 |
 | Per idle HTTP/1.1 connection over TLS, bytes | 18,326 | 34,805 | 36,070 |
 | Per idle WebSocket connection, bytes | 12,520 | 18,372 | 6,484 |
@@ -268,13 +276,8 @@ not measured for 7.1:
 
 Not measured for 7.1:
 
-- Memory after 50 configuration reloads with 1,001 routes.
-- Instruction-count harness lanes (`benchmarks/r2-data-path`): the HTTP/3, WebSocket, TCP relay, pool, static, seven-feature,
-  upstream HTTP/2 and forward-proxy lanes.
-- The 10 MiB HTTP/3 download at 40 ms round trip and 0.5% loss (network namespace with `netem`).
-- Eight comparison-harness feature lanes (2 KiB request headers, access log, request id, header rules, 1,000 routes, 4
-  origin servers, literal 301 redirect, basic authentication with bcrypt): the invocation stopped when the scheduler
-  recorder failed to start and was not repeated.
+- The other instruction-count harness lanes (`benchmarks/r2-data-path`): its own HTTP/3, WebSocket, TCP relay, pool, static
+  and upstream HTTP/2 lanes were not run there; the comparison harness measures those workloads above.
 - RTMP: the harness has no RTMP load client and the nginx build has no RTMP module.
 - An arm64 binary: no arm64 host.
 - The BBR fairness matrix is not part of this comparison; its tracked results are in `benchmarks/r2-data-path/fairness/results`.

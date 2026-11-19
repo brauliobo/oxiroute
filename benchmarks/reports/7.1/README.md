@@ -5,8 +5,9 @@ table can combine rows from different invocations, and nothing is pooled within 
 logs are local development material and are not published; this page keeps the medians, ranges and run counts.
 
 The published 7.1.0 release binary was measured on 2026-11-19 across the comparison-harness lanes of the
-[7.0 report](../7.0/README.md), with these exceptions, which are listed under "Lanes not measured": memory after
-configuration reloads, the instruction-count harness, the impaired-path HTTP/3 download, and eight feature lanes.
+[7.0 report](../7.0/README.md). A second, shorter pass on the same host and binary added single-run rows for eight
+feature lanes, the memory after configuration reloads, the lossy-path HTTP/3 download and four instruction-count harness
+lanes; the other instruction-count harness lanes are listed under "Lanes not measured".
 
 ## Conditions
 
@@ -29,17 +30,25 @@ configuration reloads, the instruction-count harness, the impaired-path HTTP/3 d
   connections ending in error (largest observed 0.034%, in OxiRoute, its `cubic` listener and nginx alike).
 - PSI is `/proc/pressure/cpu` `some` avg10 in percent, the median over the clean runs of the value before and after the
   run. It was 0.0 to 3.2 in single clean runs; the table columns show the medians.
-- **Single-run cells.** Four cells have exactly one clean run: HTTP/2 over TLS POST 1 KiB (one worker; also the nginx
+- **Single-run cells.** Four cells of the main pass have exactly one clean run: HTTP/2 over TLS POST 1 KiB (one worker; also the nginx
   HTTP/2 over TCP row of the HTTP/3 POST lane), TCP relay echo 1 KiB and 64 KiB (16 connections), and the two-worker
   256-connection lane (all six columns). Their `clean` column reads `1/1`. Every other cell has at least two clean
   runs, and memory cells three. For the two-worker 256-connection lane the tokio plane had produced request errors in
   all 16 attempts of the first invocation, so the cell was measured once more with one run per column.
+- **Quick pass.** The eight feature lanes, the four instruction-count harness lanes, the reload memory and the lossy-path
+  download were measured afterwards on the same host, the same binary and the same pinned CPUs (proxy 8-9, origin 10-11,
+  load generator 12-15, harness on CPUs 0-7), one run per cell (`--runs 1 --max-rounds 4`, 4 s after a 2 s warm-up),
+  so they are single-run cells and not strictly comparable with the 7.0 rows. PSI `some` avg10 before and after every
+  run was at most 0.4%, no run had request errors, and the comparison-harness rows have a valid scheduler trace; foreign
+  work on the pinned CPUs was recorded for the comparison-harness rows (up to 0.9 CPUs, up to 0.1 CPUs on sibling threads)
+  and not used to discard a run. The instruction-count harness rows (`benchmarks/r2-data-path/run.py`, one repetition, 16 connections) are clean
+  by PSI and by zero request errors only; they have no scheduler trace.
 - `epoll` is the default data plane. `tokio` and `io_uring` are the same binary with `http_data_plane` set in the
   configuration. `instr/req` is user-space instructions per request on the proxy process (`perf stat`,
   `instructions:u`); kernel work is not counted. Latencies are closed loop and carry coordinated omission.
 - Harness: `benchmarks/scripts/vs_nginx_haproxy.py`, a local script that is not part of this checkout, run from the tree
-  at commit `22122328`. The `benchmarks/r2-data-path` lanes are checked in and reproduce from the repository, but were
-  not run in this pass.
+  at commit `22122328`. The `benchmarks/r2-data-path` lanes and `reload_memory.py` are checked in and reproduce from the
+  repository; only the lanes named in the quick pass above were run.
 
 ## 7.1 against 7.0
 
@@ -79,6 +88,10 @@ TLS 1.2 resumed (ticket), 7% higher (109,704 to 117,657), and the single-run TCP
 
 ### Where OxiRoute is ahead of its 7.0 figures
 
+The single-run feature lanes with one worker (access log, request id, header rules, 1,000 routes, 4 origin servers,
+literal redirect, 2 KiB request headers) put OxiRoute 1.3 to 1.9 times above nginx and 1.3 to 2.2 times above HAProxy
+in requests per second. Basic authentication with bcrypt is 88,168 against 26 for both comparators, which verify the hash on every request.
+
 - Two and four workers with the default scheduling. In 7.0 the default epoll scheduling used 0.99 to 1.95 CPUs of two
   at two workers and its rate was close to the one-worker rate; in this pass it used 1.84 to 1.97 CPUs and reached
   316,118 to 350,108 requests per second at 64 to 1,024 connections (7.0: 177,640 to 285,210). At four workers it
@@ -115,6 +128,11 @@ TLS 1.2 resumed (ticket), 7% higher (109,704 to 117,657), and the single-run TCP
   167,645 and 4.7 ms).
 - Memory: idle PSS is 11.5 MB against nginx 11.0 MB; in the 7.0 pass it was 9.9 against 10.6. With 1,024 connections
   held OxiRoute is 13.8 MB against nginx 20.4 MB and HAProxy 41.8 MB.
+- Memory after reloads (one run): with 1,001 routes OxiRoute holds 33.8 MB after 50 reloads against nginx 21.3 MB and
+  HAProxy 25.0 MB; its idle figure for that configuration is 33.1 MB against 12.8 and 27.0 MB (the memory table above
+  comes from another harness, so the idle figures differ).
+- Lossy path (one run): nginx HTTP/2 over TCP downloads 10 MiB in 2.664 s against 0.357 s for OxiRoute `bbr`; OxiRoute
+  `cubic` took 13.112 s and nginx HTTP/3 30.967 s.
 - The `io_uring` plane is below epoll at 32 connections (-9%), 1,024 (-20%), 2,048 (-9%), 64 KiB (-41%) and 1 MiB
   (-35%), and stays opt-in.
 
@@ -453,6 +471,23 @@ each, median with min-max; MB):
 | 1,024 connections held | 13.8 (13.7-13.8) | 20.4 (20.1-20.5) | 41.8 (40.3-42.2) |
 | 1,024 connections drained | 13.8 (13.8-13.8) | 20.4 (20.1-20.6) | 40.4 (40.4-41.8) |
 
+Memory after configuration reloads (quick pass, one run per proxy): one worker, 1,000 exact routes plus a catch-all,
+summed PSS of the proxy's process tree in MB, measured by `benchmarks/r2-data-path/reload_memory.py` (OxiRoute through
+the management API with the previous generation retired before measuring, nginx `SIGHUP`, HAProxy master-worker
+`SIGUSR2`, each after the process tree stayed unchanged for one second). The script is new in this pass and differs from
+the 7.0 script (different process accounting and configuration generation), so the rows are not comparable with the 7.0
+rows (OxiRoute 41.6, nginx 26.2 and HAProxy 36.3 MB after 50 reloads).
+
+| State | OxiRoute | nginx | HAProxy |
+| --- | ---: | ---: | ---: |
+| Idle | 33.1 | 12.8 | 27.0 |
+| After 1 reload | 36.3 | 20.4 | 24.8 |
+| After 10 reloads | 37.1 | 20.7 | 26.2 |
+| After 50 reloads | 33.8 | 21.3 | 25.0 |
+
+OxiRoute does not grow with reloads in this run (33.8 MB after 50 against 33.1 idle); nginx grows by 7.6 MB at the
+first reload and by 0.9 MB after it, and HAProxy stays between 24.8 and 27.0 MB. PSI was 0.0.
+
 Incremental resident memory per idle connection (resident memory with connections held minus empty process, divided by
 the connection count) from the harness idle lanes: 5,000 connections for the first four rows, 1,000 for HTTP/2 after
 eight closed streams each; 2 runs each, OxiRoute default (rustls) TLS backend.
@@ -498,6 +533,21 @@ overlapping), 1.5 times it for a direct response (174,649 against 117,212) and 1
 against 3,240, with 1.9 against 2.6 million instructions per request). `bbr` and `cubic` are level on a loss-free
 loopback except on POST (see above).
 
+Lossy path (quick pass, one run per row): download of one 10 MiB file on a fresh connection at 40 ms round trip and 0.5%
+packet loss in each direction, user and network namespace with `netem`, OxiRoute with `http3_segmentation_offload = false`,
+server on CPUs 8-9 and curl on 12-15 (`benchmarks/r2-data-path/h3_impair.py download`). One run is the median and the p99.
+The `cubic` and nginx HTTP/3 times vary strongly between runs on this path (the 7.0 pass measured 1.1 to 7.9 s and 25 to
+30 s), so one run does not separate them from the 7.0 figures.
+
+| Server | seconds | goodput MiB/s | server CPU ms per MiB | packets dropped by `netem` | PSI before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OxiRoute HTTP/3, `bbr` (default) | 0.357 | 28.0 | 5.0 | 40 | 0.0 / 0.0 |
+| OxiRoute HTTP/3, `cubic` | 13.112 | 0.8 | 7.0 | 37 | 0.0 / 0.0 |
+| nginx HTTP/3 | 30.967 | 0.3 | 4.0 | 47 | 0.0 / 0.0 |
+| nginx HTTP/2 over TCP | 2.664 | 3.8 | 0.0 | 17 | 0.0 / 0.0 |
+
+The server CPU counters tick at 10 ms, so the CPU figures of a sub-second download are coarse.
+
 ### WebSocket, TCP relay, pools and other lanes (comparison harness)
 
 32 connections unless stated; HAProxy and nginx run the same functional configuration (the nginx stream module for the
@@ -524,28 +574,76 @@ TCP relay). The two TCP relay rows are single runs.
 | HTTP/1.1 keep-alive, 1 connection | nginx | 35,296 (34,463-36,129) | 54 | 20,845 | 2/2 | 1.0 / 0.9 |
 | HTTP/1.1 keep-alive, 1 connection | HAProxy | 32,088 (31,131-33,045) | 60 | 37,300 | 2/2 | 1.1 / 1.1 |
 
+### Feature lanes (quick pass, one run per cell)
+
+One worker, 32 connections, 1 KiB response, the same functional configuration for the three proxies (header rules: the
+same request and response header set, remove and add; 1,000 routes: 1,000 exact routes with a catch-all; 4 origin
+servers with round robin; the access log is written to a file for OxiRoute and nginx and to stdout for HAProxy). Every
+cell is one clean run (`1/1`). The basic authentication lane sends the same valid credentials on every request;
+OxiRoute does not run bcrypt per request, nginx and HAProxy do (cost 10), so their rate is bounded by the
+hash.
+
+| Lane | Proxy | req/s | p99 µs | instr/req | clean | PSI before / after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 2 KiB request headers | OxiRoute epoll (default) | 138,878 | 389 | 46,051 | 1/1 | 0.0 / 0.1 |
+| 2 KiB request headers | nginx | 99,170 | 424 | 48,444 | 1/1 | 0.0 / 0.0 |
+| 2 KiB request headers | HAProxy | 104,974 | 428 | 55,023 | 1/1 | 0.0 / 0.0 |
+| Access log on | OxiRoute epoll (default) | 173,218 | 316 | 13,656 | 1/1 | 0.0 / 0.1 |
+| Access log on | nginx | 92,536 | 388 | 22,299 | 1/1 | 0.0 / 0.4 |
+| Access log on | HAProxy | 79,786 | 491 | 41,564 | 1/1 | 0.1 / 0.2 |
+| Request id on | OxiRoute epoll (default) | 187,179 | 220 | 11,736 | 1/1 | 0.0 / 0.0 |
+| Request id on | nginx | 126,170 | 447 | 24,256 | 1/1 | 0.0 / 0.0 |
+| Request id on | HAProxy | 106,459 | 424 | 44,515 | 1/1 | 0.0 / 0.0 |
+| Request and response header rules | OxiRoute epoll (default) | 187,342 | 207 | 13,289 | 1/1 | 0.3 / 0.1 |
+| Request and response header rules | nginx | 140,287 | 257 | 20,619 | 1/1 | 0.1 / 0.0 |
+| Request and response header rules | HAProxy | 115,243 | 383 | 39,871 | 1/1 | 0.0 / 0.0 |
+| 1,000 exact routes plus a catch-all | OxiRoute epoll (default) | 187,168 | 211 | 11,736 | 1/1 | 0.0 / 0.2 |
+| 1,000 exact routes plus a catch-all | nginx | 140,877 | 262 | 20,356 | 1/1 | 0.1 / 0.0 |
+| 1,000 exact routes plus a catch-all | HAProxy | 119,250 | 382 | 36,095 | 1/1 | 0.1 / 0.0 |
+| 4 origin servers, round robin | OxiRoute epoll (default) | 187,035 | 212 | 11,761 | 1/1 | 0.0 / 0.0 |
+| 4 origin servers, round robin | nginx | 140,047 | 277 | 20,189 | 1/1 | 0.0 / 0.0 |
+| 4 origin servers, round robin | HAProxy | 120,160 | 373 | 35,479 | 1/1 | 0.0 / 0.0 |
+| Literal 301 redirect, no upstream | OxiRoute epoll (default) | 397,412 | 107 | 5,386 | 1/1 | 0.1 / 0.3 |
+| Literal 301 redirect, no upstream | nginx | 302,965 | 171 | 9,959 | 1/1 | 0.1 / 0.2 |
+| Literal 301 redirect, no upstream | HAProxy | 264,907 | 232 | 16,415 | 1/1 | 0.1 / 0.2 |
+| Basic authentication, bcrypt cost 10, same credentials | OxiRoute epoll (default) | 88,168 | 520 | 46,861 | 1/1 | 0.0 / 0.1 |
+| Basic authentication, bcrypt cost 10, same credentials | nginx | 26 | 1,213,719 | 231,737,266 | 1/1 | 0.1 / 0.0 |
+| Basic authentication, bcrypt cost 10, same credentials | HAProxy | 26 | 2,226,800 | 231,752,045 | 1/1 | 0.0 / 0.0 |
+
+### Instruction-count harness (quick pass, OxiRoute only)
+
+`benchmarks/r2-data-path/run.py`, one repetition per lane, 16 connections, one worker on CPUs 8-9, origin on 10-11, load
+generator on 12-15, the published binary with `OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME=1`. There is no nginx or HAProxy
+configuration for these lanes: nginx answers `CONNECT` with 405 and neither comparator has the breaker, outlier
+ejection and capacity admission of the seven-feature lane. `instr/req` is user-space instructions per request over the
+measured window with the idle baseline subtracted; every lane had 0 request errors and PSI 0.0 to 0.1.
+
+| Lane | req/s | p99 µs | instr/req |
+| --- | ---: | ---: | ---: |
+| Reverse proxy, 7 production features (forwarded headers, access log, timeouts, passive health, breaker, outlier ejection, capacity), 1 KiB | 154,355 | 193 | 19,006 |
+| Forward proxy, HTTP/1.1 absolute-URI request, 1 KiB | 39,742 | 517 | 56,820 |
+| Forward proxy, CONNECT tunnel echo, 1 KiB | 173,693 | 137 | 14,572 |
+| Forward proxy, new CONNECT tunnel per request, 1 KiB | 25,291 | 844 | 65,933 |
+
 ## Lanes not measured
 
-These were not measured in the 7.1 pass, and no 7.1 figure exists for them. The 7.0 report holds the earlier figures
-for the first four.
+These were not measured in the 7.1 pass, and no 7.1 figure exists for them.
 
-- Memory after 50 configuration reloads with 1,001 routes.
-- The instruction-count harness (`benchmarks/r2-data-path`), including its HTTP/3, WebSocket, TCP relay, pool, static,
-  seven-feature, upstream HTTP/2 and forward-proxy lanes.
-- The 10 MiB HTTP/3 download at 40 ms round trip and 0.5% loss in a network namespace with `netem`.
-- Eight comparison-harness feature lanes, because the invocation for that group stopped when the scheduler recorder
-  failed to start on the first of them and was not repeated: HTTP/1.1 with 2 KiB request headers, access log on,
-  request id on, request and response header rules, 1,000 exact routes plus a catch-all, 4 origin servers with round
-  robin, a literal 301 redirect, and basic authentication with bcrypt.
-- RTMP (the harness has no RTMP load client and the nginx build has no RTMP module); an arm64 binary (no arm64 host);
-  the forward proxy against nginx and HAProxy; the BBR fairness matrix (tracked results are in the repository); the
-  OpenSSL TLS backend; the `io_uring` column of the TLS and HTTP/2 lanes (the plane does not serve TLS).
+- The instruction-count harness lanes other than the four of the quick pass (seven-feature reverse proxy and the three
+  forward-proxy lanes): its own HTTP/3, WebSocket, TCP relay, pool, static, TLS and upstream HTTP/2 lanes. The comparison
+  harness measures most of those workloads above, with nginx and HAProxy; the instruction-count harness was not run on them.
+- RTMP: the harness has no RTMP load client and the nginx build has no RTMP module.
+- An arm64 binary: no arm64 host.
+- The forward proxy against nginx and HAProxy: nginx answers `CONNECT` with 405, and no forward-proxy configuration was
+  written for either.
+- The BBR fairness matrix: its tracked results are in the repository (`benchmarks/r2-data-path/fairness/results`).
+- The OpenSSL TLS backend, and the `io_uring` column of the TLS and HTTP/2 lanes (the plane does not serve TLS).
 
 ## What is not covered
 
 - One worker per proxy except in the scaling tables (two and four workers). None is part of the claims.
 - nginx and HAProxy run minimal proxy configurations on the same loopback; their tuning was not explored.
-- Four cells have a single clean run (see Conditions).
+- Four cells of the main pass and every cell of the quick pass have a single clean run (see Conditions).
 - Foreign work on the pinned CPUs was not a discard criterion in this pass; the rows measure the shipped binary on a
   shared host and are not strictly comparable with the 7.0 rows.
 - Closed-loop load, loopback, shared host: results show relative behavior of builds on that host, not capacity.

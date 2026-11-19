@@ -23,8 +23,10 @@ The 7.1 measurement records:
   not published with this page.
 - One proxy worker, with the proxy assigned two CPUs and the origin and load generator assigned separate CPUs; loopback
   traffic; 32 connections; interleaved turns for each proxy.
-- At least two clean 4-second runs after a 2-second warm-up for every cell except four single-run cells (HTTP/2 over TLS
-  POST 1 KiB, TCP relay echo of 1 KiB and 64 KiB, two workers with 256 connections), which have exactly one. **Clean**
+- At least two clean 4-second runs after a 2-second warm-up for every cell except the single-run cells (HTTP/2 over TLS
+  POST 1 KiB, TCP relay echo of 1 KiB and 64 KiB, two workers with 256 connections, and every row of the later quick pass:
+  eight feature lanes, four instruction-count harness lanes, reload memory and the lossy-path download), which have
+  exactly one. **Clean**
   means `/proc/pressure/cpu` `some` avg10 below 10% before and after the run, no request errors, and a valid scheduler
   trace. Foreign CPU work on the pinned CPUs was recorded but, unlike in the 7.0 pass (more than 1.5 CPUs discarded), not
   used to separate runs, so the 7.1 rows are not strictly comparable with the 7.0 rows.
@@ -99,7 +101,8 @@ OxiRoute uses the default rustls backend. Values are medians with min-max over t
 The same pass reports lower incremental RSS than nginx for these workloads; HAProxy is lower for idle WebSocket
 connections. Process PSS in 7.1 is 11.5 MB idle and 13.8 MB with 1,024 connections held for OxiRoute, against 11.0 and
 20.4 MB for nginx and 31.2 and 41.8 MB for HAProxy; OxiRoute's idle figure is above the 9.9 MB of the 7.0 pass. Memory
-after configuration reloads was not measured for 7.1. Busy connections, request bodies, caches, queues, retained
+after 50 configuration reloads with 1,001 routes (one run, new script, one worker) is 33.8 MB for OxiRoute, 21.3 MB for
+nginx and 25.0 MB for HAProxy; the 7.0 pass used another script. Busy connections, request bodies, caches, queues, retained
 generations, and total process memory require separate measurements.
 
 ## What these results do not cover
@@ -108,10 +111,12 @@ No conclusion follows here about WAN traffic, open-loop tail latency, UDP, RTMP,
 against nginx or HAProxy, cache hit rates, many-core scaling beyond four workers, failure recovery,
 long-lived mixed traffic, or production sizing. HTTP/3, HTTP/2 upstreams, the tokio and `io_uring` data planes,
 two and four workers, 512 to 2,048 connections, compression and idle memory are measured in the
-[7.1 report](../benchmarks/reports/7.1/README.md). Not measured for 7.1: memory after configuration reloads, the
-instruction-count harness lanes, the lossy-path HTTP/3 download, and eight feature lanes (2 KiB request headers, access
-log, request id, header rules, 1,000 routes, 4 origin servers, literal redirect, basic authentication with bcrypt); the
-[7.0 report](../benchmarks/reports/7.0/README.md) has the earlier figures for them. Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not in a
+[7.1 report](../benchmarks/reports/7.1/README.md). The eight feature lanes (2 KiB request headers, access
+log, request id, header rules, 1,000 routes, 4 origin servers, literal redirect, basic authentication with bcrypt), the
+seven-feature reverse proxy and forward-proxy lanes of the instruction-count harness, the memory after configuration
+reloads and the lossy-path HTTP/3 download are single-run rows of a quick pass in the same report. The remaining
+instruction-count harness lanes were not run for 7.1; the [7.0 report](../benchmarks/reports/7.0/README.md) has the
+earlier figures for the older lanes. Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not in a
 performance table. Results from different hosts, builds or load models must remain separate.
 
 ## Reproduce and publish a new baseline
