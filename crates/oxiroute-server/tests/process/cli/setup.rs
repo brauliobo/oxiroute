@@ -1,7 +1,12 @@
 //! `oxiroute init` and `token` against real files and a real daemon.
 
-use std::{fs, os::unix::fs::PermissionsExt as _};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt as _,
+    time::{Duration, Instant},
+};
 
+use rustix::process::{Pid, Signal, kill_process};
 use tempfile::TempDir;
 
 use super::{Daemon, cli_command, reserve_tcp_address, stderr, stdout};
@@ -111,7 +116,7 @@ fn every_kind_and_format_prints_a_configuration() {
 }
 
 #[tokio::test]
-async fn rotating_the_token_changes_what_the_cli_sends_and_the_daemon_takes_the_new_one_on_restart()
+async fn rotating_the_token_changes_what_the_cli_sends_and_the_daemon_takes_the_new_one_on_reload()
 {
     let daemon = Daemon::start().await;
     let before = fs::read_to_string(&daemon.token_file).expect("token");
@@ -126,4 +131,15 @@ async fn rotating_the_token_changes_what_the_cli_sends_and_the_daemon_takes_the_
 
     let stale = daemon.run(&["status"]);
     assert_eq!(stale.status.code(), Some(5), "{}", stderr(&stale));
+
+    let pid = i32::try_from(daemon.server.pid()).expect("pid");
+    kill_process(Pid::from_raw(pid).expect("pid"), Signal::HUP).expect("reload signal");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !daemon.run(&["status"]).status.success() {
+        assert!(
+            Instant::now() < deadline,
+            "the reload did not take the new token"
+        );
+        tokio::task::yield_now().await;
+    }
 }

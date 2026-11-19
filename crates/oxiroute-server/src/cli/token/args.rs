@@ -11,6 +11,6 @@ pub(crate) enum TokenCommand {
     /// Replace the token in the management token file with a new random one, keeping its owner and mode.
     ///
     /// The file is swapped atomically, so a reader sees the old or the new token and never a partial one. The daemon
-    /// reads the token when it starts: restart it to accept the new token, which the CLI uses at once.
+    /// takes the new token at its next reload or restart, while the CLI uses it at once.
     Rotate,
 }

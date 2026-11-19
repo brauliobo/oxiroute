@@ -187,7 +187,7 @@ a management API on `127.0.0.1:9900` (the CLI's default endpoint). `--format` ch
 `uci` or `hocon`; `--file -` prints instead of writing, and an existing file is kept unless `--force`.
 `token create` writes the management token as 64 random hex characters in a file only its owner can read
 (`--token-file`, else the selected context's token file) and never replaces one; `token rotate` swaps in a new token atomically with the same owner and mode; the
-daemon reads the token when it starts, so restart it to accept the new one. Neither prints the token.
+daemon takes the new token at its next reload (`generation reload` with the old token, or `SIGHUP`) or restart. Neither prints the token.
 
 ## `top`
 

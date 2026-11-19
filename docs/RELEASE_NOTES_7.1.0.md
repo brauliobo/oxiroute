@@ -245,9 +245,9 @@ Nothing in an existing configuration file needs editing to start. Read these bef
    file; the packaged unit's `ProtectSystem=strict` only allows `/run/oxiroute` and `/var/lib/oxiroute`, so add
    `ReadWritePaths=/etc/oxiroute` in a drop-in (and let the service group write the directory) or edit the file on the
    host. `oxiroute doctor` and `status` (`configWritable`) say which applies.
-6. **`token rotate` needs a restart.** The CLI uses the new token at once; the daemon reads it when it starts (a
-   rewritten token file is also picked up by the next reload, see
-   [Reload instead of restart](#reload-instead-of-restart)).
+6. **`token rotate` takes effect at the next reload.** The CLI uses the new token at once; the daemon keeps accepting
+   the old one until it reloads (`SIGHUP`, or `generation reload` sent with the old token) or restarts, see
+   [Reload instead of restart](#reload-instead-of-restart).
 7. **`NotifyAccess=main` is added to the packaged systemd units.** `oxiroute upgrade` needs it and refuses a unit
    without it. Units that override the packaged one, such as a copy in `/etc/systemd/system`, must add it to use
    `upgrade`; the packages do not run `oxiroute upgrade` for you (run it from the post-upgrade step you choose).
