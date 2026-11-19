@@ -460,6 +460,7 @@ fn ui_control_fields() -> BTreeSet<String> {
                     [
                         extract_quoted_attribute(line, "data-field=\""),
                         extract_quoted_attribute(line, "field-path=\""),
+                        config_component_path(line),
                     ]
                     .into_iter()
                     .flatten()
@@ -491,6 +492,16 @@ fn ui_control_fields() -> BTreeSet<String> {
         }
     }
     controls
+}
+
+fn config_component_path(line: &str) -> Option<String> {
+    let component = line.trim_start();
+    let declares_path =
+        component.starts_with("ConfigField") || component.starts_with("ConfigGroup");
+    ["(path=\"", " path=\""]
+        .into_iter()
+        .filter(|_| declares_path)
+        .find_map(|prefix| extract_quoted_attribute(line, prefix))
 }
 
 fn collect_vue_sources(directory: &Path, found: &mut Vec<PathBuf>) {
