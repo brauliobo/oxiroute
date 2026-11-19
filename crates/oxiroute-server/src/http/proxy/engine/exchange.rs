@@ -110,6 +110,10 @@ impl Exchange {
         })
     }
 
+    pub(super) fn answered_bytes(&self) -> u64 {
+        self.answered_body as u64
+    }
+
     pub(super) fn replay_safe(&self) -> bool {
         self.ctx.replay_safe
     }

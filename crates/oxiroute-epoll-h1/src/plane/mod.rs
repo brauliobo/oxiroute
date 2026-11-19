@@ -36,7 +36,7 @@ pub use pipes::SpliceUse;
 pub use schedule::{Scale, Scheduling};
 pub use service::{
     Answered, AttemptTimeouts, Failure, Framing, Handoff, Lease, Outcome, Recovery, Request,
-    Response, Reuse, Routed, Selected, Service, Target,
+    Response, Reuse, Routed, Secured, Selected, Service, Target, Transfer,
 };
 pub use tls::TlsRouter;
 pub use wake::Waker;

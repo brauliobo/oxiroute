@@ -90,6 +90,7 @@ impl<A: ServerApp + Send + Sync + 'static> EpollHttpService<A> {
             Arc::clone(&self.app),
             Arc::clone(&self.lane),
             handoffs,
+            self.tls.is_some(),
         ));
         let config = self.engine_config();
         let (threads, timeouts) = (self.threads, self.lane.engine_timeouts());

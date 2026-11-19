@@ -6,6 +6,7 @@ use rustls::ServerConnection;
 
 use super::{
     driver::RingSocket,
+    service::Secured,
     sys::{self, Read, Wrote},
     tls::{Finish, Progress, Session, Transport},
 };
@@ -170,6 +171,10 @@ impl Link {
         };
         self.ready.after_write(wrote, head.len() + body.len());
         wrote
+    }
+
+    pub(crate) fn facts(&self) -> Option<Secured> {
+        self.tls.as_ref().map(|tls| tls.facts())
     }
 
     pub(crate) fn handshake(&mut self) -> Progress {

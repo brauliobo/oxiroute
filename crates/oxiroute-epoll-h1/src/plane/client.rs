@@ -16,7 +16,7 @@ use super::{
     origin_head::OriginHead,
     pipes::{Carry, SpliceUse},
     region::Region,
-    service::{AttemptTimeouts, Failure, Reuse, Service},
+    service::{AttemptTimeouts, Failure, Reuse, Service, Transfer},
     slab::Token,
 };
 
@@ -221,10 +221,25 @@ pub(crate) struct Flow<S: Service> {
     pub(crate) failure: Option<Failure>,
     pub(crate) received: u64,
     pub(crate) sent: u64,
+    pub(crate) noted: Transfer,
     pub(crate) upload_done: bool,
     pub(crate) upload_failed: bool,
     pub(crate) contacted: bool,
     pub(crate) splice: SpliceUse,
+}
+
+impl<S: Service> Flow<S> {
+    pub(crate) fn unnoted(&mut self) -> Transfer {
+        let moved = Transfer {
+            received: self.received - self.noted.received,
+            sent: self.sent - self.noted.sent,
+        };
+        self.noted = Transfer {
+            received: self.received,
+            sent: self.sent,
+        };
+        moved
+    }
 }
 
 pub(crate) struct Client<S: Service> {
@@ -246,6 +261,16 @@ pub(crate) struct Client<S: Service> {
 impl<S: Service> Client<S> {
     pub(crate) fn flow(&mut self) -> &mut Flow<S> {
         self.flow.as_mut().expect("a serving client has a flow")
+    }
+
+    pub(crate) fn note_transfer(&mut self, now: Instant) {
+        let Some(flow) = self.flow.as_mut() else {
+            return;
+        };
+        let moved = flow.unnoted();
+        if !moved.is_empty() {
+            self.service.transferred(&self.admission, moved, now);
+        }
     }
 
     pub(crate) fn cancelled(&self) -> bool {

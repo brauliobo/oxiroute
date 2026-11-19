@@ -4,12 +4,15 @@ use std::{
 };
 
 use rustls::{
-    ServerConnection,
+    ProtocolVersion, ServerConnection,
     server::{Accepted, AcceptedAlert, Acceptor},
 };
 
 use super::{TlsRouter, transport::Transport};
-use crate::plane::sys::{Read, Wrote};
+use crate::plane::{
+    service::Secured,
+    sys::{Read, Wrote},
+};
 
 const NO_APPLICATION_PROTOCOL_ALERT: [u8; 7] = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x78];
 
@@ -75,6 +78,21 @@ impl Session {
                 acceptor: Box::default(),
                 router,
             }),
+        }
+    }
+
+    pub(crate) fn facts(&self) -> Secured {
+        let Phase::Live(live) = &self.phase else {
+            unreachable!("a served connection finished its handshake");
+        };
+        Secured {
+            version: match live.conn.protocol_version() {
+                Some(ProtocolVersion::TLSv1_3) => "TLS1.3",
+                Some(ProtocolVersion::TLSv1_2) => "TLS1.2",
+                _ => "TLS",
+            },
+            sni: live.conn.server_name().map(str::to_owned),
+            alpn: live.conn.alpn_protocol().map(<[u8]>::to_vec),
         }
     }
 

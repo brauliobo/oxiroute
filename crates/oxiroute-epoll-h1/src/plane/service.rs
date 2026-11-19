@@ -227,6 +227,28 @@ pub struct Outcome {
     pub splice: SpliceUse,
 }
 
+/// Body bytes that moved on a connection since the last report.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Transfer {
+    pub received: u64,
+    pub sent: u64,
+}
+
+impl Transfer {
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.received == 0 && self.sent == 0
+    }
+}
+
+/// What the TLS handshake of a connection settled.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Secured {
+    pub version: &'static str,
+    pub sni: Option<String>,
+    pub alpn: Option<Vec<u8>>,
+}
+
 pub struct Handoff<A> {
     pub stream: TcpStream,
     pub tls: Option<Box<ServerConnection>>,
@@ -274,6 +296,18 @@ pub trait Service: Send + Sync + 'static {
     fn cancelled(&self, exchange: &Self::Exchange) -> bool;
 
     fn finish(&self, exchange: Self::Exchange, outcome: &Outcome);
+
+    fn transferred(&self, _admission: &Self::Admission, _transfer: Transfer, _now: Instant) {}
+
+    fn secured(&self, _admission: &Self::Admission, _secured: Secured) {}
+
+    fn account(
+        &self,
+        _admission: &Self::Admission,
+        _exchange: &Self::Exchange,
+        _outcome: &Outcome,
+    ) {
+    }
 
     fn handoff(&self, handoff: Handoff<Self::Admission>);
 }

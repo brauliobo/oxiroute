@@ -3,6 +3,8 @@ mod plan;
 pub(crate) use plan::{EnginePlan, plan};
 
 #[cfg(target_os = "linux")]
+mod admission;
+#[cfg(target_os = "linux")]
 mod exchange;
 #[cfg(target_os = "linux")]
 mod handoff;

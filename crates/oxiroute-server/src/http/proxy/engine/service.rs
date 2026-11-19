@@ -1,13 +1,14 @@
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use oxiroute_epoll_h1::{
-    Answered, Failure, Handoff, Outcome, Recovery, Request, Response, Routed, Selected, Service,
+    Answered, Failure, Handoff, Outcome, Recovery, Request, Response, Routed, Secured, Selected,
+    Service, Transfer,
 };
-use pingora::apps::{ConnectionAdmission, ServerApp};
+use pingora::apps::ServerApp;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{exchange::Exchange, lease::EngineLease, routes::Routes};
-use crate::http::proxy::lane::LaneFront;
+use super::{admission::EngineAdmission, exchange::Exchange, lease::EngineLease, routes::Routes};
+use crate::{clients::Protocol, http::proxy::lane::LaneFront};
 
 const TEST_ENGINE_PANIC_ENV: &str = "OXIROUTE_INTERNAL_TEST_ENGINE_PANIC";
 
@@ -15,7 +16,8 @@ pub(super) struct EngineFront<A> {
     app: Arc<A>,
     lane: Arc<LaneFront>,
     routes: Routes,
-    handoffs: UnboundedSender<Handoff<ConnectionAdmission>>,
+    handoffs: UnboundedSender<Handoff<EngineAdmission>>,
+    terminates_tls: bool,
     inject_panic: bool,
 }
 
@@ -23,25 +25,32 @@ impl<A> EngineFront<A> {
     pub(super) fn new(
         app: Arc<A>,
         lane: Arc<LaneFront>,
-        handoffs: UnboundedSender<Handoff<ConnectionAdmission>>,
+        handoffs: UnboundedSender<Handoff<EngineAdmission>>,
+        terminates_tls: bool,
     ) -> Self {
         Self {
             app,
             lane,
             routes: Routes::new(),
             handoffs,
+            terminates_tls,
             inject_panic: std::env::var_os(TEST_ENGINE_PANIC_ENV).is_some(),
         }
     }
 }
 
 impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
-    type Admission = ConnectionAdmission;
+    type Admission = EngineAdmission;
     type Exchange = Exchange;
     type Lease = EngineLease;
 
-    fn admit(&self, _peer: SocketAddr) -> Option<ConnectionAdmission> {
-        self.app.admit_owned_connection()
+    fn admit(&self, peer: SocketAddr) -> Option<EngineAdmission> {
+        let held = self.app.admit_owned_connection()?;
+        let tracked = self.lane.metrics.track(peer, Protocol::Http1);
+        if let Some(tracked) = &tracked {
+            tracked.stats().set_handshaking(self.terminates_tls);
+        }
+        Some(EngineAdmission { held, tracked })
     }
 
     fn route(&self, request: &Request<'_>, now: Instant) -> Routed<Exchange> {
@@ -98,7 +107,19 @@ impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
         exchange.finish(&self.lane, outcome);
     }
 
-    fn handoff(&self, handoff: Handoff<ConnectionAdmission>) {
+    fn transferred(&self, admission: &EngineAdmission, transfer: Transfer, now: Instant) {
+        admission.transferred(transfer, now);
+    }
+
+    fn secured(&self, admission: &EngineAdmission, secured: Secured) {
+        admission.secured(secured);
+    }
+
+    fn account(&self, admission: &EngineAdmission, exchange: &Exchange, outcome: &Outcome) {
+        admission.completed(outcome, exchange.answered_bytes(), outcome.started);
+    }
+
+    fn handoff(&self, handoff: Handoff<EngineAdmission>) {
         drop(self.handoffs.send(handoff));
     }
 }

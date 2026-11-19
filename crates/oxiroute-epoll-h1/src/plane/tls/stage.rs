@@ -32,11 +32,17 @@ impl<S: Service> Reactor<S> {
         match client.link.handshake() {
             Progress::Blocked => Step::Wait,
             Progress::Failed => Step::Close,
-            Progress::Established { h1: true } => {
-                client.stage = Stage::Idle;
-                Step::Again
+            Progress::Established { h1 } => {
+                if let Some(facts) = client.link.facts() {
+                    client.service.secured(&client.admission, facts);
+                }
+                if h1 {
+                    client.stage = Stage::Idle;
+                    Step::Again
+                } else {
+                    Step::Handoff
+                }
             }
-            Progress::Established { h1: false } => Step::Handoff,
         }
     }
 }

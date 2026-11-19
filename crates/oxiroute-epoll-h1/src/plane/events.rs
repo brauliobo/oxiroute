@@ -151,7 +151,9 @@ impl<S: Service> Reactor<S> {
 
     pub(crate) fn resume(&mut self, token: Token, mut client: Box<Client<S>>, step: Step) {
         let step = if step == Step::Again {
-            self.drive(token, &mut client)
+            let step = self.drive(token, &mut client);
+            client.note_transfer(self.now);
+            step
         } else {
             step
         };

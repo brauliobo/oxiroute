@@ -63,6 +63,7 @@ impl<S: Service> Reactor<S> {
     }
 
     pub(crate) fn end_exchange(&mut self, client: &mut Client<S>, failure: Option<Failure>) {
+        client.note_transfer(self.now);
         let Some(mut flow) = client.flow.take() else {
             return;
         };
@@ -83,7 +84,9 @@ impl<S: Service> Reactor<S> {
             keepalive: flow.keepalive,
             splice: flow.splice,
         };
-        Rc::clone(&client.service).finish(exchange, &outcome);
+        let service = Rc::clone(&client.service);
+        service.account(&client.admission, &exchange, &outcome);
+        service.finish(exchange, &outcome);
     }
 
     pub(crate) fn release_upstream(&mut self, token: Option<Token>, reusable: bool) {
