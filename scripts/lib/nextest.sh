@@ -4,8 +4,9 @@
 #   run_tiers "TIER..." [nextest arguments]     the binaries of the tiers of scripts/ci/tiers.txt
 #   run_filter FILTERSET [nextest arguments]
 #
-# OXIROUTE_TEST_ARCHIVE names a `cargo nextest archive` of the workspace: the lane unpacks it once into the workspace
-# target directory, where the tests find the binaries their build recorded, and runs it instead of building. Most tests
+# OXIROUTE_TEST_ARCHIVE names a `cargo nextest archive` of the binaries of the lane (scripts/ci/archive.sh): the lane
+# unpacks it once into the workspace target directory, where the tests find the binaries their build recorded, and runs
+# it instead of building. Without an archive a lane builds only the test binaries of its own tiers. Most tests
 # wait on sockets and clocks, so a lane runs OXIROUTE_TEST_THREADS of them at once (default: three per CPU), which keeps
 # four CPUs busy. A lane then fails when a test ran longer than OXIROUTE_TEST_BUDGET seconds (scripts/ci/test_budget.sh).
 
@@ -35,9 +36,28 @@ run_filter() {
   )
 }
 
-run_tiers() {
-  local selection=$1
-  shift
+require_archived() {
+  local missing
   # shellcheck disable=SC2086
-  run_filter "$("${tiers_script}" filter ${selection})" "$@"
+  missing=$(comm -23 <("${tiers_script}" ids $1 | sort) \
+    <(jq -r '."rust-binaries"[]."binary-id"' "${build_metadata}/binaries-metadata.json" | sort))
+  [[ -z ${missing} ]] || {
+    printf 'the archive %s lacks test binaries of the tiers %s (scripts/ci/archive.sh):\n%s\n' \
+      "${OXIROUTE_TEST_ARCHIVE}" "$1" "${missing}" >&2
+    exit 1
+  }
+}
+
+run_tiers() {
+  local selection=$1 build=()
+  shift
+  if [[ -n ${OXIROUTE_TEST_ARCHIVE:-} ]]; then
+    unpack_archive
+    require_archived "${selection}"
+  else
+    # shellcheck disable=SC2086
+    read -ra build <<<"$("${tiers_script}" targets ${selection})"
+  fi
+  # shellcheck disable=SC2086
+  run_filter "$("${tiers_script}" filter ${selection})" "${build[@]}" "$@"
 }
