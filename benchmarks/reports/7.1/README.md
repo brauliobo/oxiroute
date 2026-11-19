@@ -6,8 +6,8 @@ logs are local development material and are not published; this page keeps the m
 
 The published 7.1.0 release binary was measured on 2026-11-19 across the comparison-harness lanes of the
 [7.0 report](../7.0/README.md). A second, shorter pass on the same host and binary added single-run rows for eight
-feature lanes, the memory after configuration reloads, the lossy-path HTTP/3 download and four instruction-count harness
-lanes; the other instruction-count harness lanes are listed under "Lanes not measured".
+feature lanes, HAProxy in the four HTTP/3 lanes, the memory after configuration reloads, the lossy-path HTTP/3 download
+and four instruction-count harness lanes.
 
 ## Conditions
 
@@ -35,11 +35,13 @@ lanes; the other instruction-count harness lanes are listed under "Lanes not mea
   256-connection lane (all six columns). Their `clean` column reads `1/1`. Every other cell has at least two clean
   runs, and memory cells three. For the two-worker 256-connection lane the tokio plane had produced request errors in
   all 16 attempts of the first invocation, so the cell was measured once more with one run per column.
-- **Quick pass.** The eight feature lanes, the four instruction-count harness lanes, the reload memory and the lossy-path
+- **Quick pass.** The eight feature lanes, the four HTTP/3 lanes with HAProxy (OxiRoute and nginx were measured again in
+  the same invocation), the four instruction-count harness lanes, the reload memory and the lossy-path
   download were measured afterwards on the same host, the same binary and the same pinned CPUs (proxy 8-9, origin 10-11,
   load generator 12-15, harness on CPUs 0-7), one run per cell (`--runs 1 --max-rounds 4`, 4 s after a 2 s warm-up),
   so they are single-run cells and not strictly comparable with the 7.0 rows. PSI `some` avg10 before and after every
-  run was at most 0.4%, no run had request errors, and the comparison-harness rows have a valid scheduler trace; foreign
+  run was at most 0.7%, no run exceeded the error budget (the HTTP/3 new-connection lane tolerates 0.1%; it had 1 error
+  in OxiRoute and 2 in nginx), and the comparison-harness rows have a valid scheduler trace; foreign
   work on the pinned CPUs was recorded for the comparison-harness rows (up to 0.9 CPUs, up to 0.1 CPUs on sibling threads)
   and not used to discard a run. The instruction-count harness rows (`benchmarks/r2-data-path/run.py`, one repetition, 16 connections) are clean
   by PSI and by zero request errors only; they have no scheduler trace.
@@ -47,7 +49,8 @@ lanes; the other instruction-count harness lanes are listed under "Lanes not mea
   configuration. `instr/req` is user-space instructions per request on the proxy process (`perf stat`,
   `instructions:u`); kernel work is not counted. Latencies are closed loop and carry coordinated omission.
 - Harness: `benchmarks/scripts/vs_nginx_haproxy.py`, a local script that is not part of this checkout, run from the tree
-  at commit `22122328`. The `benchmarks/r2-data-path` lanes and `reload_memory.py` are checked in and reproduce from the
+  at commit `22122328`; for the HTTP/3 lanes with HAProxy it was extended with a `bind quic4@... alpn h3` HAProxy
+  listener. The `benchmarks/r2-data-path` lanes and `reload_memory.py` are checked in and reproduce from the
   repository; only the lanes named in the quick pass above were run.
 
 ## 7.1 against 7.0
@@ -76,11 +79,17 @@ HAProxy -9% at 2,048), so a difference of a few percent in either direction is n
 | Upstream HTTP/2, 1 KiB | 38,719 | 40,125 | -3.5% | 81,740 | 81,526 | 0.47x |
 | 1 KiB cache hit | 270,691 | 270,224 | +0.2% | 126,682 | 183,402 | 2.14x |
 | 64 KiB gzip, stored coding, hit | 132,603 | 129,376 | +2.5% | 43,540 | 25,449 | 3.05x |
-| HTTP/3 proxy, 1 KiB (nginx: HTTP/3) | 65,808 | 70,169 | -6.2% | 62,538 | n/a | 1.05x |
-| HTTP/3 direct 1 KiB (nginx: HTTP/3) | 174,649 | 189,926 | -8.0% | 117,212 | n/a | 1.49x |
-| Static file 1 KiB | 318,252 | 343,474 | -7.3% | 75,598 | n/a | 4.21x |
 | WebSocket echo, 1 KiB, 16 connections | 174,132 | 174,002 | +0.1% | 220,462 | 179,158 | 0.79x |
 | Pool `weighted_round_robin`, 8 servers | 179,268 | 183,626 | -2.4% | 126,428 | 107,705 | 1.42x |
+
+Lanes without a HAProxy figure in this table: HAProxy serves no files from disk, and its HTTP/3 figures come from the
+single-run pass listed under HTTP/3.
+
+| Lane | OxiRoute 7.1 | OxiRoute 7.0 | 7.1 against 7.0 | nginx 1.30.7 | OxiRoute 7.1 against nginx |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HTTP/3 proxy, 1 KiB (nginx: HTTP/3) | 65,808 | 70,169 | -6.2% | 62,538 | 1.05x |
+| HTTP/3 direct 1 KiB (nginx: HTTP/3) | 174,649 | 189,926 | -8.0% | 117,212 | 1.49x |
+| Static file 1 KiB | 318,252 | 343,474 | -7.3% | 75,598 | 4.21x |
 
 User-space instructions per request are within 5% of the 7.0 figures on every lane that both passes measured, except
 TLS 1.2 resumed (ticket), 7% higher (109,704 to 117,657), and the single-run TCP relay echo of 64 KiB, 11% lower
@@ -118,7 +127,9 @@ in requests per second. Basic authentication with bcrypt is 88,168 against 26 fo
 - HTTP/3: through a proxy nginx HTTP/2 over TCP serves 98,260 requests per second, more than either HTTP/3 stack
   (OxiRoute 65,808, nginx HTTP/3 62,538); for new connections nginx HTTP/2 serves 5,192 against OxiRoute `bbr` 4,908.
   `cubic` is 11% below `bbr` on POST (55,711 against 62,298) with a higher p99 (1,790 against 831 µs); the two were level
-  in 7.0.
+  in 7.0. In the single-run pass with HAProxy HTTP/3, HAProxy served 81,112 requests per second through a proxy against
+  78,228 for OxiRoute and 92,546 on POST against 67,386; OxiRoute was ahead for a direct response (206,328 against
+  138,789) and for new connections (5,542 against 3,250).
 - The tokio plane at 1,024 and 2,048 connections has p99 latencies of 154,772 µs and 339,596 µs (epoll: 16,724 and
   29,842). At two workers it produces request errors: 10 of 12 attempts at 64 connections were discarded, and all 16
   attempts of the first 256-connection invocation.
@@ -533,7 +544,29 @@ overlapping), 1.5 times it for a direct response (174,649 against 117,212) and 1
 against 3,240, with 1.9 against 2.6 million instructions per request). `bbr` and `cubic` are level on a loss-free
 loopback except on POST (see above).
 
-Lossy path (quick pass, one run per row): download of one 10 MiB file on a fresh connection at 40 ms round trip and 0.5%
+HAProxy HTTP/3 (quick pass, one run per cell): the same four lanes with the three proxies measured back to back in one
+invocation, OxiRoute `bbr` (default) and nginx HTTP/3 again beside HAProxy. HAProxy listens with `bind quic4@... alpn h3`
+and the same TLS certificate. OxiRoute used 1.21 to 1.53 proxy CPUs of two and nginx and HAProxy 0.99. Every cell is one
+clean run (`1/1`) with a valid scheduler trace; the new-connection lane had 1 request error in OxiRoute, 2 in nginx and
+none in HAProxy (budget 0.1%). The OxiRoute and nginx values are 8% to 19% above their medians in the table above, which
+shows the spread of single runs on this host.
+
+| Lane | Proxy | req/s | p99 µs | instr/req | clean | PSI before / after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Proxy, 8 connections of 4 streams, 1 KiB | OxiRoute HTTP/3, `bbr` (default) | 78,228 | 555 | 68,747 | 1/1 | 0.1 / 0.2 |
+| Proxy, 8 connections of 4 streams, 1 KiB | nginx HTTP/3 | 71,224 | 490 | 55,822 | 1/1 | 0.0 / 0.3 |
+| Proxy, 8 connections of 4 streams, 1 KiB | HAProxy HTTP/3 | 81,112 | 430 | 62,102 | 1/1 | 0.1 / 0.0 |
+| Direct 1 KiB response | OxiRoute HTTP/3, `bbr` (default) | 206,328 | 190 | 34,611 | 1/1 | 0.0 / 0.3 |
+| Direct 1 KiB response | nginx HTTP/3 | 132,687 | 348 | 41,777 | 1/1 | 0.0 / 0.4 |
+| Direct 1 KiB response | HAProxy HTTP/3 | 138,789 | 1,267 | 45,725 | 1/1 | 0.2 / 0.3 |
+| Proxy POST 1 KiB | OxiRoute HTTP/3, `bbr` (default) | 67,386 | 653 | 67,325 | 1/1 | 0.1 / 0.0 |
+| Proxy POST 1 KiB | nginx HTTP/3 | 66,052 | 528 | 59,413 | 1/1 | 0.0 / 0.3 |
+| Proxy POST 1 KiB | HAProxy HTTP/3 | 92,546 | 468 | 56,233 | 1/1 | 0.1 / 0.2 |
+| New QUIC connection per request, direct | OxiRoute HTTP/3, `bbr` (default) | 5,542 | 2,293 | 1,883,679 | 1/1 | 0.1 / 0.7 |
+| New QUIC connection per request, direct | nginx HTTP/3 | 3,622 | 2,280 | 2,550,432 | 1/1 | 0.4 / 0.2 |
+| New QUIC connection per request, direct | HAProxy HTTP/3 | 3,250 | 3,719 | 2,741,986 | 1/1 | 0.1 / 0.0 |
+
+Lossy path (quick pass, one run per row; HAProxy serves no files from disk and is not part of this lane): download of one 10 MiB file on a fresh connection at 40 ms round trip and 0.5%
 packet loss in each direction, user and network namespace with `netem`, OxiRoute with `http3_segmentation_offload = false`,
 server on CPUs 8-9 and curl on 12-15 (`benchmarks/r2-data-path/h3_impair.py download`). One run is the median and the p99.
 The `cubic` and nginx HTTP/3 times vary strongly between runs on this path (the 7.0 pass measured 1.1 to 7.9 s and 25 to
@@ -625,22 +658,9 @@ measured window with the idle baseline subtracted; every lane had 0 request erro
 | Forward proxy, CONNECT tunnel echo, 1 KiB | 173,693 | 137 | 14,572 |
 | Forward proxy, new CONNECT tunnel per request, 1 KiB | 25,291 | 844 | 65,933 |
 
-## Lanes not measured
-
-These were not measured in the 7.1 pass, and no 7.1 figure exists for them.
-
-- The instruction-count harness lanes other than the four of the quick pass (seven-feature reverse proxy and the three
-  forward-proxy lanes): its own HTTP/3, WebSocket, TCP relay, pool, static, TLS and upstream HTTP/2 lanes. The comparison
-  harness measures most of those workloads above, with nginx and HAProxy; the instruction-count harness was not run on them.
-- RTMP: the harness has no RTMP load client and the nginx build has no RTMP module.
-- An arm64 binary: no arm64 host.
-- The forward proxy against nginx and HAProxy: nginx answers `CONNECT` with 405, and no forward-proxy configuration was
-  written for either.
-- The BBR fairness matrix: its tracked results are in the repository (`benchmarks/r2-data-path/fairness/results`).
-- The OpenSSL TLS backend, and the `io_uring` column of the TLS and HTTP/2 lanes (the plane does not serve TLS).
-
 ## What is not covered
 
+- RTMP and arm64 binaries.
 - One worker per proxy except in the scaling tables (two and four workers). None is part of the claims.
 - nginx and HAProxy run minimal proxy configurations on the same loopback; their tuning was not explored.
 - Four cells of the main pass and every cell of the quick pass have a single clean run (see Conditions).

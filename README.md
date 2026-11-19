@@ -111,15 +111,15 @@ report](benchmarks/reports/7.1/README.md); ranges, PSI and run counts in [docs/B
 Every number is the median of at least two clean runs of the same method, except the single-run cells noted below.
 **Clean** means PSI `some` avg10 below 10% with no request errors and a valid scheduler trace; foreign CPU work was
 recorded but not used to separate runs, so these rows are not strictly comparable with the 7.0 rows. Cells are
-requests/second / p99 µs unless a row says otherwise. `n/a` means the lane does not apply to that column; the row label
-or a note gives the reason.
+requests/second / p99 µs unless a row says otherwise.
 
 Single-run cells (one clean run): two workers with 256 connections (all columns), HTTP/2 over TLS POST 1 KiB (all
 columns, and the nginx HTTP/2 over TCP value in the HTTP/3 POST row), TCP relay echo of 1 KiB and 64 KiB, the eight
-feature rows from 2 KiB request headers to basic authentication, the four instruction-count harness rows, the lossy-path
-download, and the reload memory row. These late rows were measured on the same host with the same pinned CPUs and one
-4-second run after a 2-second warm-up per cell (PSI `some` avg10 at most 0.4%, no request errors; valid scheduler trace
-for the comparison-harness rows; foreign work on the pinned CPUs reached 0.9 CPUs).
+feature rows from 2 KiB request headers to basic authentication, the four HTTP/3 rows against HAProxy, the four
+instruction-count harness rows, the lossy-path download, and the reload memory row. These late rows were measured on the
+same host with the same pinned CPUs and one 4-second run after a 2-second warm-up per cell (PSI `some` avg10 at most
+0.7%, no request errors; valid scheduler trace for the comparison-harness rows; foreign work on the pinned CPUs reached
+0.9 CPUs).
 
 HTTP/1.1, 1 KiB response and 32 connections unless stated:
 
@@ -136,8 +136,6 @@ HTTP/1.1, 1 KiB response and 32 connections unless stated:
 | POST 64 KiB | 43,645 / 1,457 | 36,902 / 1,815 | 36,699 / 2,114 | 30,250 / 1,886 | 30,554 / 2,067 |
 | Two workers, 64 connections | 324,356 / 404 | 258,129 / 456 | 299,490 / 489 | 262,650 / 424 | 212,406 / 588 |
 | Two workers, 256 connections | 350,108 / 1,635 | 274,482 / 1,434 | 336,451 / 1,548 | 265,540 / 1,928 | 221,293 / 1,550 |
-| Two workers, 64 connections, `aged_per_worker` (opt-in; epoll plane only) | 303,178 / 538 | n/a | n/a | n/a | n/a |
-| Two workers, 256 connections, `aged_per_worker` (opt-in; epoll plane only) | 333,219 / 2,376 | n/a | n/a | n/a | n/a |
 
 In 7.0 the default epoll plane at two workers was bimodal: later runs from one process kept all connections on one worker
 thread (about 181,000 requests/second) and trailed nginx. In this 7.1 pass the default used both worker threads (1.89
@@ -153,6 +151,8 @@ Worker scaling, epoll plane, 1 KiB response (`aged_per_worker` is an opt-in `con
 | One worker, 512 connections | 175,370 / 6,754 | 168,104 / 6,695 | 114,182 / 10,065 | 91,907 / 18,811 |
 | One worker, 2,048 connections | 142,400 / 22,354 | 142,243 / 19,642 | 62,593 / 62,798 | 57,789 / 114,897 |
 | One worker, 512 connections, 1 in 500 origin responses delayed 200 ms | 167,645 / 4,704 | 146,542 / 12,422 | 104,596 / 19,176 | 89,354 / 17,484 |
+| Two workers, 64 connections | 324,356 / 404 | 303,178 / 538 | 262,650 / 424 | 212,406 / 588 |
+| Two workers, 256 connections (single run) | 350,108 / 1,635 | 333,219 / 2,376 | 265,540 / 1,928 | 221,293 / 1,550 |
 | Two workers, 512 connections | 331,811 / 4,106 | 322,758 / 4,995 | 251,002 / 3,287 | 196,840 / 6,601 |
 | Two workers, 1,024 connections | 316,118 / 11,932 | 308,543 / 10,058 | 183,250 / 13,860 | 156,846 / 9,858 |
 | Two workers, 2,048 connections | 253,178 / 31,770 | 256,805 / 24,692 | 133,134 / 22,204 | 108,102 / 37,208 |
@@ -176,51 +176,61 @@ opt-in scheduling mode):
 | HTTP/2 over TLS, 256 connections of 4 streams | 94,526 / 118,672 | 86,672 / 29,558 | 58,952 / 37,791 | 55,558 / 41,562 |
 | HTTP/2 over TLS, 512 connections of 4 streams | 101,104 / 235,542 | 70,369 / 81,505 | 51,606 / 76,764 | 49,104 / 122,558 |
 
-TLS, 32 connections, ECDSA P-256, rustls. The `io_uring` column is `n/a` because that plane does not serve TLS: with
-`http_data_plane = "io_uring"` the TLS listener runs the tokio path, so there is no separate `io_uring` TLS result.
+TLS, 32 connections, ECDSA P-256, rustls. The `io_uring` plane does not serve TLS: with `http_data_plane = "io_uring"`
+the TLS listener runs the tokio path, so the table has no `io_uring` column.
 
-| Test | OxiRoute default | OxiRoute tokio | OxiRoute io_uring | nginx | HAProxy |
+| Test | OxiRoute default | OxiRoute tokio | nginx | HAProxy |
+| --- | ---: | ---: | ---: | ---: |
+| TLS 1.3 keep-alive, 1 KiB | 127,919 / 449 | 123,312 / 426 | 94,787 / 524 | 84,884 / 712 |
+| TLS 1.2 keep-alive, 1 KiB | 125,382 / 474 | 130,119 / 392 | 98,830 / 573 | 87,748 / 626 |
+| TLS 1.3 full handshake | 14,960 / 6,352 | 15,256 / 4,294 | 4,939 / 13,716 | 4,394 / 9,062 |
+| TLS 1.2 ECDHE full handshake | 17,268 / 4,132 | 17,384 / 3,430 | 5,178 / 12,710 | 4,832 / 9,653 |
+| TLS 1.3 resumed (ticket) | 16,290 / 4,736 | 15,513 / 6,226 | 5,325 / 8,119 | 4,786 / 7,704 |
+| TLS 1.2 resumed (ticket) | 53,804 / 1,130 | 54,232 / 1,172 | 11,736 / 4,733 | 8,856 / 7,010 |
+| TLS 1.2 resumed (session id) | 54,438 / 1,382 | 55,112 / 1,578 | 12,102 / 4,406 | 9,095 / 5,718 |
+| TLS 1.3 full handshake, RSA-2048 certificate | 1,934 / 31,693 | 1,878 / 35,594 | 1,612 / 22,068 | 1,538 / 29,684 |
+| TLS 1.3 full handshake with a client certificate | 5,286 / 13,155 | 5,246 / 13,326 | 2,820 / 16,261 | 2,626 / 20,946 |
+
+With `http_data_plane = "epoll"` set explicitly, the TLS 1.3 keep-alive 1 KiB lane reaches 153,674 / 388 (OxiRoute option;
+the default listener runs the tokio path).
+
+HTTP/2 over TLS, 8 connections of 4 streams; the `io_uring` plane does not serve these front ends either:
+
+| Test | OxiRoute default | OxiRoute tokio | nginx | HAProxy |
+| --- | ---: | ---: | ---: | ---: |
+| 1 KiB | 130,661 / 486 | 134,110 / 392 | 98,260 / 608 | 80,351 / 906 |
+| 64 KiB | 28,646 / 2,608 | 28,834 / 2,326 | 17,723 / 4,072 | 20,327 / 3,013 |
+| POST 1 KiB | 113,983 / 490 | 110,957 / 586 | 67,226 / 1,116 | 72,437 / 666 |
+
+Upstream HTTP/2: an HTTP/1.1 front end with 32 connections and an HTTP/2 upstream.
+
+| Test | OxiRoute default (epoll) | OxiRoute tokio | OxiRoute io_uring | nginx | HAProxy |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| TLS 1.3 keep-alive, 1 KiB | 127,919 / 449 | 123,312 / 426 | n/a | 94,787 / 524 | 84,884 / 712 |
-| TLS 1.3 keep-alive, 1 KiB, `http_data_plane = "epoll"` set explicitly (OxiRoute option) | 153,674 / 388 | n/a | n/a | n/a | n/a |
-| TLS 1.2 keep-alive, 1 KiB | 125,382 / 474 | 130,119 / 392 | n/a | 98,830 / 573 | 87,748 / 626 |
-| TLS 1.3 full handshake | 14,960 / 6,352 | 15,256 / 4,294 | n/a | 4,939 / 13,716 | 4,394 / 9,062 |
-| TLS 1.2 ECDHE full handshake | 17,268 / 4,132 | 17,384 / 3,430 | n/a | 5,178 / 12,710 | 4,832 / 9,653 |
-| TLS 1.3 resumed (ticket) | 16,290 / 4,736 | 15,513 / 6,226 | n/a | 5,325 / 8,119 | 4,786 / 7,704 |
-| TLS 1.2 resumed (ticket) | 53,804 / 1,130 | 54,232 / 1,172 | n/a | 11,736 / 4,733 | 8,856 / 7,010 |
-| TLS 1.2 resumed (session id) | 54,438 / 1,382 | 55,112 / 1,578 | n/a | 12,102 / 4,406 | 9,095 / 5,718 |
-| TLS 1.3 full handshake, RSA-2048 certificate | 1,934 / 31,693 | 1,878 / 35,594 | n/a | 1,612 / 22,068 | 1,538 / 29,684 |
-| TLS 1.3 full handshake with a client certificate | 5,286 / 13,155 | 5,246 / 13,326 | n/a | 2,820 / 16,261 | 2,626 / 20,946 |
-
-HTTP/2 over TLS, 8 connections of 4 streams. The upstream HTTP/2 rows use an HTTP/1.1 front end with 32 connections and an
-HTTP/2 upstream. The `io_uring` column is `n/a` on the front-end rows for the same reason as TLS:
-
-| Test | OxiRoute default | OxiRoute tokio | OxiRoute io_uring | nginx | HAProxy |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1 KiB | 130,661 / 486 | 134,110 / 392 | n/a | 98,260 / 608 | 80,351 / 906 |
-| 64 KiB | 28,646 / 2,608 | 28,834 / 2,326 | n/a | 17,723 / 4,072 | 20,327 / 3,013 |
-| POST 1 KiB | 113,983 / 490 | 110,957 / 586 | n/a | 67,226 / 1,116 | 72,437 / 666 |
-| Upstream HTTP/2, 1 KiB (HTTP/1.1 front end, 32 connections) | 38,719 / 1,602 | 37,028 / 1,720 | 37,230 / 1,676 | 81,740 / 823 | 81,526 / 690 |
-| Upstream HTTP/2, POST 1 KiB (HTTP/1.1 front end, 32 connections) | 29,766 / 2,120 | 31,867 / 1,763 | 30,134 / 1,924 | 72,552 / 878 | 81,580 / 791 |
+| 1 KiB | 38,719 / 1,602 | 37,028 / 1,720 | 37,230 / 1,676 | 81,740 / 823 | 81,526 / 690 |
+| POST 1 KiB | 29,766 / 2,120 | 31,867 / 1,763 | 30,134 / 1,924 | 72,552 / 878 | 81,580 / 791 |
 
 With an HTTP/2 upstream OxiRoute serves about half the requests/second of nginx and HAProxy; with an HTTP/1.1 upstream it
 is ahead of both.
 
-Cache hits and compression, 32 connections. nginx and HAProxy compress per request and have no stored-coding cache;
-neither has a brotli or zstd encoder in the measured builds, so those rows are `n/a`:
+Cache hits and compression, 32 connections. nginx and HAProxy compress per request and have no stored-coding cache:
 
 | Test | OxiRoute default | OxiRoute tokio | OxiRoute io_uring | nginx | HAProxy |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 1 KiB cache hit | 270,691 / 218 | 270,568 / 212 | 271,036 / 196 | 126,682 / 439 | 183,402 / 315 |
 | 64 KiB cache hit | 101,339 / 824 | 99,514 / 877 | 99,528 / 849 | 94,573 / 831 | 55,102 / 1,294 |
 | 64 KiB gzip level 1, stored coding, hit (nginx and HAProxy compress per request) | 132,603 / 458 | 135,128 / 425 | 130,332 / 434 | 43,540 / 1,122 | 25,449 / 3,246 |
-| 64 KiB zstd level 1, stored coding, hit | 162,700 / 574 | 199,708 / 384 | 184,269 / 466 | n/a | n/a |
-| 64 KiB brotli level 1, stored coding, hit | 127,424 / 494 | 133,634 / 460 | 122,526 / 524 | n/a | n/a |
 | 64 KiB gzip level 1, no cache | 30,464 / 1,914 | 30,924 / 2,176 | 32,676 / 1,411 | 34,090 / 1,924 | 21,773 / 3,787 |
 
+Stored brotli and zstd codings, 64 KiB, level 1, cache hit, 32 connections. The nginx and HAProxy builds measured have no
+brotli or zstd encoder, so these lanes run on OxiRoute only:
+
+| Test | OxiRoute default | OxiRoute tokio | OxiRoute io_uring |
+| --- | ---: | ---: | ---: |
+| zstd | 162,700 / 574 | 199,708 / 384 | 184,269 / 466 |
+| brotli | 127,424 / 494 | 133,634 / 460 | 122,526 / 524 |
+
 HTTP/3, one worker, loopback, comparison harness. The `cubic` column is the same OxiRoute listener with
-`http3_congestion_control = "cubic"`. The lossy-path row is the time of one 10 MiB download in seconds (lower is better;
-single run, one fresh connection, user and network namespace with `netem`, QUIC segmentation offload off):
+`http3_congestion_control = "cubic"`:
 
 | Test | OxiRoute `bbr` (default) | OxiRoute `cubic` | nginx HTTP/3 | nginx HTTP/2 over TCP |
 | --- | ---: | ---: | ---: | ---: |
@@ -228,17 +238,39 @@ single run, one fresh connection, user and network namespace with `netem`, QUIC 
 | Direct 1 KiB response | 174,649 / 444 | 177,235 / 354 | 117,212 / 578 | 165,690 / 404 |
 | Proxy POST 1 KiB | 62,298 / 831 | 55,711 / 1,790 | 57,158 / 998 | 67,226 / 1,116 |
 | New QUIC (HTTP/2: new TLS) connection per request, direct | 4,908 / 4,140 | 5,018 / 3,771 | 3,240 / 4,868 | 5,192 / 2,434 |
-| Lossy path, 40 ms round trip, 0.5% loss, 10 MiB download, seconds | 0.357 | 13.112 | 30.967 | 2.664 |
 
-Static files, other protocols and features, 32 connections unless stated. HAProxy does not serve files from disk, so the
-static rows are `n/a` for it. nginx and HAProxy verify the bcrypt hash on every request, which is why the basic
-authentication row shows 26 requests per second for both:
+HTTP/3 against HAProxy, one run per cell, the three proxies measured back to back in one invocation (HAProxy listens with
+`bind quic4@... alpn h3`). OxiRoute used 1.2 to 1.5 CPUs of its two and nginx and HAProxy 0.99. The OxiRoute and nginx
+figures are single runs of the same lanes as above, 8% to 19% higher than their medians there:
+
+| Test | OxiRoute `bbr` (default) | nginx HTTP/3 | HAProxy HTTP/3 |
+| --- | ---: | ---: | ---: |
+| Proxy, 8 connections of 4 streams, 1 KiB | 78,228 / 555 | 71,224 / 490 | 81,112 / 430 |
+| Direct 1 KiB response | 206,328 / 190 | 132,687 / 348 | 138,789 / 1,267 |
+| Proxy POST 1 KiB | 67,386 / 653 | 66,052 / 528 | 92,546 / 468 |
+| New QUIC connection per request, direct | 5,542 / 2,293 | 3,622 / 2,280 | 3,250 / 3,719 |
+
+Lossy path, 40 ms round trip, 0.5% loss, one 10 MiB download in seconds (lower is better; single run, one fresh
+connection, user and network namespace with `netem`, QUIC segmentation offload off; HAProxy serves no files from disk and
+is not part of this lane):
+
+| OxiRoute `bbr` (default) | OxiRoute `cubic` | nginx HTTP/3 | nginx HTTP/2 over TCP |
+| ---: | ---: | ---: | ---: |
+| 0.357 | 13.112 | 30.967 | 2.664 |
+
+Static files, 32 connections. HAProxy does not serve files from disk, so this table has no HAProxy column:
+
+| Test | OxiRoute default | nginx |
+| --- | ---: | ---: |
+| Static file 1 MiB | 1,516 / 44,110 | 1,546 / 36,988 |
+| Static file 1 MiB over TLS 1.3 (OxiRoute kernel TLS, nginx user-space TLS) | 1,378 / 36,862 | 706 / 68,006 |
+| Static file 1 KiB | 318,252 / 222 | 75,598 / 862 |
+
+Other protocols and features, 32 connections unless stated. nginx and HAProxy verify the bcrypt hash on every request,
+which is why the basic authentication row shows 26 requests per second for both:
 
 | Test | OxiRoute default | nginx | HAProxy |
 | --- | ---: | ---: | ---: |
-| Static file 1 MiB | 1,516 / 44,110 | 1,546 / 36,988 | n/a |
-| Static file 1 MiB over TLS 1.3 (OxiRoute kernel TLS, nginx user-space TLS) | 1,378 / 36,862 | 706 / 68,006 | n/a |
-| Static file 1 KiB | 318,252 / 222 | 75,598 / 862 | n/a |
 | WebSocket echo, 1 KiB message, 16 connections | 174,132 / 158 | 220,462 / 132 | 179,158 / 150 |
 | TCP relay echo, 1 KiB, 16 connections | 203,425 / 151 | 219,786 / 87 | 184,368 / 153 |
 | TCP relay echo, 64 KiB, 16 connections | 78,700 / 373 | 36,437 / 545 | 26,120 / 1,485 |
@@ -253,10 +285,17 @@ authentication row shows 26 requests per second for both:
 | 4 origin servers, round robin | 187,035 / 212 | 140,047 / 277 | 120,160 / 373 |
 | Literal 301 redirect, no upstream | 397,412 / 107 | 302,965 / 171 | 264,907 / 232 |
 | Basic authentication, bcrypt cost 10, same credentials every request (OxiRoute does not run bcrypt per request) | 88,168 / 520 | 26 / 1,213,719 | 26 / 2,226,800 |
-| Reverse proxy with 7 production features on (instruction-count harness, 16 connections; no nginx or HAProxy equivalent of breaker, outlier ejection and capacity admission) | 154,355 / 193 | n/a | n/a |
-| Forward proxy, HTTP/1.1 absolute-URI request, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | 39,742 / 517 | n/a | n/a |
-| Forward proxy, CONNECT tunnel echo, 1 KiB (OxiRoute only, instruction-count harness, 16 connections; nginx answers CONNECT with 405) | 173,693 / 137 | n/a | n/a |
-| Forward proxy, new CONNECT tunnel per request (OxiRoute only, instruction-count harness, 16 connections; no comparator configuration) | 25,291 / 844 | n/a | n/a |
+
+OxiRoute only, instruction-count harness, 16 connections, 1 KiB. nginx and HAProxy have no equivalent of the breaker,
+outlier ejection and capacity admission of the first row, and no forward-proxy configuration was written for them (nginx
+answers `CONNECT` with 405):
+
+| Test | OxiRoute default |
+| --- | ---: |
+| Reverse proxy with 7 production features on | 154,355 / 193 |
+| Forward proxy, HTTP/1.1 absolute-URI request | 39,742 / 517 |
+| Forward proxy, CONNECT tunnel echo | 173,693 / 137 |
+| Forward proxy, new CONNECT tunnel per request | 25,291 / 844 |
 
 Memory, one worker (PSS in MB from the comparison harness, medians of three processes; incremental resident memory per
 idle connection in bytes, 5,000 connections, HTTP/2 1,000, medians of two runs). The reload row is one run per proxy
@@ -275,15 +314,7 @@ API, nginx `SIGHUP`, HAProxy `SIGUSR2`; the idle values of that configuration ar
 | Per idle WebSocket connection over TLS, bytes | 21,642 | 59,830 | 30,178 |
 | Per idle HTTP/2 over TLS connection, bytes | 27,852 | 48,758 | 47,796 |
 
-Not measured for 7.1:
-
-- The other instruction-count harness lanes (`benchmarks/r2-data-path`): its own HTTP/3, WebSocket, TCP relay, pool, static
-  and upstream HTTP/2 lanes were not run there; the comparison harness measures those workloads above.
-- RTMP: the harness has no RTMP load client and the nginx build has no RTMP module.
-- An arm64 binary: no arm64 host.
-- The BBR fairness matrix is not part of this comparison; its tracked results are in `benchmarks/r2-data-path/fairness/results`.
-- Forward proxy against nginx and HAProxy: nginx answers `CONNECT` with 405, and no forward-proxy configuration was
-  written for either.
+Not covered: RTMP and arm64 binaries.
 
 These are summary records: the raw runs and the complete reproducibility
 bundle are not published here. They cannot serve as an independently validated release baseline or

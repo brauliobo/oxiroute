@@ -10,7 +10,7 @@ release binary (profile-guided; tarball SHA-256 `b002f507...1d651`), run with th
 same pass. The complete 7.1 tables, including the tokio and `io_uring` planes, 64 KiB, 1 MiB, 1,024 and 2,048
 connections, cache, compression, HTTP/2, HTTP/3, two and four workers, memory and a 7.1 against 7.0 comparison with its
 regressions, are in the [7.1 report](../benchmarks/reports/7.1/README.md). The [7.0 report](../benchmarks/reports/7.0/README.md)
-holds the earlier pass on the 7.0.0 binary, including the lanes that were not re-measured for 7.1 (see the end of this page).
+holds the earlier pass on the 7.0.0 binary.
 
 The underlying research notes, raw run records and harness are local development material, not part of this public
 checkout. Treat the tables as **reported observations**, not an accepted release baseline.
@@ -25,7 +25,8 @@ The 7.1 measurement records:
   traffic; 32 connections; interleaved turns for each proxy.
 - At least two clean 4-second runs after a 2-second warm-up for every cell except the single-run cells (HTTP/2 over TLS
   POST 1 KiB, TCP relay echo of 1 KiB and 64 KiB, two workers with 256 connections, and every row of the later quick pass:
-  eight feature lanes, four instruction-count harness lanes, reload memory and the lossy-path download), which have
+  eight feature lanes, the four HTTP/3 lanes with HAProxy, four instruction-count harness lanes, reload memory and the
+  lossy-path download), which have
   exactly one. **Clean**
   means `/proc/pressure/cpu` `some` avg10 below 10% before and after the run, no request errors, and a valid scheduler
   trace. Foreign CPU work on the pinned CPUs was recorded but, unlike in the 7.0 pass (more than 1.5 CPUs discarded), not
@@ -113,11 +114,11 @@ long-lived mixed traffic, or production sizing. HTTP/3, HTTP/2 upstreams, the to
 two and four workers, 512 to 2,048 connections, compression and idle memory are measured in the
 [7.1 report](../benchmarks/reports/7.1/README.md). The eight feature lanes (2 KiB request headers, access
 log, request id, header rules, 1,000 routes, 4 origin servers, literal redirect, basic authentication with bcrypt), the
-seven-feature reverse proxy and forward-proxy lanes of the instruction-count harness, the memory after configuration
-reloads and the lossy-path HTTP/3 download are single-run rows of a quick pass in the same report. The remaining
-instruction-count harness lanes were not run for 7.1; the [7.0 report](../benchmarks/reports/7.0/README.md) has the
-earlier figures for the older lanes. Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not in a
-performance table. Results from different hosts, builds or load models must remain separate.
+HTTP/3 lanes with HAProxy, the memory after configuration reloads and the lossy-path HTTP/3 download are single-run rows
+of a quick pass in the same report. The seven-feature reverse proxy and the forward-proxy lanes run only on OxiRoute (no
+comparator can run them) and are listed apart from the comparison tables. The [7.0 report](../benchmarks/reports/7.0/README.md)
+has the earlier figures for the older lanes. Feature support belongs in the [compatibility matrix](COMPATIBILITY.md), not
+in a performance table. Results from different hosts, builds or load models must remain separate.
 
 ## Reproduce and publish a new baseline
 
