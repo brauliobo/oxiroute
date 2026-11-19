@@ -151,3 +151,45 @@ async fn the_direct_runtime_keeps_its_registry_settings_and_applies_the_rest() {
         "the registry endpoint waits for a restart"
     );
 }
+
+#[tokio::test]
+async fn the_direct_runtime_keeps_its_cpu_level_and_applies_the_rest() {
+    let daemon = Daemon::start(false).await;
+    let active = daemon.generation().await["activeRevision"].clone();
+    let mut candidate = daemon.candidate(false, 7);
+    candidate.cpu_level = Some("scalar".into());
+    daemon.write(&candidate);
+    daemon.hang_up();
+
+    let generation = daemon
+        .wait_generation("the rest of the candidate to apply", |generation| {
+            required(generation) && generation["activeRevision"] != active
+        })
+        .await;
+
+    let reason = &generation["restartRequired"]["reasons"][0];
+    assert_eq!(reason["code"], "cpu_level");
+    assert_eq!(reason["path"], "/config/cpu_level");
+    assert_eq!(daemon.max_connections().await, 7);
+}
+
+#[tokio::test]
+async fn a_supervised_reload_applies_a_changed_cpu_level_in_the_new_worker() {
+    let daemon = Daemon::start(true).await;
+    let active = daemon.generation().await["activeRevision"].clone();
+    let mut candidate = daemon.candidate(false, 7);
+    candidate.cpu_level = Some("scalar".into());
+    daemon.write(&candidate);
+    daemon.hang_up();
+
+    let generation = daemon
+        .wait_generation("the new worker to take over", |generation| {
+            generation["activeRevision"] != active
+        })
+        .await;
+
+    assert!(!required(&generation), "{generation}");
+    assert_eq!(daemon.max_connections().await, 7);
+    let log = daemon.server.shutdown_output();
+    assert!(log.contains("instruction-set level scalar"), "{log}");
+}

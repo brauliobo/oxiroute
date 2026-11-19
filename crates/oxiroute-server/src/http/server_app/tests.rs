@@ -200,6 +200,7 @@ fn generation() -> Arc<RuntimeGeneration> {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
     .validate()
     .expect("valid HTTP test config");

@@ -70,6 +70,11 @@ pub struct ConfigDraft {
     /// means the `RUST_LOG` environment variable, then errors only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_filter: Option<String>,
+    /// Highest instruction-set level the byte scanners dispatch on: `scalar`, `sse2`, `sse42`, `avx2` or `avx512`,
+    /// lowered to what the CPU runs. Omitted means the CPU's level, capped by the `OXIROUTE_CPU_LEVEL` environment
+    /// variable when it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_level: Option<String>,
     /// Durable audit log of management operations: location and retention bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<Audit>,
@@ -124,6 +129,14 @@ impl ConfigDraft {
     #[must_use]
     pub fn http_data_plane_choice(&self) -> Option<HttpDataPlane> {
         self.http_data_plane
+    }
+
+    /// The configured instruction-set level; `None` leaves the choice to the CPU and `OXIROUTE_CPU_LEVEL`.
+    #[must_use]
+    pub fn cpu_level_choice(&self) -> Option<oxiroute_cpu::Level> {
+        self.cpu_level
+            .as_deref()
+            .and_then(oxiroute_cpu::Level::parse)
     }
 
     /// The handshake threads for a host with `cpus` CPUs: the configured count, or one per 8 CPUs between 1 and 4.

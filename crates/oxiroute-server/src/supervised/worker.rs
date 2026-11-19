@@ -123,6 +123,16 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         ));
     }
     oxiroute_server::apply_log_filter(document.validated_config.as_draft().log_filter.as_deref());
+    if let Err(error) = oxiroute_cpu::init(document.validated_config.as_draft().cpu_level_choice())
+    {
+        return Err(reject(
+            &mut control,
+            &adoption,
+            REJECT_CONFIG,
+            error.to_string().into(),
+        ));
+    }
+    oxiroute_server::announce_cpu_level();
     let startup_deadline = Instant::now() + LIFECYCLE_PHASE_TIMEOUT;
     let manager = GenerationManager::new_supervised();
     manager.set_overlay_beside(coordinator.canonical_path());

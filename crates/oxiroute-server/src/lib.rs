@@ -103,7 +103,7 @@ pub use observability::operational_event::{
     emit_rtmp_access, flush_audit, worker_event_page,
 };
 pub use observability::prometheus::PrometheusError;
-pub use observability::startup::announce_ready;
+pub use observability::startup::{announce_cpu_level, announce_ready};
 pub use observability::stats::HaproxyStatsApi;
 pub use observability::stats_page::HaproxyStatsPage;
 pub use routing::{

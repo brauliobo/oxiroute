@@ -33,6 +33,7 @@ return {
   max_connections = 4096,
   listener_workers = 4,
   log_filter = "info,oxiroute::audit=debug",
+  cpu_level = "avx2",
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
@@ -427,6 +428,14 @@ Current constraints:
   supervised worker applies its own generation's value at start, and the master and every worker fall back to the same
   `RUST_LOG` (the master forwards it to its workers) and then to the same default. The direct runtime applies it with
   each generation, so a draining generation shares the process-wide filter.
+- Root `cpu_level` is an optional instruction-set level of the byte scanners: `scalar`, `sse2`, `sse42`, `avx2` or
+  `avx512`. It can only lower the level to what the CPU runs; a level above it is used at the CPU's own level. When it
+  is set it replaces the `OXIROUTE_CPU_LEVEL` environment variable, which stays the fallback; when neither is set the
+  CPU's level is used. Any other value is a validation error naming `cpu_level`. The supervised master applies it when
+  it starts, and each worker applies its own generation's value before it dispatches anything, so a reload that starts
+  a worker changes the level of the new worker. The direct runtime fixes the level at process start: a changed value
+  keeps the running one, applies the rest of the file and reports `cpu_level` as waiting for a restart. The startup
+  lines include `instruction-set level <name>`.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.

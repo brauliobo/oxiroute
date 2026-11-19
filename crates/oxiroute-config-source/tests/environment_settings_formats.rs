@@ -72,3 +72,8 @@ fn log_filter_round_trips_through_every_source_format() {
         &json!({"log_filter": "warn,oxiroute::audit=debug"}),
     ));
 }
+
+#[test]
+fn cpu_level_round_trips_through_every_source_format() {
+    assert_round_trips(&validated(&json!({"cpu_level": "sse42"})));
+}

@@ -563,6 +563,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http3_congestion_control', kind: 'enum' },
   { path: 'http3_segmentation_offload', kind: 'boolean' },
   { path: 'log_filter', kind: 'string' },
+  { path: 'cpu_level', kind: 'string' },
   { path: 'audit', kind: 'object' },
   { path: 'audit.dir', kind: 'string' },
   { path: 'audit.max_records', kind: 'integer' },

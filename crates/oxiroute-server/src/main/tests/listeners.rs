@@ -82,6 +82,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let directory = tempfile::tempdir().expect("TCP generation directory");
     let mut generation_config = config.clone();

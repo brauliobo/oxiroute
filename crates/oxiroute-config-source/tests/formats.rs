@@ -89,6 +89,7 @@ fn typed_configs_render_in_every_supported_format() {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
     .validate()
     .expect("valid typed config");

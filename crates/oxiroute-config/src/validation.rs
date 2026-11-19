@@ -78,6 +78,7 @@ use crate::{
 
 mod audit;
 mod config_history;
+mod cpu_level;
 mod h2_windows;
 mod log_filter;
 mod management;
@@ -90,6 +91,7 @@ mod worker_scaling;
 
 use audit::validate_audit;
 use config_history::validate_config_history;
+use cpu_level::validate_cpu_level;
 use log_filter::validate_log_filter;
 use management::{
     endpoint_exposes_management, validate_bind_conflicts, validate_h3_upstream_usage,
@@ -161,6 +163,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
     validate_audit(&mut config.audit)?;
     validate_config_history(&mut config.config_history)?;
     validate_log_filter(config.log_filter.as_mut())?;
+    validate_cpu_level(config.cpu_level.as_ref())?;
     validate_stats(config.stats.as_ref())?;
     validate_registry(config)?;
     validate_certificates(&mut config.certificates)?;

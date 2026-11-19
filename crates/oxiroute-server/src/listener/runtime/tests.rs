@@ -34,6 +34,7 @@ fn generation() -> std::sync::Arc<crate::RuntimeGeneration> {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let manager = crate::GenerationManager::new();
     let candidate = manager

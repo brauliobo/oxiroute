@@ -154,6 +154,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 
@@ -233,6 +234,7 @@ pub(super) fn udp_only_config(
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 
@@ -259,6 +261,7 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
         certificates: vec![Certificate {
             name: "downstream".into(),
             dns_names: vec!["proxy.example.test".into()],

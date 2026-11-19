@@ -700,6 +700,43 @@ fn retired_worker<'a>(
 }
 
 #[test]
+fn the_worker_inherits_the_cpu_level_allocator_and_trust_store_variables_and_nothing_else() {
+    let executable = std::env::current_exe().expect("test executable");
+    let runner = MasterRunner::new_for_test("/test-only/oxiroute-worker-launcher", executable);
+    let revision = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
+    let (_, identity) = worker_identity(InstanceToken([0xcd; 16])).expect("identity");
+    let forwarded = [
+        ("OXIROUTE_CPU_LEVEL", "forwarded-cpu-level"),
+        ("_RJEM_MALLOC_CONF", "forwarded-malloc-conf"),
+        ("SSL_CERT_FILE", "/forwarded/ca-bundle.pem"),
+        ("SSL_CERT_DIR", "/forwarded/certs"),
+    ];
+
+    let command = runner
+        .build_worker_command_with_environment(
+            Path::new("/etc/oxiroute/oxiroute.kdl"),
+            &revision,
+            identity,
+            &[],
+            |key| match key {
+                "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE" => Some(OsString::from("not-forwarded")),
+                _ => forwarded
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| OsString::from(value)),
+            },
+        )
+        .expect("worker environment");
+    let debug = format!("{command:?}");
+
+    for (name, value) in forwarded {
+        assert!(debug.contains(name), "worker command omitted {name}");
+        assert!(debug.contains(value), "worker command omitted {value}");
+    }
+    assert!(!debug.contains("not-forwarded"));
+}
+
+#[test]
 fn the_retired_worker_is_reported_with_its_age_deadline_and_connections() {
     let mut status = worker_status_for_test();
     status.generation.active_revision = Some(format!("{:064x}", 5));

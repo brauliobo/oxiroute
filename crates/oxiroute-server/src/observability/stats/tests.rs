@@ -91,6 +91,7 @@ fn api() -> (
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let config = config.validate().expect("valid config");
     fs::write(

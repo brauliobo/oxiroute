@@ -42,6 +42,7 @@ impl Renderer {
             audit,
             config_history,
             log_filter,
+            cpu_level,
         } = config;
 
         self.output.push_str("return {\n");
@@ -87,9 +88,7 @@ impl Renderer {
         if let Some(enabled) = http3_segmentation_offload {
             self.boolean_field("http3_segmentation_offload", *enabled);
         }
-        if let Some(filter) = log_filter {
-            self.string_field("log_filter", filter);
-        }
+        self.present_string_fields([("log_filter", log_filter), ("cpu_level", cpu_level)]);
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
         self.fallible_optional_table_field("audit", audit.as_ref(), Self::audit)?;

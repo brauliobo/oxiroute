@@ -137,6 +137,7 @@ fn main() -> ExitCode {
 
 fn serve(config: &Path) -> Result<(), Box<dyn Error>> {
     oxiroute_server::init_build_id()?;
+    oxiroute_cpu::init(None)?;
     #[cfg(target_os = "linux")]
     {
         oxiroute_allocator::start_background_thread()
@@ -267,6 +268,11 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, rejection.message()).into());
         }
     };
+    let cpu_level = config_document
+        .validated_config
+        .as_draft()
+        .cpu_level_choice();
+    oxiroute_cpu::init(cpu_level)?;
     if stop_supervisor.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "startup was cancelled").into());
     }

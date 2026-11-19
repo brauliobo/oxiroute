@@ -47,6 +47,7 @@ pub(super) fn config_with_identity(files: &IdentityFiles) -> ConfigDraft {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 

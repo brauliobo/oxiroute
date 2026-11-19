@@ -40,6 +40,7 @@ fn inventory_core_is_platform_independent_and_unbounded() {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
     .validate()
     .expect("valid empty inventory config");
@@ -305,6 +306,7 @@ fn inventory_config(
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     config.upstream_pools.push(oxiroute_config::UpstreamPool {
         name: "origin".into(),

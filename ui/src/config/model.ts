@@ -837,6 +837,7 @@ export interface CanonicalConfig {
   retirement?: RetirementConfig
   management: ManagementConfig | null
   log_filter?: string
+  cpu_level?: string
   audit?: AuditConfig
   config_history?: ConfigHistoryConfig
   registry?: RegistryConfig | null

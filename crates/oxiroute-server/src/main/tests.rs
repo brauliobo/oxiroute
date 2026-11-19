@@ -188,6 +188,7 @@ pub(super) fn recorder_runtime_config(
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 

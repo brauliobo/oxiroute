@@ -59,6 +59,11 @@ fn compose_drafts(
             &mut composed.log_filter,
             config.log_filter.as_ref(),
         )?;
+        merge_optional(
+            "cpu_level",
+            &mut composed.cpu_level,
+            config.cpu_level.as_ref(),
+        )?;
         merge_optional("registry", &mut composed.registry, config.registry.as_ref())?;
         merge_stats(&mut composed.stats, config.stats.as_ref())?;
         composed.certificates.extend(config.certificates);

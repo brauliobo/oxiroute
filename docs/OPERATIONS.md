@@ -890,8 +890,13 @@ when it moves to the new generation. Nothing here needs a restart, so none of it
 Settings live in the configuration. The environment variables that remain are fallbacks that a
 configuration key overrides (`OXIROUTE_MANAGEMENT_TOKEN_FILE` for `management.token_file`,
 `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*` for the `audit` block, `RUST_LOG` for `log_filter`,
-and the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` for `retirement.drain_deadline_ms`), client-side
-settings (`OXIROUTE_ENDPOINT` and the CLI token path), and process plumbing. Supervised workers run
-with a cleared environment: the audit and token variables and `RUST_LOG` are forwarded to them, so the master and
-every worker fall back to the same filter when a configuration sets no `log_filter`. `docs/developer/ENV_TO_CONFIG.md` lists every variable
-with its reason.
+`OXIROUTE_CPU_LEVEL` for `cpu_level`, and the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` for
+`retirement.drain_deadline_ms`), client-side settings (`OXIROUTE_ENDPOINT` and the CLI token path), and
+process plumbing. Supervised workers run with a cleared environment: the audit and token variables,
+`RUST_LOG`, `OXIROUTE_CPU_LEVEL` and the third-party conventions `_RJEM_MALLOC_CONF`, `SSL_CERT_FILE` and
+`SSL_CERT_DIR` are forwarded to them, so the master and every worker fall back to the same filter and
+instruction-set level when a configuration sets no `log_filter` or `cpu_level`, and read the same trust store.
+A changed `cpu_level` takes effect in the next worker a reload starts; the direct runtime fixes it at process
+start and reports `cpu_level` as waiting for a restart. `_RJEM_MALLOC_CONF` configures the allocator before
+`main` and stays an environment variable: a new worker inherits the master's value, so it changes only with a
+master restart or a binary hand-over. `docs/developer/ENV_TO_CONFIG.md` lists every variable with its reason.

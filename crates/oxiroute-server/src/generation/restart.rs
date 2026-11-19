@@ -86,6 +86,9 @@ pub enum StartupOnly {
     RegistrySettings {
         running: Registry,
     },
+    CpuLevel {
+        running: Option<String>,
+    },
 }
 
 impl StartupOnly {
@@ -117,6 +120,7 @@ impl StartupOnly {
                 }
             }
             Self::RegistrySettings { running } => draft.registry = Some(running.clone()),
+            Self::CpuLevel { running } => draft.cpu_level.clone_from(running),
         }
     }
 
@@ -143,6 +147,13 @@ impl StartupOnly {
                     "the direct runtime opens the registry once: its state_dir, tokens_file and \
                           endpoints change only after a restart"
                         .into(),
+            },
+            Self::CpuLevel { .. } => StartupOnlyChange {
+                code: "cpu_level".into(),
+                path: "/config/cpu_level".into(),
+                summary: "the direct runtime fixes the instruction-set level for the life of the \
+                          process: a changed cpu_level takes effect after a restart"
+                    .into(),
             },
         }
     }
@@ -189,6 +200,12 @@ pub fn startup_only_changes(
                 .clone()
                 .map(|running| StartupOnly::RegistrySettings { running }),
         );
+    }
+    let cpu_level = &running.as_draft().cpu_level;
+    if mode == RuntimeMode::Direct && *cpu_level != wanted.as_draft().cpu_level {
+        changes.push(StartupOnly::CpuLevel {
+            running: cpu_level.clone(),
+        });
     }
     changes
 }
@@ -272,6 +289,27 @@ mod tests {
         assert!(startup_only_changes(RuntimeMode::Supervised, &running, &wanted).is_empty());
         let unconfigured = config(&unix(0o600), "");
         assert!(startup_only_changes(RuntimeMode::Direct, &unconfigured, &wanted).is_empty());
+    }
+
+    #[test]
+    fn only_the_direct_runtime_keeps_its_cpu_level() {
+        let with_level = |level: &str| config(&unix(0o600), &format!(r#"cpu_level = "{level}","#));
+        let running = with_level("avx2");
+        let wanted = with_level("scalar");
+
+        let direct = startup_only_changes(RuntimeMode::Direct, &running, &wanted);
+
+        assert_eq!(startup_only_reasons(&direct)[0].code, "cpu_level");
+        assert!(startup_only_changes(RuntimeMode::Supervised, &running, &wanted).is_empty());
+        assert!(startup_only_changes(RuntimeMode::Direct, &running, &running).is_empty());
+        let unconfigured = config(&unix(0o600), "");
+        assert_eq!(
+            startup_only_changes(RuntimeMode::Direct, &unconfigured, &wanted),
+            vec![StartupOnly::CpuLevel { running: None }]
+        );
+        let mut draft = wanted.to_draft();
+        direct[0].keep_running(&mut draft);
+        assert_eq!(draft.cpu_level.as_deref(), Some("avx2"));
     }
 
     #[test]

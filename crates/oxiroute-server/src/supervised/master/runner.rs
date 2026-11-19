@@ -1,6 +1,21 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+pub(super) const FORWARDED_ENVIRONMENT: [&str; 12] = [
+    "RUST_LOG",
+    "OXIROUTE_CPU_LEVEL",
+    "OXIROUTE_MANAGEMENT_TOKEN_FILE",
+    "OXIROUTE_AUDIT_DIR",
+    "OXIROUTE_AUDIT_MAX_RECORDS",
+    "OXIROUTE_AUDIT_MAX_RECORD_BYTES",
+    "OXIROUTE_AUDIT_MAX_FILE_BYTES",
+    "OXIROUTE_AUDIT_MAX_TOTAL_BYTES",
+    "OXIROUTE_AUDIT_MAX_ROTATED_FILES",
+    "_RJEM_MALLOC_CONF",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
 pub(super) struct MasterRunner {
     pub(super) launcher_path: PathBuf,
     pub(super) executable_path: PathBuf,
@@ -64,6 +79,7 @@ impl MasterRunner {
     ) -> Result<(), Box<dyn Error>> {
         let config = &document.validated_config;
         oxiroute_server::apply_log_filter(config.as_draft().log_filter.as_deref());
+        oxiroute_cpu::init(config.as_draft().cpu_level_choice())?;
         let listeners = reservations.clone().into_stable_listeners(config)?;
         let mut book = ListenerBook::new(reservations, listeners.manifest().clone());
         let mut reports = ConfigReports::default();
@@ -175,16 +191,7 @@ impl MasterRunner {
         if !kept.is_empty() {
             command = command.arg(serde_json::to_string(kept)?);
         }
-        for key in [
-            "RUST_LOG",
-            "OXIROUTE_MANAGEMENT_TOKEN_FILE",
-            "OXIROUTE_AUDIT_DIR",
-            "OXIROUTE_AUDIT_MAX_RECORDS",
-            "OXIROUTE_AUDIT_MAX_RECORD_BYTES",
-            "OXIROUTE_AUDIT_MAX_FILE_BYTES",
-            "OXIROUTE_AUDIT_MAX_TOTAL_BYTES",
-            "OXIROUTE_AUDIT_MAX_ROTATED_FILES",
-        ] {
+        for key in FORWARDED_ENVIRONMENT {
             if let Some(value) = environment(key) {
                 command = command.env(key, value);
             }

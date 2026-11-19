@@ -49,6 +49,7 @@ pub(crate) fn complete_config() -> ConfigDraft {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 
@@ -84,6 +85,7 @@ pub(crate) fn minimal_config() -> ConfigDraft {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 

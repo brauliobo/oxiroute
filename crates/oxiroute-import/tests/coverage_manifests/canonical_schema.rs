@@ -71,7 +71,7 @@ fn ui_registry_and_controls_cover_the_authoritative_schema() {
     );
 }
 
-const NONINTEGRATED_CONTROL_PREFIXES: [&str; 71] = [
+const NONINTEGRATED_CONTROL_PREFIXES: [&str; 72] = [
     "cache_stores",
     "http_services[].routes[].action.policy.cache",
     "http_services[].routes[].action.policy.select",
@@ -84,6 +84,7 @@ const NONINTEGRATED_CONTROL_PREFIXES: [&str; 71] = [
     "audit",
     "config_history",
     "log_filter",
+    "cpu_level",
     "listener_workers",
     "http_fast_lane",
     "http_data_plane",

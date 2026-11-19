@@ -290,6 +290,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let path = directory.path().join("control-listeners.kdl");
     fs::write(
@@ -407,6 +408,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let path = directory.path().join("control-listener-failure.kdl");
     fs::write(

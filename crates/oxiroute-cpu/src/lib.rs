@@ -8,8 +8,9 @@
 //! level, so that all of it is compiled for the level and every window of 32 bytes it reads inlines into it; the
 //! AVX-512 level runs the AVX2 lanes, as lines are shorter than 64 bytes, and the SSE2 level runs the scalar lanes.
 //!
-//! `OXIROUTE_CPU_LEVEL=scalar|sse2|sse42|avx2|avx512` caps the level (to triage or to test a kernel on a CPU that has
-//! more); it can never raise it above what the CPU runs. Off x86-64, or without the `std` feature, the level is
+//! [`init`] sets the level at process start from the `cpu_level` configuration option. Without a configured level,
+//! `OXIROUTE_CPU_LEVEL=scalar|sse2|sse42|avx2|avx512` caps it (to triage or to test a kernel on a CPU that has
+//! more); neither can raise it above what the CPU runs. Off x86-64, or without the `std` feature, the level is
 //! always [`Level::Scalar`].
 //!
 //! The `*_with` functions and [`dispatch_with`] run a scanner at a given level, clamped to the hardware, for tests and
@@ -41,6 +42,8 @@ mod simd {
 
 pub use lanes::{Job, Lanes, TokenMasks, WIDTH, Window, dispatch, dispatch_with};
 pub use level::{ENV, Level, level};
+#[cfg(feature = "std")]
+pub use level::{InvalidEnv, init};
 pub use scan::{
     ascii_range, ascii_range_with, find_any3, find_any3_with, header_value_end,
     header_value_end_with, json_escape_at, json_escape_at_with,

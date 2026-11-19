@@ -94,6 +94,14 @@ impl Renderer {
         self.output.push_str(",\n");
     }
 
+    fn present_string_fields<const N: usize>(&mut self, fields: [(&str, &Option<String>); N]) {
+        for (name, value) in fields {
+            if let Some(value) = value {
+                self.string_field(name, value);
+            }
+        }
+    }
+
     fn optional_string_field(&mut self, name: &str, value: Option<&str>) {
         match value {
             Some(value) => self.string_field(name, value),

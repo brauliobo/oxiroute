@@ -1,4 +1,4 @@
-//! The instruction-set level this process dispatches on: detected once, optionally lowered by `OXIROUTE_CPU_LEVEL`.
+//! The instruction-set level this process dispatches on: detected, optionally lowered by [`init`] or `OXIROUTE_CPU_LEVEL`.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -138,10 +138,11 @@ const UNSET: u8 = u8::MAX;
 static HARDWARE: AtomicU8 = AtomicU8::new(UNSET);
 static LEVEL: AtomicU8 = AtomicU8::new(UNSET);
 
-/// The level the scanners run at: the hardware level, lowered by `OXIROUTE_CPU_LEVEL`. Resolved on first use.
+/// The level the scanners run at: the hardware level, lowered by `OXIROUTE_CPU_LEVEL`. Resolved on first use unless
+/// [`init`] set it.
 ///
 /// # Panics
-/// On first use, when `OXIROUTE_CPU_LEVEL` is set to anything but a level name.
+/// On first use without [`init`], when `OXIROUTE_CPU_LEVEL` is set to anything but a level name.
 #[inline]
 pub fn level() -> Level {
     match LEVEL.load(Ordering::Relaxed) {
@@ -150,9 +151,20 @@ pub fn level() -> Level {
     }
 }
 
+#[cfg(feature = "std")]
 #[cold]
 fn resolve() -> Level {
-    let level = lowered(Level::hardware(), requested()).clamp();
+    settle(requested().unwrap_or_else(|error| panic!("{error}")))
+}
+
+#[cfg(not(feature = "std"))]
+#[cold]
+fn resolve() -> Level {
+    settle(None)
+}
+
+fn settle(requested: Option<Level>) -> Level {
+    let level = lowered(Level::hardware(), requested).clamp();
     LEVEL.store(level as u8, Ordering::Relaxed);
     level
 }
@@ -161,20 +173,49 @@ fn lowered(hardware: Level, requested: Option<Level>) -> Level {
     requested.map_or(hardware, |level| level.min(hardware))
 }
 
+/// The value of `OXIROUTE_CPU_LEVEL` is not a level name.
 #[cfg(feature = "std")]
-fn requested() -> Option<Level> {
-    match std::env::var(ENV) {
-        Ok(name) => Some(Level::parse(&name).unwrap_or_else(|| {
-            panic!("{ENV}={name}: expected scalar, sse2, sse42, avx2 or avx512")
-        })),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(err) => panic!("{ENV}: {err}"),
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvalidEnv(std::string::String);
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for InvalidEnv {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{ENV}={}: expected scalar, sse2, sse42, avx2 or avx512",
+            self.0
+        )
     }
 }
 
-#[cfg(not(feature = "std"))]
-fn requested() -> Option<Level> {
-    None
+#[cfg(feature = "std")]
+impl std::error::Error for InvalidEnv {}
+
+/// Sets the level the scanners run at: `configured` when given, else `OXIROUTE_CPU_LEVEL`, else the hardware level,
+/// always clamped to what the CPU runs. Call it at process start; every scanner reads the level at each call, so the
+/// level is stable from then on.
+///
+/// # Errors
+/// When `configured` is `None` and `OXIROUTE_CPU_LEVEL` is set to anything but a level name.
+#[cfg(feature = "std")]
+pub fn init(configured: Option<Level>) -> Result<Level, InvalidEnv> {
+    let requested = match configured {
+        Some(level) => Some(level),
+        None => requested()?,
+    };
+    Ok(settle(requested))
+}
+
+#[cfg(feature = "std")]
+fn requested() -> Result<Option<Level>, InvalidEnv> {
+    match std::env::var(ENV) {
+        Ok(name) => Level::parse(&name).map(Some).ok_or(InvalidEnv(name)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            Err(InvalidEnv(raw.to_string_lossy().into_owned()))
+        }
+    }
 }
 
 #[cfg(test)]

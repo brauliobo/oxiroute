@@ -84,6 +84,7 @@ fn empty_config() -> ConfigDraft {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     }
 }
 

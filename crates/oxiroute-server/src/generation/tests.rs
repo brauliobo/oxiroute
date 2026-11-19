@@ -101,6 +101,7 @@ fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfig
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     })
 }
 

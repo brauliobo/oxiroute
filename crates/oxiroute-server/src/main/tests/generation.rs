@@ -256,6 +256,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         audit: None,
         config_history: None,
         log_filter: None,
+        cpu_level: None,
     };
     let (_, manager, generation) = activate_test_generation(&path, &config);
     let (release, released) = mpsc::sync_channel(0);

@@ -490,6 +490,8 @@ pub enum ConfigError {
     MinActiveWorkersAboveListenerWorkers { min_active: u64, workers: u64 },
     #[error("log_filter is invalid: {detail}")]
     InvalidLogFilter { detail: &'static str },
+    #[error("cpu_level `{0}` is invalid: it must be scalar, sse2, sse42, avx2 or avx512")]
+    InvalidCpuLevel(String),
     #[error("audit setting `{pointer}` is invalid: {detail}")]
     InvalidAudit {
         pointer: &'static str,

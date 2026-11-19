@@ -9,6 +9,14 @@ use crate::{
 
 const REVISION_PREFIX_CHARACTERS: usize = 12;
 
+/// Says which instruction-set level the byte scanners of this process run at.
+pub fn announce_cpu_level() {
+    info!(
+        target: STARTUP_LOG_TARGET,
+        "instruction-set level {}", oxiroute_cpu::level().name()
+    );
+}
+
 /// Says what a started process serves: one line per listener, the management URL and a ready line.
 ///
 /// The lines go to the startup log target, so a `log_filter` or `RUST_LOG` that excludes it silences them.
@@ -46,6 +54,7 @@ pub fn announce_ready(config: &ValidatedConfig, revision: &EffectiveRevision) {
             );
         }
     }
+    announce_cpu_level();
     let prefix = revision
         .as_str()
         .chars()
