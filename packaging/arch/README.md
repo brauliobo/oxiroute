@@ -64,7 +64,7 @@ Add the management object:
 
 ```kdl
 (object)management {
-  bind "127.1.0.1:9900"
+  bind "127.0.0.1:9900"
 }
 ```
 
@@ -99,13 +99,13 @@ mode requires a service restart; it is not silently applied by reload.
 ## Release source
 
 `PKGBUILD` expects the checksum-pinned release asset
-`https://github.com/brauliobo/oxiroute/releases/download/v7.1.0/oxiroute-7.1.0.tar.gz`. The asset is a
-deterministic archive of committed files with the `oxiroute-7.1.0/` prefix and without this
+`https://github.com/brauliobo/oxiroute/releases/download/v7.1.1/oxiroute-7.1.1.tar.gz`. The asset is a
+deterministic archive of committed files with the `oxiroute-7.1.1/` prefix and without this
 `packaging/arch` directory. Excluding untracked and ignored files prevents local build or benchmark
 artifacts from entering a release. Excluding the AUR recipe avoids making the source checksum depend
 on the checksum recorded inside the recipe.
 
-The v7.1.0 archive includes the supervised launcher and related workspace crates. Publish the release
+The v7.1.1 archive includes the supervised launcher and related workspace crates. Publish the release
 archive before using the recipe, then keep the source checksum synchronized with that exact asset and
 regenerate `.SRCINFO`.
 
@@ -121,7 +121,7 @@ Examples:
 
 ```sh
 ./build-local.sh
-./build-local.sh /path/to/oxiroute-7.1.0.tar.gz --cleanbuild
+./build-local.sh /path/to/oxiroute-7.1.1.tar.gz --cleanbuild
 ```
 
 Build products and source archives are written below `.makepkg/`, which is ignored by Git. Cargo's
@@ -141,8 +141,8 @@ change.
 ## Service access
 
 The packaged empty configuration binds the read-only operational endpoint to
-`127.1.0.1:8404`. Public readiness is `http://127.1.0.1:8404/ready`, and public Prometheus
-exposition is `http://127.1.0.1:8404/metrics`. The packaged `admin_token_file #null` intentionally
+`127.0.0.1:8404`. Public readiness is `http://127.0.0.1:8404/ready`, and public Prometheus
+exposition is `http://127.0.0.1:8404/metrics`. The packaged `admin_token_file #null` intentionally
 leaves `/stats`, `/api/v1/status`, and `POST /stats/admin` inaccessible. To enable them, create a
 mode-`0600` token owned by `oxiroute`, set `stats.admin_token_file` to its path, and send
 `Authorization: Bearer <token>` from loopback. Administration also requires the active

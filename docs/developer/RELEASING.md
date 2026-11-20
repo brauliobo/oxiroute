@@ -80,9 +80,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify/release/version.sh 7.1.0
-./scripts/create-release-archive.sh /tmp/oxiroute-7.1.0.tar.gz 7.1.0
-./scripts/verify/release/archive.sh /tmp/oxiroute-7.1.0.tar.gz 7.1.0 --compare-worktree
+./scripts/verify/release/version.sh 7.1.1
+./scripts/create-release-archive.sh /tmp/oxiroute-7.1.1.tar.gz 7.1.1
+./scripts/verify/release/archive.sh /tmp/oxiroute-7.1.1.tar.gz 7.1.1 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -267,10 +267,10 @@ To regenerate locally with the same compiler:
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
 BOLT_BIN_DIR=$(scripts/install-bolt.sh /var/tmp/oxiroute-bolt-tools) \
-  ./scripts/build-release-binaries.sh 7.1.0 /path/to/oxiroute-release
-BOLT=0 ./scripts/build-release-binaries.sh 7.1.0 /path/to/oxiroute-pgo          # PGO only
-PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 7.1.0 /path/to/oxiroute-plain  # plain build of the same command
-FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 7.1.0 /path/to/oxiroute-abort
+  ./scripts/build-release-binaries.sh 7.1.1 /path/to/oxiroute-release
+BOLT=0 ./scripts/build-release-binaries.sh 7.1.1 /path/to/oxiroute-pgo          # PGO only
+PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 7.1.1 /path/to/oxiroute-plain  # plain build of the same command
+FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 7.1.1 /path/to/oxiroute-abort
 ```
 
 `PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
@@ -453,16 +453,16 @@ The workflow is these commands in this order; a package needs the tarball of its
 seconds to assemble, the binary build is the one slow step:
 
 ```sh
-PGO=0 scripts/package/main.sh binary x86_64 7.1.0 dist       # the one binary, on the el9 glibc; plain: ONLY for local smoke tests
-scripts/package/main.sh binary x86_64 7.1.0 dist             # profile-guided (the release build; STAGE=pgo leaves dist/stage for BOLT)
-scripts/package/main.sh build el9 x86_64 7.1.0 dist          # assembles the package from dist/oxiroute-7.1.0-x86_64-unknown-linux-gnu.tar.gz
-scripts/package/main.sh all arch x86_64 7.1.0 dist           # the Arch package, its .sha256, and the pacman -U test in archlinux:latest
-PGO=0 scripts/package/main.sh test el9 x86_64 dist/oxiroute-7.1.0-1.el9.x86_64.rpm
-PGO=0 scripts/package/main.sh all amzn2023 x86_64 7.1.0 dist # assemble, then test
-PACKAGE_IMAGES=ubuntu:22.04 PGO=0 scripts/package/main.sh test deb x86_64 dist/oxiroute_7.1.0_amd64.deb   # one image only
-scripts/package/main.sh test deb x86_64 dist/oxiroute_7.1.0_amd64.deb old/oxiroute_6.9.0_amd64.deb   # also upgrade
+PGO=0 scripts/package/main.sh binary x86_64 7.1.1 dist       # the one binary, on the el9 glibc; plain: ONLY for local smoke tests
+scripts/package/main.sh binary x86_64 7.1.1 dist             # profile-guided (the release build; STAGE=pgo leaves dist/stage for BOLT)
+scripts/package/main.sh build el9 x86_64 7.1.1 dist          # assembles the package from dist/oxiroute-7.1.1-x86_64-unknown-linux-gnu.tar.gz
+scripts/package/main.sh all arch x86_64 7.1.1 dist           # the Arch package, its .sha256, and the pacman -U test in archlinux:latest
+PGO=0 scripts/package/main.sh test el9 x86_64 dist/oxiroute-7.1.1-1.el9.x86_64.rpm
+PGO=0 scripts/package/main.sh all amzn2023 x86_64 7.1.1 dist # assemble, then test
+PACKAGE_IMAGES=ubuntu:22.04 PGO=0 scripts/package/main.sh test deb x86_64 dist/oxiroute_7.1.1_amd64.deb   # one image only
+scripts/package/main.sh test deb x86_64 dist/oxiroute_7.1.1_amd64.deb old/oxiroute_6.9.0_amd64.deb   # also upgrade
 scripts/package/main.sh selftest                             # offline: asset set, refusals, matrices, wiring, pins
-ALLOW_PLAIN=1 scripts/package/main.sh assets verify dist 7.1.0   # a local dry run; the workflow never sets ALLOW_PLAIN
+ALLOW_PLAIN=1 scripts/package/main.sh assets verify dist 7.1.1   # a local dry run; the workflow never sets ALLOW_PLAIN
 ```
 
 `PGO=0` writes `"pgo": false` into the build record, which `assets` and the publish job refuse. `binary` never applies BOLT

@@ -1,7 +1,7 @@
 # Maintainer: OxiRoute maintainers <https://github.com/oxiroute/oxiroute/issues>
 
 pkgname=oxiroute-bin
-pkgver=7.1.0
+pkgver=7.1.1
 pkgrel=1
 pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime (prebuilt, profile-guided release binaries)'
 arch=('x86_64')

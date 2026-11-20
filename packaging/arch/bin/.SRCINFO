@@ -1,6 +1,6 @@
 pkgbase = oxiroute-bin
 	pkgdesc = Pingora-based HTTP, TCP, and RTMP proxy runtime (prebuilt, profile-guided release binaries)
-	pkgver = 7.1.0
+	pkgver = 7.1.1
 	pkgrel = 1
 	url = https://github.com/brauliobo/oxiroute
 	install = oxiroute.install
@@ -11,9 +11,9 @@ pkgbase = oxiroute-bin
 	depends = glibc
 	depends = systemd>=257
 	optdepends = certbot: provide certificate lineages consumed by configured Certbot sources
-	provides = oxiroute=7.1.0
+	provides = oxiroute=7.1.1
 	conflicts = oxiroute
-	noextract = oxiroute-7.1.0-1-x86_64.pkg.tar.zst
+	noextract = oxiroute-7.1.1-1-x86_64.pkg.tar.zst
 	options = !debug
 	options = !strip
 	options = !zipman
@@ -21,7 +21,7 @@ pkgbase = oxiroute-bin
 	backup = etc/oxiroute/oxiroute.env
 	backup = etc/oxiroute/oxiroute.kdl
 	backup = etc/oxiroute/oxiroute.lua
-	source = oxiroute-7.1.0-1-x86_64.pkg.tar.zst::https://github.com/brauliobo/oxiroute/releases/download/v7.1.0/oxiroute-7.1.0-1-x86_64.pkg.tar.zst
+	source = oxiroute-7.1.1-1-x86_64.pkg.tar.zst::https://github.com/brauliobo/oxiroute/releases/download/v7.1.1/oxiroute-7.1.1-1-x86_64.pkg.tar.zst
 	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
 
 pkgname = oxiroute-bin

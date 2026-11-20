@@ -1,6 +1,6 @@
 # Compatibility matrix
 
-This matrix describes the OxiRoute 7.1.0 release line. It records narrow tested
+This matrix describes the OxiRoute 7.1.1 release line. It records narrow tested
 capabilities, not complete parity with the native products or protocols named below.
 
 ## Status meanings
