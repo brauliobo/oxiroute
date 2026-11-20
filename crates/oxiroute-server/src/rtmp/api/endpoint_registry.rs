@@ -10,6 +10,8 @@ pub(super) enum EndpointId {
     VodTicket,
     RecordingTicket,
     RtmpSecrets,
+    Clients,
+    Connections,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +34,8 @@ pub(super) enum SuccessSchema {
     Requests,
     Ticket,
     RtmpSecrets,
+    Clients,
+    Connections,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,7 +91,18 @@ const RECORDING_TICKET_FAILURES: &[Failure] = &[
     },
 ];
 
-const ENDPOINTS: [EndpointSpec; 10] = [
+const CLIENT_TRACKING_FAILURES: &[Failure] = &[
+    Failure {
+        status: "400",
+        description: "A query parameter is unknown or invalid.",
+    },
+    Failure {
+        status: "409",
+        description: "Client tracking is disabled by the client_tracking configuration.",
+    },
+];
+
+const ENDPOINTS: [EndpointSpec; 12] = [
     EndpointSpec {
         id: EndpointId::Status,
         operation_id: "getStatus",
@@ -207,6 +222,28 @@ const ENDPOINTS: [EndpointSpec; 10] = [
         failures: &[],
         success_schema: SuccessSchema::RtmpSecrets,
     },
+    EndpointSpec {
+        id: EndpointId::Clients,
+        operation_id: "getClients",
+        path: "/api/v1/clients",
+        method: "GET",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: None,
+        failures: CLIENT_TRACKING_FAILURES,
+        success_schema: SuccessSchema::Clients,
+    },
+    EndpointSpec {
+        id: EndpointId::Connections,
+        operation_id: "getConnections",
+        path: "/api/v1/connections",
+        method: "GET",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        request: None,
+        failures: CLIENT_TRACKING_FAILURES,
+        success_schema: SuccessSchema::Connections,
+    },
 ];
 
 pub(super) fn all() -> &'static [EndpointSpec] {
@@ -252,7 +289,7 @@ mod tests {
 
     #[test]
     fn registry_owns_the_protected_read_only_management_endpoints() {
-        assert_eq!(all().len(), 10);
+        assert_eq!(all().len(), 12);
         for (endpoint, expected) in all().iter().take(6).zip([
             (
                 EndpointId::Status,

@@ -583,6 +583,18 @@ impl RtmpManagementApi {
             EndpointId::Requests => {
                 observability::requests(method, session.req_header().uri.query())
             }
+            EndpointId::Clients => observability::clients(
+                method,
+                session.req_header().uri.query(),
+                &self.metrics,
+                self.generations.as_ref(),
+            ),
+            EndpointId::Connections => observability::connections(
+                method,
+                session.req_header().uri.query(),
+                &self.metrics,
+                self.generations.as_ref(),
+            ),
             EndpointId::MediaTicket => self.mint_media_ticket(method, session).await,
             EndpointId::VodTicket => self.mint_vod_ticket(method, session).await,
             EndpointId::RtmpSecrets => self.rtmp_secret_fingerprints(method),

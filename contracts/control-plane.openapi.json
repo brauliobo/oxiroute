@@ -207,6 +207,43 @@
         ],
         "type": "string"
       },
+      "BucketDto": {
+        "properties": {
+          "bytesIn": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytesOut": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clients": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "connections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requests": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clients",
+          "connections",
+          "requests",
+          "bytesIn",
+          "bytesOut"
+        ],
+        "type": "object"
+      },
       "CacheDto": {
         "properties": {
           "admissions": {
@@ -304,6 +341,130 @@
         ],
         "type": "object"
       },
+      "ClientDto": {
+        "properties": {
+          "bytesIn": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytesOut": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "connections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "connectionsTotal": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "errors": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "firstSeenUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "lastActivityUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "listeners": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "protocols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "requests": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ip",
+          "connections",
+          "connectionsTotal",
+          "requests",
+          "bytesIn",
+          "bytesOut",
+          "firstSeenUnixMs",
+          "lastActivityUnixMs",
+          "listeners",
+          "protocols",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "ClientListResponse": {
+        "properties": {
+          "clients": {
+            "items": {
+              "$ref": "#/components/schemas/ClientDto"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ipv6Prefix": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "other": {
+            "$ref": "#/components/schemas/BucketDto"
+          },
+          "sampledAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/BucketDto"
+          },
+          "trackedClients": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sampledAtUnixMs",
+          "generation",
+          "ipv6Prefix",
+          "trackedClients",
+          "truncated",
+          "clients",
+          "other",
+          "totals"
+        ],
+        "type": "object"
+      },
       "ComponentStateDto": {
         "enum": [
           "healthy",
@@ -353,6 +514,159 @@
           "atUnixMs",
           "revision",
           "diagnostics"
+        ],
+        "type": "object"
+      },
+      "ConnectionDto": {
+        "properties": {
+          "ageMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytesIn": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytesOut": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "currentRequest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurrentRequestDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idleMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "listener": {
+            "type": "string"
+          },
+          "peerIp": {
+            "type": "string"
+          },
+          "peerPort": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "requests": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "tls": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TlsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "peerIp",
+          "peerPort",
+          "listener",
+          "protocol",
+          "tls",
+          "state",
+          "ageMs",
+          "idleMs",
+          "requests",
+          "bytesIn",
+          "bytesOut",
+          "service",
+          "upstream",
+          "currentRequest"
+        ],
+        "type": "object"
+      },
+      "ConnectionListResponse": {
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionDto"
+            },
+            "type": "array"
+          },
+          "sampledAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sampledAtUnixMs",
+          "truncated",
+          "total",
+          "connections"
+        ],
+        "type": "object"
+      },
+      "CurrentRequestDto": {
+        "properties": {
+          "ageMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "ageMs"
         ],
         "type": "object"
       },
@@ -1970,6 +2284,31 @@
         ],
         "type": "object"
       },
+      "TlsDto": {
+        "properties": {
+          "alpn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sni": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "sni",
+          "alpn"
+        ],
+        "type": "object"
+      },
       "TlsProfileDto": {
         "properties": {
           "clientAuth": {
@@ -2082,6 +2421,240 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/clients": {
+      "get": {
+        "operationId": "getClients",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientListResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A query parameter is unknown or invalid.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client tracking is disabled by the client_tracking configuration.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/connections": {
+      "get": {
+        "operationId": "getConnections",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionListResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A query parameter is unknown or invalid.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client tracking is disabled by the client_tracking configuration.",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
     "/api/v1/generations": {
       "get": {
         "operationId": "getGenerations",

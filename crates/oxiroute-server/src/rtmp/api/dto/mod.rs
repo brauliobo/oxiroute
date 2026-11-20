@@ -43,8 +43,8 @@ pub(crate) use mutation::{
     ServerHealthRequest, ServerStateRequest, ServerWeightRequest,
 };
 pub(crate) use observability::{
-    CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,
-    StatusResponse,
+    CapabilitiesResponse, ClientListResponse, ConnectionListResponse, ListenerFacts,
+    MonitoringResponse, ReadinessResponse, RequestListResponse, StatusResponse,
 };
 pub(crate) use overlay::{OverlayResponse, OverlaySetting, OverlayStatus};
 pub(crate) use persistence::Persistence;

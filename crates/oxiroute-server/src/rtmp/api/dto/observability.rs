@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod certificates;
+mod clients;
 mod enums;
 mod monitoring;
 mod requests;
@@ -25,6 +26,7 @@ use certificates::{
     AcmeManagedCertificateDto, CertbotCertificateDto, CertificateWatcherDto,
     DirectFileCertificateDto,
 };
+pub(crate) use clients::{ClientListResponse, ConnectionListResponse, ListenerFacts};
 use enums::{
     AdministrativeStateDto, AuditComponentStateDto, CertbotWatcherHealthDto, ComponentStateDto,
     ObservedTransportDto, RecorderPhaseDto, RelayDnsRefreshFailureDto, RelayFailureDto,

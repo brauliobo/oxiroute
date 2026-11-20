@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
 use oxiroute_rtmp::RtmpControlHandle;
 use serde::Serialize;
 use serde_json::Value;
 
 use super::ApiResponse;
 use super::dto::{
-    CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,
-    StatusResponse, TopologyResponse,
+    CapabilitiesResponse, ClientListResponse, ConnectionListResponse, ListenerFacts,
+    MonitoringResponse, ReadinessResponse, RequestListResponse, StatusResponse, TopologyResponse,
 };
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
@@ -61,6 +63,95 @@ pub(super) fn handle(
             crate::observability::status::summary::status_json_response(metrics, generations)
         }
         Route::Capabilities => capabilities_response(metrics),
+    }
+}
+
+fn tracking_registry(
+    metrics: &RuntimeMetrics,
+) -> Result<&std::sync::Arc<crate::clients::Registry>, ApiResponse> {
+    let registry = metrics.clients();
+    if registry.settings().enabled {
+        Ok(registry)
+    } else {
+        Err(ApiResponse::error(
+            409,
+            "client_tracking_disabled",
+            "client tracking is disabled by the client_tracking configuration",
+        ))
+    }
+}
+
+fn listener_facts(generations: Option<&GenerationManager>) -> HashMap<String, ListenerFacts> {
+    let Some(generation) = generations.and_then(GenerationManager::active) else {
+        return HashMap::new();
+    };
+    generation
+        .config()
+        .as_draft()
+        .listeners
+        .iter()
+        .map(|listener| {
+            let draining = generation
+                .traffic_listener_metrics(&listener.name)
+                .is_ok_and(|metrics| !metrics.accepting());
+            (
+                listener.name.clone(),
+                ListenerFacts {
+                    service: listener.service.clone(),
+                    draining,
+                },
+            )
+        })
+        .collect()
+}
+
+pub(super) fn clients(
+    method: &str,
+    query: Option<&str>,
+    metrics: &RuntimeMetrics,
+    generations: Option<&GenerationManager>,
+) -> ApiResponse {
+    if method != "GET" {
+        return ApiResponse::method_not_allowed("GET");
+    }
+    let registry = match tracking_registry(metrics) {
+        Ok(registry) => registry,
+        Err(response) => return response,
+    };
+    let generation = generations.map_or(0, |generations| generations.status().generation);
+    match ClientListResponse::current(query, registry, generation) {
+        Ok(response) => serialized_response(
+            200,
+            &response,
+            "clients_serialization_failed",
+            "could not serialize the client list",
+        ),
+        Err(message) => ApiResponse::error(400, "invalid_client_query", message),
+    }
+}
+
+pub(super) fn connections(
+    method: &str,
+    query: Option<&str>,
+    metrics: &RuntimeMetrics,
+    generations: Option<&GenerationManager>,
+) -> ApiResponse {
+    if method != "GET" {
+        return ApiResponse::method_not_allowed("GET");
+    }
+    let registry = match tracking_registry(metrics) {
+        Ok(registry) => registry,
+        Err(response) => return response,
+    };
+    let current = crate::http::inflight::registry().by_connection();
+    match ConnectionListResponse::current(query, registry, &listener_facts(generations), current) {
+        Ok(response) => serialized_response(
+            200,
+            &response,
+            "connections_serialization_failed",
+            "could not serialize the connection list",
+        ),
+        Err(message) => ApiResponse::error(400, "invalid_connection_query", message),
     }
 }
 

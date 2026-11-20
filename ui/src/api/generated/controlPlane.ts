@@ -42,6 +42,14 @@ export interface AuditStatusDto {
 
 export type BlockedReasonDto = "listener_runtime_failed" | "listener_stopped" | "listener_not_listening"
 
+export interface BucketDto {
+  bytesIn: number
+  bytesOut: number
+  clients: number
+  connections: number
+  requests: number
+}
+
 export interface CacheDto {
   admissions: DecimalCounter
   evictions: DecimalCounter
@@ -67,6 +75,31 @@ export interface CertbotCertificateDto {
   name: string
 }
 
+export interface ClientDto {
+  bytesIn: number
+  bytesOut: number
+  connections: number
+  connectionsTotal: number
+  errors: number
+  firstSeenUnixMs: number
+  ip: string
+  lastActivityUnixMs: number
+  listeners: Array<string>
+  protocols: Array<string>
+  requests: number
+}
+
+export interface ClientListResponse {
+  clients: Array<ClientDto>
+  generation: number
+  ipv6Prefix: number
+  other: BucketDto
+  sampledAtUnixMs: number
+  totals: BucketDto
+  trackedClients: number
+  truncated: boolean
+}
+
 export type ComponentStateDto = "healthy" | "degraded" | "unsupported"
 
 export interface ComponentStatusDto {
@@ -78,6 +111,37 @@ export interface ConfigRejectionDto {
   atUnixMs: number
   diagnostics: Array<RejectionDiagnostic>
   revision: string | null
+}
+
+export interface ConnectionDto {
+  ageMs: number
+  bytesIn: number
+  bytesOut: number
+  currentRequest: CurrentRequestDto | null
+  id: number
+  idleMs: number
+  listener: string
+  peerIp: string
+  peerPort: number
+  protocol: string
+  requests: number
+  service: string | null
+  state: string
+  tls: TlsDto | null
+  upstream: string | null
+}
+
+export interface ConnectionListResponse {
+  connections: Array<ConnectionDto>
+  sampledAtUnixMs: number
+  total: number
+  truncated: boolean
+}
+
+export interface CurrentRequestDto {
+  ageMs: number
+  method: string
+  path: string
 }
 
 export type DecimalCounter = string
@@ -446,6 +510,12 @@ export interface TlsClientAuthDto {
   mode: string
 }
 
+export interface TlsDto {
+  alpn: string | null
+  sni: string | null
+  version: string
+}
+
 export interface TlsProfileDto {
   clientAuth: TlsClientAuthDto
   name: string
@@ -470,6 +540,8 @@ export interface VodTicketRequest {
 }
 
 export interface ControlPlaneResponses {
+  getClients: ClientListResponse
+  getConnections: ConnectionListResponse
   getGenerations: GenerationResponse
   getListeners: ListenerInventoryResponse
   getPools: PoolInventoryResponse
