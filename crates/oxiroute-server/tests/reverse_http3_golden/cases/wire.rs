@@ -352,6 +352,13 @@ async fn control_stream_endings(c: &mut Context) {
     )
     .await;
     let mut raw = Raw::open(&endpoint, address).await;
+    let served = raw
+        .exchange(&ok_request(&host("wire/control-stream-is-reset")))
+        .await;
+    assert_eq!(
+        served["status"], 200,
+        "the server identified the control stream: {served}"
+    );
     raw.control
         .as_mut()
         .expect("control stream")

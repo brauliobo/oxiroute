@@ -346,14 +346,7 @@
     {
       "access_log": ["h3 web GET 200"],
       "id": "wire/control-stream-is-reset",
-      "steps": [
-        {"connection_after":"open","outcome":{"connection_open":true},"request":"RESET_STREAM on the control stream"},
-        {
-          "connection_after": "open",
-          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
-          "request": "follow-up GET /fixed/ok"
-        }
-      ]
+      "steps": [{"connection_after":{"closed":260},"outcome":{"connection_closed":260},"request":"RESET_STREAM on the control stream"}]
     },
     {
       "access_log": [],
