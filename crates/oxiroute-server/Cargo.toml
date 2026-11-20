@@ -178,6 +178,10 @@ name = "process_check"
 path = "tests/process/check.rs"
 
 [[test]]
+name = "process_clients"
+path = "tests/process/clients.rs"
+
+[[test]]
 name = "process_cli"
 path = "tests/process/cli/main.rs"
 
