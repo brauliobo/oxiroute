@@ -147,7 +147,7 @@ body through, where `changed` counts the targets of the request.
 | --- | --- | --- |
 | Process | `serve`, `status`, `ready`, `metrics`, `monitoring`, `topology`, `drain`, `shutdown` | Start and inspect the daemon |
 | Monitoring | `check` | One line and a Nagios exit code for cron and monitoring systems |
-| Monitoring | `top` | Live terminal dashboard of listeners, pools, servers and requests; one snapshot with `--once`, `--json` or without a terminal |
+| Monitoring | `top` | Live terminal dashboard of listeners, upstreams, clients, connections, requests, RTMP and generations; one measured snapshot with `--once`, `--json`, `--csv` or without a terminal |
 | Contexts | `context list|add|use|remove|current` | Name daemons and their token sources and pick the one commands talk to (see "Contexts") |
 | Documentation | `completions`, `man`, `version` | Shell completions, the manual page and the build version |
 | Lifecycle | `generation status|reload|rollback|drain [--wait]` | Prepare, publish, revert, or drain generations; `drain --wait` waits for the traffic references up to `--timeout` |
@@ -192,15 +192,21 @@ daemon takes the new token at its next reload (`generation reload` with the old 
 ## `top`
 
 ```sh
-oxiroute top [--interval 1s] [--once] [--json] [--view listeners|pools|servers|requests]
-             [--filter TEXT] [--sort COLUMN] [--reverse]
+oxiroute top [--interval 1s] [--window 2s|10s|60s|life] [--once] [--json] [--csv]
+             [--view listeners|upstreams|clients|conns|requests|rtmp|generations]
+             [--filter EXPR] [--sort COLUMN] [--reverse] [--top N]
+             [--no-mouse] [--ascii] [--color auto|always|never] [--theme dark|light|mono] [--reset-layout]
 ```
 
-A read-only live dashboard with a listeners, pools, servers and requests view, rates and latency
-percentiles computed from successive snapshots, sorting, name filtering and pause. It reads the management
-API with the management token (`--token-file`); registry sockets do not serve statistics. `--once`,
-`--json` (the snapshot document of `GET /api/v1/stats`) or a missing terminal print one snapshot and exit.
-Keys, columns and semantics: [Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
+A read-only live dashboard with a listeners view, an upstream pool and server tree, clients, connections,
+in-flight requests, RTMP streams and generations, with sparkline meters, mouse support, an incremental
+filter, rates over a 2s, 10s or 60s window and a layout that can be collapsed, hidden and remembered
+(`$XDG_STATE_HOME/oxiroute/top.json`; `--reset-layout` forgets it). It reads the management API with the
+management token (`--token-file`); registry sockets do not serve statistics. `--once`, `--json` (schema
+version 2: the view's rows with their units), `--csv` or a missing terminal take two samples one window apart,
+print one measured view and exit. The clients and connections views need a server that tracks them and say so
+on one line when it does not. Keys, columns, the JSON schema and semantics:
+[Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
 
 ## `evacuate`
 

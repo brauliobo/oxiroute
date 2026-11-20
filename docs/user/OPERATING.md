@@ -32,9 +32,10 @@ oxiroute --output json topology > /tmp/oxiroute-topology.json
 oxiroute metrics
 ```
 
-`oxiroute top` is a live, read-only terminal dashboard of listeners, pools, servers and in-flight
-requests with request and byte rates, status classes, errors, latency percentiles, queue depth and
-health state; `--once` prints one snapshot. See [Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
+`oxiroute top` is a live, read-only terminal dashboard of listeners, upstream pools and servers, clients,
+connections, in-flight requests, RTMP and generations with request and byte rates, status classes, errors,
+latency percentiles, queue depth and health state; `--once`, `--json` and `--csv` print one measured snapshot.
+See [Live dashboard](../MANAGEMENT_CLI.md#live-dashboard).
 
 ## Drain Before Maintenance
 

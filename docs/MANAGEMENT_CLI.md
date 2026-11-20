@@ -109,7 +109,7 @@ Status meanings:
 | Setup | init | Supported | `oxiroute init proxy|static|rtmp [--format kdl|lua|uci|hocon] [--file FILE|-] [--force]` writes a minimal configuration that loads, validates and prepares in every format: a proxy to one upstream pool on `0.0.0.0:8080`, static files from `public/` (created beside the file), or an RTMP `live` application on `0.0.0.0:1935`, each with a management API on `127.0.0.1:9900` and its token file `management.token` in the file's directory. The default file is `oxiroute.` and the format's extension in the current directory; an existing file is refused unless `--force`, and `-` prints to stdout. The paths in it are absolute. |
 | Setup | management token | Supported | `oxiroute token create` writes the management token file (the one `--token-file` names, else the token file of the selected context, else the one the CLI would read, else `/etc/oxiroute/management.token`) with 32 random bytes as 64 hex characters, mode `0600`, and refuses to replace an existing file. `oxiroute token rotate` replaces the token atomically (temporary file in the same directory, then rename) keeping the file's owner and mode. The token is never printed. The daemon takes a rotated token at its next reload (`SIGHUP`, or `generation reload` sent with the old token) or restart; the CLI uses the file at once. |
 | Monitoring | doctor | Supported | `oxiroute doctor [CONFIG] [--unit FILE] [--offline] [--json]`. One pass that reads the configuration file offline and probes this host: it validates and prepares the configuration (listener binds excepted), binds each listen address to see it is free (an address in use is not a problem when a daemon at `--endpoint` answers its status page, unless `--offline`), connects to every static upstream server, reads the expiry of the certificate files (30d warning, 7d critical like `tls check`), checks the modes of the configuration, management token, private key and credential files, of the overlay file and the history directory beside the configuration (an overlay the daemon cannot load is a warning), and of the contexts file and the token files its contexts name (critical for the selected context, warning for the others), and checks the systemd unit: every `ReadWritePaths=` entry exists, and every path the configuration writes (audit log, disk caches, ACME state, registry state, access logs, sockets, recordings, HLS and DASH output) is writable under `ProtectSystem=`, `ReadWritePaths=` and the `StateDirectory=`/`RuntimeDirectory=`/`CacheDirectory=`/`LogsDirectory=` settings, including drop-ins; with a management API, the configuration directory (where `config apply`, `--persist` overlays and the history are written) must be writable too, a warning when it is not. The unit is `--unit` or the first `oxiroute.service` of the systemd directories; its `ExecStart` names the configuration when `CONFIG` is omitted, and its `Environment=` and `EnvironmentFile=` give the daemon's environment. Problems print first, worst first, each with a `fix:` line; exit `0` OK, `1` WARNING, `2` CRITICAL, `3` UNKNOWN (wrong options). |
-| Monitoring | live dashboard | Supported | `oxiroute top [--interval 1s] [--once] [--json] [--view listeners|pools|servers|requests] [--filter TEXT] [--sort COLUMN] [--reverse]`. Read-only terminal dashboard over `GET /api/v1/stats` and `GET /api/v1/requests` with the management token; one snapshot instead of a screen with `--once`, `--json` or without a terminal. See "Live dashboard" below. |
+| Monitoring | live dashboard | Supported | `oxiroute top [--interval 1s] [--window 2s|10s|60s|life] [--once] [--json] [--csv] [--view listeners|upstreams|clients|conns|requests|rtmp|generations] [--filter EXPR] [--sort COLUMN] [--reverse] [--top N] [--no-mouse] [--ascii] [--color auto|always|never] [--theme dark|light|mono] [--reset-layout]`. Read-only terminal dashboard over `GET /api/v1/stats`, `/api/v1/requests`, `/api/v1/rtmp/stats`, `/api/v1/clients` and `/api/v1/connections` with the management token; a measured snapshot (two samples one window apart) instead of a screen with `--once`, `--json`, `--csv` or without a terminal. See "Live dashboard" below. |
 | Routing | route test | Supported | `oxiroute route test URL` or `route test HOST PATH [--method M] [--listener L]` asks `GET /api/v1/routes/explain` which route, action and pool would serve a request. The daemon runs the host, path and method through the route table of the active generation, the table that serves traffic, on every HTTP listener or only the one named, and answers per listener with the route id, the action (`proxy`, `fixed`, `redirect`, `static`), the status of a fixed or redirect action, and the pool, rescue pool and capability-select pools with their available and total servers. Nothing is sent to an upstream. A URL names its host without the scheme's default port, and its path without the query. Exit `6` when no route serves the request (`listener_not_found` for an unknown `--listener`). |
 | Events | list | Supported | `oxiroute events list [--after CURSOR] [--limit N]`; cursor and limit are validated. |
 | Events | follow | Supported | `oxiroute events follow [--after CURSOR \| --since 10m] [--count N]` reads `/api/v2/events/stream`: it prints the retained events after the cursor (or of the window) first, then new ones as they happen. When the connection drops or the daemon sends `shutdown` it reconnects from the last event it printed, and gives up with exit `4` when the daemon stays unreachable for `--timeout` (30s by default). Events lost to the ring (`resync_required`) are reported on stderr and the stream continues from the oldest retained event. `--count N` stops after N events; Ctrl-C (or SIGTERM) ends it with status 130 (143). |
@@ -120,61 +120,205 @@ Status meanings:
 
 ## Live dashboard
 
-`oxiroute top` is a read-only terminal dashboard in the spirit of htop and the HAProxy statistics page. It
-never mutates state and uses the management endpoint, `--token-file` and the global `--output` and
-`--quiet` options like the other management commands. Registry sockets (`--socket`) do not serve
-statistics, so `top` refuses them with exit `3`.
+`oxiroute top` is a read-only terminal dashboard in the spirit of htop and btop. It never mutates state and
+uses the management endpoint, `--token-file` and the global `--output` and `--quiet` options like the other
+management commands. Registry sockets (`--socket`) do not serve statistics, so `top` refuses them with exit `3`.
 
 ```sh
-oxiroute top                                # the live screen on a terminal
-oxiroute top --view servers --sort 5XX      # start in the servers view, sorted by 5xx
-oxiroute top --once --filter web            # one text snapshot of rows whose names contain "web"
-oxiroute top --json | jq '.pools[].servers[].status'
+oxiroute top                                      # the live screen on a terminal
+oxiroute top --view upstreams --sort 5XX          # start in the upstream tree, sorted by 5xx
+oxiroute top --once --filter web                  # one measured text snapshot of rows matching "web"
+oxiroute top --view upstreams --json | jq '.rows[] | {key, state: .values.state}'
+oxiroute top --view clients --csv --window 10s    # clients as CSV, rates over a 10s window
+oxiroute top --reset-layout                       # forget the saved layout
 ```
 
-Data source. `GET /api/v1/stats` returns the stats page snapshot ("Stats page API" in
-[OPERATIONS.md](OPERATIONS.md)): the same typed document, built per request, so no stats page listener is
-needed. The in-flight request list is `GET /api/v1/requests`, fetched only while the Requests view is
-shown. `--json` prints the snapshot document as the server wrote it, `--output json` does the same.
+### Data sources
 
-Rates are computed by the client from two successive snapshots, over the server's `sampledAtUnixMs`
-clock: a rate is a counter delta divided by the time between the snapshots, and is `-` when a counter went
-backwards (a restart or a reset) or the row is new. Latency percentiles (`P50`, `P99`) are read from the
-cumulative histogram deltas of the same two snapshots, so they describe the last window and are histogram
-bucket upper bounds (`>5s` past the last bound); the first screen, and `--once`, show lifetime
-percentiles, rates are `-` there. A sample closer than 1 s to the previous one does not start a new
-window. The interval is not below 1 s, the rate the server rebuilds statistics at.
-
-| View | Rows | Columns |
+| View | Endpoint | Read while the view is open |
 |---|---|---|
-| Listeners | one per listener | `NAME PROTO BIND STATE CONN ACC/s REQ/s IN/s OUT/s ERR/s P50 P99 CACHE` |
-| Pools | one per pool | `NAME ALGO STATUS UP QUEUE QWAIT INFL REQ/s IN/s OUT/s 2XX 3XX 4XX 5XX ERR/s P50 P99` |
-| Servers | one per pool server | `POOL SERVER STATUS ADDRESS CONN WGT REQ/s IN/s OUT/s 2XX 3XX 4XX 5XX ERR/s P50 P99 DOWN CHKFAIL` |
-| Requests | one per in-flight request, oldest first | `ID LISTENER CLIENT METHOD HOST PATH POOL SERVER PHASE AGE WAIT TRY` |
+| Listeners, Upstreams, Generations | `GET /api/v1/stats` (the stats page snapshot, built per request) | always |
+| Requests | `GET /api/v1/requests?limit=1000` | yes |
+| RTMP | `GET /api/v1/rtmp/stats` | yes |
+| Clients | `GET /api/v1/clients?limit=N&sort=bytes\|connections\|requests\|recent&ip=PREFIX` | yes |
+| Conns | `GET /api/v1/connections?limit=N&ip=PREFIX&listener=NAME` | yes |
 
-- `STATE`/`STATUS` are `up`, `down`, `drain`, `maint`, `ejected`, `unchecked`, `unknown` for servers,
-  `up`, `degraded`, `down`, `empty` for pools and `up`, `drain`, `maint`, `conf`, `stopped`, `failed` for
-  listeners. `CONN` is current and maximum connections; `UP` is available and total servers.
+The header, tabs and summary always come from the stats snapshot. The Clients and Conns endpoints are optional:
+when the server answers `404`, the view shows one line, `the server lacks per-client tracking` (or
+`per-connection tracking`), and keeps working for every other view; when the answer or its body says the
+feature is `disabled` (or the document has `enabled: false`), the line says it is disabled on the server and
+how to enable it; any other failure is shown with its reason and tried again at the next interval. `--top N`
+(1 to 1000, 200 by default) is how many clients the server is asked for; the `other` and `TOTAL` rows come from
+the server's own aggregates, so they cover the clients that are not listed. A filter written as `ip:PREFIX` or
+`listener:NAME` is also sent to the server.
+
+There is no Routes view: the statistics keep no per-route counters, only the configuration.
+
+### Views
+
+Tabs, with a badge: `1` Listeners (count, `!N` unhealthy), `2` Upstreams (pools, `!N` down), `3` Clients,
+`4` Conns, `5` Requests (in flight, red when one is overdue), `6` RTMP, `7` Generations (`#N` active,
+`+N` draining). A view whose feed is unavailable stays in the strip without a badge.
+
+- **Listeners**: one row per listener, `TOTAL` last.
+- **Upstreams**: an expandable tree, one row per pool with its servers as children (keys `pool` and
+  `pool/server`). `STATE`, `HEALTH` (active checks) and `OUTLIER` (passive ejection) show the health, breaker
+  and outlier state; closed pools keep their summed counters.
+- **Clients**: one row per client address (IPv6 grouped by the server's prefix), sorted by bytes in.
+- **Conns**: one row per open connection with its TLS version, SNI and ALPN, upstream and current request.
+- **Requests**: one row per in-flight request, oldest first.
+- **RTMP**: a tree of live streams with their publisher and subscribers as children.
+- **Generations**: the active generation and the retired ones that still drain, with the kinds of requests
+  that keep them alive as children.
+
+Columns appear by priority as the terminal narrows and are never truncated: `P1` always, `P2` from 100
+columns, `P3` from 120, `P4` only from the column picker. A column you turn on in the picker stays on at every
+width.
+
+| View | `P1` | `P2` | `P3` | `P4` |
+|---|---|---|---|---|
+| Listeners | `NAME` `STATE` `CONN` `REQ/s` `IN/s` `OUT/s` `ERR/s` `P99` | `BIND` `ACC/s` | `PROTO` `P50` `CACHE` | `MAX` |
+| Upstreams | `NAME` `STATE` `CONN` `QUEUE` `REQ/s` `IN/s` `OUT/s` `ERR/s` `P99` | `UP` `4XX` `5XX` `HEALTH` `ADDRESS` | `2XX` `P50` `OUTLIER` `ALGO` `WGT` `QWAIT` `INFL` | `3XX` `DOWN` `CHKFAIL` `MAX` |
+| Clients | `CLIENT` `CONN` `REQ/s` `IN/s` `OUT/s` `ERR%` | `NEW/s` `IN tot` `OUT tot` `AGE` | `ERRORS` `REQS` `IDLE` `LISTENER` `PROTO` | `LISTENERS` `CONNS` |
+| Conns | `CLIENT` `LISTENER` `UPSTREAM` `STATE` `AGE` `IN/s` `OUT/s` | `PROTO` `IDLE` `IN tot` `OUT tot` `REQUEST` | `REQS` `SERVICE` `ID` | `TLS` |
+| Requests | `CLIENT` `METHOD` `PATH` `PHASE` `AGE` | `HOST` `LISTENER` `POOL` `SERVER` `WAIT` | `TRY` `ID` | |
+| RTMP | `NAME` `ROLE` `SUBS` `IN/s` | `BYTES` `PEER` `AGE` | `AUDIO/s` `VIDEO/s` `SERVICE` | |
+| Generations | `NAME` `STATE` `AGE` `DEADLINE` `IN-FLIGHT` | `REVISION` | | |
+
+- `STATE` is `up`, `down`, `drain`, `maint`, `ejected`, `unchecked`, `unknown` for servers, `up`,
+  `degraded`, `down`, `empty` for pools and `up`, `drain`, `maint`, `conf`, `stopped`, `failed` for listeners.
+  `CONN` is current and maximum connections; `UP` is available and total servers.
 - `REQ/s` of a listener counts finished HTTP operations (or TCP relays); of a pool or server it counts
   upstream attempts, including retries. `ERR/s` of a listener counts server errors, upstream errors,
   timeouts and internal errors (for relays: connect, I/O, accounting and PROXY protocol failures); of a pool
   or server it counts attempts that failed to connect, timed out or hit a protocol error. `IN/s` and
-  `OUT/s` follow the stats page CSV: bytes from and to the client for a listener, bytes to and from the
-  server for a pool or server. `2XX`..`5XX` are lifetime response totals. `CACHE` is the hit ratio of the
-  listener's HTTP cache. A column is `-` when the proxy does not export the value.
-- The header shows version, uptime, active generation and draining generations, worker scaling (with
-  `dynamic` scaling: active and total workers of every listener runtime), configuration warnings, CPU,
-  memory, threads, descriptors, host load, upstream in-flight requests, connections, accepted rate, bytes
-  rates and retries.
+  `OUT/s` are bytes from and to the client for a listener, a client or a connection, and bytes to and from
+  the server for a pool or server. `2XX`..`5XX` are lifetime response totals. `CACHE` is the hit ratio of
+  the listener's HTTP cache. A column is `-` when the proxy does not export the value.
+- `other` and `TOTAL` are pinned below the rows and ignore the filter: `TOTAL` sums the whole view (for
+  Clients, the server's totals) and `other` is what the listed clients do not cover.
 - Not shown, because the proxy exports no counter for them: TLS handshakes, per-worker load, per-listener
   status classes.
 
-Keys: `Tab` and `Shift-Tab` or `1`-`4` switch views, `<` `>` pick the sort column (each view keeps its
-own), `r` reverses the sort, `/` filters rows by name (`Enter` keeps it, `Esc` clears it), `p` or `Space`
-pauses and resumes sampling, `j` `k` and the arrow keys select, `g` `G` jump, `q`, `Esc` or `Ctrl-C` quit.
-Sorting is by the column's value, not its text; rows with no value sort last. A failed refresh shows the
-error under the last snapshot and the next interval tries again; a failure on the first request exits
-with the usual categories (`4` transport, `5` authentication).
+### Rates
+
+Rates are counter deltas divided by the time between two server samples (`sampledAtUnixMs`). The window is
+`2s`, `10s` (the default), `60s` or `life` (the counters over the uptime): `w` cycles it, `--window` sets it,
+and the choice is remembered. The client keeps about a minute of samples; while the history is shorter than the
+window the title says `filling` and the rate uses the oldest sample. A rate is `-` when a counter went
+backwards, and a new row (a client or connection that appeared inside the window) is rated over its own age.
+A restart, a reload into a new generation or a counter reset clears the history and says so. Latency
+percentiles (`P50`, `P99`) are histogram bucket upper bounds over the same window (`>5s` past the last bound).
+
+### Screen
+
+- The status line shows the version, uptime, active generation, workers and warnings, the rate window and a
+  live marker. Under it, the **meters** panel has a box with a sparkline, the peak and the total for requests,
+  in and out, and one for the load (CPU, connections, memory, descriptors); below 100 columns it shrinks to a
+  one-line strip. The **summary** panel holds the
+  chips of the open view. The **detail drawer** of the selected row opens beside the table from 120 columns
+  and below it otherwise, with the recent history of the row's rates.
+- Below 60 columns or 12 rows the screen says `terminal too small`. Rendering uses rounded boxes, truecolor
+  where `COLORTERM` says so and 16 colors otherwise; `NO_COLOR` or `--color never` use bold, dim and reverse
+  instead, and `--ascii` (or a non-UTF-8 locale or `TERM=linux`) draws `+-|` borders and `#` bars.
+- Rows keep a stable order and the selection follows the row key, so a refresh never moves the cursor;
+  `o` freezes the order and a vanished row stays marked until it returns.
+
+### Showing less
+
+Everything can be collapsed, hidden or switched, and the choices are remembered.
+
+- **Panels** (meters, summary, drawer): `h`, `s`, `i` collapse one to a title line (a click on the title does
+  the same), `H`, `S`, `I` hide it. Hidden panels are listed at the right of the footer (`hidden: H Meters`);
+  click one or press its key to bring it back.
+- **Groups**: `Enter`, `Space` or `Right` open a pool, stream or generation, `Left` closes it or jumps to its
+  parent, `+` and `-` open or close every group, and a click on the marker does the same. The state is kept by
+  row key across refreshes. A filter opens the groups that hold a match. `t` groups Clients, Conns and
+  Requests by listener.
+- **Columns**: `c` (`F2`) opens a picker to turn columns on or off and reorder them (`K` and `J`); `r` there
+  restores the defaults.
+- **Views**: `V` (`F4`) picks which tabs exist and in which order; a hidden view stays in the list so it can be
+  turned on again, and `--view` still starts in it.
+- **Density**: `d` is the compact mode (no meters, summary or border, one line per row) and `f` maximizes the
+  table.
+
+The layout is saved after every change in `$XDG_STATE_HOME/oxiroute/top.json`
+(`~/.local/state/oxiroute/top.json` when unset): panels, view order and visibility, columns per view, density,
+theme, rate window and units. It names choices only, never hosts, addresses or filters. A file that cannot be
+read is reported and the defaults are used; `--reset-layout` removes it. `--once`, `--json` and `--csv` use the
+same layout, so a column you hid is hidden there too (JSON still lists it, with `visible: false`).
+
+### Keys and mouse
+
+| Keys | Action |
+|---|---|
+| `Tab` `Shift-Tab` or `]` `[`, `1`-`9` | next, previous or numbered view |
+| `j` `k` or arrows, `PgUp` `PgDn`, `g` `G` or `Home` `End` | move the selection |
+| `Enter` | open or close a group, otherwise the detail drawer; in the drawer, jump to the connections or requests of the row |
+| `Space`, `Right`, `Left`, `+`, `-` | groups, as above |
+| `<` `>` or `,` `.`, `r` | pick the sort column, reverse it; each view keeps its own sort |
+| `/` | filter: words, `!word`, `column:text`, `ip:PREFIX`; `Enter` keeps it, `Esc` clears it |
+| `w`, `u`, `o`, `t` | rate window, bytes or bits, freeze the order, group by listener |
+| `h` `s` `i`, `H` `S` `I`, `d`, `f` | panels, density, focus |
+| `c`, `V`, `T`, `m` | columns, views, theme (dark, light, mono), mouse capture |
+| `p` or `F9` | pause and resume sampling (`Space` opens groups) |
+| `F1` or `?`, `F10` or `q`, `Ctrl-C` | help, quit |
+
+`Esc` closes the top layer (filter, help, picker, drawer); with none open it goes back from a drill-down
+(`Enter` in the drawer, for example from a listener to its connections) and then clears the filter. The
+mouse selects rows (a double click opens the drawer), sorts by a header click, switches tabs, opens groups
+from their marker, collapses panels from their title, triggers the footer chips and scrolls with the wheel;
+`--no-mouse` or `m` leaves the terminal its own text selection. A failed refresh shows the error under the
+last snapshot and the next interval tries again; a failure on the first request exits with the usual
+categories (`4` transport, `5` authentication).
+
+### Printing: `--once`, `--json`, `--csv`
+
+Without a terminal, or with `--once`, `--json` or `--csv`, `top` takes two samples one window apart (2 seconds
+unless `--window` says otherwise; `life` needs one), so the rates are real, then prints the view and exits.
+`--view` chooses the one view printed (without it the text output prints Listeners and Upstreams, and JSON and
+CSV print Listeners); `--filter`, `--sort`, `--reverse` and `--top` apply as on the screen, and `--output json`
+means `--json`. The text output is the headline (status, resources, traffic), a line saying what the rates are
+over, and one plain table per view with indented children and the `other` and `TOTAL` rows. It shows the
+columns of the widest screen tier.
+
+`--json` prints one line, schema version `2`:
+
+```json
+{
+  "schemaVersion": 2,
+  "sampledAtUnixMs": 1790000000000,
+  "window": { "name": "2s", "ms": 2000, "complete": true },
+  "instance": { "version": "7.1.0", "uptimeMs": 0, "generation": 4, "accepting": true, "draining": 0, "warnings": 0 },
+  "summary": {
+    "connections": { "current": 7, "limit": 4096 },
+    "rates": { "reqPerSec": 0, "errPerSec": 0, "bytesInPerSec": 0, "bytesOutPerSec": 0, "newConnPerSec": 0 },
+    "process": { "cpuPercent": 12.5, "rssBytes": 0, "fds": 0, "threads": 0 }
+  },
+  "view": "upstreams",
+  "sort": { "column": "name", "descending": false },
+  "filter": "",
+  "columns": [ { "key": "req", "title": "REQ/s", "unit": "perSecond", "visible": true } ],
+  "rows": [ { "key": "web/origin-a", "depth": 1, "parent": "web", "values": { "req": 0, "state": "up" } } ],
+  "other": null,
+  "total": { "key": "TOTAL", "depth": 0, "parent": null, "values": {} },
+  "truncated": false,
+  "population": null,
+  "limit": 200,
+  "notice": null
+}
+```
+
+`window.complete` is `false` when the history was shorter than the window and `ms` is `null` for `life`.
+Column `unit` is `count`, `perSecond`, `bytes`, `bytesPerSecond`, `percent`, `milliseconds`, `text` or `null`
+(a numeric column with no value yet); a cell is a number in that unit, a string, or `null` when there is no
+value. Counters that are whole numbers print as integers. `rows` are in screen order with their `parent` key;
+`other` and `total` are `null` or a row of the same shape; `population` is `{ "shown": n, "of": n }` for the
+views the server truncates (`truncated` is then true); `notice` is the sentence the screen would show when the
+feed is missing. Schema version 1 was the raw `GET /api/v1/stats` document: read that endpoint for it.
+
+`--csv` prints `kind,key,` and the visible column keys, then one line per row (`kind` `row`), then `other`
+and `total` lines when the view has them; numbers have no unit suffix and fields with commas are quoted.
 
 ## Registry endpoints
 
