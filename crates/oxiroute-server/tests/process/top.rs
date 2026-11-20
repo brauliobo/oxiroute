@@ -17,8 +17,8 @@ use std::{
 };
 
 use oxiroute_config::{
-    ConfigDraft, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
-    Listener, Management, Protocol, UpstreamPool,
+    ClientTracking, ConfigDraft, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
+    HttpService, Listener, Management, Protocol, UpstreamPool,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -38,6 +38,8 @@ struct Farm {
     _server: ServerProcess,
     state: TempDir,
     management: SocketAddr,
+    traffic: SocketAddr,
+    held: Vec<TcpStream>,
 }
 
 async fn backend() -> SocketAddr {
@@ -50,7 +52,10 @@ async fn backend() -> SocketAddr {
             tokio::spawn(async move {
                 let mut buffer = [0_u8; 2048];
                 let _ = stream.read(&mut buffer).await;
-                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{REPLY}",
+                    REPLY.len()
+                );
                 let _ = stream.write_all(reply.as_bytes()).await;
             });
         }
@@ -58,7 +63,12 @@ async fn backend() -> SocketAddr {
     address
 }
 
-fn config(management: SocketAddr, traffic: SocketAddr, backends: [SocketAddr; 2]) -> ConfigDraft {
+fn config(
+    management: SocketAddr,
+    traffic: SocketAddr,
+    backends: [SocketAddr; 2],
+    client_tracking: Option<ClientTracking>,
+) -> ConfigDraft {
     let servers = backends.iter().zip(["alpha", "beta"]).map(|(address, name)| {
         json!({ "name": name, "endpoint": { "type": "socket", "address": address.to_string() }, "max_connections": 4 })
     });
@@ -94,6 +104,7 @@ fn config(management: SocketAddr, traffic: SocketAddr, backends: [SocketAddr; 2]
             h2_initial_stream_window: None,
             h2_initial_connection_window: None,
         }],
+        client_tracking,
         upstream_pools: vec![pool],
         http_services: vec![HttpService {
             name: "traffic".into(),
@@ -109,10 +120,21 @@ fn config(management: SocketAddr, traffic: SocketAddr, backends: [SocketAddr; 2]
     }
 }
 
-fn get_through(traffic: SocketAddr) -> String {
+const UPLOAD: &str = "hello";
+const REPLY: &str = "ok";
+
+fn post(path: &str, headers: &str) -> Vec<u8> {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: example.test\r\n{headers}Content-Length: {}\r\n\r\n{UPLOAD}",
+        UPLOAD.len()
+    )
+    .into_bytes()
+}
+
+fn post_through(traffic: SocketAddr) -> String {
     let mut stream = TcpStream::connect(traffic).expect("traffic connection");
     stream
-        .write_all(b"GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+        .write_all(&post("/hello", "Connection: close\r\n"))
         .expect("request");
     let mut answer = String::new();
     stream.read_to_string(&mut answer).expect("answer");
@@ -121,10 +143,14 @@ fn get_through(traffic: SocketAddr) -> String {
 
 impl Farm {
     async fn start_with_traffic() -> Self {
+        Self::start(None).await
+    }
+
+    async fn start(client_tracking: Option<ClientTracking>) -> Self {
         let management = reserve_tcp_address();
         let traffic = reserve_tcp_address();
         let backends = [backend().await, backend().await];
-        let validated = config(management, traffic, backends)
+        let validated = config(management, traffic, backends, client_tracking)
             .validate()
             .expect("valid top config");
         let mut server = ServerProcess::start(&validated, Some(TOKEN));
@@ -134,11 +160,13 @@ impl Farm {
             _server: server,
             state: TempDir::new().expect("scratch"),
             management,
+            traffic,
+            held: Vec::new(),
         };
         tokio::task::spawn_blocking(move || {
             for _ in 0..REQUESTS {
                 assert!(
-                    get_through(traffic).starts_with("HTTP/1.1 200"),
+                    post_through(traffic).starts_with("HTTP/1.1 200"),
                     "traffic is proxied"
                 );
             }
@@ -146,6 +174,25 @@ impl Farm {
         .await
         .expect("traffic task");
         farm
+    }
+
+    async fn hold_a_connection(&mut self) {
+        let traffic = self.traffic;
+        let stream = tokio::task::spawn_blocking(move || {
+            let mut stream = TcpStream::connect(traffic).expect("held connection");
+            stream.write_all(&post("/held", "")).expect("held request");
+            let mut seen = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !seen.ends_with(b"\r\n\r\nok") {
+                let read = stream.read(&mut chunk).expect("held answer");
+                assert!(read > 0, "the proxy closed the held connection");
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            stream
+        })
+        .await
+        .expect("held task");
+        self.held.push(stream);
     }
 
     fn layout_file(&self) -> std::path::PathBuf {
@@ -356,23 +403,121 @@ async fn the_window_is_chosen_and_life_needs_no_wait() {
     assert!(rate > 0.0, "{rate}");
 }
 
+fn assert_client_row(row: &Value) {
+    let values = &row["values"];
+    assert_eq!(values["ip"], "127.0.0.1");
+    assert_eq!(values["reqs"], REQUESTS);
+    assert_eq!(values["intot"], REQUESTS * UPLOAD.len());
+    assert_eq!(values["outtot"], REQUESTS * REPLY.len());
+    assert_eq!(values["listener"], "traffic");
+    assert_eq!(values["proto"], "http/1.1");
+    assert!(
+        values["conns"].as_u64() >= Some(REQUESTS as u64),
+        "{values}"
+    );
+}
+
 #[tokio::test]
-async fn clients_and_connections_say_so_when_the_server_does_not_track_them() {
+async fn the_clients_view_lists_the_real_client_with_its_bytes_in_json() {
     let farm = Farm::start_with_traffic().await;
-    for (view, header) in [("clients", "CLIENT"), ("conns", "CLIENT")] {
-        let output = farm.top(TOKEN, &["top", "--view", view]);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+    let document = document(&farm.top(TOKEN, &["top", "--view", "clients", "--json"]));
+    assert_eq!(document["view"], "clients");
+    assert!(document["notice"].is_null(), "{document}");
+    assert_eq!(rows(&document), ["127.0.0.1"]);
+    assert_client_row(&document["rows"][0]);
+    assert_eq!(document["population"], json!({ "shown": 1, "of": 1 }));
+    assert_eq!(document["total"]["key"], "TOTAL");
+    assert_eq!(document["total"]["values"]["reqs"], REQUESTS);
+    assert_eq!(
+        document["total"]["values"]["intot"],
+        document["rows"][0]["values"]["intot"]
+    );
+    assert_eq!(document["truncated"], false);
+}
+
+#[tokio::test]
+async fn the_clients_view_prints_one_line_per_client_in_csv_and_text() {
+    let farm = Farm::start_with_traffic().await;
+    let csv = stdout(&farm.top(TOKEN, &["top", "--view", "clients", "--csv"]));
+    let lines: Vec<_> = csv.lines().collect();
+    let header: Vec<_> = lines[0].split(',').collect();
+    let at = |title: &str| header.iter().position(|cell| *cell == title).expect(title);
+    let client: Vec<_> = lines[1].split(',').collect();
+    assert_eq!(&client[..2], ["row", "127.0.0.1"], "{csv}");
+    assert_eq!(client[at("listener")], "traffic");
+    assert_eq!(client[at("proto")], "http/1.1");
+    assert_eq!(client[at("reqs")], REQUESTS.to_string());
+    assert_eq!(client[at("intot")], (REQUESTS * UPLOAD.len()).to_string());
+    assert_eq!(client[at("outtot")], (REQUESTS * REPLY.len()).to_string());
+    assert!(lines[2].starts_with("total,TOTAL,"), "{csv}");
+    assert_eq!(lines.len(), 3, "{csv}");
+
+    let text = stdout(&farm.top(TOKEN, &["top", "--once", "--view", "clients"]));
+    let rows = section(&text, "Clients");
+    assert!(rows[0].starts_with("CLIENT"), "{text}");
+    let cells: Vec<_> = rows[1].split_whitespace().collect();
+    assert_eq!(cells[0], "127.0.0.1", "{text}");
+    assert!(rows[2].starts_with("TOTAL"), "{text}");
+    assert_eq!(rows.len(), 3, "{text}");
+}
+
+#[tokio::test]
+async fn the_connections_view_lists_the_open_connection_with_its_bytes() {
+    let mut farm = Farm::start_with_traffic().await;
+    farm.hold_a_connection().await;
+    let document = document(&farm.top(TOKEN, &["top", "--view", "conns", "--json"]));
+    assert_eq!(document["view"], "conns");
+    assert!(document["notice"].is_null(), "{document}");
+    let keys = rows(&document);
+    assert_eq!(keys.len(), 1, "{document}");
+    let values = &document["rows"][0]["values"];
+    let peer = values["ip"].as_str().expect("peer");
+    assert!(peer.starts_with("127.0.0.1:"), "{peer}");
+    assert_eq!(values["listener"], "traffic");
+    assert_eq!(values["proto"], "http/1.1");
+    assert_eq!(values["reqs"], 1);
+    assert_eq!(values["intot"], UPLOAD.len());
+    assert_eq!(values["outtot"], REPLY.len());
+    assert_eq!(document["population"], json!({ "shown": 1, "of": 1 }));
+
+    let csv = stdout(&farm.top(TOKEN, &["top", "--view", "conns", "--csv"]));
+    let lines: Vec<_> = csv.lines().collect();
+    assert!(lines[1].starts_with("row,"), "{csv}");
+    assert!(
+        lines[1].contains("127.0.0.1:") && lines[1].contains("traffic"),
+        "{csv}"
+    );
+
+    let text = stdout(&farm.top(TOKEN, &["top", "--once", "--view", "conns"]));
+    let rows = section(&text, "Conns");
+    assert!(rows[0].starts_with("CLIENT"), "{text}");
+    assert!(rows[1].starts_with("127.0.0.1:"), "{text}");
+    assert!(
+        rows[1].contains("traffic") && rows[1].contains("http/1.1"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn disabled_client_tracking_is_an_explicit_notice_in_every_output() {
+    let farm = Farm::start(Some(ClientTracking {
+        enabled: Some(false),
+        ..ClientTracking::default()
+    }))
+    .await;
+    for (view, what) in [("clients", "client"), ("conns", "connection")] {
+        let notice = format!(
+            "per-{what} tracking is disabled on the server: enable it in the configuration"
         );
-        let text = stdout(&output);
-        let lacks = text.contains("the server lacks per-");
-        let tracks = text.contains(&format!("\n{header}"));
-        assert!(lacks || tracks, "{view}: {text}");
         let json = document(&farm.top(TOKEN, &["top", "--view", view, "--json"]));
         assert_eq!(json["view"], view);
-        assert!(json["notice"].is_string() || json["rows"].is_array());
+        assert_eq!(json["notice"], notice);
+        assert_eq!(json["rows"], json!([]));
+        let text = stdout(&farm.top(TOKEN, &["top", "--once", "--view", view]));
+        assert!(text.contains(&notice), "{view}: {text}");
+        let csv = farm.top(TOKEN, &["top", "--view", view, "--csv"]);
+        assert!(csv.status.success());
+        assert!(!stdout(&csv).contains("127.0.0.1"));
     }
 }
 
