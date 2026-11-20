@@ -15,6 +15,7 @@ mkdir -p -- "${root}/pkg/bin" "${root}/release" "${root}/remotes"
 cp -- "${here}"/verify-checksums.sh "${here}"/pin-bin-release.sh "${here}"/publish-aur.sh "${here}"/PKGBUILD "${here}"/.SRCINFO \
   "${here}"/README.md "${here}"/oxiroute.* "${root}/pkg/"
 cp -- "${here}"/bin/PKGBUILD "${here}"/bin/.SRCINFO "${here}"/bin/oxiroute.install "${here}"/bin/README.md "${root}/pkg/bin/"
+sed -i -E "s/[0-9a-f]{64}/$(printf '0%.0s' {1..64})/" "${root}/pkg/bin/PKGBUILD" "${root}/pkg/bin/.SRCINFO"
 
 publish() { AUR_REMOTE_BASE=file://${root}/remotes "${root}/pkg/publish-aur.sh" "$@"; }
 remote_files() { git -C "${root}/remotes/$1.git" ls-tree -r --name-only master | LC_ALL=C sort | tr '\n' ' '; }
