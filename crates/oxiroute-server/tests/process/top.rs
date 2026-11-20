@@ -148,11 +148,20 @@ impl Farm {
         farm
     }
 
+    fn layout_file(&self) -> std::path::PathBuf {
+        self.state
+            .path()
+            .join("xdg")
+            .join("oxiroute")
+            .join("top.json")
+    }
+
     fn top(&self, token: &str, words: &[&str]) -> Output {
         let token_file = write_token(self.state.path(), token, 0o600);
         Command::new(env!("CARGO_BIN_EXE_oxiroute"))
             .env_remove("OXIROUTE_ENDPOINT")
             .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")
+            .env("XDG_STATE_HOME", self.state.path().join("xdg"))
             .args(["--endpoint", &format!("http://{}", self.management)])
             .arg("--token-file")
             .arg(token_file)
@@ -166,18 +175,25 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-fn column(table: &str, section: &str, name: &str) -> Vec<(String, String)> {
-    let body = table
-        .split(&format!("\n{section}\n"))
+fn section<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
+    text.split(&format!("\n{name}\n"))
         .nth(1)
-        .expect("section");
-    let mut lines = body.lines().take_while(|line| !line.is_empty());
-    let header: Vec<_> = lines.next().expect("header").split_whitespace().collect();
+        .unwrap_or_else(|| panic!("no {name} section in:\n{text}"))
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .collect()
+}
+
+fn column(text: &str, name: &str, title: &str) -> Vec<(String, String)> {
+    let lines = section(text, name);
+    let header: Vec<_> = lines[0].split_whitespace().collect();
     let at = header
         .iter()
-        .position(|title| *title == name)
+        .position(|candidate| *candidate == title)
         .expect("column");
-    lines
+    lines[1..]
+        .iter()
+        .filter(|line| !line.starts_with("TOTAL") && !line.starts_with("other"))
         .map(|line| {
             let cells: Vec<_> = line.split_whitespace().collect();
             (cells[0].to_owned(), cells[at].to_owned())
@@ -185,8 +201,26 @@ fn column(table: &str, section: &str, name: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+fn document(output: &Output) -> Value {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("one JSON document")
+}
+
+fn rows(document: &Value) -> Vec<&str> {
+    document["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| row["key"].as_str().expect("key"))
+        .collect()
+}
+
 #[tokio::test]
-async fn once_prints_listeners_pools_and_servers_with_the_counters_of_real_traffic() {
+async fn once_prints_the_listeners_and_the_upstream_tree_measured_over_a_real_window() {
     let farm = Farm::start_with_traffic().await;
     let output = farm.top(TOKEN, &["top", "--once"]);
     assert!(
@@ -196,25 +230,30 @@ async fn once_prints_listeners_pools_and_servers_with_the_counters_of_real_traff
     );
     let text = stdout(&output);
     assert!(text.starts_with("oxiroute "), "{text}");
+    assert!(text.contains("\nrates over a 2s window\n"), "{text}");
     assert_eq!(
         column(&text, "Listeners", "STATE"),
         [("traffic".to_owned(), "up".to_owned())]
     );
-    let pool = column(&text, "Pools", "2XX");
-    assert_eq!(pool, [("farm".to_owned(), REQUESTS.to_string())]);
-    let servers = column(&text, "Servers", "2XX");
-    let names: Vec<_> = servers.iter().map(|(pool, _)| pool.as_str()).collect();
-    assert_eq!(names, ["farm", "farm"]);
-    let served: usize = servers
+    let upstreams = column(&text, "Upstreams", "2XX");
+    let names: Vec<_> = upstreams.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["farm", "alpha", "beta"]);
+    assert_eq!(upstreams[0].1, REQUESTS.to_string());
+    let served: usize = upstreams[1..]
         .iter()
         .map(|(_, count)| count.parse::<usize>().expect("count"))
         .sum();
     assert_eq!(served, REQUESTS);
-    let statuses = column(&text, "Servers", "STATUS");
+    let health = column(&text, "Upstreams", "HEALTH");
     assert!(
-        statuses.iter().all(|(_, status)| status == "unchecked"),
-        "{statuses:?}"
+        health[1..].iter().all(|(_, health)| health == "unchecked"),
+        "{health:?}"
     );
+    let total = section(&text, "Upstreams")
+        .into_iter()
+        .find(|line| line.starts_with("TOTAL"))
+        .expect("a TOTAL row");
+    assert!(total.contains(&REQUESTS.to_string()), "{total}");
 }
 
 #[tokio::test]
@@ -222,20 +261,30 @@ async fn without_a_terminal_top_prints_one_snapshot_and_filters_and_sorts() {
     let farm = Farm::start_with_traffic().await;
     let piped = farm.top(TOKEN, &["top"]);
     assert!(piped.status.success());
-    assert!(stdout(&piped).contains("\nServers\n"));
+    assert!(stdout(&piped).contains("\nUpstreams\n"));
     let filtered = stdout(&farm.top(
         TOKEN,
         &[
-            "top", "--view", "servers", "--filter", "ALPHA", "--sort", "SERVER",
+            "top",
+            "--view",
+            "upstreams",
+            "--filter",
+            "ALPHA",
+            "--sort",
+            "NAME",
         ],
     ));
     assert!(
-        filtered.contains("alpha") && !filtered.contains("beta") && !filtered.contains("Pools"),
+        filtered.contains("alpha") && !filtered.contains("beta") && !filtered.contains("Listeners"),
         "{filtered}"
+    );
+    assert!(
+        filtered.contains("farm"),
+        "the parent of a match stays: {filtered}"
     );
     let requests = stdout(&farm.top(TOKEN, &["top", "--view", "requests"]));
     assert!(
-        requests.contains("Requests\nID") && requests.contains("AGE"),
+        requests.contains("\nRequests\nCLIENT") && requests.contains("AGE"),
         "{requests}"
     );
     let bad_column = farm.top(TOKEN, &["top", "--sort", "nonsense"]);
@@ -243,26 +292,119 @@ async fn without_a_terminal_top_prints_one_snapshot_and_filters_and_sorts() {
 }
 
 #[tokio::test]
-async fn json_is_the_management_snapshot_document() {
+async fn json_is_one_document_with_the_measured_rows_of_the_view() {
     let farm = Farm::start_with_traffic().await;
     for words in [&["top", "--json"][..], &["--output", "json", "top"]] {
-        let output = farm.top(TOKEN, words);
+        let document = document(&farm.top(TOKEN, words));
+        assert_eq!(document["schemaVersion"], 2);
+        assert_eq!(document["view"], "listeners");
+        assert_eq!(
+            document["window"],
+            json!({ "name": "2s", "ms": 2_000, "complete": true })
+        );
+        assert_eq!(rows(&document), ["traffic"]);
+        assert_eq!(document["rows"][0]["values"]["state"], "up");
+        assert_eq!(document["total"]["key"], "TOTAL");
+        assert!(document["sampledAtUnixMs"].as_u64().expect("time") > 0);
+        assert_eq!(document["instance"]["accepting"], true);
+    }
+    let upstreams = document(&farm.top(TOKEN, &["top", "--view", "upstreams", "--json"]));
+    assert_eq!(rows(&upstreams), ["farm", "farm/alpha", "farm/beta"]);
+    assert_eq!(upstreams["rows"][1]["parent"], "farm");
+    assert_eq!(upstreams["rows"][1]["depth"], 1);
+    assert_eq!(upstreams["rows"][0]["values"]["2xx"], REQUESTS);
+    assert_eq!(upstreams["total"]["values"]["2xx"], REQUESTS);
+    let columns = upstreams["columns"].as_array().expect("columns");
+    let req = columns
+        .iter()
+        .find(|column| column["key"] == "req")
+        .expect("req");
+    assert_eq!(req["unit"], "perSecond");
+}
+
+#[tokio::test]
+async fn csv_has_a_header_one_line_per_row_and_the_total() {
+    let farm = Farm::start_with_traffic().await;
+    let output = farm.top(TOKEN, &["top", "--view", "upstreams", "--csv"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    let lines: Vec<_> = text.lines().collect();
+    assert!(lines[0].starts_with("kind,key,name,state,"), "{text}");
+    let keys: Vec<_> = lines[1..]
+        .iter()
+        .map(|line| line.split(',').take(2).collect::<Vec<_>>().join(","))
+        .collect();
+    assert_eq!(
+        keys,
+        ["row,farm", "row,farm/alpha", "row,farm/beta", "total,TOTAL"]
+    );
+    let width = lines[0].split(',').count();
+    assert!(lines.iter().all(|line| line.split(',').count() == width));
+}
+
+#[tokio::test]
+async fn the_window_is_chosen_and_life_needs_no_wait() {
+    let farm = Farm::start_with_traffic().await;
+    let life = document(&farm.top(TOKEN, &["top", "--json", "--window", "life"]));
+    assert_eq!(
+        life["window"],
+        json!({ "name": "life", "ms": null, "complete": true })
+    );
+    let rate = life["summary"]["rates"]["reqPerSec"]
+        .as_f64()
+        .expect("a rate");
+    assert!(rate > 0.0, "{rate}");
+}
+
+#[tokio::test]
+async fn clients_and_connections_say_so_when_the_server_does_not_track_them() {
+    let farm = Farm::start_with_traffic().await;
+    for (view, header) in [("clients", "CLIENT"), ("conns", "CLIENT")] {
+        let output = farm.top(TOKEN, &["top", "--view", view]);
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let snapshot: Value = serde_json::from_slice(&output.stdout).expect("one JSON document");
-        assert_eq!(snapshot["schemaVersion"], 1);
-        assert_eq!(
-            snapshot["pools"][0]["traffic"]["responses"]["2xx"],
-            REQUESTS.to_string()
-        );
-        assert_eq!(
-            snapshot["listeners"][0]["http"]["total"],
-            REQUESTS.to_string()
-        );
+        let text = stdout(&output);
+        let lacks = text.contains("the server lacks per-");
+        let tracks = text.contains(&format!("\n{header}"));
+        assert!(lacks || tracks, "{view}: {text}");
+        let json = document(&farm.top(TOKEN, &["top", "--view", view, "--json"]));
+        assert_eq!(json["view"], view);
+        assert!(json["notice"].is_string() || json["rows"].is_array());
     }
+}
+
+#[tokio::test]
+async fn the_saved_layout_shapes_the_printed_output_and_reset_forgets_it() {
+    let farm = Farm::start_with_traffic().await;
+    let file = farm.layout_file();
+    std::fs::create_dir_all(file.parent().expect("directory")).expect("state directory");
+    std::fs::write(
+        &file,
+        r#"{"version": 1, "panels": {"meters": "hidden"}, "columns": {"listeners": {"off": ["state"]}}}"#,
+    )
+    .expect("layout");
+    let hidden = stdout(&farm.top(TOKEN, &["top", "--once", "--view", "listeners"]));
+    assert!(hidden.starts_with("Listeners\n"), "{hidden}");
+    assert!(!hidden.lines().nth(1).expect("header").contains("STATE"));
+    let reset = stdout(&farm.top(TOKEN, &["top", "--once", "--reset-layout"]));
+    assert!(reset.starts_with("oxiroute "), "{reset}");
+    assert!(!file.exists());
+}
+
+#[tokio::test]
+async fn a_damaged_layout_file_is_reported_and_the_defaults_are_used() {
+    let farm = Farm::start_with_traffic().await;
+    let file = farm.layout_file();
+    std::fs::create_dir_all(file.parent().expect("directory")).expect("state directory");
+    std::fs::write(&file, "not json").expect("layout");
+    let output = farm.top(TOKEN, &["top", "--once"]);
+    assert!(output.status.success());
+    assert!(stdout(&output).starts_with("oxiroute "));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--reset-layout"), "{stderr}");
 }
 
 #[tokio::test]
