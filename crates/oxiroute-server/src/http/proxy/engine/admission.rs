@@ -1,9 +1,9 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use oxiroute_epoll_h1::{Outcome, Secured, Transfer};
 use pingora::apps::ConnectionAdmission;
 
-use crate::clients::{Connection, Exclusive, Protocol, TlsInfo};
+use crate::clients::{Connection, Counter, Exclusive, Protocol, TlsInfo};
 
 pub(super) struct EngineAdmission {
     pub(super) held: ConnectionAdmission,
@@ -11,6 +11,12 @@ pub(super) struct EngineAdmission {
 }
 
 impl EngineAdmission {
+    pub(super) fn counter(&self) -> Option<Counter> {
+        self.tracked
+            .as_ref()
+            .map(|tracked| Counter::Engine(Arc::clone(tracked.stats())))
+    }
+
     pub(super) fn transferred(&self, transfer: Transfer, now: Instant) {
         if let Some(tracked) = &self.tracked {
             tracked

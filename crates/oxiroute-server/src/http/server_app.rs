@@ -39,6 +39,7 @@ pub struct MonitoredHttpApp<A> {
     generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
     listener: ListenerRuntime,
+    metrics: ListenerMetrics,
 }
 
 impl<A> MonitoredHttpApp<A> {
@@ -47,7 +48,8 @@ impl<A> MonitoredHttpApp<A> {
         Self {
             generation,
             inner: Arc::new(inner),
-            listener: ListenerRuntime::new(metrics),
+            listener: ListenerRuntime::new(metrics.clone()),
+            metrics,
         }
     }
 }
@@ -100,6 +102,7 @@ where
         downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> impl std::future::Future<Output = Option<Stream>> + Send {
+        crate::clients::track(&self.metrics, &downstream);
         self.inner.process_new(downstream, shutdown)
     }
 

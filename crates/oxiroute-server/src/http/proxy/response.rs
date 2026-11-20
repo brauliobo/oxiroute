@@ -363,17 +363,17 @@ pub(super) fn observe_counter(
     current: usize,
     observed: &mut u64,
     received: bool,
-) {
+) -> u64 {
     let Ok(current) = u64::try_from(current) else {
         warn!("HTTP byte counter exceeds the supported range");
-        return;
+        return 0;
     };
     let Some(delta) = current.checked_sub(*observed) else {
         warn!("HTTP byte counter moved backwards");
-        return;
+        return 0;
     };
     if delta == 0 {
-        return;
+        return 0;
     }
     let result = if received {
         listener.record_bytes_received(delta)
@@ -381,8 +381,14 @@ pub(super) fn observe_counter(
         listener.record_bytes_sent(delta)
     };
     match result {
-        Ok(()) => *observed = current,
-        Err(error) => warn!("could not account for HTTP traffic: {error}"),
+        Ok(()) => {
+            *observed = current;
+            delta
+        }
+        Err(error) => {
+            warn!("could not account for HTTP traffic: {error}");
+            0
+        }
     }
 }
 

@@ -171,6 +171,7 @@ pub struct HttpRequestContext {
     trace: AttemptTrace,
     inflight: Option<InflightGuard>,
     request_id: Option<HeaderValue>,
+    connection: Option<crate::clients::Counter>,
 }
 
 /// What the access log and per-server counters need to know about the attempts of one request.
@@ -268,6 +269,7 @@ impl HttpRequestContext {
             trace: AttemptTrace::default(),
             inflight: None,
             request_id: None,
+            connection: None,
         }
     }
 
@@ -306,6 +308,7 @@ impl HttpRequestContext {
     ) {
         let arrival = self.arrival(method, host, path, client_ip, access_log);
         self.inflight = Some(inflight::registry().register(arrival));
+        self.tie_connection();
     }
 
     /// Like `register_arrival` for a request routed to `route` and `pool` already.
@@ -318,6 +321,7 @@ impl HttpRequestContext {
     ) {
         let arrival = self.arrival(method, host, path, client_ip, access_log);
         self.inflight = Some(inflight::registry().register_placed(arrival, route, pool));
+        self.tie_connection();
     }
 
     fn arrival<'a>(
@@ -354,8 +358,48 @@ impl HttpRequestContext {
         if let Some(inflight) = &self.inflight {
             inflight.progress(now);
         }
-        observe_counter(&self.listener, received, &mut self.observed_received, true);
-        observe_counter(&self.listener, sent, &mut self.observed_sent, false);
+        let received = observe_counter(&self.listener, received, &mut self.observed_received, true);
+        let sent = observe_counter(&self.listener, sent, &mut self.observed_sent, false);
+        if let Some(stats) = self
+            .connection
+            .as_ref()
+            .and_then(crate::clients::Counter::credited)
+        {
+            stats.transferred::<crate::clients::Concurrent>(received, sent, now);
+        }
+    }
+
+    fn attach_connection(&mut self, session: &Session) {
+        let counter = session
+            .digest()
+            .and_then(|digest| crate::clients::counter_of(digest.socket_digest.as_deref()));
+        if let Some(counter) = &counter
+            && session.is_http2()
+        {
+            counter.stats().set_protocol(crate::clients::Protocol::H2);
+        }
+        self.connection = counter;
+    }
+
+    fn tie_connection(&self) {
+        if let (Some(inflight), Some(counter)) = (&self.inflight, &self.connection) {
+            inflight.set_connection(counter.stats().id());
+        }
+    }
+
+    fn record_operation(
+        &mut self,
+        result: HttpOperationResult,
+        elapsed: Duration,
+    ) -> Result<(), crate::MetricsError> {
+        if let Some(stats) = self
+            .connection
+            .as_ref()
+            .and_then(crate::clients::Counter::credited)
+        {
+            stats.completed::<crate::clients::Concurrent>(result.is_failure(), self.now);
+        }
+        self.listener.record_http_operation(result, elapsed)
     }
 
     /// Servers tried over the whole request, including those of a rescue pool already left.
@@ -648,9 +692,7 @@ impl Drop for HttpRequestContext {
             HttpOperationResult::Cancelled
         };
         self.operation_result = Some(result);
-        let _ = self
-            .listener
-            .record_http_operation(result, self.started_at.elapsed());
+        let _ = self.record_operation(result, self.started_at.elapsed());
     }
 }
 

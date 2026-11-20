@@ -52,6 +52,10 @@ pub enum HttpOperationResult {
 }
 
 impl HttpOperationResult {
+    pub(crate) const fn is_failure(self) -> bool {
+        !matches!(self, Self::Success | Self::ClientError)
+    }
+
     pub(super) const ALL: [Self; 7] = [
         Self::Success,
         Self::ClientError,
@@ -90,7 +94,7 @@ impl HttpOperationResult {
     #[must_use]
     pub const fn from_status(status: Option<u16>) -> Self {
         match status {
-            Some(200..=399) => Self::Success,
+            Some(100..=399) => Self::Success,
             Some(400..=499) => Self::ClientError,
             Some(500..=599) => Self::ServerError,
             Some(_) => Self::InternalError,

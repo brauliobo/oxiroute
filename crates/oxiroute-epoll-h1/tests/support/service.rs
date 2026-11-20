@@ -202,7 +202,7 @@ impl Service for Reference {
         Some(Guard::new(&self.counters.live_admissions))
     }
 
-    fn route(&self, request: &Request<'_>, _now: Instant) -> Routed<Exchange> {
+    fn route(&self, _admission: &Guard, request: &Request<'_>, _now: Instant) -> Routed<Exchange> {
         assert!(
             !(self.knobs.panic_in_route && request.target() == b"/panic"),
             "injected panic"

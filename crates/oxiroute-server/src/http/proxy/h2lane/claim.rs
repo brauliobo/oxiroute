@@ -66,6 +66,7 @@ pub(super) struct Plan {
     /// Whether the request could be sent again, which decides whether an operator may move it to another server.
     pub(super) replay_safe: bool,
     pub(super) body: Body,
+    pub(super) connection: Option<crate::clients::Counter>,
 }
 
 impl Plan {
@@ -176,6 +177,7 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
         values,
         replay_safe,
         body,
+        connection: crate::clients::counter_of(digest.socket_digest.as_deref()),
     })
 }
 

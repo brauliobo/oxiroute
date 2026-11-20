@@ -164,6 +164,7 @@ pub(in crate::http::proxy) struct Arrival<'a> {
     pub(in crate::http::proxy) fields: Scanned<'a>,
     /// Whether the request could be sent again: an operator's move of it needs that.
     pub(in crate::http::proxy) replay_safe: bool,
+    pub(in crate::http::proxy) connection: Option<crate::clients::Counter>,
 }
 
 /// The scanned head of a request with the bytes it was scanned from, for what a queue tag reads of it.

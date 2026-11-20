@@ -16,9 +16,8 @@ impl ForwardClient {
         Self::track(metrics, stream, Protocol::Http1)
     }
 
-    #[must_use]
-    pub fn track_http2(metrics: &ListenerMetrics, stream: &Stream) -> Self {
-        Self::track(metrics, stream, Protocol::H2)
+    pub fn track_http2(metrics: &ListenerMetrics, stream: &Stream) {
+        Self::track(metrics, stream, Protocol::H2);
     }
 
     fn track(metrics: &ListenerMetrics, stream: &Stream, protocol: Protocol) -> Self {

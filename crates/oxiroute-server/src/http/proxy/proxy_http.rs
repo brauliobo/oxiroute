@@ -31,6 +31,7 @@ impl ProxyHttp for HttpReverseProxy {
         let hop_by_hop = strip_hop_by_hop(session);
         ctx.request_id = Some(stamp_request(session.req_header_mut_keeping_facts())?);
         ctx.request_facts = session.request_facts();
+        ctx.attach_connection(session);
         ctx.adopt_downstream_deadline(session);
         ctx.register_inflight(session, self.service.access_log());
         let arrived = ctx.started_at;
@@ -91,6 +92,11 @@ impl ProxyHttp for HttpReverseProxy {
                 return Ok(true);
             };
             ctx.websocket_reference = Some(reference);
+            if let Some(counter) = &ctx.connection {
+                counter
+                    .stats()
+                    .set_protocol(crate::clients::Protocol::WebSocket);
+            }
         }
 
         let (Ok(authority), Ok(())) = (authority, hop_by_hop) else {
@@ -749,7 +755,7 @@ impl ProxyHttp for HttpReverseProxy {
                 response_status,
             );
             ctx.operation_result = Some(result);
-            if let Err(metric_error) = ctx.listener.record_http_operation(result, elapsed) {
+            if let Err(metric_error) = ctx.record_operation(result, elapsed) {
                 warn!("could not account for HTTP operation metrics: {metric_error}");
             }
         }

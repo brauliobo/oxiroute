@@ -5,7 +5,7 @@
 //! removes the entry on `Drop`, so failed and cancelled requests leave it too.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     net::IpAddr,
     sync::{
         Arc, Mutex, OnceLock,
@@ -34,6 +34,7 @@ use entries::Entries;
 mod entries;
 
 pub(crate) const MAX_PATH_BYTES: usize = 128;
+const NO_CONNECTION: u64 = u64::MAX;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_mins(1);
 
@@ -158,6 +159,7 @@ pub(crate) struct InflightEntry {
     queue_position: OnceLock<Arc<AtomicU64>>,
     stuck_reported: AtomicBool,
     place: Mutex<Place>,
+    connection: AtomicU64,
     evacuation: Evacuation,
     access_log: Option<Arc<AccessLog>>,
 }
@@ -222,6 +224,7 @@ impl InflightEntry {
             queue_position: OnceLock::new(),
             stuck_reported: AtomicBool::new(false),
             place: Mutex::new(place),
+            connection: AtomicU64::new(NO_CONNECTION),
             evacuation: Evacuation::new(),
             access_log: arrival.access_log,
         }
@@ -245,6 +248,7 @@ impl InflightEntry {
             queue_position,
             stuck_reported,
             place: placed,
+            connection,
             evacuation,
             access_log,
         } = self;
@@ -264,6 +268,7 @@ impl InflightEntry {
         *placed
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = place;
+        *connection.get_mut() = NO_CONNECTION;
         *evacuation = Evacuation::new();
         *access_log = arrival.access_log;
     }
@@ -465,6 +470,14 @@ impl InflightFilter {
     }
 }
 
+/// The request a connection is serving.
+pub(crate) struct CurrentRequest {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) age_ms: u64,
+    pub(crate) server: Option<String>,
+}
+
 pub(crate) struct InflightListing {
     pub(crate) total: usize,
     pub(crate) requests: Vec<InflightView>,
@@ -623,6 +636,34 @@ impl InflightRegistry {
         }
     }
 
+    /// What each connection with a request inside the router is doing now; the oldest request of a connection.
+    pub(crate) fn by_connection(&self) -> HashMap<u64, CurrentRequest> {
+        let mut current = HashMap::<u64, CurrentRequest>::new();
+        for entry in self.entries() {
+            let connection = entry.connection.load(Ordering::Relaxed);
+            if connection == NO_CONNECTION {
+                continue;
+            }
+            let age_ms = entry.age_ms();
+            if current
+                .get(&connection)
+                .is_some_and(|known| known.age_ms >= age_ms)
+            {
+                continue;
+            }
+            current.insert(
+                connection,
+                CurrentRequest {
+                    method: entry.method.to_string(),
+                    path: entry.texts.path().to_owned(),
+                    age_ms,
+                    server: entry.place().server.as_deref().map(str::to_owned),
+                },
+            );
+        }
+        current
+    }
+
     /// Cancels the attempts running on `server` of `pool`, in any generation, and reports what happened.
     pub(crate) fn evacuate_server(
         &self,
@@ -728,6 +769,10 @@ impl InflightGuard {
 
     fn age_ms_at(&self, now: Instant) -> u64 {
         duration_ms(crate::clock::since(now, self.entry.started))
+    }
+
+    pub(crate) fn set_connection(&self, connection: u64) {
+        self.entry.connection.store(connection, Ordering::Relaxed);
     }
 
     pub(crate) fn progress(&self, now: Instant) {

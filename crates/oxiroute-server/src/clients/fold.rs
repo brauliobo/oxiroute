@@ -108,9 +108,4 @@ impl History {
     pub(super) const fn evicted(&self) -> Totals {
         self.evicted
     }
-
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.folded.len()
-    }
 }

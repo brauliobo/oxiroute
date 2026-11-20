@@ -44,7 +44,7 @@ impl super::LaneFront {
                 error.esource()
             );
         }
-        let elapsed = self.finish_request(ctx, error, progress, ended);
+        let elapsed = Self::finish_request(ctx, error, progress, ended);
         if let Some(log) = self.service.access_log() {
             write_proxied(log, &self.service_log, ctx, request, progress, elapsed);
         }
@@ -52,7 +52,6 @@ impl super::LaneFront {
 
     /// The accounting of a request that ended at `ended`, whatever protocol it arrived by; the time it took.
     pub(in crate::http::proxy) fn finish_request(
-        &self,
         ctx: &mut HttpRequestContext,
         error: Option<&Error>,
         progress: &Progress,
@@ -63,7 +62,7 @@ impl super::LaneFront {
         let elapsed = ended.saturating_duration_since(ctx.started_at);
         let result = classify_http_result(error, status);
         ctx.operation_result = Some(result);
-        if let Err(metric_error) = self.metrics.record_http_operation(result, elapsed) {
+        if let Err(metric_error) = ctx.record_operation(result, elapsed) {
             warn!("could not account for HTTP operation metrics: {metric_error}");
         }
         ctx.observe_bytes(received, sent, ended);

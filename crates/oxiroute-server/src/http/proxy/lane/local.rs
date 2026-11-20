@@ -83,10 +83,16 @@ impl LaneFront {
         let ended = Instant::now();
         let _ = self.metrics.record_bytes_sent(body);
         let status = sent.then_some(status);
-        let _ = self.metrics.record_http_operation(
-            HttpOperationResult::from_status(status),
-            ended.saturating_duration_since(started),
-        );
+        let result = HttpOperationResult::from_status(status);
+        let _ = self
+            .metrics
+            .record_http_operation(result, ended.saturating_duration_since(started));
+        if let Some(counter) = crate::clients::of_stream(stream)
+            && let Some(stats) = counter.credited()
+        {
+            stats.transferred::<crate::clients::Concurrent>(0, body, ended);
+            stats.completed::<crate::clients::Concurrent>(result.is_failure(), ended);
+        }
         if let Some(log) = self.service.access_log() {
             let method = Method::from_bytes(request.method(buffer))
                 .expect("the route was selected for this method");

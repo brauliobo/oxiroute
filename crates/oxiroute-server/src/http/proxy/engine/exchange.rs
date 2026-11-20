@@ -8,6 +8,7 @@ use pingora::{Error, upstreams::peer::Peer as _};
 
 use super::{LOG_TARGET, lease::EngineLease, outcome::Pending, plan::EnginePlan, routes::Routes};
 use crate::{
+    clients::Counter,
     http::{
         action::HttpRoutePlan,
         proxy::{
@@ -53,6 +54,7 @@ impl Exchange {
         routes: &Routes,
         request: &Request<'_>,
         now: Instant,
+        connection: Option<Counter>,
     ) -> Option<Self> {
         let (buffer, head) = (request.bytes(), request.head());
         let lane = head::adopt(buffer, head)?;
@@ -88,6 +90,7 @@ impl Exchange {
             },
             authority,
             &target,
+            connection,
         );
         let idempotency = front.idempotency_of(&ctx, buffer, head).map(Box::from);
         ctx.bind_evacuation_to_engine(request.waker());

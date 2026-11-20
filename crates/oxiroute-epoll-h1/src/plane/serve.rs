@@ -111,7 +111,7 @@ impl<S: Service> Reactor<S> {
         let secure = client.link.encrypted();
         let waker = (&self.wake, replayable);
         let request = Request::new(bytes, head, client.peer, secure, waker);
-        let Routed::Serve(exchange) = service.route(&request, self.now) else {
+        let Routed::Serve(exchange) = service.route(&client.admission, &request, self.now) else {
             return Step::Handoff;
         };
         let keepalive = !request.close() && self.drain_deadline.is_none();

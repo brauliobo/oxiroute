@@ -265,7 +265,12 @@ pub trait Service: Send + Sync + 'static {
 
     fn admit(&self, peer: SocketAddr) -> Option<Self::Admission>;
 
-    fn route(&self, request: &Request<'_>, now: Instant) -> Routed<Self::Exchange>;
+    fn route(
+        &self,
+        admission: &Self::Admission,
+        request: &Request<'_>,
+        now: Instant,
+    ) -> Routed<Self::Exchange>;
 
     fn select(&self, exchange: &mut Self::Exchange, now: Instant) -> Selected<Self::Lease>;
 

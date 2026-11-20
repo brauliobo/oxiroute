@@ -53,9 +53,14 @@ impl<A: ServerApp + Send + Sync + 'static> Service for EngineFront<A> {
         Some(EngineAdmission { held, tracked })
     }
 
-    fn route(&self, request: &Request<'_>, now: Instant) -> Routed<Exchange> {
+    fn route(
+        &self,
+        admission: &EngineAdmission,
+        request: &Request<'_>,
+        now: Instant,
+    ) -> Routed<Exchange> {
         assert!(!self.inject_panic, "injected epoll engine panic");
-        Exchange::begin(&self.lane, &self.routes, request, now)
+        Exchange::begin(&self.lane, &self.routes, request, now, admission.counter())
             .map_or(Routed::Handoff, Routed::Serve)
     }
 

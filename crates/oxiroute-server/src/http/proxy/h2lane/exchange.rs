@@ -82,7 +82,7 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
         );
         progress.status = fail(front, &mut stream, &mut ctx, error, &plan, &mut progress).await;
     }
-    let elapsed = front.finish_request(&mut ctx, error.as_deref(), &progress, Instant::now());
+    let elapsed = LaneFront::finish_request(&mut ctx, error.as_deref(), &progress, Instant::now());
     write_access_line(front, &ctx, &plan, &progress, elapsed);
     plan.recycle();
 }
@@ -121,6 +121,7 @@ fn begin(front: &LaneFront, plan: &Plan) -> Box<HttpRequestContext> {
         ),
         fields: Scanned(&wire.text, &wire.head),
         replay_safe: plan.replay_safe,
+        connection: plan.connection.clone(),
     })
 }
 

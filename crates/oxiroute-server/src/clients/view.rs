@@ -192,7 +192,9 @@ impl Registry {
             .map(|(key, aggregate)| aggregate.row(*key, now))
             .collect::<Vec<_>>();
         let mut totals = Bucket::default();
-        rows.iter().for_each(|row| totals.add(row));
+        for row in &rows {
+            totals.add(row);
+        }
         totals = totals.with_evicted(evicted);
         let tracked_clients = rows.len() as u64;
         if let Some(prefix) = &query.ip_prefix {

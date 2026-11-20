@@ -36,10 +36,18 @@ pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
     let _ = front.metrics.record_bytes_sent(body);
     let status = sent.then_some(response.status);
     let ended = Instant::now();
-    let _ = front.metrics.record_http_operation(
-        HttpOperationResult::from_status(status),
-        ended.saturating_duration_since(started),
-    );
+    let result = HttpOperationResult::from_status(status);
+    let _ = front
+        .metrics
+        .record_http_operation(result, ended.saturating_duration_since(started));
+    if let Some(stats) = plan
+        .connection
+        .as_ref()
+        .and_then(crate::clients::Counter::credited)
+    {
+        stats.transferred::<crate::clients::Concurrent>(0, body, ended);
+        stats.completed::<crate::clients::Concurrent>(result.is_failure(), ended);
+    }
     if let Some(log) = front.service.access_log() {
         let line = log::Line::answered(
             (plan.id.as_bytes(), plan.id_generated),

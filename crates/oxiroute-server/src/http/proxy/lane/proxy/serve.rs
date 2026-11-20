@@ -46,7 +46,8 @@ impl super::super::LaneFront {
             .request
             .target(forward.buffer)
             .expect("the route was selected for this host");
-        let mut ctx = self.begin(&forward, authority, &target);
+        let counter = crate::clients::of_stream(stream);
+        let mut ctx = self.begin(&forward, authority, &target, counter);
         let mut progress = Progress {
             received: 0,
             sent: 0,
@@ -84,6 +85,7 @@ impl super::super::LaneFront {
         forward: &Forward<'_>,
         authority: Authority,
         target: &Target<'_>,
+        connection: Option<crate::clients::Counter>,
     ) -> Box<HttpRequestContext> {
         let (buffer, request, route) = (forward.buffer, forward.request, forward.route);
         let replay_safe = proxy_route(route).policy.request_is_replay_safe_with(
@@ -111,6 +113,7 @@ impl super::super::LaneFront {
             ),
             fields: Scanned(buffer, forward.head),
             replay_safe,
+            connection,
         })
     }
 
@@ -125,6 +128,7 @@ impl super::super::LaneFront {
             line,
             fields,
             replay_safe,
+            connection,
         } = arrival;
         let proxy = proxy_route(route);
         // Boxed: the context is 1.9 kB and would be copied into every future that holds or returns it.
@@ -134,6 +138,7 @@ impl super::super::LaneFront {
             started,
             self.service.upstream_io_timeout(),
         ));
+        ctx.connection = connection;
         ctx.request_id = Some(id.clone());
         ctx.adopt_client_timeouts([self.timeouts.request, self.timeouts.session_write()]);
         ctx.register_routed_arrival(

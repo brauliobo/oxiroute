@@ -114,9 +114,9 @@ pub use routing::{
     RuntimeEndpoint, ServerAdminState, ServerHealthCarry, ServerOrigin, fit_health_carry,
 };
 pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
+pub use rtmp::tracking::RtmpSessionTracking;
 #[doc(hidden)]
 pub use rtmp::tracking::{ObservedClients, observe_clients};
-pub use rtmp::tracking::RtmpSessionTracking;
 pub use service_plan::{
     DataPlane, ExclusiveStores, HttpServicePlan, PlaneSelection, RtmpServicePlan, RuntimePlan,
     ServiceKind, ServicePlanError, ServiceSpec, Skip, Skipped, StoreOwnershipError, runtime_plan,

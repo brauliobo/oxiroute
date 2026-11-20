@@ -88,8 +88,13 @@ impl Service for Relay {
         self.inner.admit(peer)
     }
 
-    fn route(&self, request: &Request<'_>, now: Instant) -> Routed<Self::Exchange> {
-        self.inner.route(request, now)
+    fn route(
+        &self,
+        admission: &Self::Admission,
+        request: &Request<'_>,
+        now: Instant,
+    ) -> Routed<Self::Exchange> {
+        self.inner.route(admission, request, now)
     }
 
     fn select(&self, exchange: &mut Self::Exchange, now: Instant) -> Selected<Self::Lease> {
