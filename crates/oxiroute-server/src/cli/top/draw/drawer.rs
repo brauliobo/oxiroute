@@ -51,17 +51,22 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
         y += 1;
     }
     y = sparks(frame, app, drawer, inner, y, bottom);
+    let width = label_width(drawer.lines.iter().map(|(label, _)| *label));
     for (label, value) in &drawer.lines {
         if y >= bottom {
             break;
         }
         let line = Line::from(vec![
-            Span::styled(format!("{label:<14}"), theme.style(Role::Dim)),
+            Span::styled(format!("{label:<width$}"), theme.style(Role::Dim)),
             Span::raw(value.clone()),
         ]);
         frame.render_widget(Paragraph::new(line), Rect::new(inner.x, y, inner.width, 1));
         y += 1;
     }
+}
+
+fn label_width<'a>(labels: impl Iterator<Item = &'a str>) -> usize {
+    labels.map(|label| label.chars().count()).max().unwrap_or(0) + 1
 }
 
 fn sparks(
@@ -73,11 +78,12 @@ fn sparks(
     bottom: u16,
 ) -> u16 {
     let theme = app.theme;
+    let width = label_width(drawer.sparks.iter().map(|spark| spark.label.as_str())).max(8);
     for spark in &drawer.sparks {
         if y >= bottom {
             break;
         }
-        let label = format!("{:<8}{:>7} ", spark.label, spark.value);
+        let label = format!("{:<width$}{:>7} ", spark.label, spark.value);
         let used = u16::try_from(label.chars().count())
             .unwrap_or(0)
             .min(inner.width);

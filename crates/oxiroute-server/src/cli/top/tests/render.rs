@@ -253,9 +253,43 @@ fn the_drawer_opens_beside_the_table_when_wide() {
     assert!(has_all(
         &screen,
         &[
-            "bind          socket:127.0.0.1:8080",
-            "cache         9000 hits, 3000 misses"
+            "bind      socket:127.0.0.1:8080",
+            "cache     9000 hits, 3000 misses"
         ]
+    ));
+}
+
+#[test]
+fn every_drawer_separates_each_label_from_its_value() {
+    for view in View::ALL {
+        let mut app = running_full(view);
+        press(&mut app, "i", (120, 60));
+        let screen = screen(&mut app, 120, 60);
+        let lines = &app.scene.drawer.as_ref().expect("a drawer").lines;
+        for (label, value) in lines {
+            let edge = format!("│{label}");
+            let row = screen
+                .lines()
+                .skip_while(|line| !line.contains("Detail "))
+                .find(|line| line.contains(&edge))
+                .unwrap_or_else(|| panic!("{view:?}: no drawer line holds {label}:\n{screen}"));
+            let after = row.split_once(&edge).expect("the label").1;
+            assert!(
+                after.starts_with(' ') && !after.trim().is_empty() && !value.is_empty(),
+                "{view:?}: {label:?} touches its value in {row:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_pool_drawer_sizes_its_label_column_to_the_longest_label() {
+    let mut app = running_full(View::Upstreams);
+    press(&mut app, "i", (120, 30));
+    let screen = screen(&mut app, 120, 30);
+    assert!(has_all(
+        &screen,
+        &["unavailable selections 0", "fail-open selections   0"]
     ));
 }
 
@@ -323,5 +357,5 @@ fn the_same_row_renders_in_bits_when_asked() {
     let mut app = running(View::Listeners);
     press(&mut app, "u", (120, 30));
     let screen = screen(&mut app, 120, 30);
-    assert!(line_with(&screen, "edge").contains("32Mb"), "{screen}");
+    assert!(line_with(&screen, "edge").contains("32Mb"));
 }
