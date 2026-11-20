@@ -73,10 +73,9 @@ The full reference is [reference/CLI.md](reference/CLI.md); every command and op
   each finding and monitoring exit codes.
 - **`init proxy|static|rtmp`** writes a minimal configuration that loads, validates and prepares, in KDL, Lua, UCI or
   HOCON, and **`token create|rotate`** writes or atomically replaces the management token file without printing it.
-- **`top`** is a read-only live terminal dashboard with live meters, an upstream pool and server tree, clients,
-  connections, in-flight requests, RTMP streams and generations, mouse support, rates over a 2s, 10s or 60s window,
-  and panels, groups, columns and views you can collapse, hide and reorder, remembered per user. `--once`, `--json`
-  and `--csv` print the same rows measured over a real window.
+- **`top`** is a read-only live terminal dashboard of listeners, pools, servers and in-flight requests with rates,
+  latency percentiles, sorting and filtering, over the new management endpoint `GET /api/v1/stats`; `--once` and
+  `--json` print one snapshot.
 - **`completions bash|zsh|fish` and `man`** print completion scripts and the manual page for `oxiroute` and `oxr`;
   the Arch, Debian and RPM packages install both names.
 - **Safer invocation.** A mistyped command is a usage error with suggestions instead of starting the daemon, and every
