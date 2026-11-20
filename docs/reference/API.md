@@ -41,6 +41,8 @@ are migrated.
 | RTMP media tickets | `POST /api/v1/rtmp/media/{service}/{application}/{stream}/ticket`, `POST /api/v1/rtmp/vod/{service}/{application}/{source}/ticket` | Management bearer token; mints `{ticket, path, expiresAtUnixMs, ttlSeconds}` (`ttlSeconds` 1-600, default 90). The ticket is accepted as `?ticket=` only on `GET` of the matching media/VOD object without an `Authorization` header; in the OpenAPI artifact as `createMediaTicket` and `createVodTicket` (see RTMP_SPEC.md) |
 | RTMP recording tickets | `POST /api/v1/rtmp/recordings/{recordingId}/ticket` | Management bearer token; same body and response as the media ticket. The ticket is accepted as `?ticket=` only on `GET /api/v1/rtmp/recordings/{recordingId}/content` of the same recording without an `Authorization` header, never on the item, list or delete routes; `404 recording_not_found` for an unknown id; in the OpenAPI artifact as `createRecordingTicket` |
 | In-flight requests | `GET /api/v1/requests?pool=&route=&phase=&min_age_ms=&limit=&requestId=` | Management bearer token; live requests oldest first (default limit 100, at most 1000) with `total` and `truncated`; in the OpenAPI artifact as `getRequests` |
+| Clients | `GET /api/v1/clients?limit=&sort=&ip=` | Management bearer token; peers aggregated by address with live and total connections, requests, bytes and errors (default limit 200, at most 2000; `sort` is `bytes`, `connections`, `requests` or `recent`; `ip` is an address prefix); `409 client_tracking_disabled` when tracking is off; in the OpenAPI artifact as `getClients` |
+| Connections | `GET /api/v1/connections?limit=&ip=&listener=` | Management bearer token; every open connection with its peer, listener, protocol, TLS facts, state, age, idle time, counters and current request (default limit 500, at most 5000); `409 client_tracking_disabled` when tracking is off; in the OpenAPI artifact as `getConnections` |
 | Statistics | `GET /ready`, `GET /metrics`, `GET /status.json`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready`, `GET /metrics` and `GET /status.json` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
 
 Every recognized `/api/v1` or `/api/v2` route requires exactly one management Bearer token. The only public
@@ -455,6 +457,26 @@ configured servers into the configuration file through the typed save (in the au
 logic are not kept and a composed file is refused with `422`), then removes those entries from the overlay.
 It answers like a save, or `{"outcome":"nothing_to_promote","promoted":0}`. State, health, checks, weight and
 listener entries have no configuration setting and stay in the overlay.
+
+## Clients and Connections
+
+`GET /api/v1/clients` answers `sampledAtUnixMs`, `generation`, `ipv6Prefix` (64 or 128), `trackedClients`,
+`truncated`, `clients[]`, `other` and `totals`. A client row has `ip`, `connections` (live now),
+`connectionsTotal`, `requests`, `bytesIn` (received from the client), `bytesOut` (sent to the client),
+`firstSeenUnixMs`, `lastActivityUnixMs`, `listeners[]`, `protocols[]` and `errors` (5xx responses plus aborted
+requests). The counters only grow; closed connections are folded into their client. `other` and `totals` carry
+`clients`, `connections`, `requests`, `bytesIn` and `bytesOut`: `other` sums the clients not listed (beyond
+`limit` or evicted beyond `client_tracking.max_clients`), `totals` sums every client.
+
+`GET /api/v1/connections` answers `sampledAtUnixMs`, `truncated`, `total` and `connections[]`. A row has `id`,
+`peerIp`, `peerPort`, `listener`, `protocol` (`http/1.1`, `h2`, `h3`, `tcp`, `udp`, `rtmp`, `websocket`), `tls`
+(`version`, `sni`, `alpn`, or `null` for plaintext), `state` (`active`, `idle`, `draining`, `handshaking`),
+`ageMs`, `idleMs`, `requests`, `bytesIn`, `bytesOut`, `service`, `upstream` and `currentRequest` (`method`,
+`path`, `ageMs`, or `null` between requests). `upstream` is the pool server serving the request in flight.
+
+Both are management-token reads. Peer addresses appear nowhere else: not on the public stats page, in
+`/metrics` or in events. Unknown or invalid query parameters answer `400 invalid_client_query` or
+`400 invalid_connection_query`. See [OPERATIONS.md](../OPERATIONS.md#client-and-connection-tracking).
 
 ## Evacuate
 

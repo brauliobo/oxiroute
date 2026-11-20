@@ -536,6 +536,52 @@ The HTTP/2 lane is the same idea for HTTP/2: a request for a fixed-response or p
 served on its stream without a session; every other HTTP/2 request takes the classic path. The option above controls
 both lanes.
 
+### Client and connection tracking
+
+`oxiroute` tracks the peers of its public listeners and exposes them through the management-only
+`GET /api/v1/clients` and `GET /api/v1/connections` ([API.md](reference/API.md)). The `client_tracking`
+section ([CONFIG_SPEC.md](CONFIG_SPEC.md)) turns it off, bounds the history (`max_clients`, default 10000) and
+chooses the IPv6 aggregation (`ipv6_prefix`, default 128; 64 groups a whole subnet). A reload applies it to the
+new generation. When disabled, the endpoints answer `409 client_tracking_disabled` and the data path does no
+tracking work.
+
+Coverage. Control listeners are not tracked; public listeners are:
+
+| Protocol | Served by | Tracked |
+| --- | --- | --- |
+| HTTP/1 (plain and TLS), HTTP/2, WebSocket upgrade | the HTTP data plane: epoll by default (io_uring shares its engine), tokio otherwise | yes |
+| HTTP/3 connections | the QUIC listener, whatever the HTTP data plane | yes |
+| UDP flows | the UDP listener | yes |
+| L4 TCP relays | the L4 listener | yes |
+| RTMP sessions | the RTMP listener | yes |
+| Forward proxy: HTTP/1, HTTP/2, HTTP/3, CONNECT | the forward proxy listener | yes |
+
+Every public listener kind is tracked. Not tracked: control listeners (management API, Unix socket) and the
+stats page listener.
+
+Accounting.
+- Bytes are payload bytes (HTTP bodies, relayed stream bytes, datagram payloads), not wire bytes: headers,
+  TLS records and QUIC framing are not counted. They match the listener byte counters.
+- `bytesIn` is received from the client, `bytesOut` is sent to the client.
+- The epoll plane credits bytes after each readiness event, so a long transfer is visible while it runs; the
+  tokio plane credits each body chunk. Requests are counted when they end. `errors` counts 5xx responses and
+  aborted requests.
+- SNI is reported for TLS on the epoll plane and for HTTP/3; the tokio plane reports the TLS version and ALPN
+  only, and `sni` is `null`.
+- Forward HTTP/3 CONNECT tunnels credit their bytes when the tunnel ends. RTMP sessions carry no application,
+  stream or role. The PROXY-protocol client address is used for UDP flows only; TCP and forward connections
+  are keyed by the socket peer.
+
+Bounds and cost. A connection is one object of relaxed atomics written by its own worker; there is no lock or
+allocation per request. The registry lock is taken only when a connection opens or closes. Live connections
+are summed when the API is read. A closed connection is folded into its client; beyond `max_clients` the least
+recently active clients are evicted into the `other` bucket, so the totals stay exact.
+
+Scope. Only the active generation is reported. In a supervised daemon that is the active worker process;
+in the direct (unsupervised) runtime the registry is process wide, so connections of generations still
+draining in the same process appear as well. IP addresses are returned only by the two authenticated
+endpoints, never on the public stats page, in `/metrics` or in events.
+
 ### Request tracing and in-flight requests
 
 `oxiroute requests list` (`GET /api/v1/requests`) shows every request currently inside the router
