@@ -413,3 +413,7 @@ tests and strict clippy.
 - A connection another acceptor took is served like an accepted one: `protocols/l4/stream.rs` `Stream::adopt` builds the
   stream of a non-blocking `std::net::TcpStream` on the calling runtime with its peer address and the bytes already read,
   and `server/transfer_fd` `Fds::take_owned` hands a descriptor of the container to its caller as an `OwnedFd`.
+- A connection carries its tracking record (7.1.1, per-client and per-connection tracking): `protocols/digest.rs`
+  `SocketDigest` has one more `OnceCell<Arc<dyn Any + Send + Sync>>` slot, filled once through `tracking_or_init` and read
+  with `tracking`. The application owns the type; the slot is dropped with the last reference to the digest, that is with
+  the connection, so the record closes without a hook. The slot is empty when tracking is off.
