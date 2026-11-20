@@ -56,6 +56,15 @@ fn every_size_shows_the_identity_tabs_table_and_footer() {
 }
 
 #[test]
+fn a_narrow_status_line_drops_whole_segments_and_keeps_the_badge() {
+    let screen = screen(&mut running(View::Listeners), 80, 24);
+    let status = screen.lines().next().expect("status line");
+    assert!(status.contains("generation #4 accepting"), "{status}");
+    assert!(!status.contains("workers"), "{status}");
+    assert!(status.trim_end().ends_with("2s rates  ● LIVE"), "{status}");
+}
+
+#[test]
 fn the_listener_columns_drop_by_priority_as_the_terminal_narrows() {
     let wide = screen(&mut running(View::Listeners), 120, 30);
     assert!(has_all(

@@ -27,6 +27,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App, layout: &Layout) {
     let window = format!(" {} rates ", app.window.label());
     let total = width(&window) + width(&badge);
     let left_rect = Rect::new(rect.x, rect.y, rect.width.saturating_sub(total + 1), 1);
+    let left = whole_segments(&left, left_rect.width.saturating_sub(1));
     frame.render_widget(
         Paragraph::new(Line::styled(format!(" {left}"), theme.style(Role::Title))),
         left_rect,
@@ -41,4 +42,15 @@ pub(super) fn draw(frame: &mut Frame, app: &App, layout: &Layout) {
         ),
     ]);
     frame.render_widget(Paragraph::new(line), right_of(rect, total));
+}
+
+fn whole_segments(text: &str, available: u16) -> &str {
+    let mut end = text.len();
+    while width(&text[..end]) > available {
+        match text[..end].rfind("  ") {
+            Some(cut) => end = cut,
+            None => break,
+        }
+    }
+    &text[..end]
 }
