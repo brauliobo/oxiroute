@@ -225,6 +225,11 @@ impl Cell {
         match &self.value {
             Value::Missing => Json::Null,
             Value::Text(text) => Json::String(text.clone()),
+            Value::Number { value, .. }
+                if *value >= 0.0 && (value - value.trunc()).abs() < f64::EPSILON =>
+            {
+                Json::from(units::saturating_u64(*value))
+            }
             Value::Number { value, .. } => {
                 Number::from_f64(*value).map_or(Json::Null, Json::Number)
             }

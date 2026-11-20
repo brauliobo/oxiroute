@@ -1,4 +1,4 @@
-use super::{Plan, Printed};
+use super::Printed;
 use crate::cli::top::model::Row;
 
 fn field(text: &str) -> String {
@@ -13,7 +13,7 @@ fn line(parts: impl IntoIterator<Item = String>) -> String {
     parts.into_iter().collect::<Vec<_>>().join(",")
 }
 
-pub(super) fn render(plan: &Plan, tables: &[Printed]) -> String {
+pub(super) fn render(tables: &[Printed]) -> String {
     let Some(printed) = tables.first() else {
         return String::new();
     };
@@ -33,7 +33,7 @@ pub(super) fn render(plan: &Plan, tables: &[Printed]) -> String {
                 printed
                     .columns
                     .iter()
-                    .map(|index| field(&csv_value(row, *index, plan))),
+                    .map(|index| field(&csv_value(row, *index))),
             ),
         )
     };
@@ -47,7 +47,7 @@ pub(super) fn render(plan: &Plan, tables: &[Printed]) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
-fn csv_value(row: &Row, index: usize, _plan: &Plan) -> String {
+fn csv_value(row: &Row, index: usize) -> String {
     match row.cells[index].json() {
         serde_json::Value::Null => String::new(),
         serde_json::Value::String(text) => text,

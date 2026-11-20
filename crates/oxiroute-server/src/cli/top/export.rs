@@ -96,7 +96,7 @@ pub(crate) fn render(history: &History, plan: &Plan, kind: Kind) -> Result<Strin
     let text = match kind {
         Kind::Text => text::render(&sampling, plan, &tables),
         Kind::Json => json::render(&sampling, plan, &tables)?,
-        Kind::Csv => csv::render(plan, &tables),
+        Kind::Csv => csv::render(&tables),
     };
     Ok(text)
 }
