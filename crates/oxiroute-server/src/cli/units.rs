@@ -20,13 +20,13 @@ pub(crate) fn saturating_u64(value: f64) -> u64 {
 fn scaled(value: f64, base: f64, suffixes: &[&str; 5]) -> String {
     let mut value = value;
     let mut step = 0;
-    while value >= 1_000.0 && step + 1 < suffixes.len() {
+    while value >= 999.5 && step + 1 < suffixes.len() {
         value /= base;
         step += 1;
     }
     match (step, value) {
         (0, _) => format!("{value:.0}"),
-        (_, scaled) if scaled < 10.0 => format!("{scaled:.1}{}", suffixes[step]),
+        (_, scaled) if scaled < 9.95 => format!("{scaled:.1}{}", suffixes[step]),
         (_, scaled) => format!("{scaled:.0}{}", suffixes[step]),
     }
 }
@@ -36,7 +36,7 @@ pub(crate) fn count(value: u64) -> String {
 }
 
 pub(crate) fn rate(value: f64) -> String {
-    if value > 0.0 && value < 10.0 {
+    if value > 0.0 && value < 9.95 {
         format!("{value:.1}")
     } else {
         scaled(value, 1_000.0, &DECIMAL)
@@ -44,7 +44,7 @@ pub(crate) fn rate(value: f64) -> String {
 }
 
 pub(crate) fn bytes_rate(value: f64) -> String {
-    if value > 0.0 && value < 10.0 {
+    if value > 0.0 && value < 9.95 {
         format!("{value:.1}")
     } else {
         scaled(value, 1_024.0, &BINARY)

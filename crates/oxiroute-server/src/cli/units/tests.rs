@@ -15,6 +15,16 @@ fn counts_and_rates_scale_to_short_readable_text() {
 }
 
 #[test]
+fn a_value_that_rounds_up_takes_the_next_form_instead_of_a_wider_one() {
+    assert_eq!(units::rate(9.96), "10");
+    assert_eq!(units::bytes_rate(9.96), "10");
+    assert_eq!(units::bytes_rate(10.0 * 1_024.0 - 8.0), "10K");
+    assert_eq!(units::count(9_960), "10k");
+    assert_eq!(units::count(999_600), "1.0M");
+    assert_eq!(units::bytes(1_023 * 1_024 + 900), "1.0M");
+}
+
+#[test]
 fn durations_read_in_the_largest_fitting_units() {
     assert_eq!(units::millis(850), "850ms");
     assert_eq!(units::millis(1_500), "1.5s");
