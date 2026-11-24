@@ -2,23 +2,71 @@
 
 Prepared 2026-11-24 for the `v7.2.0` tag.
 
-OxiRoute 7.2.0 adds strict YAML 1.2 and TOML configuration formats, expands `.lua` support into a deterministic
-sandboxed Lua 5.4 scripting environment with a built-in helper library, an ergonomic `oxi` builder DSL, and
-hot-reloaded modular file loaders, and automatically creates `/etc/oxiroute/management.token` on package install and
-upgrade across Arch, Debian/Ubuntu, and RPM packages. Existing configuration files need no edits to upgrade.
+OxiRoute 7.2.0 adds the UCI-inspired `.oxi` stanza format (with inline lists, embedded sandboxed Lua 5.4, and
+hot-reloaded multi-file `include`), strict YAML 1.2 and TOML formats, cross-format `vars`/parameterized templates and
+high-level `edge`/`sites` configuration sugar across all 7 formats, expanded sandboxed Lua 5.4 scripting with a built-in
+helper library and `oxi` builder DSL, nginx/HAProxy CLI parity upgrades (`config check --no-probe/--dump`, `config test`,
+`version -v`, top-level `reload`), and automatic `/etc/oxiroute/management.token` creation on package install and upgrade
+across Arch, Debian/Ubuntu, and RPM packages. Existing configuration files need no edits to upgrade.
 
 ## Headlines
 
-- **YAML 1.2 and TOML configuration formats.** `.yaml`/`.yml` and `.toml` join KDL 2.0, Lua, HOCON, and OpenWrt UCI
-  across `serve`, `init`, `config check`, `config compose`, and the management API, with full support for generic
-  `templates`/`use` expansion and native server references.
+- **`.oxi` stanza configuration format.** Flat, two-space-indented stanzas (`site`, `template`, `pool`, `cert`, `tls`,
+  `service`, `listener`, `cache`, `forward_proxy`, `rtmp`, `l4`, native `*_server`) with inline space-separated lists,
+  arrow route shorthands (`http ... -> https`, `route /api -> 127.0.0.1:5000`), sandboxed multi-file `include`
+  (`.oxi`/`.yaml`/`.toml`/`.json`/`.lua` with hot-reload dependency tracking), embedded sandboxed Lua 5.4 (`lua` blocks
+  and `lua(...)` expressions), and deterministic lossless rendering.
+- **Cross-format parameterized templates, `vars`, and `edge`/`sites` sugar.** Root `vars`, template `params` defaults,
+  parameterized `use`, typed/string `{{var}}` interpolation, and high-level `edge`/`sites` desugaring work identically
+  across all 7 formats (`.oxi`, KDL, YAML, TOML, Lua, HOCON, UCI) and coexist cleanly with low-level `ConfigDraft`
+  sections.
+- **YAML 1.2 and TOML configuration formats.** `.yaml`/`.yml` and `.toml` join KDL 2.0, `.oxi`, Lua, HOCON, and OpenWrt
+  UCI across `serve`, `init`, `config check`, `config compose`, and the management API, verified by an exhaustive
+  7-format full-schema round-trip coverage suite.
 - **Sandboxed Lua 5.4 scripting, `oxi` DSL, and modular loaders.** `.lua` configs run in a bounded, deterministic Lua
   5.4 sandbox with collection/string/encoding/hashing/network helpers, concise `oxi.*` builders, and directory-jailed
   `include`/`read_*` helpers whose files are automatically watched for hot reload.
+- **Nginx & HAProxy CLI parity upgrades.** `oxiroute config check` (aliased as `config test`) gains `--no-probe`
+  (offline check without port binding) and `--dump [--format <FMT>]` (`nginx -T` in any format), `oxiroute version -v`
+  prints detailed build/capability info (`nginx -V` / `haproxy -vv`), top-level `oxiroute reload [--wait]` matches
+  `nginx -s reload`, and packaged config discovery checks `/etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}`.
 - **Automatic management token creation on package install and upgrade.** Every package family (Arch, Debian/Ubuntu,
   RPM) runs a shared helper (`/usr/lib/oxiroute/ensure-management-token`) to generate `/etc/oxiroute/management.token`
   (`0600 oxiroute:oxiroute`) when missing, so `oxiroute` CLI commands and a configured management listener work out of
   the box without manual token setup.
+
+## `.oxi` stanza format, cross-format templates, and `edge`/`sites` sugar
+
+The full `.oxi` syntax and sugar reference is in [OXI configuration format](OXI_FORMAT.md) and
+[Configuration formats](CONFIG_FORMATS.md).
+
+- **Minimalist stanza syntax (`.oxi`).** Two-space-indented flat stanzas without braces, brackets, commas, or quotes on
+  bare paths, hosts, IPs, URLs, or globs, plus explicit `[item]`/`[]`/`{}` containers and `- ` anonymous list items for
+  lossless round-trip rendering of any `ValidatedConfig`.
+- **Embedded Lua 5.4 and multi-file `include`.** `.oxi` documents support top-level `lua` blocks (with `vars` exposed as
+  a global), key-level `lua` blocks, inline `lua(...)` expressions, and sandboxed relative `include` across `.oxi`,
+  `.yaml`, `.toml`, `.json`, and `.lua` files with automatic hot-reload tracking via `ResolvedSource.dependencies`.
+- **Cross-format `vars` and parameterized templates.** Every format now supports root `vars`, template `params` defaults,
+  parameterized `use` arguments, whole-value typed `{{var}}` and embedded `"127.0.0.1:{{port}}"` interpolation, dotted
+  lookups, `\{{` escaping, and `MAX_SUBSTITUTIONS` / `MAX_EXPANSION_DEPTH` / `MAX_OUTPUT_BYTES` bounds.
+- **Cross-format `edge` and `sites` sugar.** High-level `edge` (`http`, `https`, `redirect_https`, `stats`, `management`)
+  and `sites` (`host`, `cert` for Certbot/self-signed/files/ACME/reuse, `proxy`, `static`, `redirect`, `respond`,
+  sub-path `routes`, `gzip`) desugar deterministically into canonical `ConfigDraft` sections in every format.
+- **Exhaustive 7-format coverage.** `tests/format_coverage.rs` verifies full kitchen-sink `ValidatedConfig` round-trips,
+  identical `vars`/parameterized template resolution, identical `edge`/`sites` sugar resolution, TOML fail-closed
+  explicit-`null` rejection, and shared resource bounds across all 7 formats.
+
+## Nginx & HAProxy CLI parity
+
+- **`oxiroute config check` / `config test`.** Added `--no-probe` to validate and prepare configurations offline without
+  attempting to bind listening ports, and `--dump [--format <FMT>]` to print the fully resolved effective configuration
+  in any supported format.
+- **`oxiroute version -v / --verbose`.** Prints version, target arch/OS, supported config formats, protocols, TLS
+  backends, data planes, and detected CPU SIMD level (human table or `--output json`).
+- **Top-level `oxiroute reload [--wait]`.** Mirrors `oxiroute generation reload` alongside top-level `drain` and
+  `shutdown`.
+- **Multi-format packaged discovery.** The CLI automatically discovers management endpoints and token files from
+  `/etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}`.
 
 ## YAML 1.2 and TOML configuration formats
 
