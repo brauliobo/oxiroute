@@ -49,6 +49,7 @@ impl Execute for ProcessCommand {
             Self::Metrics => context.show_text("/metrics"),
             Self::Topology => context.show("/api/v1/topology", View::Topology),
             Self::Monitoring => context.show("/api/v1/monitoring", View::Monitoring),
+            Self::Reload { wait } => crate::cli::generation::reload(context, *wait),
             Self::Drain => context.mutate("POST", "/api/v1/process/drain", &json!({})),
             Self::Shutdown => context.mutate("POST", "/api/v1/process/shutdown", &json!({})),
         }

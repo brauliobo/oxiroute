@@ -12,7 +12,15 @@ use crate::cli::{
 impl Execute for ConfigCommand {
     fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
         match self {
-            Self::Check { config } => render::emit(&check::report(config)?),
+            Self::Check {
+                config,
+                no_probe,
+                dump,
+                format,
+            } => {
+                let dump_format = dump.then(|| format.unwrap_or_default().into());
+                render::emit(&check::report(config, !*no_probe, dump_format)?)
+            }
             Self::Compose { format, configs } => render::emit(&compose(configs, (*format).into())?),
             Self::Get => context.show("/api/v1/config", View::Config),
             Self::Show(args) => show(context, args),

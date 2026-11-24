@@ -8,9 +8,19 @@ use super::input::InputFormat;
 #[derive(Subcommand)]
 pub(crate) enum ConfigCommand {
     /// Check a configuration file offline: parse, validate and prepare it without a daemon.
+    #[command(visible_alias = "test")]
     Check {
         /// Configuration file in a native or canonical format.
         config: PathBuf,
+        /// Skip listener bind probes when testing offline or while another process binds the ports.
+        #[arg(long)]
+        no_probe: bool,
+        /// Print the fully resolved effective configuration after validation succeeds.
+        #[arg(long)]
+        dump: bool,
+        /// Output format for `--dump` (defaults to `kdl`).
+        #[arg(long, value_enum, value_name = "FORMAT", requires = "dump")]
+        format: Option<ComposeFormat>,
     },
     /// Compose finalized canonical configurations in the supplied order.
     ///
@@ -46,7 +56,7 @@ pub(crate) enum ConfigCommand {
 
 #[derive(Args)]
 pub(crate) struct SourceArgs {
-    /// Configuration file in KDL, Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
+    /// Configuration file in KDL, OXI (.oxi), Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
     pub(super) file: PathBuf,
     /// Format of the file when its extension does not say.
     #[arg(long, value_enum, value_name = "FORMAT")]
@@ -77,7 +87,7 @@ pub(crate) enum Against {
 
 #[derive(Args)]
 pub(crate) struct DiffArgs {
-    /// Configuration file in KDL, Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
+    /// Configuration file in KDL, OXI (.oxi), Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
     #[arg(required_unless_present = "rev", conflicts_with = "rev")]
     pub(super) file: Option<PathBuf>,
     /// Format of the file when its extension does not say.
@@ -140,7 +150,7 @@ pub(crate) struct EditArgs {
 
 #[derive(Args)]
 pub(crate) struct FmtArgs {
-    /// Configuration file in KDL, Lua, HOCON, UCI, YAML or TOML, chosen by its extension.
+    /// Configuration file in KDL, OXI (.oxi), Lua, HOCON, UCI, YAML or TOML, chosen by its extension.
     pub(super) file: PathBuf,
     /// Format of the file when its extension does not say.
     #[arg(long, value_enum, value_name = "FORMAT")]
@@ -165,6 +175,7 @@ pub(crate) enum ComposeFormat {
     Hocon,
     Yaml,
     Toml,
+    Oxi,
 }
 
 impl From<ComposeFormat> for ConfigFormat {
@@ -176,6 +187,7 @@ impl From<ComposeFormat> for ConfigFormat {
             ComposeFormat::Hocon => Self::Hocon,
             ComposeFormat::Yaml => Self::Yaml,
             ComposeFormat::Toml => Self::Toml,
+            ComposeFormat::Oxi => Self::Oxi,
         }
     }
 }

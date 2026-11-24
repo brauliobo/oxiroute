@@ -5,7 +5,7 @@ use crate::cli::{context::Context, error::CliError, render, view::View};
 
 const RELOAD: &str = "/api/v1/generations/reload";
 
-pub(super) fn reload(context: &Context<'_>, wait: bool) -> Result<(), CliError> {
+pub(in crate::cli) fn reload(context: &Context<'_>, wait: bool) -> Result<(), CliError> {
     if !wait {
         return context.mutate("POST", RELOAD, &json!({}));
     }

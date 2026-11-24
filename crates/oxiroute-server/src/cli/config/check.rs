@@ -1,5 +1,7 @@
 use std::{fmt::Write as _, path::Path};
 
+use oxiroute_config_source::{ConfigFormat, render_config};
+
 use super::report;
 use crate::{
     GenerationManager,
@@ -64,14 +66,27 @@ pub(in crate::cli) fn without_management(
     Ok(())
 }
 
-pub(super) fn report(path: &Path) -> Result<String, CliError> {
+pub(in crate::cli) fn report(
+    path: &Path,
+    probe_listeners: bool,
+    dump_format: Option<ConfigFormat>,
+) -> Result<String, CliError> {
     let mut document = load(path)?;
+    let resolved = dump_format.map(|_| document.validated_config.clone());
     let mut notices = warnings(&document);
     notices.extend(without_unusable_management(&mut document)?);
-    prepare(*document, true)?;
+    prepare(*document, probe_listeners)?;
     let mut report = String::from("configuration is valid and runtime-preparable\n");
     for notice in notices {
         writeln!(report, "warning: {notice}").map_err(CliError::local)?;
+    }
+    if let Some((format, validated)) = dump_format.zip(resolved) {
+        let rendered = render_config(format, &validated).map_err(CliError::local)?;
+        report.push('\n');
+        report.push_str(&rendered);
+        if !report.ends_with('\n') {
+            report.push('\n');
+        }
     }
     Ok(report)
 }

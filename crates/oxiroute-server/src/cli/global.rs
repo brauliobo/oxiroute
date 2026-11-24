@@ -34,7 +34,7 @@ pub(crate) struct Global {
         value_name = "URL",
         help_heading = "Connection",
         long_help = "Management API URL, `http://HOST:PORT`.\n\nWithout it the CLI reads OXIROUTE_ENDPOINT in /etc/oxiroute/oxiroute.env, \
-            then the management bind of /etc/oxiroute/oxiroute.kdl or .lua, then uses http://127.0.0.1:9900."
+            then the management bind of /etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}, then uses http://127.0.0.1:9900."
     )]
     pub(super) endpoint: Option<String>,
     /// Named context whose address, token source and timeout apply; flags and variables take precedence.
@@ -64,7 +64,7 @@ pub(crate) struct Global {
         help_heading = "Connection",
         long_help = "File holding the management bearer token: a regular file with mode 0400 or 0600 and 32 to 512 visible characters.\n\n\
             Without it the CLI reads OXIROUTE_MANAGEMENT_TOKEN_FILE in /etc/oxiroute/oxiroute.env, then the management token_file of \
-            /etc/oxiroute/oxiroute.kdl or .lua, then /etc/oxiroute/management.token when it exists."
+            /etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}, then /etc/oxiroute/management.token when it exists."
     )]
     pub(super) token_file: Option<PathBuf>,
     /// Time limit for connecting and for each answer; `--wait` waits up to the same limit.
@@ -75,7 +75,7 @@ pub(crate) struct Global {
         value_name = "DURATION",
         help_heading = "Connection",
         long_help = "Time limit for connecting to the daemon and for each answer, such as 500ms, 15s or 2m.\n\n\
-            Without it the CLI waits 5s to connect and 10s for each answer. With --wait on `ready` or `generation reload` the \
+            Without it the CLI waits 5s to connect and 10s for each answer. With --wait on `ready`, `reload` or `generation reload` the \
             same limit bounds the whole wait, 30s by default."
     )]
     pub(super) timeout: Option<Duration>,

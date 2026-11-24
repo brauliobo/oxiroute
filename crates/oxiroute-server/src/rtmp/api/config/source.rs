@@ -39,6 +39,7 @@ enum SourceFormat {
     Uci,
     Yaml,
     Toml,
+    Oxi,
     Json,
 }
 
@@ -51,6 +52,7 @@ impl SourceFormat {
             Self::Uci => ConfigFormat::Uci,
             Self::Yaml => ConfigFormat::Yaml,
             Self::Toml => ConfigFormat::Toml,
+            Self::Oxi => ConfigFormat::Oxi,
         }
     }
 }

@@ -16,7 +16,15 @@ pub(in crate::cli) const ENDPOINT_ENV: &str = "OXIROUTE_ENDPOINT";
 pub(in crate::cli) const MANAGEMENT_TOKEN_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
 pub(in crate::cli) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9900";
 const PACKAGE_ENV_FILE: &str = "/etc/oxiroute/oxiroute.env";
-const PACKAGE_CONFIGS: [&str; 2] = ["/etc/oxiroute/oxiroute.kdl", "/etc/oxiroute/oxiroute.lua"];
+const PACKAGE_CONFIGS: [&str; 7] = [
+    "/etc/oxiroute/oxiroute.oxi",
+    "/etc/oxiroute/oxiroute.kdl",
+    "/etc/oxiroute/oxiroute.yaml",
+    "/etc/oxiroute/oxiroute.yml",
+    "/etc/oxiroute/oxiroute.toml",
+    "/etc/oxiroute/oxiroute.lua",
+    "/etc/oxiroute/oxiroute.conf",
+];
 const PACKAGE_TOKEN_FILE: &str = "/etc/oxiroute/management.token";
 const MAX_PACKAGE_ENV_BYTES: usize = 8 * 1024;
 
@@ -48,6 +56,11 @@ impl Package {
             token_file,
             management: OnceCell::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::cli) fn config_paths(&self) -> &[PathBuf] {
+        &self.configs
     }
 
     pub(in crate::cli) fn discovered_endpoint(&self) -> Option<String> {
