@@ -134,10 +134,8 @@ fn convert_headers(lua: &Lua, value: LuaValue, fn_name: &str) -> mlua::Result<Ta
                                 "{fn_name}(): header map values must be strings"
                             )));
                         };
-                        str_entries.push((
-                            name.to_str()?.to_owned(),
-                            header_value.to_str()?.to_owned(),
-                        ));
+                        str_entries
+                            .push((name.to_str()?.to_owned(), header_value.to_str()?.to_owned()));
                     }
                     _ => {
                         return Err(mlua::Error::runtime(format!(
@@ -533,9 +531,8 @@ fn fn_redirect(lua: &Lua, (location, opts): (LuaValue, Option<Table>)) -> mlua::
         LuaValue::String(text) => {
             let text = text.to_str()?;
             let loc = lua.create_table()?;
-            let is_template = text.contains("$scheme")
-                || text.contains("$host")
-                || text.contains("$request_uri");
+            let is_template =
+                text.contains("$scheme") || text.contains("$host") || text.contains("$request_uri");
             if is_template {
                 loc.set("kind", "request_template")?;
                 loc.set("value", text.as_ref())?;
@@ -592,7 +589,10 @@ fn fn_fixed_response(
     out.set("type", "fixed_response")?;
     out.set("status", status)?;
     out.set("body", body.unwrap_or_default())?;
-    out.set("headers", convert_headers(lua, headers, "oxi.fixed_response")?)?;
+    out.set(
+        "headers",
+        convert_headers(lua, headers, "oxi.fixed_response")?,
+    )?;
     Ok(out)
 }
 

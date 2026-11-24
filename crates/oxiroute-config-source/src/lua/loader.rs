@@ -185,9 +185,10 @@ pub(super) fn register(
             "read_yaml",
             "read_toml",
         ] {
-            let disabled = lua.create_function(|_, _rel_path: LuaValue| -> mlua::Result<LuaValue> {
-                Err(mlua::Error::runtime(MEMORY_ONLY_ERROR))
-            })?;
+            let disabled =
+                lua.create_function(|_, _rel_path: LuaValue| -> mlua::Result<LuaValue> {
+                    Err(mlua::Error::runtime(MEMORY_ONLY_ERROR))
+                })?;
             globals.set(name, disabled)?;
         }
         return Ok(());
@@ -419,6 +420,8 @@ fn read_bounded_utf8(path: &Path, display_path: &str, max_bytes: usize) -> mlua:
     }
 
     String::from_utf8(bytes).map_err(|err| {
-        mlua::Error::runtime(format!("Lua loader file `{display_path}` is not valid UTF-8: {err}"))
+        mlua::Error::runtime(format!(
+            "Lua loader file `{display_path}` is not valid UTF-8: {err}"
+        ))
     })
 }

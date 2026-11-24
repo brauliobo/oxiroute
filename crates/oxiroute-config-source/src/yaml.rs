@@ -53,8 +53,7 @@ impl<'a> SourceIndex<'a> {
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
-    let documents =
-        MarkedYaml::load_from_str(source).map_err(|error| parse_scan_error(&error))?;
+    let documents = MarkedYaml::load_from_str(source).map_err(|error| parse_scan_error(&error))?;
     if documents.is_empty() {
         return Err(ConfigSourceError::parse("YAML", "YAML document is empty"));
     }

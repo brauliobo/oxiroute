@@ -179,12 +179,9 @@ fn full_validated_config_round_trips_through_toml() {
     assert_eq!(resolved_by_ext.format, ConfigFormat::Toml);
     assert_eq!(resolved_by_ext.config, validated);
 
-    let resolved_explicit = resolve_source_with_format(
-        Path::new("config"),
-        rendered.as_bytes(),
-        ConfigFormat::Toml,
-    )
-    .expect("resolve_source_with_format with ConfigFormat::Toml");
+    let resolved_explicit =
+        resolve_source_with_format(Path::new("config"), rendered.as_bytes(), ConfigFormat::Toml)
+            .expect("resolve_source_with_format with ConfigFormat::Toml");
     assert_eq!(resolved_explicit.format, ConfigFormat::Toml);
     assert_eq!(resolved_explicit.config, validated);
 
@@ -230,8 +227,8 @@ path = { kind = "exact", value = "/healthz" }
         json!(200)
     );
 
-    let resolved = resolve_source(Path::new("templated.toml"), source)
-        .expect("resolve TOML with templates");
+    let resolved =
+        resolve_source(Path::new("templated.toml"), source).expect("resolve TOML with templates");
     let expected = serde_json::from_value::<ConfigDraft>(json!({
         "version": 1,
         "listeners": [{
@@ -305,13 +302,7 @@ fn rejects_non_finite_floats() {
     ] {
         let error = decode_value(ConfigFormat::Toml, source).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "TOML",
-                    ..
-                }
-            ),
+            matches!(error, ConfigSourceError::Parse { format: "TOML", .. }),
             "unexpected error for {:?}: {error:?}",
             std::str::from_utf8(source)
         );
@@ -329,13 +320,7 @@ fn rejects_toml_datetime_values() {
     ] {
         let error = decode_value(ConfigFormat::Toml, source).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "TOML",
-                    ..
-                }
-            ),
+            matches!(error, ConfigSourceError::Parse { format: "TOML", .. }),
             "unexpected error for {:?}: {error:?}",
             std::str::from_utf8(source)
         );

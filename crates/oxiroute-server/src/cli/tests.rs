@@ -218,10 +218,7 @@ fn parses_canonical_config_composition_inputs_in_order() {
             && configs == &[PathBuf::from("nginx.lua"), PathBuf::from("haproxy.lua")]
     ));
 
-    for (flag, expected) in [
-        ("yaml", ComposeFormat::Yaml),
-        ("toml", ComposeFormat::Toml),
-    ] {
+    for (flag, expected) in [("yaml", ComposeFormat::Yaml), ("toml", ComposeFormat::Toml)] {
         let cli = Cli::try_parse_process_from([
             "oxiroute",
             "config",

@@ -158,7 +158,10 @@ fn lua_sandbox_blocks_dangerous_globals_and_bytecode() {
     // Lua bytecode header (\x1bLua...) must be rejected by ChunkMode::Text.
     let bytecode = b"\x1bLua\x54\x00";
     let err = decode_value(ConfigFormat::Lua, bytecode).unwrap_err();
-    assert!(matches!(err, ConfigSourceError::Lua(LuaConfigError::Lua(_))));
+    assert!(matches!(
+        err,
+        ConfigSourceError::Lua(LuaConfigError::Lua(_))
+    ));
 }
 
 #[test]
@@ -268,7 +271,8 @@ fn lua_decode_enforces_structural_depth_node_string_source_and_vm_bounds() {
     ));
 
     // Memory limit.
-    let mem_script = r#"local t = {}; for i = 1, 100000 do t[i] = string.rep("x", 1024) end; return t"#;
+    let mem_script =
+        r#"local t = {}; for i = 1, 100000 do t[i] = string.rep("x", 1024) end; return t"#;
     let err = decode_value(ConfigFormat::Lua, mem_script.as_bytes()).unwrap_err();
     assert!(matches!(
         err,

@@ -203,8 +203,9 @@ return {
 }
 "#;
 
-    let resolved = resolve_source_with_format(&root_path, root_source.as_bytes(), ConfigFormat::Lua)
-        .expect("resolve lua with external readers");
+    let resolved =
+        resolve_source_with_format(&root_path, root_source.as_bytes(), ConfigFormat::Lua)
+            .expect("resolve lua with external readers");
     assert!(resolved.compositional);
     let draft = resolved.config.as_draft();
     assert_eq!(draft.certificates.len(), 1);
@@ -291,10 +292,7 @@ fn rejects_include_cycles() {
     let root_path = dir.path().join("oxiroute.lua");
     let err = resolve_source(&root_path, b"return include('a.lua')").unwrap_err();
     assert!(matches!(err, ConfigSourceError::Lua(_)));
-    assert!(
-        err.to_string().contains("cycle"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("cycle"), "unexpected error: {err}");
 }
 
 #[test]
@@ -312,10 +310,7 @@ fn rejects_include_depth_exceeded() {
     let root_path = dir.path().join("oxiroute.lua");
     let err = resolve_source(&root_path, b"return include('level_0.lua')").unwrap_err();
     assert!(matches!(err, ConfigSourceError::Lua(_)));
-    assert!(
-        err.to_string().contains("depth"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("depth"), "unexpected error: {err}");
 }
 
 #[test]
@@ -354,8 +349,7 @@ fn rejects_missing_invalid_utf8_and_oversized_files() {
         &dir.path().join("huge.lua"),
         " ".repeat(MAX_SOURCE_BYTES + 1),
     );
-    let oversized_lua_err =
-        resolve_source(&root_path, b"return include('huge.lua')").unwrap_err();
+    let oversized_lua_err = resolve_source(&root_path, b"return include('huge.lua')").unwrap_err();
     assert!(matches!(oversized_lua_err, ConfigSourceError::Lua(_)));
     assert!(
         oversized_lua_err.to_string().contains("size limit"),

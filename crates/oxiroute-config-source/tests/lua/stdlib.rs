@@ -169,7 +169,10 @@ fn merge_and_deep_merge_semantics() {
         return deep_merge({}, t)
         ",
     );
-    assert!(cycle_err.contains("cyclic"), "unexpected error: {cycle_err}");
+    assert!(
+        cycle_err.contains("cyclic"),
+        "unexpected error: {cycle_err}"
+    );
 }
 
 #[test]
@@ -275,10 +278,11 @@ fn functional_list_helpers() {
     assert!(eval_lua_err("return range(1, 5, 0)").contains("zero"));
     assert!(eval_lua_err("return map({ a = 1 }, function(x) return x end)").contains("list"));
     assert!(eval_lua_err("return flat_map({ 1 }, function(x) return x end)").contains("list"));
+    assert!(eval_lua_err("return group_by({ 1, 2 }, function(x) return x end)").contains("string"));
     assert!(
-        eval_lua_err("return group_by({ 1, 2 }, function(x) return x end)").contains("string")
+        eval_lua_err("return filter({ [1] = 'a', [3] = 'c' }, function() return true end)")
+            .contains("sparse")
     );
-    assert!(eval_lua_err("return filter({ [1] = 'a', [3] = 'c' }, function() return true end)").contains("sparse"));
 }
 
 #[test]

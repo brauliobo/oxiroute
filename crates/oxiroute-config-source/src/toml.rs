@@ -4,9 +4,7 @@ use std::ops::Range;
 use serde_json::{Map, Number, Value};
 
 use crate::ConfigSourceError;
-use crate::limits::{
-    MAX_NODES, MAX_STRUCTURAL_DEPTH, check_output, check_string, validate_value,
-};
+use crate::limits::{MAX_NODES, MAX_STRUCTURAL_DEPTH, check_output, check_string, validate_value};
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let table = source.parse::<toml::Table>().map_err(|error| {

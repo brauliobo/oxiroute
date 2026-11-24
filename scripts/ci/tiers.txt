@@ -40,8 +40,12 @@ oxiroute-config-source::listener_ipv6_only_formats    core
 oxiroute-config-source::listener_workers_formats      core
 oxiroute-config-source::lua_config                    core
 oxiroute-config-source::lua_diagnostics               core
+oxiroute-config-source::lua_dsl                       core
 oxiroute-config-source::lua_errors                    core
+oxiroute-config-source::lua_loader                    core
 oxiroute-config-source::lua_render                    core
+oxiroute-config-source::lua_scripts                   core
+oxiroute-config-source::lua_stdlib                    core
 oxiroute-config-source::nginx_overlays                core
 oxiroute-config-source::proxy_protocol                core
 oxiroute-config-source::registry                      core
@@ -53,7 +57,9 @@ oxiroute-config-source::tls_backend_formats           core
 oxiroute-config-source::tls_client_auth               core
 oxiroute-config-source::tls_key_exchange_formats      core
 oxiroute-config-source::tls_ktls                      core
+oxiroute-config-source::toml                          core
 oxiroute-config-source::uci                           core
+oxiroute-config-source::yaml                          core
 oxiroute-config::audit                                core
 oxiroute-config::canary                               core
 oxiroute-config::cipher_list                          core

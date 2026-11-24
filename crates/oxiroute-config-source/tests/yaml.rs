@@ -257,13 +257,7 @@ fn rejects_empty_and_multi_document_yaml() {
     for empty in ["", "   \n\t\n", "# only comments\n", "---\n", "---\n...\n"] {
         let error = decode_value(ConfigFormat::Yaml, empty.as_bytes()).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "YAML",
-                    ..
-                }
-            ),
+            matches!(error, ConfigSourceError::Parse { format: "YAML", .. }),
             "expected YAML parse error for {empty:?}, got {error}"
         );
     }
@@ -271,13 +265,8 @@ fn rejects_empty_and_multi_document_yaml() {
     let multi = b"a: 1\n---\nb: 2\n";
     let error = decode_value(ConfigFormat::Yaml, multi).unwrap_err();
     assert!(
-        matches!(
-            error,
-            ConfigSourceError::Parse {
-                format: "YAML",
-                ..
-            }
-        ) && error.to_string().contains("multi-document"),
+        matches!(error, ConfigSourceError::Parse { format: "YAML", .. })
+            && error.to_string().contains("multi-document"),
         "unexpected error: {error}"
     );
 }
@@ -287,13 +276,7 @@ fn rejects_duplicate_mapping_keys() {
     let source = b"a: 1\nb: 2\na: 3\n";
     let error = decode_value(ConfigFormat::Yaml, source).unwrap_err();
     assert!(
-        matches!(
-            error,
-            ConfigSourceError::Parse {
-                format: "YAML",
-                ..
-            }
-        ),
+        matches!(error, ConfigSourceError::Parse { format: "YAML", .. }),
         "unexpected error: {error}"
     );
 }
@@ -311,13 +294,8 @@ fn rejects_non_string_mapping_keys() {
     for source in cases {
         let error = decode_value(ConfigFormat::Yaml, source.as_bytes()).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "YAML",
-                    ..
-                }
-            ) && error.to_string().contains("mapping keys must be strings"),
+            matches!(error, ConfigSourceError::Parse { format: "YAML", .. })
+                && error.to_string().contains("mapping keys must be strings"),
             "unexpected error for {source:?}: {error}"
         );
     }
@@ -334,13 +312,8 @@ fn rejects_non_finite_floats() {
     ] {
         let error = decode_value(ConfigFormat::Yaml, source.as_bytes()).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "YAML",
-                    ..
-                }
-            ) && error.to_string().contains("non-finite"),
+            matches!(error, ConfigSourceError::Parse { format: "YAML", .. })
+                && error.to_string().contains("non-finite"),
             "unexpected error for {source:?}: {error}"
         );
     }
@@ -370,13 +343,7 @@ fn rejects_yaml_anchors_aliases_and_tags() {
     for source in cases {
         let error = decode_value(ConfigFormat::Yaml, source.as_bytes()).unwrap_err();
         assert!(
-            matches!(
-                error,
-                ConfigSourceError::Parse {
-                    format: "YAML",
-                    ..
-                }
-            ),
+            matches!(error, ConfigSourceError::Parse { format: "YAML", .. }),
             "expected YAML parse error for {source:?}, got {error}"
         );
     }

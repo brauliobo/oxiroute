@@ -45,12 +45,28 @@ name = "lua_diagnostics"
 path = "tests/lua/diagnostics.rs"
 
 [[test]]
+name = "lua_dsl"
+path = "tests/lua/dsl.rs"
+
+[[test]]
 name = "lua_errors"
 path = "tests/lua/errors.rs"
 
 [[test]]
+name = "lua_loader"
+path = "tests/lua/loader.rs"
+
+[[test]]
 name = "lua_render"
 path = "tests/lua/render/main.rs"
+
+[[test]]
+name = "lua_scripts"
+path = "tests/lua/scripts.rs"
+
+[[test]]
+name = "lua_stdlib"
+path = "tests/lua/stdlib.rs"
 
 [[test]]
 name = "tls_backend_formats"
