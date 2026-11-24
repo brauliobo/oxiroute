@@ -33,6 +33,9 @@ fn serve_takes_its_configuration_explicitly_or_as_a_path_shorthand() {
     for operand in [
         "edge.lua",
         "oxiroute.hocon",
+        "oxiroute.yaml",
+        "oxiroute.yml",
+        "oxiroute.toml",
         "./edge",
         "etc/edge",
         &plain_file,
@@ -214,6 +217,30 @@ fn parses_canonical_config_composition_inputs_in_order() {
         } if *format == ComposeFormat::Hocon
             && configs == &[PathBuf::from("nginx.lua"), PathBuf::from("haproxy.lua")]
     ));
+
+    for (flag, expected) in [
+        ("yaml", ComposeFormat::Yaml),
+        ("toml", ComposeFormat::Toml),
+    ] {
+        let cli = Cli::try_parse_process_from([
+            "oxiroute",
+            "config",
+            "compose",
+            "--format",
+            flag,
+            "edge.yaml",
+            "edge.toml",
+        ])
+        .expect("config compose yaml/toml");
+
+        assert!(matches!(
+            cli.subcommand(),
+            Command::Config {
+                command: ConfigCommand::Compose { format, configs }
+            } if *format == expected
+                && configs == &[PathBuf::from("edge.yaml"), PathBuf::from("edge.toml")]
+        ));
+    }
 }
 
 #[test]

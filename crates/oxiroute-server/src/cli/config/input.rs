@@ -15,6 +15,8 @@ pub(crate) enum InputFormat {
     Lua,
     Hocon,
     Uci,
+    Yaml,
+    Toml,
     Json,
 }
 
@@ -25,6 +27,8 @@ impl InputFormat {
             Self::Lua => "lua",
             Self::Hocon => "hocon",
             Self::Uci => "uci",
+            Self::Yaml => "yaml",
+            Self::Toml => "toml",
             Self::Json => "json",
         }
     }
@@ -35,6 +39,8 @@ impl InputFormat {
             Self::Lua => ConfigFormat::Lua,
             Self::Hocon | Self::Json => ConfigFormat::Hocon,
             Self::Uci => ConfigFormat::Uci,
+            Self::Yaml => ConfigFormat::Yaml,
+            Self::Toml => ConfigFormat::Toml,
         }
     }
 
@@ -47,10 +53,12 @@ impl InputFormat {
             "lua" => Ok(Self::Lua),
             "uci" => Ok(Self::Uci),
             "hocon" | "conf" => Ok(Self::Hocon),
+            "yaml" | "yml" => Ok(Self::Yaml),
+            "toml" => Ok(Self::Toml),
             "json" => Ok(Self::Json),
             other => Err(CliError::Local(format!(
                 "cannot tell the format of {} from the extension `.{other}`: pass --format kdl, \
-                 lua, hocon, uci or json",
+                 lua, hocon, uci, yaml, toml or json",
                 path.display()
             ))),
         }

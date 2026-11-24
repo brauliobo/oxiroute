@@ -37,6 +37,8 @@ enum SourceFormat {
     Lua,
     Hocon,
     Uci,
+    Yaml,
+    Toml,
     Json,
 }
 
@@ -47,6 +49,8 @@ impl SourceFormat {
             Self::Lua => ConfigFormat::Lua,
             Self::Hocon | Self::Json => ConfigFormat::Hocon,
             Self::Uci => ConfigFormat::Uci,
+            Self::Yaml => ConfigFormat::Yaml,
+            Self::Toml => ConfigFormat::Toml,
         }
     }
 }

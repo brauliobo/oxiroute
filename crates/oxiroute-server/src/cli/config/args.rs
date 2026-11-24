@@ -46,7 +46,7 @@ pub(crate) enum ConfigCommand {
 
 #[derive(Args)]
 pub(crate) struct SourceArgs {
-    /// Configuration file in KDL, Lua, HOCON, UCI or JSON, chosen by its extension.
+    /// Configuration file in KDL, Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
     pub(super) file: PathBuf,
     /// Format of the file when its extension does not say.
     #[arg(long, value_enum, value_name = "FORMAT")]
@@ -77,7 +77,7 @@ pub(crate) enum Against {
 
 #[derive(Args)]
 pub(crate) struct DiffArgs {
-    /// Configuration file in KDL, Lua, HOCON, UCI or JSON, chosen by its extension.
+    /// Configuration file in KDL, Lua, HOCON, UCI, YAML, TOML or JSON, chosen by its extension.
     #[arg(required_unless_present = "rev", conflicts_with = "rev")]
     pub(super) file: Option<PathBuf>,
     /// Format of the file when its extension does not say.
@@ -140,7 +140,7 @@ pub(crate) struct EditArgs {
 
 #[derive(Args)]
 pub(crate) struct FmtArgs {
-    /// Configuration file in KDL, Lua, HOCON or UCI, chosen by its extension.
+    /// Configuration file in KDL, Lua, HOCON, UCI, YAML or TOML, chosen by its extension.
     pub(super) file: PathBuf,
     /// Format of the file when its extension does not say.
     #[arg(long, value_enum, value_name = "FORMAT")]
@@ -163,6 +163,8 @@ pub(crate) enum ComposeFormat {
     Lua,
     Uci,
     Hocon,
+    Yaml,
+    Toml,
 }
 
 impl From<ComposeFormat> for ConfigFormat {
@@ -172,6 +174,8 @@ impl From<ComposeFormat> for ConfigFormat {
             ComposeFormat::Lua => Self::Lua,
             ComposeFormat::Uci => Self::Uci,
             ComposeFormat::Hocon => Self::Hocon,
+            ComposeFormat::Yaml => Self::Yaml,
+            ComposeFormat::Toml => Self::Toml,
         }
     }
 }

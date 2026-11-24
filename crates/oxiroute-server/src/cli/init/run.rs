@@ -88,6 +88,8 @@ pub(super) const fn extension(format: ComposeFormat) -> &'static str {
         ComposeFormat::Lua => "lua",
         ComposeFormat::Uci => "uci",
         ComposeFormat::Hocon => "conf",
+        ComposeFormat::Yaml => "yaml",
+        ComposeFormat::Toml => "toml",
     }
 }
 
