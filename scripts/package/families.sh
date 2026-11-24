@@ -8,7 +8,7 @@ glibc_floor=2.34
 binary_image=almalinux:9
 version_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 # The files a package depends on: a change to one of them is what makes a pull request build and test the packages.
-recipe_paths_re='^(packaging/(deb|rpm|smoke|pacman)/|packaging/arch/oxiroute\.(service|sysusers|tmpfiles|modules|env|kdl|lua|install)$|packaging/arch/README\.md$'
+recipe_paths_re='^(packaging/(deb|rpm|smoke|pacman)/|packaging/install-staged\.sh$|packaging/arch/oxiroute\.(service|sysusers|tmpfiles|modules|env|kdl|lua|install|ensure-token)$|packaging/arch/README\.md$'
 recipe_paths_re+='|scripts/package/'
 recipe_paths_re+='|scripts/(build-release-binaries\.sh|verify/(baseline-isa|binary-paths|glibc_floor)\.sh|lib/reject-isa-flags\.sh)$'
 recipe_paths_re+='|benchmarks/scripts/(pgo|bolt|test-pgo)\.sh$|scripts/(lib/stage/|test/release/binary\.sh)|docs/(user/INSTALL|MANAGEMENT_CLI)\.md$|\.github/workflows/release(-binary|-packages|-profile)?\.yml$)'

@@ -52,7 +52,7 @@ publish "${version}" "${root}/clones" > /dev/null 2>&1
 [[ $(remote_commits oxiroute-bin | head -n 1) == "Update to ${version}-1" ]] || { printf 'oxiroute-bin has no update commit\n' >&2; exit 1; }
 [[ $(remote_files oxiroute-bin) == '.SRCINFO PKGBUILD README.md oxiroute.install ' ]] ||
   { printf 'oxiroute-bin has unexpected files: %s\n' "$(remote_files oxiroute-bin)" >&2; exit 1; }
-[[ $(remote_files oxiroute) == '.SRCINFO PKGBUILD README.md oxiroute.env oxiroute.install oxiroute.kdl oxiroute.lua oxiroute.modules oxiroute.service oxiroute.sysusers oxiroute.tmpfiles ' ]] ||
+[[ $(remote_files oxiroute) == '.SRCINFO PKGBUILD README.md oxiroute.ensure-token oxiroute.env oxiroute.install oxiroute.kdl oxiroute.lua oxiroute.modules oxiroute.service oxiroute.sysusers oxiroute.tmpfiles ' ]] ||
   { printf 'oxiroute has unexpected files: %s\n' "$(remote_files oxiroute)" >&2; exit 1; }
 git -C "${root}/remotes/oxiroute-bin.git" show master:PKGBUILD | cmp -s - "${root}/pkg/bin/PKGBUILD" ||
   { printf 'the pushed oxiroute-bin PKGBUILD is not the recipe\n' >&2; exit 1; }

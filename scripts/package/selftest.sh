@@ -209,11 +209,22 @@ test_recipe_paths_cover_the_workflow_filter() {
 
 test_layout_comes_from_packaging_arch() {
   local file
+  sh -n "${repo}/packaging/arch/oxiroute.ensure-token" || fail 'oxiroute.ensure-token has invalid shell syntax'
+  bash -n "${repo}/packaging/install-staged.sh" || fail 'install-staged.sh has invalid bash syntax'
   for file in $(sed -n 's/^layout_files=(\(.*\))/\1/p' "${here}/container/package.sh"); do
     [[ -f ${repo}/packaging/arch/${file} ]] || fail "packaging/arch/${file} does not exist"
-    grep -q "${file}" "${repo}/packaging/rpm/oxiroute.spec" "${repo}/packaging/deb/debian/rules" || fail "${file} is in no recipe"
-    grep -q "${file}" "${repo}/packaging/pacman/PKGBUILD" || fail "${file} is not in the Arch recipe"
+    grep -q "${file}" "${repo}/packaging/install-staged.sh" || fail "${file} is not installed by packaging/install-staged.sh"
+    grep -q "${file}" "${repo}/packaging/arch/PKGBUILD" || fail "${file} is not in the Arch source recipe"
   done
+  for file in packaging/deb/debian/rules packaging/rpm/oxiroute.spec packaging/pacman/PKGBUILD; do
+    grep -q 'install-staged\.sh' "${repo}/${file}" || fail "${file} does not use packaging/install-staged.sh"
+  done
+  for file in packaging/arch/oxiroute.install packaging/deb/debian/oxiroute.postinst packaging/rpm/oxiroute.spec; do
+    grep -q 'ensure-management-token' "${repo}/${file}" || fail "${file} does not call ensure-management-token"
+    ! grep -q 'token create' "${repo}/${file}" || fail "${file} duplicates token creation instead of calling ensure-management-token"
+  done
+  grep -Eq "${recipe_paths_re}" <<< packaging/install-staged.sh || fail 'install-staged.sh does not start the package build'
+  grep -Eq "${recipe_paths_re}" <<< packaging/arch/oxiroute.ensure-token || fail 'oxiroute.ensure-token does not start the package build'
   [[ $(grep -c '%config(noreplace)' "${repo}/packaging/rpm/oxiroute.spec") == 3 ]] || fail 'the rpm does not mark the 3 configuration files'
   ! grep -rn 'enable\|restart' "${repo}/packaging/deb/debian/rules" | grep -v 'no-enable' || fail 'the deb enables a service'
 }

@@ -1,16 +1,5 @@
-ensure_management_token() {
-  local token='/etc/oxiroute/management.token'
-
-  if [ ! -e "$token" ] && [ ! -L "$token" ]; then
-    systemd-sysusers oxiroute.conf
-    /usr/bin/oxiroute token create --token-file "$token" > /dev/null &&
-      chown oxiroute:oxiroute "$token" &&
-      echo "Created the management token $token for the oxiroute service and the CLI."
-  fi
-}
-
 post_install() {
-  ensure_management_token
+  /usr/lib/oxiroute/ensure-management-token
 
   cat <<'EOF'
 OxiRoute was installed with a safe, empty configuration.
@@ -33,7 +22,7 @@ post_upgrade() {
   local lua='/etc/oxiroute/oxiroute.lua'
   local fallback='/etc/systemd/system/oxiroute.service.d/10-legacy-lua.conf'
 
-  ensure_management_token
+  /usr/lib/oxiroute/ensure-management-token
 
   if [ -f "$lua" ] && [ -f "$kdl" ] &&
      [ "$(sha256sum "$kdl" | cut -d ' ' -f 1)" = "$default_kdl_sha" ]; then

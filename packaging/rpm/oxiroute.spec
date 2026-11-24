@@ -28,24 +28,14 @@ cp -p %{stage}/payload/LICENSE %{stage}/payload/BUILD-INFO.json %{stage}/docs/*.
 %build
 
 %install
-install -Dm755 %{stage}/payload/bin/oxiroute %{buildroot}%{_bindir}/oxiroute
-ln -s oxiroute %{buildroot}%{_bindir}/oxr
-install -Dm644 -t %{buildroot}%{_datadir}/bash-completion/completions %{stage}/payload/share/bash-completion/completions/*
-install -Dm644 -t %{buildroot}%{_datadir}/zsh/site-functions %{stage}/payload/share/zsh/site-functions/*
-install -Dm644 -t %{buildroot}%{_datadir}/fish/vendor_completions.d %{stage}/payload/share/fish/vendor_completions.d/*
-install -Dm644 -t %{buildroot}%{_mandir}/man1 %{stage}/payload/share/man/man1/*
-install -Dm755 %{stage}/payload/lib/oxiroute/oxiroute-worker-launcher %{buildroot}%{_prefix}/lib/oxiroute/oxiroute-worker-launcher
-install -Dm644 %{stage}/layout/oxiroute.service %{buildroot}%{_unitdir}/oxiroute.service
-install -Dm644 %{stage}/layout/oxiroute.sysusers %{buildroot}%{_sysusersdir}/oxiroute.conf
-install -Dm644 %{stage}/layout/oxiroute.tmpfiles %{buildroot}%{_tmpfilesdir}/oxiroute.conf
-install -Dm644 %{stage}/layout/oxiroute.modules %{buildroot}%{_prefix}/lib/modules-load.d/oxiroute.conf
-install -Dm644 -t %{buildroot}%{_sysconfdir}/oxiroute %{stage}/layout/oxiroute.env %{stage}/layout/oxiroute.kdl %{stage}/layout/oxiroute.lua
+%{stage}/install-staged.sh %{stage} %{buildroot}
 
 %pre
 %sysusers_create_package oxiroute %{stage}/layout/oxiroute.sysusers
 
 %post
 %tmpfiles_create_package oxiroute %{stage}/layout/oxiroute.tmpfiles
+%{_prefix}/lib/oxiroute/ensure-management-token
 %systemd_post oxiroute.service
 
 %preun
@@ -68,6 +58,7 @@ install -Dm644 -t %{buildroot}%{_sysconfdir}/oxiroute %{stage}/layout/oxiroute.e
 %{_mandir}/man1/oxiroute.1*
 %{_mandir}/man1/oxr.1*
 %dir %{_prefix}/lib/oxiroute
+%{_prefix}/lib/oxiroute/ensure-management-token
 %{_prefix}/lib/oxiroute/oxiroute-worker-launcher
 %{_unitdir}/oxiroute.service
 %{_sysusersdir}/oxiroute.conf
@@ -77,3 +68,4 @@ install -Dm644 -t %{buildroot}%{_sysconfdir}/oxiroute %{stage}/layout/oxiroute.e
 %config(noreplace) %{_sysconfdir}/oxiroute/oxiroute.env
 %config(noreplace) %{_sysconfdir}/oxiroute/oxiroute.kdl
 %config(noreplace) %{_sysconfdir}/oxiroute/oxiroute.lua
+%ghost %attr(0600,oxiroute,oxiroute) %{_sysconfdir}/oxiroute/management.token

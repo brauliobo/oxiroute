@@ -79,6 +79,7 @@ version or newer (the `abort` and `x86-64-v3` flavours are tarballs only).
 | `/usr/lib/sysusers.d/oxiroute.conf`, `/usr/lib/tmpfiles.d/oxiroute.conf` | The `oxiroute` system user and `/var/lib/oxiroute` |
 | `/usr/lib/modules-load.d/oxiroute.conf` | Loads the `tls` kernel module for kernel TLS offload |
 | `/etc/oxiroute/oxiroute.kdl`, `oxiroute.env`, `oxiroute.lua` | Configuration files, never overwritten by an upgrade |
+| `/etc/oxiroute/management.token` | Management bearer token (`0600 oxiroute:oxiroute`), generated on install/upgrade if absent |
 | `/usr/share/doc/oxiroute/` | This guide, the management CLI guide, `BUILD-INFO.json` and the license |
 
 The package depends on glibc, `systemd` and `ca-certificates`; OpenSSL is linked statically. Kernel TLS and

@@ -24,6 +24,7 @@ pkgbase = oxiroute
 	source = oxiroute.env
 	source = oxiroute.kdl
 	source = oxiroute.lua
+	source = oxiroute.ensure-token
 	source = README.md
 	sha256sums = 1770ea843e15a7840274238d9c51f25ff5c1555a866b6cb24903ae15677f809b
 	sha256sums = 1bb18eb30e49f9b4eae546094ca57bf2796a0660bd3811c25f551f76ca9bd86b
@@ -33,6 +34,7 @@ pkgbase = oxiroute
 	sha256sums = af8bee74a60970689940f80b9c5755fb66a48f263114bd8e686373f9073217df
 	sha256sums = 57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9
 	sha256sums = f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564
+	sha256sums = a47a1fa7a4239166cbf5f36b11698bf751aaa98fc4a80b9dfa2f3511e76c9d0d
 	sha256sums = d1942e65634558a12741f3cccc2018a9c117ee705ad0dfdc753a0e04ad992c2b
 
 pkgname = oxiroute

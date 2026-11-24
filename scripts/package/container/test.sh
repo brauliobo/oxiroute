@@ -18,6 +18,7 @@ config_files=(oxiroute.env oxiroute.kdl oxiroute.lua)
 shared_files=(
   /usr/lib/systemd/system/oxiroute.service:oxiroute.service /usr/lib/sysusers.d/oxiroute.conf:oxiroute.sysusers
   /usr/lib/tmpfiles.d/oxiroute.conf:oxiroute.tmpfiles /usr/lib/modules-load.d/oxiroute.conf:oxiroute.modules
+  /usr/lib/oxiroute/ensure-management-token:oxiroute.ensure-token
   /etc/oxiroute/oxiroute.env:oxiroute.env /etc/oxiroute/oxiroute.kdl:oxiroute.kdl /etc/oxiroute/oxiroute.lua:oxiroute.lua
 )
 pids=()
@@ -77,7 +78,7 @@ check_files() {
     cmp -- "${entry%%:*}" "${layout}/${entry#*:}" || fail "${entry%%:*} differs from packaging/arch/${entry#*:}"
   done
   [[ $(readlink /usr/bin/oxr) == oxiroute ]] || fail '/usr/bin/oxr is not an alias of oxiroute'
-  [[ -x /usr/bin/oxiroute && -x /usr/lib/oxiroute/oxiroute-worker-launcher ]] || fail 'a binary is missing'
+  [[ -x /usr/bin/oxiroute && -x /usr/lib/oxiroute/oxiroute-worker-launcher && -x /usr/lib/oxiroute/ensure-management-token ]] || fail 'a binary or helper is missing'
   local asset
   for asset in /usr/share/bash-completion/completions/{oxiroute,oxr} /usr/share/zsh/site-functions/_{oxiroute,oxr} \
     /usr/share/fish/vendor_completions.d/{oxiroute,oxr}.fish; do
@@ -116,6 +117,14 @@ check_account_and_state() {
     [[ $(stat -c '%a %U' "${mode%:*}") == "${mode#*:} oxiroute" ]] || fail "${mode%:*} is not ${mode#*:} oxiroute"
   done
   pass 'the oxiroute user has a nologin shell and owns its state directories'
+}
+
+check_management_token() {
+  local token=/etc/oxiroute/management.token
+  [[ $(stat -c '%a %U %G' "${token}") == '600 oxiroute oxiroute' ]] || fail "${token} is not 0600 oxiroute:oxiroute"
+  [[ $(wc -c < "${token}") == 64 ]] || fail "${token} does not hold a 64-character token"
+  setpriv --reuid oxiroute --regid oxiroute --clear-groups cat "${token}" > /dev/null || fail "the oxiroute user cannot read ${token}"
+  pass 'the management token is created, owned by oxiroute and readable only by it'
 }
 
 check_nothing_enabled() {
@@ -200,11 +209,14 @@ check_proxy() {
 }
 
 check_reinstall_keeps_config() {
+  local token_before
+  token_before=$(cat /etc/oxiroute/management.token)
   printf '# edited after the install\n' >> /etc/oxiroute/oxiroute.env
   reinstall_package "/tmp/install/${PACKAGE}"
   grep -qx '# edited after the install' /etc/oxiroute/oxiroute.env || fail 'a reinstall overwrote a modified configuration'
+  [[ $(cat /etc/oxiroute/management.token) == "${token_before}" ]] || fail 'a reinstall replaced the management token'
   check_nothing_enabled
-  pass 'a reinstall keeps the modified configuration'
+  pass 'a reinstall keeps the modified configuration and management token'
 }
 
 check_remove() {
@@ -229,7 +241,8 @@ check_remove_config_pacman() {
 
 check_remove_config_dnf() {
   grep -qx '# edited after the install' /etc/oxiroute/oxiroute.env.rpmsave || fail 'remove did not keep the modified configuration'
-  pass 'remove keeps the modified configuration as oxiroute.env.rpmsave'
+  absent /etc/oxiroute/management.token
+  pass 'remove keeps the modified configuration as oxiroute.env.rpmsave and deletes the token'
 }
 
 check_purge() {
@@ -245,6 +258,7 @@ install_initial
 check_files
 check_config_marking
 check_account_and_state
+check_management_token
 check_nothing_enabled
 check_build_record
 check_commands

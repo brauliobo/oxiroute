@@ -1,0 +1,20 @@
+#!/usr/bin/sh
+# Creates the default management token on package install/upgrade when it is missing.
+# Never replaces an existing file or symlink; ensures the oxiroute user exists before chown.
+set -eu
+
+token=/etc/oxiroute/management.token
+
+if [ -e "$token" ] || [ -L "$token" ]; then
+  exit 0
+fi
+
+if ! id -u oxiroute >/dev/null 2>&1 && command -v systemd-sysusers >/dev/null 2>&1; then
+  systemd-sysusers oxiroute.conf
+fi
+
+/usr/bin/oxiroute token create --token-file "$token" >/dev/null
+if ! chown oxiroute:oxiroute "$token"; then
+  rm -f "$token"
+  exit 1
+fi

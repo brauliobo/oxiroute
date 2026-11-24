@@ -23,6 +23,7 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.env'
         'oxiroute.kdl'
         'oxiroute.lua'
+        'oxiroute.ensure-token'
         'README.md')
 sha256sums=('1770ea843e15a7840274238d9c51f25ff5c1555a866b6cb24903ae15677f809b'
              '1bb18eb30e49f9b4eae546094ca57bf2796a0660bd3811c25f551f76ca9bd86b'
@@ -32,6 +33,7 @@ sha256sums=('1770ea843e15a7840274238d9c51f25ff5c1555a866b6cb24903ae15677f809b'
              'af8bee74a60970689940f80b9c5755fb66a48f263114bd8e686373f9073217df'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
+             'a47a1fa7a4239166cbf5f36b11698bf751aaa98fc4a80b9dfa2f3511e76c9d0d'
              'd1942e65634558a12741f3cccc2018a9c117ee705ad0dfdc753a0e04ad992c2b')
 
 prepare() {
@@ -94,6 +96,8 @@ package() {
   install -d -m755 "${pkgdir}/usr/lib/oxiroute"
   install -m755 "target/${_target}/release/oxiroute-worker-launcher" \
     "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
+  install -m755 "${srcdir}/oxiroute.ensure-token" \
+    "${pkgdir}/usr/lib/oxiroute/ensure-management-token"
   # Some Arch glibc crt objects overstate their ISA requirement; all compiled code targets baseline x86-64.
   objcopy --remove-section .note.gnu.property "${pkgdir}/usr/bin/oxiroute"
   objcopy --remove-section .note.gnu.property \

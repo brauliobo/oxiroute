@@ -18,7 +18,7 @@ stage=${work}/stage
 out=/out
 target=$(package_target "${ARCH}")
 tarball=${out}/$(tarball_stem "${RELEASE_VERSION}" "${target}" unwind).tar.gz
-layout_files=(oxiroute.service oxiroute.sysusers oxiroute.tmpfiles oxiroute.modules oxiroute.env oxiroute.kdl oxiroute.lua)
+layout_files=(oxiroute.service oxiroute.sysusers oxiroute.tmpfiles oxiroute.modules oxiroute.env oxiroute.kdl oxiroute.lua oxiroute.ensure-token)
 
 install_packaging_tools() {
   refresh_index
@@ -35,6 +35,7 @@ stage_files() {
   tar --directory "${src}" --extract --file /src.tar
   tar --directory "${stage}/payload" --strip-components=1 --extract --gzip --file "${tarball}"
   for file in "${layout_files[@]}"; do cp -- "${src}/packaging/arch/${file}" "${stage}/layout/"; done
+  cp -- "${src}/packaging/install-staged.sh" "${stage}/install-staged.sh"
   cp -- "${src}/docs/MANAGEMENT_CLI.md" "${src}/docs/user/INSTALL.md" "${stage}/docs/"
   cp -- "${src}/packaging/arch/README.md" "${stage}/docs/arch-packaging.md"
 }

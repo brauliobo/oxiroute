@@ -15,6 +15,7 @@ etc/oxiroute/oxiroute.lua
 usr/bin/oxiroute
 usr/bin/oxr
 usr/lib/modules-load.d/oxiroute.conf
+usr/lib/oxiroute/ensure-management-token
 usr/lib/oxiroute/oxiroute-worker-launcher
 usr/lib/systemd/system/oxiroute.service
 usr/lib/sysusers.d/oxiroute.conf
@@ -64,6 +65,11 @@ require_listing() {
     printf '%s installs the kernel module list with a mode other than 0644\n' "${label}" >&2
     exit 1
   }
+  cmp -- "${here}/oxiroute.ensure-token" "${pkgdir}/usr/lib/oxiroute/ensure-management-token"
+  [[ $(stat -c %a "${pkgdir}/usr/lib/oxiroute/ensure-management-token") == 755 ]] || {
+    printf '%s installs the token helper with a mode other than 0755\n' "${label}" >&2
+    exit 1
+  }
 }
 
 package_source_recipe() {
@@ -94,7 +100,8 @@ stage_release() {
   chmod 755 "${stage}/payload/lib/oxiroute/oxiroute-worker-launcher"
   printf 'license\n' >"${stage}/payload/LICENSE"
   printf '{"version": "%s"}\n' "${bin_version}" >"${stage}/payload/BUILD-INFO.json"
-  cp -- "${here}"/oxiroute.{service,sysusers,tmpfiles,modules,env,kdl,lua} "${stage}/layout/"
+  cp -- "${here}"/oxiroute.{service,sysusers,tmpfiles,modules,env,kdl,lua,ensure-token} "${stage}/layout/"
+  cp -- "${here}/../install-staged.sh" "${stage}/install-staged.sh"
   printf 'management\n' >"${stage}/docs/MANAGEMENT_CLI.md"
   cp -- "${here}/README.md" "${stage}/docs/arch-packaging.md"
 }

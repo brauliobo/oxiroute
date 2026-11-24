@@ -20,6 +20,12 @@ install_script=${package_dir}/oxiroute.install
   exit 1
 }
 bash -n "${install_script}"
+ensure_token_script=${package_dir}/oxiroute.ensure-token
+[[ -f "${ensure_token_script}" ]] || {
+  printf 'package token helper not found: %s\n' "${ensure_token_script}" >&2
+  exit 1
+}
+sh -n "${ensure_token_script}"
 for path in "${pkgbuild}" "${srcinfo}" "${sysusers}" "${tmpfiles}" "${environment_file}" "${modules_file}"; do
   [[ -f "${path}" ]] || {
     printf 'package metadata file not found: %s\n' "${path}" >&2
@@ -73,7 +79,8 @@ for expected in \
   'OXIROUTE_AUDIT_MAX_RECORD_BYTES=16384' \
   'OXIROUTE_AUDIT_MAX_FILE_BYTES=1048576' \
   'OXIROUTE_AUDIT_MAX_TOTAL_BYTES=8388608' \
-  'OXIROUTE_AUDIT_MAX_ROTATED_FILES=7'; do
+  'OXIROUTE_AUDIT_MAX_ROTATED_FILES=7' \
+  'OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token'; do
   [[ "${environment_values[${expected%%=*}]:-}" == "${expected#*=}" ]] || {
     printf 'package environment is missing bounded audit setting: %s\n' "${expected}" >&2
     exit 1
