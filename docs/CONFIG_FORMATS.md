@@ -128,16 +128,29 @@ Rendering emits deterministic TOML with sorted keys and preserved array order. N
 
 ## Lua
 
-Lua sources (`.lua`) run in a sandboxed Lua 5.4 environment and return one configuration table. The
-sandbox exposes deterministic `table`, `string`, `math` (without `random` or `randomseed`), and
-`utf8` libraries, safe base functions (`pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber`,
-`select`, `pcall`, `xpcall`, `error`, `assert`), and the `null` and `array` helpers for
-distinguishing explicit nulls and empty arrays from empty tables.
+Lua sources (`.lua`) run in a sandboxed, deterministic Lua 5.4 environment (text-only chunks with
+memory, instruction, and tree-size limits) and return one configuration table. The sandbox exposes
+`table`, `string`, `math` (without `random` or `randomseed`), `utf8`, allowlisted safe base
+functions, and `null`/`array`/`object` value helpers, while blocking `os`, `io`, `package`, `debug`,
+`coroutine`, `load`, `require`, and other unsafe globals.
 
-Unsafe facilities (`os`, `io`, `package`, `debug`, `load`, `require`) and binary chunks remain
-blocked, and execution enforces memory and instruction limits. Lua sources participate in the full
-source pipeline—including generic `templates`/`use` expansion, top-level native server references
-(using the same table shapes as HOCON), `decode_value`, and deterministic Lua rendering.
+Built-in scripting capabilities include:
+
+- **Collection, string, encoding, hashing, and network helpers**: functional table utilities
+  (`clone`, `merge`, `deep_merge`, `map`, `filter`, `flat_map`, `group_by`, etc.), `str.*`,
+  `json`/`yaml`/`toml`/`base64`/`hash.sha256`, and `net.*`.
+- **OxiRoute builder DSL (`oxi` / `oxiroute`)**: concise constructors such as `oxi.config`,
+  `oxi.certbot`, `oxi.tls_profile`, `oxi.upstream`, `oxi.route`, `oxi.proxy`, `oxi.http_service`,
+  and `oxi.listener`.
+- **Modular includes and data loading**: directory-jailed `include` and
+  `read_text`/`read_lines`/`read_json`/`read_yaml`/`read_toml` with automatic hot-reload dependency
+  tracking via `ResolvedSource.dependencies` (disabled in memory-only `decode_value`/`load_lua`).
+- **Full source pipeline composition**: seamless support for generic `templates`/`use` expansion,
+  top-level native server references (using the same table shapes as HOCON), `decode_value`, and
+  deterministic Lua rendering.
+
+See [`LUA_SCRIPTING.md`](LUA_SCRIPTING.md) for the complete Lua 5.4 scripting reference, sandbox
+bounds, DSL guide, and examples.
 
 ## Native server references
 
