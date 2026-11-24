@@ -168,6 +168,7 @@ const fn format_name(format: ConfigFormat) -> &'static str {
         ConfigFormat::Hocon => "HOCON",
         ConfigFormat::Yaml => "YAML",
         ConfigFormat::Toml => "TOML",
+        ConfigFormat::Oxi => "OXI",
     }
 }
 

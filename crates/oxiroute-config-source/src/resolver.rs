@@ -18,7 +18,7 @@ use crate::error::{NativeDiagnosticCount, NativeDiagnostics};
 use crate::native::{NativeDirective, extract_directives};
 use crate::{
     ConfigFormat, ConfigSourceError, MAX_DEPENDENCY_PATHS, expand_templates, hocon, kdl, limits,
-    lua, render_config, toml, uci, yaml,
+    lua, oxi, render_config, sugar, toml, uci, yaml,
 };
 
 /// A fully resolved, normalized configuration source.
@@ -75,7 +75,7 @@ pub fn resolve_source_with_format(
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let source = limits::source_text(bytes)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut lua_dependencies = Vec::new();
+    let mut source_dependencies = Vec::new();
     let (mut value, mut directives) = match format {
         ConfigFormat::Kdl => kdl::decode_with_directives(source)?,
         ConfigFormat::Hocon => (hocon::decode(source)?, Vec::new()),
@@ -84,7 +84,12 @@ pub fn resolve_source_with_format(
         ConfigFormat::Toml => (toml::decode(source)?, Vec::new()),
         ConfigFormat::Lua => {
             let (decoded, deps) = lua::decode_with_base_dir(source, parent)?;
-            lua_dependencies = deps;
+            source_dependencies = deps;
+            (decoded, Vec::new())
+        }
+        ConfigFormat::Oxi => {
+            let (decoded, deps) = oxi::decode_with_base_dir(source, parent)?;
+            source_dependencies = deps;
             (decoded, Vec::new())
         }
     };
@@ -95,15 +100,16 @@ pub fn resolve_source_with_format(
 
     let has_templates = value
         .as_object()
-        .is_some_and(|root| root.contains_key("templates"));
+        .is_some_and(|root| root.contains_key("templates") || root.contains_key("vars"));
     let value = expand_templates(&value)?;
+    let (value, has_sugar) = sugar::desugar(value)?;
     let native_version = source_version(&value)?.unwrap_or(1);
     let inline = inline_config(value, format)?;
     let mut imported_fragments = Vec::with_capacity(directives.len());
 
     let mut dependencies = Dependencies::default();
-    let has_lua_dependencies = !lua_dependencies.is_empty();
-    for dep in lua_dependencies {
+    let has_source_dependencies = !source_dependencies.is_empty();
+    for dep in source_dependencies {
         dependencies.push_with_parent(&dep)?;
     }
     let mut native_references = Vec::with_capacity(directives.len());
@@ -120,7 +126,7 @@ pub fn resolve_source_with_format(
     finish(
         format,
         config,
-        has_templates || !directives.is_empty() || has_lua_dependencies,
+        has_templates || has_sugar || !directives.is_empty() || has_source_dependencies,
         dependencies.paths,
         native_references,
     )

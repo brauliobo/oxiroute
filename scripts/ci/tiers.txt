@@ -28,6 +28,7 @@ oxiroute-config-source::canonical_foundation          core
 oxiroute-config-source::composition                   core
 oxiroute-config-source::compression                   core
 oxiroute-config-source::environment_settings_formats  core
+oxiroute-config-source::format_coverage               core
 oxiroute-config-source::formats                       core
 oxiroute-config-source::haproxy                       core
 oxiroute-config-source::hocon                         core
@@ -47,11 +48,13 @@ oxiroute-config-source::lua_render                    core
 oxiroute-config-source::lua_scripts                   core
 oxiroute-config-source::lua_stdlib                    core
 oxiroute-config-source::nginx_overlays                core
+oxiroute-config-source::oxi                           core
 oxiroute-config-source::proxy_protocol                core
 oxiroute-config-source::registry                      core
 oxiroute-config-source::resolver                      core
 oxiroute-config-source::retirement_formats            core
 oxiroute-config-source::rtmp                          core
+oxiroute-config-source::sugar                         core
 oxiroute-config-source::templates                     core
 oxiroute-config-source::tls_backend_formats           core
 oxiroute-config-source::tls_client_auth               core

@@ -15,8 +15,10 @@ mod kdl;
 mod limits;
 mod lua;
 mod native;
+mod oxi;
 mod render;
 mod resolver;
+mod sugar;
 mod templates;
 mod toml;
 mod uci;
@@ -59,13 +61,15 @@ pub enum ConfigFormat {
     Yaml,
     /// TOML configuration format.
     Toml,
+    /// `OxiRoute` stanza format (`.oxi`) with inline lists, `edge`/`site` sugar, and embedded Lua.
+    Oxi,
 }
 
 impl ConfigFormat {
     /// Infers a format from a path extension. A path without an extension uses KDL.
     ///
     /// Extensions are matched case-insensitively. Supported values are `kdl`, `kdl2`, `lua`,
-    /// `uci`, `hocon`, `conf`, `yaml`, `yml`, and `toml`.
+    /// `uci`, `hocon`, `conf`, `yaml`, `yml`, `toml`, and `oxi`.
     ///
     /// # Errors
     ///
@@ -84,6 +88,7 @@ impl ConfigFormat {
             "hocon" | "conf" => Ok(Self::Hocon),
             "yaml" | "yml" => Ok(Self::Yaml),
             "toml" => Ok(Self::Toml),
+            "oxi" => Ok(Self::Oxi),
             _ => Err(ConfigSourceError::UnknownExtension(extension.to_owned())),
         }
     }
@@ -105,6 +110,7 @@ pub fn decode_value(format: ConfigFormat, source: &[u8]) -> Result<Value, Config
         ConfigFormat::Yaml => yaml::decode(source),
         ConfigFormat::Toml => toml::decode(source),
         ConfigFormat::Lua => lua::decode(source),
+        ConfigFormat::Oxi => oxi::decode(source),
     })
 }
 
@@ -127,6 +133,7 @@ pub(crate) fn render_value(
         ConfigFormat::Yaml => yaml::render(value)?,
         ConfigFormat::Toml => toml::render(value)?,
         ConfigFormat::Lua => lua::render(value)?,
+        ConfigFormat::Oxi => oxi::render(value)?,
     };
     limits::check_output(&output)?;
     Ok(output)
@@ -201,6 +208,7 @@ mod tests {
             ConfigFormat::Hocon,
             ConfigFormat::Yaml,
             ConfigFormat::Lua,
+            ConfigFormat::Oxi,
         ] {
             let value = json!({"z": [true, null], "a": {"two": 2, "one": 1}});
             let rendered = render_value(format, &value).unwrap();
@@ -241,6 +249,7 @@ mod tests {
             ConfigFormat::Yaml,
             ConfigFormat::Toml,
             ConfigFormat::Lua,
+            ConfigFormat::Oxi,
         ] {
             assert!(matches!(
                 render_value(format, &value),

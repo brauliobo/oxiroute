@@ -135,18 +135,27 @@ fn lua_error(error: mlua::Error) -> LuaConfigError {
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
-    decode_inner(source, None).map(|(value, _)| value)
+    decode_inner(source, None, None).map(|(value, _)| value)
 }
 
 pub(crate) fn decode_with_base_dir(
     source: &str,
     base_dir: &Path,
 ) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
-    decode_inner(source, Some(base_dir))
+    decode_inner(source, None, Some(base_dir))
+}
+
+pub(crate) fn eval_embedded(
+    source: &str,
+    vars: Option<&Map<String, Value>>,
+    base_dir: Option<&Path>,
+) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
+    decode_inner(source, vars, base_dir)
 }
 
 fn decode_inner(
     source: &str,
+    vars: Option<&Map<String, Value>>,
     base_dir: Option<&Path>,
 ) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
     if source.len() > MAX_SOURCE_BYTES {
@@ -157,6 +166,16 @@ fn decode_inner(
     let lua = sandboxed_lua(base_dir, &dependencies)
         .map_err(lua_error)
         .map_err(ConfigSourceError::Lua)?;
+    if let Some(vars) = vars {
+        let lua_vars = lua
+            .to_value(&Value::Object(vars.clone()))
+            .map_err(lua_error)
+            .map_err(ConfigSourceError::Lua)?;
+        lua.globals()
+            .set("vars", lua_vars)
+            .map_err(lua_error)
+            .map_err(ConfigSourceError::Lua)?;
+    }
     let value: LuaValue = lua
         .load(source)
         .set_name("oxiroute.lua")

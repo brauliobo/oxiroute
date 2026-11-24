@@ -43,6 +43,10 @@ fn infers_supported_extensions_and_kdl_default() {
         ConfigFormat::infer("config.toml").unwrap(),
         ConfigFormat::Toml
     );
+    assert_eq!(
+        ConfigFormat::infer("config.oxi").unwrap(),
+        ConfigFormat::Oxi
+    );
     assert!(ConfigFormat::infer(Path::new("config.ini")).is_err());
 }
 
@@ -72,6 +76,7 @@ fn all_decoders_apply_the_source_bound_before_parsing() {
         ConfigFormat::Yaml,
         ConfigFormat::Toml,
         ConfigFormat::Lua,
+        ConfigFormat::Oxi,
     ] {
         assert!(matches!(
             decode_value(format, &oversized),
@@ -126,6 +131,7 @@ fn typed_configs_render_in_every_supported_format() {
         ConfigFormat::Hocon,
         ConfigFormat::Yaml,
         ConfigFormat::Toml,
+        ConfigFormat::Oxi,
     ] {
         let rendered = render_config(format, &config).expect("typed render");
         let resolved = oxiroute_config_source::resolve_source_with_format(
@@ -228,6 +234,7 @@ fn nginx_compatibility_policies_round_trip_through_every_format() {
         ConfigFormat::Hocon,
         ConfigFormat::Yaml,
         ConfigFormat::Toml,
+        ConfigFormat::Oxi,
     ] {
         let rendered = render_config(format, &draft).expect("typed render");
         let resolved = oxiroute_config_source::resolve_source_with_format(
