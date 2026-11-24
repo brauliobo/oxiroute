@@ -1,27 +1,30 @@
 # Configuration formats
 
-OxiRoute accepts KDL 2.0, restricted Lua, OpenWrt UCI, and HOCON source documents. KDL 2.0 is the
-default authoring, `serve`, `config compose`, and effective-revision format. Every source resolves to
-the same strict `oxiroute_config::ConfigDraft` model before runtime preparation. Lua remains supported for
-existing deployments, but generic templates and native-server references are available only in the
-declarative KDL/HOCON/UCI pipeline.
+OxiRoute accepts KDL 2.0, sandboxed Lua 5.4, OpenWrt UCI, HOCON, YAML 1.2, and TOML source
+documents. KDL 2.0 is the default authoring, `serve`, `config compose`, and effective-revision
+format. Every source flows through the unified source pipeline and resolves to the same strict
+`oxiroute_config::ConfigDraft` model before runtime preparation, including generic `templates`/`use`
+expansion and native-server references.
 
 | Format | Current status | Contract |
 | --- | --- | --- |
 | KDL 2.0 | stable/default | Canonical authoring, `serve`, composition, previews, and effective revisions. |
-| Restricted Lua | partial adapter | Supported text-only compatibility source and renderer; not the canonical format and does not support generic templates or native references. |
+| Sandboxed Lua 5.4 | stable adapter | Sandboxed Lua 5.4 scripting source and deterministic renderer with generic `templates`/`use`, native references, and `decode_value`; blocks `os`/`io`/`package`/`debug`/`load`/`require` and enforces memory and instruction limits. |
 | HOCON | stable adapter | Declarative source and renderer with bounded substitutions and native references; no environment discovery or include execution. |
 | OpenWrt UCI | stable adapter | Declarative reversible mapping and renderer; no shell execution, anonymous sections, or unsupported list forms. |
+| YAML 1.2 | stable adapter | Strict YAML 1.2 source (`.yaml`, `.yml`) and deterministic minimalist renderer with generic `templates`/`use` and native references; rejects aliases, anchors, and multi-document streams. |
+| TOML | stable adapter | Standard TOML source (`.toml`) and deterministic renderer with generic `templates`/`use` and native references; TOML has no `null` type. |
 
 ## Source pipeline
 
 The source pipeline has one semantics regardless of syntax:
 
 1. Read one stable, bounded UTF-8 root snapshot without following a root-file symlink.
-2. Infer syntax from the path: no extension, `.kdl`, or `.kdl2` means KDL; `.lua` means restricted
-   Lua; `.uci` means UCI; and `.hocon` or `.conf` means HOCON. Matching is case-insensitive.
-3. For KDL/HOCON/UCI, decode a bounded generic value tree while rejecting duplicate object keys and
-   ambiguous constructs. Extract strict top-level native-server declarations.
+2. Infer syntax from the path: no extension, `.kdl`, or `.kdl2` means KDL; `.lua` means sandboxed
+   Lua; `.uci` means UCI; `.hocon` or `.conf` means HOCON; `.yaml` or `.yml` means YAML 1.2; and
+   `.toml` means TOML. Matching is case-insensitive.
+3. Decode a bounded generic value tree while rejecting duplicate object keys and ambiguous
+   constructs. Extract strict top-level native-server declarations.
 4. Expand generic root `templates` and exact object `use` markers. Objects merge recursively, arrays
    and scalars replace, local fields override templates, and cycles are rejected.
 5. Deserialize any inline fragment into `oxiroute_config::ConfigDraft` and resolve each `nginx_server`,
@@ -31,11 +34,6 @@ The source pipeline has one semantics regardless of syntax:
    process-wide values, duplicate identities, dangling references, and every non-final native import.
 7. Apply schema defaults, normalize, validate, and render deterministic KDL. The SHA-256 of those KDL
    bytes is the candidate/runtime revision.
-
-Lua takes the legacy direct path: the bounded evaluator returns one table, which is immediately
-decoded as `ConfigDraft`, validated into `ValidatedConfig`, then rendered to deterministic KDL for
-its candidate revision.
-Lua does not pass through generic templates or native reference extraction.
 
 `diskRevision` remains the SHA-256 of the exact authored root bytes and is used for revision-checked
 saves. `candidateRevision` identifies the effective runtime generation and changes whenever
@@ -107,7 +105,39 @@ Object values merge recursively; arrays, scalars, and null replace inherited val
 The root `templates` object is removed after expansion and never reaches typed deserialization.
 Templates cannot interpolate strings, inspect the environment, read files, or create native
 directives: native declarations are extracted before expansion. Template expansion is available in
-KDL, HOCON, and generic UCI records, not restricted Lua.
+every supported source format: KDL, Lua, HOCON, UCI, YAML, and TOML.
+
+## YAML 1.2
+
+YAML sources (`.yaml`, `.yml`) are parsed as strict YAML 1.2 into the bounded generic value tree.
+Aliases, anchors, and multi-document streams are rejected so documents remain self-contained and
+unambiguous.
+
+YAML supports generic `templates`/`use` expansion and top-level native server references using the
+same object or array-of-objects shapes as HOCON. Rendering emits deterministic minimalist YAML with
+sorted object keys and preserved array order.
+
+## TOML
+
+TOML sources (`.toml`) follow standard TOML syntax and decode into the bounded generic value tree.
+TOML supports generic `templates`/`use` expansion and top-level native server references using the
+same table or array-of-tables shapes as HOCON.
+
+Rendering emits deterministic TOML with sorted keys and preserved array order. Note that TOML has no
+`null` type.
+
+## Lua
+
+Lua sources (`.lua`) run in a sandboxed Lua 5.4 environment and return one configuration table. The
+sandbox exposes deterministic `table`, `string`, `math` (without `random` or `randomseed`), and
+`utf8` libraries, safe base functions (`pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber`,
+`select`, `pcall`, `xpcall`, `error`, `assert`), and the `null` and `array` helpers for
+distinguishing explicit nulls and empty arrays from empty tables.
+
+Unsafe facilities (`os`, `io`, `package`, `debug`, `load`, `require`) and binary chunks remain
+blocked, and execution enforces memory and instruction limits. Lua sources participate in the full
+source pipeline—including generic `templates`/`use` expansion, top-level native server references
+(using the same table shapes as HOCON), `decode_value`, and deterministic Lua rendering.
 
 ## Native server references
 
@@ -149,7 +179,7 @@ The two repeatable nginx options `bearer_token_file "<server_name>" "<path>"` an
 `upstream_tls "<authority>" "<sni>" ["<ca>"]` are the only exception: each occurrence takes its
 positional string arguments (no properties, types, or children), and every other option still rejects duplicates.
 
-HOCON uses a single object or an array of objects with these exact shapes:
+HOCON (as well as YAML, TOML, and Lua) uses a single object or an array of objects with these exact shapes:
 
 ```hocon
 nginx_server = {
@@ -219,8 +249,7 @@ operator-provisioned token file (regular file, mode 0400 or 0600, one printable-
 reads or stores the nginx literal) and is identified by the case-insensitive `server_name`. `upstream_tls`
 hardens one https `proxy_pass` authority with a verified SNI and optional CA bundle; without it https upstreams
 keep nginx's unverified default. Both lists reject empty values and duplicate identities, and an entry that
-matches no lowered rule fails the import. UCI cannot express the CLI-only `activate` flag, and the Lua format has
-no native references. Relative token and CA paths resolve from the source document directory. Apache reference options are
+matches no lowered rule fails the import. UCI cannot express the CLI-only `activate` flag. Relative token and CA paths resolve from the source document directory. Apache reference options are
 exactly `path`. HAProxy reference options are
 exactly ordered `paths`, optional `node_ip`, and `gpu1_defined`; true `gpu1_defined` requires
 `node_ip`. Squid accepts `path` and `externalize_cache`; the latter is required when parsed refresh
@@ -240,25 +269,32 @@ native files.
 formats and flattens every input to one typed configuration:
 
 ```sh
-oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf
+oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf routes.yaml policy.toml
 oxiroute config compose --format lua edge.kdl legacy.lua
 oxiroute config compose --format uci edge.kdl legacy.lua
 oxiroute config compose --format hocon edge.kdl legacy.lua
+oxiroute config compose --format yaml edge.kdl legacy.lua
+oxiroute config compose --format toml edge.kdl legacy.lua
 ```
 
-The default output is KDL; `--format` accepts `kdl`, `lua`, `uci`, or `hocon`. Composition output does
-not retain comments, templates, HOCON substitutions, UCI record names, native declarations, or
-provenance. It is the explicit flattening operation.
+The default output is KDL; `--format` accepts `kdl`, `lua`, `uci`, `hocon`, `yaml`, or `toml`.
+Composition output does not retain comments, templates, HOCON substitutions, UCI record names,
+native declarations, or provenance. It is the explicit flattening operation.
 
 Standalone `import nginx|haproxy --emit preview` also defaults to KDL and accepts
-`--format kdl|lua|uci|hocon` for a fully finalized candidate. `--format` does not alter `report`
-output, which remains evidence rather than a configuration source.
+`--format kdl|lua|uci|hocon|yaml|toml` for a fully finalized candidate. `--format` does not alter
+`report` output, which remains evidence rather than a configuration source.
 
 ## Format policy
 
-- Lua retains its restricted, text-only, instruction-bounded compatibility behavior. It loads no
-  standard libraries, rejects binary chunks, and exposes no filesystem, process, network, package,
-  dynamic-load, or debug facilities.
+- Lua executes in a sandboxed, text-only, memory- and instruction-bounded Lua 5.4 runtime. It
+  exposes deterministic `table`, `string`, `math` (without `random`/`randomseed`), `utf8`, safe base
+  functions (`pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber`, `select`, `pcall`, `xpcall`,
+  `error`, `assert`), and `null`/`array` helpers, while rejecting binary chunks and blocking `os`,
+  `io`, `package`, `debug`, `load`, and `require`.
+- YAML 1.2 is parsed strictly without aliases, anchors, or multi-document streams, and rendered
+  deterministically in minimalist YAML form.
+- TOML is parsed as standard TOML and rendered deterministically; note that TOML has no `null` type.
 - HOCON supports local substitutions and object merging with an empty environment. Optional process
   substitutions such as `${?HOME}` disappear; required `${HOME}` remains unresolved and rejects the
   source. Every include form is rejected before resolution. Deterministic HOCON rendering is sorted,
@@ -273,7 +309,8 @@ output, which remains evidence rather than a configuration source.
   `option`/`list` mapping above.
 - Upstream `tls.verify` (`"full"` or `"none"`, with an optional `tls.server_name`) and the cookie
   rewrite `mode` (`"exact"` or `"nginx_prefix"`) are plain canonical fields in every format. The
-  Lua renderer always writes both; the KDL, UCI, and HOCON renderers omit the default value.
+  Lua renderer always writes both; the KDL, UCI, HOCON, YAML, and TOML renderers omit the default
+  value.
 - No format infers process environment values. HAProxy preprocessing inputs are explicit source
   fields and participate in the effective candidate revision.
 
