@@ -18,7 +18,9 @@ mod native;
 mod render;
 mod resolver;
 mod templates;
+mod toml;
 mod uci;
+mod yaml;
 
 use std::path::Path;
 
@@ -47,19 +49,23 @@ pub enum ConfigFormat {
     /// KDL 2.0, the default source and preview format.
     #[default]
     Kdl,
-    /// Legacy restricted Lua, resolved through [`load_lua`].
+    /// Sandboxed Lua configuration scripts.
     Lua,
     /// `OpenWrt` UCI using deterministic generic JSON records.
     Uci,
     /// HOCON parsed without includes or process environment access.
     Hocon,
+    /// Strict YAML 1.2 parsed without aliases or multi-document streams.
+    Yaml,
+    /// TOML configuration format.
+    Toml,
 }
 
 impl ConfigFormat {
     /// Infers a format from a path extension. A path without an extension uses KDL.
     ///
     /// Extensions are matched case-insensitively. Supported values are `kdl`, `kdl2`, `lua`,
-    /// `uci`, `hocon`, and `conf`.
+    /// `uci`, `hocon`, `conf`, `yaml`, `yml`, and `toml`.
     ///
     /// # Errors
     ///
@@ -76,6 +82,8 @@ impl ConfigFormat {
             "lua" => Ok(Self::Lua),
             "uci" => Ok(Self::Uci),
             "hocon" | "conf" => Ok(Self::Hocon),
+            "yaml" | "yml" => Ok(Self::Yaml),
+            "toml" => Ok(Self::Toml),
             _ => Err(ConfigSourceError::UnknownExtension(extension.to_owned())),
         }
     }
@@ -83,34 +91,30 @@ impl ConfigFormat {
 
 /// Decodes already-supplied source bytes into the bounded format-neutral value tree.
 ///
-/// This function performs no file or environment access. Lua is available only through
-/// [`resolve_source`], which returns a typed configuration rather than a generic value.
+/// This function performs no file or environment access.
 ///
 /// # Errors
 ///
-/// Returns an error when the source exceeds a bound, is invalid UTF-8, uses an unsupported adapter,
-/// or violates the selected format's strict mapping.
+/// Returns an error when the source exceeds a bound, is invalid UTF-8, or violates the selected
+/// format's strict mapping.
 pub fn decode_value(format: ConfigFormat, source: &[u8]) -> Result<Value, ConfigSourceError> {
     limits::source_text(source).and_then(|source| match format {
         ConfigFormat::Kdl => kdl::decode(source),
         ConfigFormat::Uci => uci::decode(source),
         ConfigFormat::Hocon => hocon::decode(source),
-        ConfigFormat::Lua => Err(ConfigSourceError::UnsupportedAdapter {
-            format: "Lua",
-            operation: "decode",
-        }),
+        ConfigFormat::Yaml => yaml::decode(source),
+        ConfigFormat::Toml => toml::decode(source),
+        ConfigFormat::Lua => lua::decode(source),
     })
 }
 
 /// Deterministically renders a bounded value tree in the selected format.
 ///
-/// HOCON output is sorted, pretty JSON, which is valid HOCON. Lua rendering remains unsupported;
-/// resolved Lua sources receive a canonical KDL preview instead.
+/// HOCON output is sorted, pretty JSON, which is valid HOCON.
 ///
 /// # Errors
 ///
-/// Returns an error when the value exceeds a bound, cannot be represented by the selected format,
-/// or uses the unsupported Lua adapter.
+/// Returns an error when the value exceeds a bound or cannot be represented by the selected format.
 pub(crate) fn render_value(
     format: ConfigFormat,
     value: &Value,
@@ -120,12 +124,9 @@ pub(crate) fn render_value(
         ConfigFormat::Kdl => kdl::render(value)?,
         ConfigFormat::Uci => uci::render(value)?,
         ConfigFormat::Hocon => limits::render_sorted_json(value)?,
-        ConfigFormat::Lua => {
-            return Err(ConfigSourceError::UnsupportedAdapter {
-                format: "Lua",
-                operation: "render",
-            });
-        }
+        ConfigFormat::Yaml => yaml::render(value)?,
+        ConfigFormat::Toml => toml::render(value)?,
+        ConfigFormat::Lua => lua::render(value)?,
     };
     limits::check_output(&output)?;
     Ok(output)
@@ -153,9 +154,38 @@ pub fn render_config(
         return render::render_lua(config)
             .map_err(|error| ConfigSourceError::render_source("Lua", error));
     }
-    let value = serde_json::to_value(config)
+    let mut value = serde_json::to_value(config)
         .map_err(|error| ConfigSourceError::TypedConfig(error.to_string()))?;
+    if format == ConfigFormat::Toml {
+        strip_null_object_fields(&mut value);
+        let round_tripped = serde_json::from_value::<oxiroute_config::ConfigDraft>(value.clone())
+            .ok()
+            .and_then(|draft| draft.validate().ok());
+        if round_tripped.as_ref() != Some(config) {
+            return Err(ConfigSourceError::render(
+                "TOML",
+                "TOML cannot represent explicit null overrides for fields with non-null defaults",
+            ));
+        }
+    }
     render_value(format, &value)
+}
+
+fn strip_null_object_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, entry| !entry.is_null());
+            for entry in map.values_mut() {
+                strip_null_object_fields(entry);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_null_object_fields(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 #[cfg(test)]
@@ -165,11 +195,24 @@ mod tests {
 
     #[test]
     fn low_level_renderers_round_trip_without_becoming_public_configuration_apis() {
-        for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+        for format in [
+            ConfigFormat::Kdl,
+            ConfigFormat::Uci,
+            ConfigFormat::Hocon,
+            ConfigFormat::Yaml,
+            ConfigFormat::Lua,
+        ] {
             let value = json!({"z": [true, null], "a": {"two": 2, "one": 1}});
             let rendered = render_value(format, &value).unwrap();
             assert_eq!(decode_value(format, rendered.as_bytes()).unwrap(), value);
         }
+
+        let toml_value = json!({"z": [true, false], "a": {"two": 2, "one": 1}});
+        let rendered = render_value(ConfigFormat::Toml, &toml_value).unwrap();
+        assert_eq!(
+            decode_value(ConfigFormat::Toml, rendered.as_bytes()).unwrap(),
+            toml_value
+        );
     }
 
     #[test]
@@ -191,7 +234,14 @@ mod tests {
                 .map(|key| (format!("key-{key}"), Value::String(oversized.clone())))
                 .collect(),
         );
-        for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+        for format in [
+            ConfigFormat::Kdl,
+            ConfigFormat::Uci,
+            ConfigFormat::Hocon,
+            ConfigFormat::Yaml,
+            ConfigFormat::Toml,
+            ConfigFormat::Lua,
+        ] {
             assert!(matches!(
                 render_value(format, &value),
                 Err(ConfigSourceError::OutputTooLarge)

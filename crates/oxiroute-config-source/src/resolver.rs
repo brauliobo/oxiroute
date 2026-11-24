@@ -18,7 +18,7 @@ use crate::error::{NativeDiagnosticCount, NativeDiagnostics};
 use crate::native::{NativeDirective, extract_directives};
 use crate::{
     ConfigFormat, ConfigSourceError, MAX_DEPENDENCY_PATHS, expand_templates, hocon, kdl, limits,
-    load_lua, render_config, uci,
+    lua, render_config, toml, uci, yaml,
 };
 
 /// A fully resolved, normalized configuration source.
@@ -74,16 +74,13 @@ pub fn resolve_source_with_format(
     format: ConfigFormat,
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let source = limits::source_text(bytes)?;
-    if format == ConfigFormat::Lua {
-        let config = load_lua(source)?;
-        return finish(format, config, false, Vec::new(), Vec::new());
-    }
-
     let (mut value, mut directives) = match format {
         ConfigFormat::Kdl => kdl::decode_with_directives(source)?,
         ConfigFormat::Hocon => (hocon::decode(source)?, Vec::new()),
         ConfigFormat::Uci => uci::decode_with_directives(source)?,
-        ConfigFormat::Lua => unreachable!("Lua is resolved before generic decoding"),
+        ConfigFormat::Yaml => (yaml::decode(source)?, Vec::new()),
+        ConfigFormat::Toml => (toml::decode(source)?, Vec::new()),
+        ConfigFormat::Lua => (lua::decode(source)?, Vec::new()),
     };
     let format_name = format_name(format);
     let mut extracted = extract_directives(&mut value, format_name)?;
@@ -95,7 +92,7 @@ pub fn resolve_source_with_format(
         .is_some_and(|root| root.contains_key("templates"));
     let value = expand_templates(&value)?;
     let native_version = source_version(&value)?.unwrap_or(1);
-    let inline = inline_config(value)?;
+    let inline = inline_config(value, format)?;
     let mut imported_fragments = Vec::with_capacity(directives.len());
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -120,7 +117,10 @@ pub fn resolve_source_with_format(
     )
 }
 
-fn inline_config(mut value: Value) -> Result<Option<ConfigDraft>, ConfigSourceError> {
+fn inline_config(
+    mut value: Value,
+    format: ConfigFormat,
+) -> Result<Option<ConfigDraft>, ConfigSourceError> {
     let Value::Object(root) = &mut value else {
         return Err(ConfigSourceError::TypedConfig(
             "configuration root must be an object".to_owned(),
@@ -136,6 +136,9 @@ fn inline_config(mut value: Value) -> Result<Option<ConfigDraft>, ConfigSourceEr
     }
     root.entry("listeners")
         .or_insert_with(|| Value::Array(Vec::new()));
+    if format == ConfigFormat::Lua {
+        return lua::deserialize_draft(value).map(Some);
+    }
     serde_json::from_value(value)
         .map(Some)
         .map_err(|error| ConfigSourceError::TypedConfig(error.to_string()))

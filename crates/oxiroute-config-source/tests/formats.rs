@@ -31,24 +31,48 @@ fn infers_supported_extensions_and_kdl_default() {
         ConfigFormat::infer("config.conf").unwrap(),
         ConfigFormat::Hocon
     );
-    assert!(ConfigFormat::infer(Path::new("config.toml")).is_err());
+    assert_eq!(
+        ConfigFormat::infer("config.yaml").unwrap(),
+        ConfigFormat::Yaml
+    );
+    assert_eq!(
+        ConfigFormat::infer("config.yml").unwrap(),
+        ConfigFormat::Yaml
+    );
+    assert_eq!(
+        ConfigFormat::infer("config.toml").unwrap(),
+        ConfigFormat::Toml
+    );
+    assert!(ConfigFormat::infer(Path::new("config.ini")).is_err());
 }
 
 #[test]
-fn lua_adapter_is_explicitly_unsupported() {
-    assert!(matches!(
-        decode_value(ConfigFormat::Lua, b"return {}"),
-        Err(ConfigSourceError::UnsupportedAdapter {
-            format: "Lua",
-            operation: "decode"
-        })
-    ));
+fn lua_adapter_decodes_values() {
+    assert_eq!(
+        decode_value(ConfigFormat::Lua, b"return {}").unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        decode_value(
+            ConfigFormat::Lua,
+            b"return { version = 1, empty = array({}), items = { 1, 2 } }",
+        )
+        .unwrap(),
+        json!({ "version": 1, "empty": [], "items": [1, 2] })
+    );
 }
 
 #[test]
 fn all_decoders_apply_the_source_bound_before_parsing() {
     let oversized = vec![b' '; MAX_SOURCE_BYTES + 1];
-    for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+    for format in [
+        ConfigFormat::Kdl,
+        ConfigFormat::Uci,
+        ConfigFormat::Hocon,
+        ConfigFormat::Yaml,
+        ConfigFormat::Toml,
+        ConfigFormat::Lua,
+    ] {
         assert!(matches!(
             decode_value(format, &oversized),
             Err(ConfigSourceError::SourceTooLarge)
@@ -100,6 +124,8 @@ fn typed_configs_render_in_every_supported_format() {
         ConfigFormat::Lua,
         ConfigFormat::Uci,
         ConfigFormat::Hocon,
+        ConfigFormat::Yaml,
+        ConfigFormat::Toml,
     ] {
         let rendered = render_config(format, &config).expect("typed render");
         let resolved = oxiroute_config_source::resolve_source_with_format(
@@ -200,6 +226,8 @@ fn nginx_compatibility_policies_round_trip_through_every_format() {
         ConfigFormat::Lua,
         ConfigFormat::Uci,
         ConfigFormat::Hocon,
+        ConfigFormat::Yaml,
+        ConfigFormat::Toml,
     ] {
         let rendered = render_config(format, &draft).expect("typed render");
         let resolved = oxiroute_config_source::resolve_source_with_format(

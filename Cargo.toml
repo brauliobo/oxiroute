@@ -84,6 +84,7 @@ rustix = { version = "1.1.6", features = ["event", "fs", "net", "pipe", "process
 rustls = { version = "0.23.46", default-features = false, features = ["aws-lc-rs", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-native-certs = "0.8.5"
 rustls-pki-types = { version = "1.15.1", features = ["std"] }
+saphyr = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 sha2 = "0.11"
@@ -98,6 +99,7 @@ tokio = { version = "1.54", features = ["fs", "io-util", "macros", "net", "sync"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 tokio-openssl = "0.6"
+toml = "1.2.2"
 uuid = { version = "1.29", features = ["v4"] }
 x509-parser = "0.18.1"
 zeroize = "1.9.1"
