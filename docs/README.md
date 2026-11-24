@@ -37,7 +37,7 @@ and failure behavior. Use the
 | Commands and exits | [CLI](reference/CLI.md) | [Management CLI](MANAGEMENT_CLI.md) |
 | API endpoints and revisions | [API](reference/API.md) | [API/UI specification](API_UI_SPEC.md), [OpenAPI](../contracts/control-plane.openapi.json) |
 | Configuration and formats | [Configuration](reference/CONFIGURATION.md) | [Schema](CONFIG_SPEC.md), [formats](CONFIG_FORMATS.md) |
-| Current support | [Compatibility matrix](COMPATIBILITY.md) | [Current release notes](RELEASE_NOTES_7.1.1.md) |
+| Current support | [Compatibility matrix](COMPATIBILITY.md) | [Current release notes](RELEASE_NOTES_7.2.0.md) |
 | Runtime lifecycle | [Operations guide](user/OPERATING.md) | [Operations contract](OPERATIONS.md) |
 | Native import | [Migration guide](user/MIGRATION.md) | [Import specification](IMPORT_SPEC.md) |
 | Media | [RTMP guide](user/RTMP.md) | [RTMP specification](RTMP_SPEC.md) |

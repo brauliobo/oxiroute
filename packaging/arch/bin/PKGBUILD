@@ -1,7 +1,7 @@
 # Maintainer: OxiRoute maintainers <https://github.com/oxiroute/oxiroute/issues>
 
 pkgname=oxiroute-bin
-pkgver=7.1.1
+pkgver=7.2.0
 pkgrel=1
 pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime (prebuilt, profile-guided release binaries)'
 arch=('x86_64')
@@ -21,7 +21,7 @@ _package="oxiroute-${pkgver}-1-x86_64.pkg.tar.zst"
 # The checksum is the content of the release asset ${_package}.sha256.
 source=("${_package}::${url}/releases/download/v${pkgver}/${_package}")
 noextract=("${_package}")
-sha256sums=('521c41f2df47c0ebfeb12b523f4bb2d7ad7d3d0b56ff2ef168f4725f8f47cb1e')
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 _release_metadata() { bsdtar -xOf "${srcdir}/${_package}" .PKGINFO; }
 

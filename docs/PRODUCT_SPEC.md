@@ -188,7 +188,7 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-The package currently declares version `7.1.1`. The compatibility matrix records the supported
+The package currently declares version `7.2.0`. The compatibility matrix records the supported
 narrow paths for this release line, and marks work that is not yet available as `planned`.
 
 The current contract is:

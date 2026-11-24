@@ -121,6 +121,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -733,18 +739,8 @@ version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
 dependencies = [
- "darling_core 0.20.11",
- "darling_macro 0.20.11",
-]
-
-[[package]]
-name = "darling"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
-dependencies = [
- "darling_core 0.24.1",
- "darling_macro 0.24.1",
+ "darling_core",
+ "darling_macro",
 ]
 
 [[package]]
@@ -762,38 +758,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "darling_core"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
-dependencies = [
- "ident_case",
- "proc-macro2",
- "quote",
- "strsim",
- "syn 3.0.9",
-]
-
-[[package]]
 name = "darling_macro"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
- "darling_core 0.20.11",
+ "darling_core",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "darling_macro"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
-dependencies = [
- "darling_core 0.24.1",
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]
@@ -881,7 +853,7 @@ version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
 dependencies = [
- "darling 0.20.11",
+ "darling",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -979,6 +951,15 @@ name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "env_filter"
@@ -1366,6 +1347,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1731,15 +1721,15 @@ dependencies = [
 
 [[package]]
 name = "instability"
-version = "0.3.14"
+version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3b5acc1e2fd9375041a388da33d1eb8aed5f7a8c0dd3543e3ea2805adfbe20"
+checksum = "6778b0196eefee7df739db78758e5cf9b37412268bfa5650bfeed028aed20d9c"
 dependencies = [
- "darling 0.24.1",
+ "darling",
  "indoc",
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1929,7 +1919,7 @@ checksum = "082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670"
 dependencies = [
  "miette",
  "num-traits",
- "winnow",
+ "winnow 0.7.15",
 ]
 
 [[package]]
@@ -2449,8 +2439,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-float"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "oxiroute"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -2518,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-acme"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "base64 0.23.1",
  "hickory-resolver",
@@ -2538,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-aged-executor"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "atomic-waker",
  "oxiroute-aged-order",
@@ -2548,11 +2547,11 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-aged-order"
-version = "7.1.1"
+version = "7.2.0"
 
 [[package]]
 name = "oxiroute-allocator"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
@@ -2560,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cache"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2576,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-compress"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "brotli",
  "http",
@@ -2587,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "http",
  "jiff",
@@ -2598,25 +2597,29 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
+ "base64 0.23.1",
  "hocon-parser",
  "kdl",
  "mlua",
  "oxiroute-config",
  "oxiroute-import",
+ "saphyr",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
 name = "oxiroute-cpu"
-version = "7.1.1"
+version = "7.2.0"
 
 [[package]]
 name = "oxiroute-epoll-h1"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "oxiroute-aged-order",
  "oxiroute-h1-head",
@@ -2628,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-forward-proxy"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2664,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h1-head"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "arrayvec",
  "oxiroute-cpu",
@@ -2672,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h2"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "bytes",
  "http",
@@ -2682,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h3"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2695,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "http",
  "openssl",
@@ -2711,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "bytes",
  "http",
@@ -2727,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2735,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2746,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2757,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
@@ -2770,14 +2773,14 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-tls-client"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "openssl",
 ]
 
 [[package]]
 name = "oxiroute-tls-rustls"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -2793,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-uring"
-version = "7.1.1"
+version = "7.2.0"
 dependencies = [
  "io-uring",
  "libc",
@@ -2802,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-worker-scaling"
-version = "7.1.1"
+version = "7.2.0"
 
 [[package]]
 name = "palette"
@@ -3681,6 +3684,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "saphyr"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8150ae0f360ddf81a99e52d5d37071e06af29e7c004f955846e941418463cc48"
+dependencies = [
+ "encoding_rs",
+ "hashlink",
+ "ordered-float 5.5.0",
+ "saphyr-parser",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "saphyr-parser"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a425f8285f1321dd220c4d781a7f757eccd6639359f72bdeceec3cdaac8b3a7"
+dependencies = [
+ "arraydeque",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3771,7 +3797,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
- "ordered-float",
+ "ordered-float 2.10.1",
  "serde",
 ]
 
@@ -3817,6 +3843,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -4265,6 +4300,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.2.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5426cb1b964690d913f6c5c1a1ae0b42f428ec506bb4d452876d7a209c9bca3b"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.5",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
+dependencies = [
+ "winnow 1.0.5",
+]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
+
+[[package]]
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4672,6 +4746,12 @@ checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "winnow"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "wit-bindgen"
