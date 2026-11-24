@@ -8,6 +8,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+base64.workspace = true
 hocon-parser.workspace = true
 kdl.workspace = true
 mlua.workspace = true
@@ -16,6 +17,7 @@ oxiroute-import = { path = "../oxiroute-import" }
 saphyr.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 

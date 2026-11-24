@@ -2,11 +2,16 @@ use std::{
     collections::BTreeMap,
     ffi::c_void,
     fmt::Write as _,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
 };
+
+mod dsl;
+mod loader;
+mod stdlib;
 
 use mlua::{
     HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value as LuaValue, VmState,
@@ -52,7 +57,8 @@ pub fn load_lua(source: &str) -> Result<ValidatedConfig, LuaConfigError> {
         return Err(LuaConfigError::SourceTooLarge);
     }
 
-    let lua = sandboxed_lua().map_err(lua_error)?;
+    let deps = loader::LuaDependencies::default();
+    let lua = sandboxed_lua(None, &deps).map_err(lua_error)?;
     let value: LuaValue = lua
         .load(source)
         .set_name("oxiroute.lua")
@@ -63,7 +69,10 @@ pub fn load_lua(source: &str) -> Result<ValidatedConfig, LuaConfigError> {
     config.validate().map_err(LuaConfigError::from)
 }
 
-fn sandboxed_lua() -> mlua::Result<Lua> {
+fn sandboxed_lua(
+    base_dir: Option<&Path>,
+    dependencies: &loader::LuaDependencies,
+) -> mlua::Result<Lua> {
     let stdlib = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8;
     let lua = Lua::new_with(stdlib, LuaOptions::default())?;
     let globals = lua.globals();
@@ -100,6 +109,10 @@ fn sandboxed_lua() -> mlua::Result<Lua> {
     })?;
     globals.set("array", array_fn)?;
 
+    stdlib::register(&lua)?;
+    dsl::register(&lua)?;
+    loader::register(&lua, base_dir, dependencies)?;
+
     lua.set_memory_limit(lua.used_memory().saturating_add(MAX_LUA_MEMORY_BYTES))?;
 
     let instructions = Arc::new(AtomicU32::new(MAX_LUA_INSTRUCTIONS));
@@ -124,11 +137,26 @@ fn lua_error(error: mlua::Error) -> LuaConfigError {
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
+    decode_inner(source, None).map(|(value, _)| value)
+}
+
+pub(crate) fn decode_with_base_dir(
+    source: &str,
+    base_dir: &Path,
+) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
+    decode_inner(source, Some(base_dir))
+}
+
+fn decode_inner(
+    source: &str,
+    base_dir: Option<&Path>,
+) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ConfigSourceError::SourceTooLarge);
     }
 
-    let lua = sandboxed_lua()
+    let dependencies = loader::LuaDependencies::default();
+    let lua = sandboxed_lua(base_dir, &dependencies)
         .map_err(lua_error)
         .map_err(ConfigSourceError::Lua)?;
     let value: LuaValue = lua
@@ -147,7 +175,7 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     };
     let decoded = converter.convert_value(value, 0)?;
     validate_value(&decoded)?;
-    Ok(decoded)
+    Ok((decoded, dependencies.into_paths()))
 }
 
 struct LuaConverter {
@@ -937,13 +965,13 @@ mod tests {
     #[test]
     fn deserialize_draft_accepts_empty_objects_for_sequence_fields() {
         let decoded = decode(
-            r#"return {
+            r"return {
                 version = 1,
                 listeners = {},
                 certificates = {},
                 tls_profiles = {},
                 http_services = {},
-            }"#,
+            }",
         )
         .expect("decode Lua");
 
@@ -961,10 +989,10 @@ mod tests {
     #[test]
     fn deserialize_draft_rejects_non_empty_object_for_sequence_field() {
         let decoded = decode(
-            r#"return {
+            r"return {
                 version = 1,
                 listeners = { not_a_list = true },
-            }"#,
+            }",
         )
         .expect("decode Lua");
 

@@ -74,13 +74,19 @@ pub fn resolve_source_with_format(
     format: ConfigFormat,
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let source = limits::source_text(bytes)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut lua_dependencies = Vec::new();
     let (mut value, mut directives) = match format {
         ConfigFormat::Kdl => kdl::decode_with_directives(source)?,
         ConfigFormat::Hocon => (hocon::decode(source)?, Vec::new()),
         ConfigFormat::Uci => uci::decode_with_directives(source)?,
         ConfigFormat::Yaml => (yaml::decode(source)?, Vec::new()),
         ConfigFormat::Toml => (toml::decode(source)?, Vec::new()),
-        ConfigFormat::Lua => (lua::decode(source)?, Vec::new()),
+        ConfigFormat::Lua => {
+            let (decoded, deps) = lua::decode_with_base_dir(source, parent)?;
+            lua_dependencies = deps;
+            (decoded, Vec::new())
+        }
     };
     let format_name = format_name(format);
     let mut extracted = extract_directives(&mut value, format_name)?;
@@ -95,8 +101,11 @@ pub fn resolve_source_with_format(
     let inline = inline_config(value, format)?;
     let mut imported_fragments = Vec::with_capacity(directives.len());
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut dependencies = Dependencies::default();
+    let has_lua_dependencies = !lua_dependencies.is_empty();
+    for dep in lua_dependencies {
+        dependencies.push_with_parent(&dep)?;
+    }
     let mut native_references = Vec::with_capacity(directives.len());
     for directive in &directives {
         let imported = import_native(directive, parent, &mut dependencies)?;
@@ -111,7 +120,7 @@ pub fn resolve_source_with_format(
     finish(
         format,
         config,
-        has_templates || !directives.is_empty(),
+        has_templates || !directives.is_empty() || has_lua_dependencies,
         dependencies.paths,
         native_references,
     )
