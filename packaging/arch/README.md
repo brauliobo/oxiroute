@@ -50,17 +50,10 @@ descendant cgroups and therefore disrupt sibling OxiRoute workers; the private n
 view and write authority to the service subtree but does not protect workers from each other. The
 existing unprivileged identity, capability bound, and `NoNewPrivileges=true` remain in force.
 
-To enable the authenticated management client on the direct generation runtime, create the
-restrictive default token file:
-
-```sh
-umask 077
-openssl rand -hex 32 > /etc/oxiroute/management.token
-chown oxiroute:oxiroute /etc/oxiroute/management.token
-chmod 600 /etc/oxiroute/management.token
-```
-
-Add the management object:
+The package creates the restrictive default token `/etc/oxiroute/management.token` (`0600
+oxiroute:oxiroute`) on install and on upgrade when it is missing; an existing file is never replaced.
+To rotate it, run `oxiroute token rotate`. To enable the authenticated management client on the
+direct generation runtime, add the management object:
 
 ```kdl
 (object)management {
@@ -68,8 +61,8 @@ Add the management object:
 }
 ```
 
-The package environment file has a commented example for a configured token path. Uncomment or
-change that assignment when the daemon should use a non-default path. The client resolves paths in
+The package environment file points the daemon at the default token path. Change that assignment
+when the daemon should use a non-default path. The client resolves paths in
 this order: explicit `--token-file`, process `OXIROUTE_MANAGEMENT_TOKEN_FILE`, the one plain
 assignment in `/etc/oxiroute/oxiroute.env`, then `/etc/oxiroute/management.token` when present. It
 does not execute the environment file. With the default token above, no token option or environment
@@ -79,9 +72,8 @@ export is needed:
 oxiroute status
 ```
 
-The daemon still needs `OXIROUTE_MANAGEMENT_TOKEN_FILE` in its systemd environment file whenever a
-management listener is configured; uncomment the packaged assignment before starting the service.
-The CLI's default-path discovery is a client convenience and does not change that startup gate.
+The daemon needs `OXIROUTE_MANAGEMENT_TOKEN_FILE` in its systemd environment file whenever a
+management listener is configured; the packaged assignment provides it.
 
 `systemctl reload oxiroute.service` sends `SIGHUP` to the active runtime. On the supervised path, the
 master re-reads the canonical configuration, watches and re-resolves imported native dependencies,
@@ -183,9 +175,7 @@ ReadWritePaths=/etc/oxiroute
 ```
 
 For example, use a local tmpfiles override to set `/etc/oxiroute` to `0770 root:oxiroute`; keep the
-configuration at `0640 root:oxiroute` and the management token at `0600 oxiroute:oxiroute`. Set
-`OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token` in the environment file only after
-creating that token with restrictive permissions.
+configuration at `0640 root:oxiroute` and the management token at `0600 oxiroute:oxiroute`. The package creates that token.
 
 Without that drop-in the packaged unit cannot write the configuration: `GET /api/v1/status` reports
 `configWritable: false`, and `oxiroute config apply` and `config edit` fail with `E_CONFIG_READ_ONLY` (a read-only
