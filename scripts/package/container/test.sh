@@ -59,6 +59,20 @@ restore_kdl_migrated_by_install_hook() {
   [[ ${pm} != pacman ]] || cp -- "${layout}/oxiroute.kdl" /etc/oxiroute/oxiroute.kdl
 }
 
+adopt_upgraded_env() {
+  local suffix
+  case ${pm} in
+    apt) suffix=.dpkg-dist ;;
+    dnf) suffix=.rpmnew ;;
+    pacman) suffix=.pacnew ;;
+  esac
+  if [[ -f /etc/oxiroute/oxiroute.env${suffix} ]]; then
+    mv -f -- "/etc/oxiroute/oxiroute.env${suffix}" /etc/oxiroute/oxiroute.env
+  else
+    sed -i '/^# edited before the upgrade$/d' /etc/oxiroute/oxiroute.env
+  fi
+}
+
 install_initial() {
   if [[ -z ${PREVIOUS:-} ]]; then install_new; return; fi
   install_package_file "/tmp/previous/${PREVIOUS}"
@@ -66,7 +80,7 @@ install_initial() {
   upgrade_package "/tmp/install/${PACKAGE}"
   cmp -s /usr/share/doc/oxiroute/BUILD-INFO.json "/out/${PACKAGE}.build.json" || fail "the upgrade did not install ${PACKAGE}"
   grep -qx '# edited before the upgrade' /etc/oxiroute/oxiroute.env || fail 'the upgrade overwrote a modified configuration'
-  sed -i '/^# edited before the upgrade$/d' /etc/oxiroute/oxiroute.env
+  adopt_upgraded_env
   restore_kdl_migrated_by_install_hook
   pass "upgraded from ${PREVIOUS}, the modified configuration is kept"
 }
