@@ -21,7 +21,7 @@ _package="oxiroute-${pkgver}-1-x86_64.pkg.tar.zst"
 # The checksum is the content of the release asset ${_package}.sha256.
 source=("${_package}::${url}/releases/download/v${pkgver}/${_package}")
 noextract=("${_package}")
-sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums=('d4ce9a32fe1b2cfac09714b808a85371283beb8d358bcbef0468b87dc03e1d1c')
 
 _release_metadata() { bsdtar -xOf "${srcdir}/${_package}" .PKGINFO; }
 

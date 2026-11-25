@@ -22,6 +22,6 @@ pkgbase = oxiroute-bin
 	backup = etc/oxiroute/oxiroute.kdl
 	backup = etc/oxiroute/oxiroute.lua
 	source = oxiroute-7.2.0-1-x86_64.pkg.tar.zst::https://github.com/brauliobo/oxiroute/releases/download/v7.2.0/oxiroute-7.2.0-1-x86_64.pkg.tar.zst
-	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
+	sha256sums = d4ce9a32fe1b2cfac09714b808a85371283beb8d358bcbef0468b87dc03e1d1c
 
 pkgname = oxiroute-bin
