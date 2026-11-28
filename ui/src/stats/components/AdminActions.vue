@@ -48,6 +48,7 @@ async function confirm() {
 <template lang="pug">
 Card.ox-admin(:aria-labelledby="headingId")
   h2(:id="headingId") Administration
+  p.ox-muted Runtime only — changes here are never written to configuration files.
   .ox-admin-controls
     Field(label="Pool" label-for="ox-admin-pool")
       Select#ox-admin-pool(:model-value="pool?.name ?? ''" :options="poolOptions" @update:modelValue="(name) => (poolName = name)")
@@ -62,6 +63,7 @@ Card.ox-admin(:aria-labelledby="headingId")
     p.ox-admin-result.ox-bad-text(v-if="result && !result.ok") {{ result.text }}
   Dialog(:open="target !== undefined" title="Confirm administration" @close="target = undefined")
     p Set server {{ target?.server }} of pool {{ target?.pool }} to {{ verb?.label }}?
+    p.ox-muted Runtime only — never modifies configuration files.
     Actions
       Button(autofocus data-close) Cancel
       Button(variant="primary" @click="confirm") Confirm

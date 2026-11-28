@@ -304,6 +304,59 @@
     display: none;
   }
 
+  .source-workspace {
+    display: grid;
+    grid-template-columns: 16rem minmax(0, 1fr);
+    border: var(--ox-border-width) solid var(--ox-border);
+    border-radius: var(--ox-radius);
+    background: var(--ox-surface);
+  }
+
+  .source-rail {
+    display: grid;
+    align-content: start;
+    gap: var(--ox-space-4);
+    min-width: 0;
+    padding: var(--ox-space-5);
+    border-right: var(--ox-border-width) solid var(--ox-border);
+  }
+
+  .source-rail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-3);
+  }
+
+  .source-file-list,
+  .source-new-file {
+    display: grid;
+    gap: var(--ox-space-3);
+  }
+
+  .source-editor-pane {
+    display: grid;
+    align-content: start;
+    gap: var(--ox-space-5);
+    min-width: 0;
+    padding: var(--ox-space-6);
+  }
+
+  .source-editor-head,
+  .source-convert-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ox-space-4);
+  }
+
+  .source-editor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ox-space-3);
+  }
+
   @media (max-width: 64rem) {
     .config-layout {
       grid-template-columns: 13rem minmax(0, 1fr);

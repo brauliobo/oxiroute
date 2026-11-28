@@ -49,13 +49,18 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       :canonical-unavailable="canonicalUnavailable"
       :save-message="saveMessage"
       :tls-alpn-message="tlsAlpnMessage"
+      :reloading="reloadingGeneration"
       @discard="discardAndReload"
       @reapply="reloadAndReapply"
+      @open-source="workspaceMode = 'source'"
+      @reload-now="reloadSavedGeneration"
     )
 
     ReapplyReport(v-if="reapplyReport" :report="reapplyReport" @dismiss="reapplyReport = null")
 
-    .config-layout
+    Tabs(:tabs="WORKSPACE_MODES" v-model="workspaceMode" label="Configuration workspace mode")
+
+    .config-layout(v-if="workspaceMode === 'structured'")
       ObjectRail(
         v-model="selectedKey"
         :config="draft"
@@ -148,7 +153,22 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           @review="openReview"
         )
 
-    ValidationOutput(v-if="validationCurrent && validationResult" :result="validationResult")
+    ValidationOutput(v-if="workspaceMode === 'structured' && validationCurrent && validationResult" :result="validationResult")
+
+    SourceFilesPanel(
+      v-if="workspaceMode === 'source'"
+      :token="token"
+      :active-revision="activeRevision"
+      @saved="loadSnapshot(false)"
+      @unauthorized="relockConfiguration"
+    )
+
+    ConfigHistoryPanel(
+      v-if="workspaceMode === 'history'"
+      :token="token"
+      @rolled-back="loadSnapshot(false)"
+      @unauthorized="relockConfiguration"
+    )
 
     SaveReviewDialog(
       :open="reviewOpen"
@@ -168,6 +188,8 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
 <script setup lang="ts" vapor>
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
+import Tabs from '#design/tabs/Tabs.vue'
+import { reloadGeneration } from './api'
 import { locateDiagnostic, type CanonicalConfig, type ConfigDiagnostic, type ConfigSnapshot } from './config'
 import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
 import CertificateEditor from './configuration/CertificateEditor.vue'
@@ -187,6 +209,7 @@ import UpstreamPoolEditor from './configuration/UpstreamPoolEditor.vue'
 import { useConfigurationLifecycle } from './configuration/useConfigurationLifecycle'
 import { useConfigurationNavigation } from './configuration/useConfigurationNavigation'
 import CanonicalUnavailablePanel from './configuration/workspace/CanonicalUnavailablePanel.vue'
+import ConfigHistoryPanel from './configuration/workspace/ConfigHistoryPanel.vue'
 import DiagnosticsSection from './configuration/workspace/DiagnosticsSection.vue'
 import EditorActions from './configuration/workspace/EditorActions.vue'
 import FailurePanel from './configuration/workspace/FailurePanel.vue'
@@ -198,6 +221,7 @@ import ReapplyReport from './configuration/workspace/ReapplyReport.vue'
 import RevisionBanners from './configuration/workspace/RevisionBanners.vue'
 import RevisionBoard from './configuration/workspace/RevisionBoard.vue'
 import SaveReviewDialog from './configuration/workspace/SaveReviewDialog.vue'
+import SourceFilesPanel from './configuration/workspace/SourceFilesPanel.vue'
 import StatsSection from './configuration/workspace/StatsSection.vue'
 import { hasErrors, summarizeDiagnostics } from './configuration/workspace/diagnosticSummary'
 import { useDiagnosticFocus } from './configuration/workspace/useDiagnosticFocus'
@@ -222,6 +246,13 @@ const staleRevision = ref<string | null>(null)
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
 const accessToken = computed(() => props.token || null)
+const WORKSPACE_MODES = [
+  { id: 'structured', label: 'Structured editor' },
+  { id: 'source', label: 'Source & includes' },
+  { id: 'history', label: 'History & rollback' },
+]
+const workspaceMode = ref('structured')
+const reloadingGeneration = ref(false)
 const selectedKey = ref('general')
 const reapplyReport = ref<Pick<MergeResult<unknown>, 'applied' | 'collisions'> | null>(null)
 
@@ -341,6 +372,17 @@ function ensureSelection(): void {
 
 function checkDiskRevision(): void {
   void loadSnapshot(true)
+}
+
+async function reloadSavedGeneration(): Promise<void> {
+  if (!accessToken.value || !activeRevision.value) return
+  reloadingGeneration.value = true
+  try {
+    await reloadGeneration(activeRevision.value, accessToken.value)
+    await loadSnapshot(false)
+  } finally {
+    reloadingGeneration.value = false
+  }
 }
 
 async function confirmDiscard(title: string): Promise<boolean> {

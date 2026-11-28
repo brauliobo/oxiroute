@@ -1,7 +1,7 @@
 import { arrayOf, isRecord, isString, nullableSafeInteger, nullableString, safeInteger } from '../../valueGuards'
 import { ApiError, request } from '../transport'
 import type { AdministrativeState } from '../managementContracts'
-import { authorizationHeader, invalidPayload } from './shared'
+import { authorizationHeader, invalidPayload, mutationHeaders } from './shared'
 
 export type RegistrationStatus = 'active' | 'shadowed' | 'orphaned'
 export type AnnouncedState = 'ready' | 'draining'
@@ -45,6 +45,26 @@ export async function fetchRegistrations(token: string, signal?: AbortSignal): P
     headers: authorizationHeader(token),
     signal,
   }))
+}
+
+export async function setRegisteredServerState(
+  pool: string,
+  name: string,
+  state: AdministrativeState,
+  token: string,
+): Promise<void> {
+  await request(`/api/v1/pools/${pool}/servers/${name}/state`, {
+    method: 'PUT',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ state }),
+  })
+}
+
+export async function deregisterPoolServer(pool: string, name: string, token: string): Promise<void> {
+  await request(`/api/v1/pools/${pool}/servers/${name}`, {
+    method: 'DELETE',
+    headers: authorizationHeader(token),
+  })
 }
 
 export function registryDisabled(error: unknown): boolean {

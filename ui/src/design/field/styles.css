@@ -30,6 +30,15 @@
     opacity: 0.55;
   }
 
+  .ox-textarea {
+    width: 100%;
+    min-height: 16rem;
+    font-family: var(--ox-mono);
+    font-size: var(--ox-text-xs);
+    line-height: var(--ox-leading-body);
+    resize: vertical;
+  }
+
   .ox-input[aria-invalid='true'] {
     border-color: var(--ox-bad);
   }

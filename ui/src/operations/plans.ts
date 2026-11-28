@@ -30,6 +30,8 @@ import type { ActionPlan, Snapshot, Success } from './types'
 
 export const RUNTIME_STATE_PERSISTENCE =
   'Runtime state only: kept across reloads and rollbacks, not written to the configuration file, reset by a restart.'
+export const OVERLAY_STATE_PERSISTENCE =
+  'Saved to the sidecar persistence overlay (.overlay.json): survives restarts without editing the configuration file. Promote or clear it in the Overlays tab.'
 
 const LEFT_RUNNING_REASONS: Record<string, string> = {
   response_started: 'the backend already started its response',
@@ -44,7 +46,11 @@ type Mutable = Exclude<AdministrativeState, 'ready'>
 
 const target = (entry: ServerInventoryEntry) => [{ pool: entry.pool, server: entry.server.name }]
 const serverLabel = (entry: ServerInventoryEntry) => `server ${entry.server.name} in pool ${entry.pool}`
-const runtimeState = (summary: string): Success => ({ tone: 'ok', summary, details: [RUNTIME_STATE_PERSISTENCE] })
+const runtimeState = (summary: string, persisted = false): Success => ({
+  tone: 'ok',
+  summary,
+  details: [persisted ? OVERLAY_STATE_PERSISTENCE : RUNTIME_STATE_PERSISTENCE],
+})
 
 function evacuationSuccess(subject: string, report: EvacuationResponse): Success {
   const left = Object.entries(report.leftRunning).filter(([, count]) => count > 0)
@@ -135,23 +141,25 @@ export function shutdown(snapshot: Snapshot): ActionPlan<MutationResponse> {
   }
 }
 
-export function listenerState(listener: MonitoringListener, state: AdministrativeState): ActionPlan<MutationResponse> {
+export function listenerState(listener: MonitoringListener, state: AdministrativeState, persistOverlay = false): ActionPlan<MutationResponse> {
+  const persist = persistOverlay && state !== 'drain'
   return {
     scope: 'admission',
     failure: `set listener ${listener.name} to ${ADMIN_BADGES[state].label.toLowerCase()}`,
     confirm: state === 'ready' ? undefined : confirmations.listenerStateConfirmation(listener, state as Mutable),
-    run: (revision, token) => setListenerAdministrativeState([listener.name], state, revision, token),
-    succeeded: () => runtimeState(`Listener ${listener.name} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`),
+    run: (revision, token) => setListenerAdministrativeState([listener.name], state, revision, token, persist),
+    succeeded: () => runtimeState(`Listener ${listener.name} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`, persist),
   }
 }
 
-export function poolState(pool: MonitoringPool, state: AdministrativeState): ActionPlan<MutationResponse> {
+export function poolState(pool: MonitoringPool, state: AdministrativeState, persistOverlay = false): ActionPlan<MutationResponse> {
+  const persist = persistOverlay && state !== 'drain'
   return {
     scope: 'admission',
     failure: `set pool ${pool.name} to ${ADMIN_BADGES[state].label.toLowerCase()}`,
     confirm: state === 'ready' ? undefined : confirmations.poolStateConfirmation(pool, state as Mutable),
-    run: (revision, token) => setPoolAdministrativeState([pool.name], state, revision, token),
-    succeeded: () => runtimeState(`Pool ${pool.name} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`),
+    run: (revision, token) => setPoolAdministrativeState([pool.name], state, revision, token, persist),
+    succeeded: () => runtimeState(`Pool ${pool.name} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`, persist),
   }
 }
 
@@ -165,36 +173,38 @@ export function evacuatePool(pool: MonitoringPool, force: boolean): ActionPlan<E
   }
 }
 
-export function serverState(entry: ServerInventoryEntry, state: AdministrativeState): ActionPlan<MutationResponse> {
+export function serverState(entry: ServerInventoryEntry, state: AdministrativeState, persistOverlay = false): ActionPlan<MutationResponse> {
+  const persist = persistOverlay && state !== 'drain'
   return {
     scope: 'servers',
     failure: `set ${serverLabel(entry)} to ${ADMIN_BADGES[state].label.toLowerCase()}`,
     confirm: state === 'ready' ? undefined : confirmations.serverStateConfirmation(entry, state as Mutable),
-    run: (revision, token) => setServerAdministrativeState(target(entry), state, revision, token),
-    succeeded: () => runtimeState(`Server ${entry.server.name} in pool ${entry.pool} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`),
+    run: (revision, token) => setServerAdministrativeState(target(entry), state, revision, token, persist),
+    succeeded: () => runtimeState(`Server ${entry.server.name} in pool ${entry.pool} is now ${ADMIN_BADGES[state].label.toLowerCase()}.`, persist),
   }
 }
 
-export function serverHealth(entry: ServerInventoryEntry, health: HealthOverride): ActionPlan<MutationResponse> {
+export function serverHealth(entry: ServerInventoryEntry, health: HealthOverride, persistOverlay = false): ActionPlan<MutationResponse> {
   return {
     scope: 'servers',
     failure: `set the health of ${serverLabel(entry)} to ${health === 'auto' ? 'automatic' : `forced ${health}`}`,
     confirm: health === 'down' ? confirmations.forceDownConfirmation(entry) : undefined,
-    run: (revision, token) => setServerHealthOverride(target(entry), health, revision, token),
+    run: (revision, token) => setServerHealthOverride(target(entry), health, revision, token, persistOverlay),
     succeeded: () => runtimeState(
       `Health of server ${entry.server.name} in pool ${entry.pool} is ${health === 'auto' ? 'automatic' : `forced ${health}`}.`,
+      persistOverlay,
     ),
   }
 }
 
-export function serverChecks(entry: ServerInventoryEntry): ActionPlan<MutationResponse> {
+export function serverChecks(entry: ServerInventoryEntry, persistOverlay = false): ActionPlan<MutationResponse> {
   const enabled = !entry.server.checksEnabled
   const verb = enabled ? 'enable' : 'disable'
   return {
     scope: 'servers',
     failure: `${verb} the checks of ${serverLabel(entry)}`,
-    run: (revision, token) => setServerChecks(target(entry), enabled, revision, token),
-    succeeded: () => runtimeState(`Checks of server ${entry.server.name} in pool ${entry.pool} are ${enabled ? 'enabled' : 'disabled'}.`),
+    run: (revision, token) => setServerChecks(target(entry), enabled, revision, token, persistOverlay),
+    succeeded: () => runtimeState(`Checks of server ${entry.server.name} in pool ${entry.pool} are ${enabled ? 'enabled' : 'disabled'}.`, persistOverlay),
   }
 }
 
@@ -207,25 +217,25 @@ export function serverDns(entry: ServerInventoryEntry): ActionPlan<DnsRefreshRes
   }
 }
 
-export function serverLimit(entry: ServerInventoryEntry, limit: number | null): ActionPlan<MutationResponse> {
+export function serverLimit(entry: ServerInventoryEntry, limit: number | null, persistOverlay = false): ActionPlan<MutationResponse> {
   return {
     scope: 'servers',
     failure: `${limit === null ? 'reset' : 'set'} the connection limit of ${serverLabel(entry)}`,
-    run: (revision, token) => setServerMaxConnections(target(entry), limit, revision, token),
+    run: (revision, token) => setServerMaxConnections(target(entry), limit, revision, token, persistOverlay),
     succeeded: () => runtimeState(limit === null
       ? `Connection limit of server ${entry.server.name} in pool ${entry.pool} is back to its configured value.`
-      : `Connection limit of server ${entry.server.name} in pool ${entry.pool} is ${plural(limit, 'connection')}.`),
+      : `Connection limit of server ${entry.server.name} in pool ${entry.pool} is ${plural(limit, 'connection')}.`, persistOverlay),
   }
 }
 
-export function serverWeight(entry: ServerInventoryEntry, weight: number | null): ActionPlan<MutationResponse> {
+export function serverWeight(entry: ServerInventoryEntry, weight: number | null, persistOverlay = false): ActionPlan<MutationResponse> {
   return {
     scope: 'servers',
     failure: `${weight === null ? 'reset' : 'set'} the weight of ${serverLabel(entry)}`,
-    run: (revision, token) => setServerWeight(target(entry), weight, revision, token),
+    run: (revision, token) => setServerWeight(target(entry), weight, revision, token, persistOverlay),
     succeeded: () => runtimeState(weight === null
       ? `Weight of server ${entry.server.name} in pool ${entry.pool} is back to its configured value.`
-      : `Weight of server ${entry.server.name} in pool ${entry.pool} is ${weight}.`),
+      : `Weight of server ${entry.server.name} in pool ${entry.pool} is ${weight}.`, persistOverlay),
   }
 }
 

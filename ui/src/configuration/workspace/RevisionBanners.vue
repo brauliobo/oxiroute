@@ -2,10 +2,14 @@
 Banner.revision-banner.candidate-waiting(v-if="candidateWaiting" tone="info" role="status")
   strong A saved configuration is waiting to be activated.
   |  The file on disk renders as generation {{ shortRevision(snapshot.candidateRevision) }}; generation {{ shortRevision(activeRevision ?? '') }} is serving traffic. The watcher activates the file without a restart unless the change needs one.
+  template(#actions)
+    Button(small variant="primary" :disabled="reloading" @click="emit('reload-now')") {{ reloading ? 'Reloading...' : 'Reload now' }}
 
 Banner.revision-banner.compositional(v-if="snapshot.compositional" tone="info" role="status")
-  strong Compositional root is read-only.
-  |  Typed saves are unavailable because this {{ formatLabel(snapshot.configFormat) }} root resolves {{ snapshot.dependencyCount }} {{ snapshot.dependencyCount === 1 ? 'dependency' : 'dependencies' }}. Inspection and server validation remain available without flattening its source files.
+  strong Compositional root is read-only in structured mode — use Source &amp; includes to edit.
+  |  Typed saves are unavailable because this {{ formatLabel(snapshot.configFormat) }} root resolves {{ snapshot.dependencyCount }} {{ snapshot.dependencyCount === 1 ? 'dependency' : 'dependencies' }}. Edit the root or any included file safely in the Source &amp; includes tab without flattening its source files.
+  template(#actions)
+    Button(small variant="primary" @click="emit('open-source')") Open in Source &amp; includes editor
 
 Banner.revision-banner.stale(v-if="staleRevision" tone="bad" tabindex="-1" role="alert")
   strong The file on disk changed while you were editing.
@@ -57,8 +61,9 @@ const props = defineProps<{
   canonicalUnavailable: CanonicalUnavailableState | null
   saveMessage: SaveMessage | null
   tlsAlpnMessage: TlsAlpnMessage | null
+  reloading?: boolean
 }>()
-const emit = defineEmits<{ discard: []; reapply: [] }>()
+const emit = defineEmits<{ discard: []; reapply: []; 'open-source': []; 'reload-now': [] }>()
 
 const TONES = { success: 'ok', pending: 'info', error: 'bad' } as const
 const candidateWaiting = computed(() =>

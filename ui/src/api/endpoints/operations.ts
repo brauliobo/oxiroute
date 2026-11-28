@@ -29,45 +29,80 @@ export interface DnsRefreshResponse {
 }
 
 export async function setListenerAdministrativeState(
-  listeners: string[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+  listeners: string[], state: AdministrativeState, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return postRevisionMutation('/api/v1/listeners/administrative-state', { listeners, state }, expectedActiveRevision, token)
+  return postRevisionMutation(
+    '/api/v1/listeners/administrative-state',
+    persist ? { listeners, state, persist: true } : { listeners, state },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setPoolAdministrativeState(
-  pools: string[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+  pools: string[], state: AdministrativeState, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return postRevisionMutation('/api/v1/pools/administrative-state', { pools, state }, expectedActiveRevision, token)
+  return postRevisionMutation(
+    '/api/v1/pools/administrative-state',
+    persist ? { pools, state, persist: true } : { pools, state },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setServerAdministrativeState(
-  targets: ServerTarget[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+  targets: ServerTarget[], state: AdministrativeState, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return postRevisionMutation('/api/v1/servers/administrative-state', { targets, state }, expectedActiveRevision, token)
+  return postRevisionMutation(
+    '/api/v1/servers/administrative-state',
+    persist ? { targets, state, persist: true } : { targets, state },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setServerHealthOverride(
-  targets: ServerTarget[], health: HealthOverride, expectedActiveRevision: string, token: string,
+  targets: ServerTarget[], health: HealthOverride, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return postRevisionMutation('/api/v1/servers/health-override', { targets, health }, expectedActiveRevision, token)
+  return postRevisionMutation(
+    '/api/v1/servers/health-override',
+    persist ? { targets, health, persist: true } : { targets, health },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setServerChecks(
-  targets: ServerTarget[], enabled: boolean, expectedActiveRevision: string, token: string,
+  targets: ServerTarget[], enabled: boolean, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return postRevisionMutation('/api/v1/servers/checks', { targets, enabled }, expectedActiveRevision, token)
+  return postRevisionMutation(
+    '/api/v1/servers/checks',
+    persist ? { targets, enabled, persist: true } : { targets, enabled },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setServerMaxConnections(
-  targets: ServerTarget[], maxConnections: number | null, expectedActiveRevision: string, token: string,
+  targets: ServerTarget[], maxConnections: number | null, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return putRevisionMutation('/api/v1/servers/max-connections', { targets, maxConnections }, expectedActiveRevision, token)
+  return putRevisionMutation(
+    '/api/v1/servers/max-connections',
+    persist ? { targets, maxConnections, persist: true } : { targets, maxConnections },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export async function setServerWeight(
-  targets: ServerTarget[], weight: number | null, expectedActiveRevision: string, token: string,
+  targets: ServerTarget[], weight: number | null, expectedActiveRevision: string, token: string, persist = false,
 ): Promise<MutationResponse> {
-  return putRevisionMutation('/api/v1/servers/weight', { targets, weight }, expectedActiveRevision, token)
+  return putRevisionMutation(
+    '/api/v1/servers/weight',
+    persist ? { targets, weight, persist: true } : { targets, weight },
+    expectedActiveRevision,
+    token,
+  )
 }
 
 export interface EvacuationResponse {

@@ -1,5 +1,5 @@
 <script setup vapor lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import Badge from '#design/badge/Badge.vue'
 import Banner from '#design/banner/Banner.vue'
 import Notice from '#design/banner/Notice.vue'
@@ -9,12 +9,19 @@ import Loading from '#design/empty/Loading.vue'
 import { formatDuration } from '#design/format'
 import Panel from '#design/panel/Panel.vue'
 import Table from '#design/table/Table.vue'
-import type { RegistrationStatus } from '../api'
+import {
+  ApiError,
+  deregisterPoolServer,
+  setRegisteredServerState,
+  type AdministrativeState,
+  type RegistrationStatus,
+} from '../api'
+import { confirmAction } from '../shell/confirm'
 import { ADMIN_BADGES, humanize, limitText, type StateBadge } from './labels'
 import { useRegistrations } from './useRegistrations'
 import './page.css'
 
-const COLUMNS = ['Server', 'Address', 'Registry status', 'State', 'Lease', 'Weight and limit', 'Labels']
+const COLUMNS = ['Server', 'Address', 'Registry status', 'State', 'Lease', 'Weight and limit', 'Labels', 'Actions']
 const STATUS_BADGES: Record<RegistrationStatus, StateBadge> = {
   active: { label: 'Active', tone: 'ok' },
   shadowed: { label: 'Shadowed', tone: 'warn' },
@@ -25,9 +32,57 @@ const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
 
 const { list, error, disabled, loading, load } = useRegistrations(() => props.token, () => emit('unauthorized'))
+const acting = ref(false)
+const actionError = ref<string | null>(null)
+const actionNotice = ref<string | null>(null)
 
 const labelText = (labels: Record<string, string>) =>
   Object.entries(labels).map(([key, value]) => `${key}=${value}`).join(', ') || 'none'
+
+async function updateState(pool: string, name: string, state: AdministrativeState): Promise<void> {
+  acting.value = true
+  actionError.value = null
+  actionNotice.value = null
+  try {
+    await setRegisteredServerState(pool, name, state, props.token)
+    actionNotice.value = `Updated registered server ${name} in pool ${pool} to ${state} (registry state only; config file unchanged).`
+    await load()
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      emit('unauthorized')
+      return
+    }
+    actionError.value = err instanceof Error ? err.message : 'Unable to update registered server state'
+  } finally {
+    acting.value = false
+  }
+}
+
+async function removeRegistration(pool: string, name: string): Promise<void> {
+  const ok = await confirmAction({
+    title: `Deregister ${name} from pool ${pool}?`,
+    message: 'Removes this dynamic server from the registry immediately. Configuration files are not modified.',
+    confirmLabel: 'Deregister server',
+    danger: true,
+  })
+  if (!ok) return
+  acting.value = true
+  actionError.value = null
+  actionNotice.value = null
+  try {
+    await deregisterPoolServer(pool, name, props.token)
+    actionNotice.value = `Deregistered ${name} from pool ${pool}.`
+    await load()
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      emit('unauthorized')
+      return
+    }
+    actionError.value = err instanceof Error ? err.message : 'Unable to deregister server'
+  } finally {
+    acting.value = false
+  }
+}
 
 onMounted(load)
 </script>
@@ -37,9 +92,12 @@ Panel.ox-ops-registrations(title="Registrations")
   .ox-ops-buttons
     Button(:disabled="loading" @click="load") {{ loading ? 'Refreshing...' : 'Refresh registrations' }}
   Notice(kind="alert")
-    Banner(v-if="error" tone="bad")
+    Banner(v-if="error || actionError" tone="bad")
       strong Registrations unavailable.
-      |  {{ error }}
+      |  {{ error || actionError }}
+  Notice(kind="status")
+    Banner(v-if="actionNotice" tone="ok")
+      strong {{ actionNotice }}
   Loading(v-if="loading && !list && !disabled" label="Reading registrations")
   EmptyState(v-if="disabled" title="Server registration is not configured") No pool accepts registrations, so there are no dynamic servers to list.
   template(v-if="list")
@@ -64,4 +122,11 @@ Panel.ox-ops-registrations(title="Registrations")
           td(data-label="Lease") {{ entry.expiresInMs === null ? 'no lease' : `expires in ${formatDuration(entry.expiresInMs)}` }}
           td(data-label="Weight and limit") weight {{ entry.registration.weight }}, priority {{ entry.registration.priority }}, limit {{ limitText(entry.registration.maxConnections) }}
           td(data-label="Labels") {{ labelText(entry.registration.labels) }}
+          td(data-label="Actions")
+            .ox-ops-buttons(v-if="list.writer")
+              Button(small :disabled="acting" @click="updateState(entry.registration.pool, entry.registration.name, 'ready')") Ready
+              Button(small :disabled="acting" @click="updateState(entry.registration.pool, entry.registration.name, 'drain')") Drain
+              Button(small :disabled="acting" @click="updateState(entry.registration.pool, entry.registration.name, 'maintenance')") Maintenance
+              Button(small variant="danger" :disabled="acting" @click="removeRegistration(entry.registration.pool, entry.registration.name)") Deregister
+            span.ox-muted(v-else) Read-only
 </template>
