@@ -452,11 +452,17 @@ active generation.
 target no longer exists).
 
 `POST /api/v1/overlay/clear` deletes the file; the running state is left as it is. `POST
-/api/v1/overlay/promote` needs `If-Config-Revision` like `PUT /config/source`, writes the `max_connections` of
-configured servers into the configuration file through the typed save (in the authored format; its comments and
-logic are not kept and a composed file is refused with `422`), then removes those entries from the overlay.
-It answers like a save, or `{"outcome":"nothing_to_promote","promoted":0}`. State, health, checks, weight and
-listener entries have no configuration setting and stay in the overlay.
+/api/v1/config/promote-overlay` (also routed at `/api/v1/overlay/promote`) needs `If-Config-Revision` like `PUT /config/source`, runs under an exclusive overlay lock, writes both `max_connections` of configured servers and `weight` overrides of `weighted_round_robin` pools into the configuration file through the typed save (in the authored format; its comments and logic are not kept and a composed file is refused with `422`), then removes those promoted entries from the overlay.
+It answers like a save, or `{"outcome":"nothing_to_promote","promoted":0}`. State, health, checks, non-weighted pool weights and listener entries stay in the overlay. `POST /api/v1/servers/refresh-dns` rejects `"persist": true` with `400 persist_not_supported`.
+
+### Multi-File Workspace, Conversion & Declarative Patching
+
+- `GET /api/v1/config/files` lists the root configuration file and every directory-jailed included file with `path`, `kind` (`root` or `include`), `format`, `revision`, `sizeBytes`, and `writable`.
+- `GET /api/v1/config/files/{relpath}` reads one directory-jailed file with secret redaction and its `fileRevision`.
+- `POST /api/v1/config/files/validate` validates a candidate edit to `{path, text, textDiff?}` against the entire configuration graph in memory without writing to disk.
+- `PUT /api/v1/config/files/{relpath}` saves a validated root or included file atomically (requiring `If-Config-Revision` unless `create: true`).
+- `POST /api/v1/config/convert` renders disk, active, or submitted source text into any of the 7 supported formats (`oxi`, `kdl`, `yaml`, `toml`, `lua`, `hocon`, `uci`) with secret redaction.
+- `POST /api/v1/config/patch` applies a declarative typed `ResourcePatch` (`set_global`, `upsert`, `remove`, `upsert_pool_server`, `remove_pool_server`, `upsert_http_route`, `remove_http_route`) with optional `dryRun: true` or `If-Config-Revision`-guarded durable persistence.
 
 ## Clients and Connections
 

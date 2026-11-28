@@ -194,8 +194,12 @@ Built-in scripting capabilities include:
   `oxi.certbot`, `oxi.tls_profile`, `oxi.upstream`, `oxi.route`, `oxi.proxy`, `oxi.http_service`,
   and `oxi.listener`.
 - **Modular includes and data loading**: directory-jailed `include` and
-  `read_text`/`read_lines`/`read_json`/`read_yaml`/`read_toml` with automatic hot-reload dependency
-  tracking via `ResolvedSource.dependencies` (disabled in memory-only `decode_value`/`load_lua`).
+  `read_text`/`read_lines`/`read_json`/`read_yaml`/`read_toml`/`read_kdl`/`read_hocon`/`read_uci`/`read_oxi`
+  with automatic hot-reload dependency tracking via `ResolvedSource.dependencies` and
+  `ResolvedSource.included_files` (disabled in memory-only `decode_value`/`load_lua`).
+  Directory-jailed included files can also be inspected, validated against the full configuration
+  graph, and edited through the Management API (`/api/v1/config/files`), the CLI
+  (`oxiroute config files`), and the Management Web UI (**Source & includes** tab).
 - **Full source pipeline composition**: seamless support for generic `templates`/`use` expansion,
   top-level native server references (using the same table shapes as HOCON), `decode_value`, and
   deterministic Lua rendering.

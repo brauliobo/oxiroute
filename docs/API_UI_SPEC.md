@@ -29,6 +29,11 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/import-reports`, `/api/v1/import-reports/{index}` | Bounded native import report inventory/evidence with redacted source paths and a read-only KDL preview only for finalized, unblocked candidates. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
 | `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for canonical config-watcher activation. |
+| `GET` | `/api/v1/config/files`, `/api/v1/config/files/{relpath}` | List and read the root configuration file and every directory-jailed included file with secret redaction and per-file revision. |
+| `POST` | `/api/v1/config/files/validate` | Validate a candidate edit to any root or directory-jailed included file against the full configuration graph in memory. |
+| `PUT` | `/api/v1/config/files/{relpath}` | Revision-checked atomic save (or `create: true`) of a root or directory-jailed included file. |
+| `POST` | `/api/v1/config/convert` | Render the disk, active, or submitted source configuration into any of the 7 native formats (`oxi`, `kdl`, `yaml`, `toml`, `lua`, `hocon`, `uci`). |
+| `POST` | `/api/v1/config/patch` | Apply a typed declarative resource mutation (`set_global`, `upsert`, `remove`, `upsert_pool_server`, `remove_pool_server`, `upsert_http_route`, `remove_http_route`) with optional `dryRun` or revision-checked durable persistence. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
 | `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status; `buildId` is the build of the serving process and `masterBuildId` the one of the supervising master (null without one), equal unless the executable was replaced under a running master. |
@@ -631,12 +636,7 @@ after transient failures, and expose loading/stale/error states. Manual controls
 and are available for configured manual recorder definitions on active publishers. The topology
 inspector exposes stable config paths and exact redacted attributes without recording roots.
 
-The console asks for the bearer token once and shares it with every workspace; the configuration workspace exposes every field in the
-current frontend canonical-field registry, validates through the server, renders the format-preserving
-backend preview and candidate topology for review, and saves with `If-Config-Revision` when the root is
-non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, HOCON, and UCI, and
-uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
-server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
+The console asks for the bearer token once and shares it with every workspace; the configuration workspace exposes three modes (**Structured editor**, **Source & includes**, and **History & rollback**). Structured mode exposes the full canonical field registry (including root runtime/data-plane/retirement/audit/history/client-tracking/registry settings, UDP & HTTP/3 listeners, HTTP/3 upstream versions, passive circuit-breaker/outlier-detection/readmission, pool queues/registration/canaries, HTTP gzip/access-log/route policy/basic auth/static files, and RTMP tuning), validates through the server, renders the format-preserving backend preview and candidate topology for review, and saves with `If-Config-Revision` when the root is non-compositional. It consumes `configPreview` and `configFormat` for all 7 native formats (`oxi`, `kdl`, `yaml`, `toml`, `lua`, `hocon`, `uci`), and offers one-click switching into **Source & includes** for compositional roots so both root and directory-jailed included files can be validated against the full graph, converted across formats, saved atomically, and reloaded inline without flattening source composition. **History & rollback** browses on-disk revisions, diffs them against `current`, and performs revision-checked rollbacks. In `#/operations`, transient actions (`drain`, `evacuate`, DNS refresh) remain strictly runtime-only and never write to configuration files, while opt-in sidecar overlay persistence (`.overlay.json`), overlay promotion/clearing, route explanation (`/api/v1/routes/explain`), client/connection inspection, and interactive dynamic registration controls are first-class tabs. The standalone Stats Page administration panel likewise marks every server action as runtime-only. It preserves dirty drafts across refresh failures and `409`
  conflicts. The save response distinguishes pending activation from restart-required Unix listener
   mode changes and lists added and removed listeners in `I_LISTENER_CHANGES`; generation status is authoritative for publication completion. The UI consumes bounded
   SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
