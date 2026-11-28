@@ -6,6 +6,8 @@ use crate::cli::parse::nonempty_target;
 
 #[derive(Subcommand)]
 pub(crate) enum RegistryCommand {
+    /// List all active dynamic server registrations, leases and registry status.
+    List,
     /// Create scoped tokens for registering servers or reading the registry.
     Token {
         #[command(subcommand)]

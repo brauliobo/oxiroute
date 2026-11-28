@@ -184,6 +184,9 @@ pub(crate) struct RegisterArgs {
     /// Stay in the foreground, renew the lease, and deregister on SIGTERM or SIGINT.
     #[arg(long)]
     pub(super) heartbeat: bool,
+    /// Take over an existing dynamic registration owned by another token (requires admin token).
+    #[arg(long)]
+    pub(super) takeover: bool,
 }
 
 #[derive(Subcommand)]

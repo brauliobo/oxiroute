@@ -34,7 +34,7 @@ pub(crate) struct Global {
         value_name = "URL",
         help_heading = "Connection",
         long_help = "Management API URL, `http://HOST:PORT`.\n\nWithout it the CLI reads OXIROUTE_ENDPOINT in /etc/oxiroute/oxiroute.env, \
-            then the management bind of /etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}, then uses http://127.0.0.1:9900."
+            then the management bind of /etc/oxiroute/oxiroute.{oxi,kdl,kdl2,yaml,yml,toml,lua,conf,hocon,uci}, then uses http://127.0.0.1:9900."
     )]
     pub(super) endpoint: Option<String>,
     /// Named context whose address, token source and timeout apply; flags and variables take precedence.
@@ -64,7 +64,7 @@ pub(crate) struct Global {
         help_heading = "Connection",
         long_help = "File holding the management bearer token: a regular file with mode 0400 or 0600 and 32 to 512 visible characters.\n\n\
             Without it the CLI reads OXIROUTE_MANAGEMENT_TOKEN_FILE in /etc/oxiroute/oxiroute.env, then the management token_file of \
-            /etc/oxiroute/oxiroute.{oxi,kdl,yaml,yml,toml,lua,conf}, then /etc/oxiroute/management.token when it exists."
+            /etc/oxiroute/oxiroute.{oxi,kdl,kdl2,yaml,yml,toml,lua,conf,hocon,uci}, then /etc/oxiroute/management.token when it exists."
     )]
     pub(super) token_file: Option<PathBuf>,
     /// Time limit for connecting and for each answer; `--wait` waits up to the same limit.

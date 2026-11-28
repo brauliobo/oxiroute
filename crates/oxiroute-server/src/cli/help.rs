@@ -157,11 +157,12 @@ pub(crate) const CONFIG_EXAMPLES: &str = "Examples:
   oxiroute config diff --rev 3f9a1c2b7d40
   oxiroute config rollback 3f9a1c2b7d40 --wait
 
-`config validate`, `config diff` and `config apply` take a file in any native format (kdl, lua, hocon, uci, or a JSON \
+`config validate`, `config diff` and `config apply` take a file in any native format (kdl, oxi, yaml, toml, lua, hocon, uci, or a JSON \
 document), chosen by its extension or `--format`, and ask the daemon, so they check what `config check` checks offline \
 plus the running state. `config apply` stores the file's own text, with its comments and Lua logic, when it is in the \
-format of the daemon's file. Exit codes: 3 for an invalid file, 7 when the file changed on disk meanwhile, and 1 for \
-differences with `config diff --exit-code` or `config fmt --check`.";
+format of the daemon's file. Use `config files` to list, inspect, or edit directory-jailed included files, `config convert` \
+to render into another format, and `config resource` for declarative resource CRUD. Exit codes: 3 for an invalid file, 7 \
+when the file changed on disk meanwhile, and 1 for differences with `config diff --exit-code` or `config fmt --check`.";
 
 pub(crate) const CONTEXT_EXAMPLES: &str = "Examples:
   oxiroute context add prod --address http://192.0.2.10:9900 --token-from-file /etc/oxiroute/prod.token --use

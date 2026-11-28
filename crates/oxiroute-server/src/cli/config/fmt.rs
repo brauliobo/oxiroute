@@ -13,7 +13,7 @@ pub(super) fn fmt(context: &Context<'_>, args: &FmtArgs) -> Result<(), CliError>
     let input = SourceInput::read(&args.file, args.format)?;
     if input.format == InputFormat::Json {
         return Err(CliError::Local(
-            "fmt rewrites kdl, lua, hocon and uci files; a JSON document has no canonical text form".into(),
+            "fmt rewrites kdl, oxi, yaml, toml, lua, hocon and uci files; a JSON document has no canonical text form".into(),
         ));
     }
     let name = args.file.display().to_string();

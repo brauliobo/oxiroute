@@ -17,6 +17,12 @@ pub(crate) enum ProcessCommand {
     Topology,
     /// Show process, host and traffic figures with the state of listeners and pools.
     Monitoring,
+    /// Show the daemon's runtime capabilities (listeners, protocols, supervision, control features).
+    Capabilities,
+    /// List tracked clients currently seen by the daemon.
+    Clients,
+    /// List tracked active connections currently served by the daemon.
+    Connections,
     /// Reload the daemon's configuration file on disk as a new generation.
     Reload {
         /// Wait until the new revision is active or the file is rejected, up to --timeout (30s by default).

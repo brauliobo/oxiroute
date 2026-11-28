@@ -194,6 +194,7 @@ fn offline_and_management_commands_parse_beside_serve() {
         Command::Config {
             command: ConfigCommand::Check {
                 config,
+                input_format: None,
                 no_probe: false,
                 dump: false,
                 format: None,
@@ -316,6 +317,7 @@ fn config_check_accepts_test_alias_no_probe_dump_and_format() {
         Command::Config {
             command: ConfigCommand::Check {
                 config,
+                input_format: None,
                 no_probe: true,
                 dump: true,
                 format: Some(ComposeFormat::Yaml),
@@ -330,6 +332,7 @@ fn config_check_accepts_test_alias_no_probe_dump_and_format() {
         Command::Config {
             command: ConfigCommand::Check {
                 config,
+                input_format: None,
                 no_probe: false,
                 dump: false,
                 format: None,
@@ -450,8 +453,8 @@ fn version_verbose_parses_short_and_long_and_renders_structured_output() {
     for line in [
         format!("version: {BUILD_VERSION}"),
         format!("target: {expected_target}"),
-        "formats: kdl, oxi, yaml, toml, lua, hocon, uci".to_owned(),
-        "protocols: http/1.1, http/2, http/3, forward-http1, forward-http2, rtmp, tcp, udp"
+        "formats: oxi, kdl, yaml, toml, lua, hocon, uci".to_owned(),
+        "protocols: http/1.1, http/2, http/3, forward-http1, forward-http2, forward-http3, rtmp, tcp, udp"
             .to_owned(),
         "tls_backends: openssl, rustls".to_owned(),
         "data_planes: tokio, epoll".to_owned(),
@@ -469,7 +472,7 @@ fn version_verbose_parses_short_and_long_and_renders_structured_output() {
     assert_eq!(parsed["cpu_level"], expected_cpu);
     assert_eq!(
         parsed["formats"],
-        serde_json::json!(["kdl", "oxi", "yaml", "toml", "lua", "hocon", "uci"])
+        serde_json::json!(["oxi", "kdl", "yaml", "toml", "lua", "hocon", "uci"])
     );
     assert_eq!(
         parsed["protocols"],
@@ -479,6 +482,7 @@ fn version_verbose_parses_short_and_long_and_renders_structured_output() {
             "http/3",
             "forward-http1",
             "forward-http2",
+            "forward-http3",
             "rtmp",
             "tcp",
             "udp"
@@ -520,22 +524,28 @@ fn package_discovery_supports_all_canonical_formats_in_priority_order() {
         [
             "/etc/oxiroute/oxiroute.oxi",
             "/etc/oxiroute/oxiroute.kdl",
+            "/etc/oxiroute/oxiroute.kdl2",
             "/etc/oxiroute/oxiroute.yaml",
             "/etc/oxiroute/oxiroute.yml",
             "/etc/oxiroute/oxiroute.toml",
             "/etc/oxiroute/oxiroute.lua",
             "/etc/oxiroute/oxiroute.conf",
+            "/etc/oxiroute/oxiroute.hocon",
+            "/etc/oxiroute/oxiroute.uci",
         ]
     );
 
     let names = [
         "oxiroute.oxi",
         "oxiroute.kdl",
+        "oxiroute.kdl2",
         "oxiroute.yaml",
         "oxiroute.yml",
         "oxiroute.toml",
         "oxiroute.lua",
         "oxiroute.conf",
+        "oxiroute.hocon",
+        "oxiroute.uci",
     ];
     for (name, body, expected) in [
         (

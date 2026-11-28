@@ -66,12 +66,25 @@ pub(in crate::cli) fn without_management(
     Ok(())
 }
 
+#[cfg(test)]
 pub(in crate::cli) fn report(
     path: &Path,
     probe_listeners: bool,
     dump_format: Option<ConfigFormat>,
 ) -> Result<String, CliError> {
-    let mut document = load(path)?;
+    report_with_format(path, None, probe_listeners, dump_format)
+}
+
+pub(in crate::cli) fn report_with_format(
+    path: &Path,
+    input_format: Option<ConfigFormat>,
+    probe_listeners: bool,
+    dump_format: Option<ConfigFormat>,
+) -> Result<String, CliError> {
+    let mut document = match input_format {
+        None => load(path)?,
+        Some(format) => load_with_format(path, format)?,
+    };
     let resolved = dump_format.map(|_| document.validated_config.clone());
     let mut notices = warnings(&document);
     notices.extend(without_unusable_management(&mut document)?);
@@ -89,6 +102,35 @@ pub(in crate::cli) fn report(
         }
     }
     Ok(report)
+}
+
+fn load_with_format(
+    path: &Path,
+    format: ConfigFormat,
+) -> Result<Box<ResolvedConfigDocument>, CliError> {
+    let bytes = std::fs::read(path)
+        .map_err(|err| CliError::Local(format!("cannot read {}: {err}", path.display())))?;
+    let resolved = oxiroute_config_source::resolve_source_with_format(path, &bytes, format)
+        .map_err(|err| CliError::Local(format!("{}: {err}", path.display())))?;
+    let preview = if resolved.format == ConfigFormat::Kdl {
+        resolved.canonical_kdl.clone()
+    } else {
+        render_config(resolved.format, &resolved.config)
+            .unwrap_or_else(|_| resolved.canonical_kdl.clone())
+    };
+    Ok(Box::new(ResolvedConfigDocument {
+        authored_revision: crate::config::coordinator::AuthoredRevision::from_bytes(&bytes),
+        effective_revision: crate::config::coordinator::EffectiveRevision::of(
+            &resolved.canonical_kdl,
+            &resolved.config,
+        ),
+        validated_config: resolved.config,
+        format: resolved.format,
+        compositional: resolved.compositional,
+        dependencies: resolved.dependencies,
+        config_preview: preview,
+        diagnostics: Vec::new(),
+    }))
 }
 
 fn without_unusable_management(

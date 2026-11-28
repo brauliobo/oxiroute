@@ -24,7 +24,14 @@ pub(super) struct Imported {
 }
 
 impl Execute for ImportCommand {
-    fn run(&self, _: &Context<'_>) -> Result<(), CliError> {
+    fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
+        if let Self::Reports { index } = self {
+            let path = match index {
+                Some(idx) => format!("/api/v1/import-reports/{idx}"),
+                None => "/api/v1/import-reports".to_owned(),
+            };
+            return context.show(&path, crate::cli::view::View::Generic);
+        }
         let imported = self.render().map_err(CliError::local)?;
         if !imported.text.is_empty() {
             render::emit(&imported.text)?;
@@ -132,6 +139,7 @@ impl ImportCommand {
                     None,
                 )
             }
+            Self::Reports { .. } => unreachable!("handled directly in Execute::run"),
         }
     }
 }

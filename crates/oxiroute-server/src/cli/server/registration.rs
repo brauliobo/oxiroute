@@ -80,7 +80,10 @@ fn registration_body(args: &RegisterArgs) -> Result<Value, CliError> {
 }
 
 pub(super) fn register(client: &Client, args: &RegisterArgs) -> Result<Response, CliError> {
-    let path = server_path(&args.pool, &args.server)?;
+    let mut path = server_path(&args.pool, &args.server)?;
+    if args.takeover {
+        path.push_str("?takeover=true");
+    }
     client.json("PUT", &path, &registration_body(args)?, &[])
 }
 

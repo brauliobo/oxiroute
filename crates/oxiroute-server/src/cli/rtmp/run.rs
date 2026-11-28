@@ -22,6 +22,9 @@ impl Execute for RtmpCommand {
             Self::Recorder { command } => command.run(context),
             Self::Relay { command } => command.run(context),
             Self::Recording { command } => command.run(context),
+            Self::Client { command } => command.run(context, Role::Any),
+            Self::Stats => context.show("/api/v1/rtmp/stats", View::Generic),
+            Self::Secrets => context.show("/api/v1/rtmp/secrets", View::Generic),
         }
     }
 }

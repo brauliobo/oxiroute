@@ -67,6 +67,11 @@ pub(crate) enum ImportCommand {
         #[command(flatten)]
         options: ImportOptions,
     },
+    /// Inspect retained native import reports currently loaded by the running daemon.
+    Reports {
+        /// Optional zero-based report index to inspect in full detail.
+        index: Option<usize>,
+    },
 }
 
 #[derive(Args)]

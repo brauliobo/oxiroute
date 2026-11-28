@@ -5,11 +5,13 @@ mod compare;
 mod compose;
 mod daemon;
 mod edit;
+mod files;
 mod fmt;
 mod history;
 mod input;
 mod promote;
 mod report;
+mod resource;
 mod run;
 mod show;
 

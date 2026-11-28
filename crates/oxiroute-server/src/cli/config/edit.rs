@@ -74,7 +74,7 @@ pub(super) fn edit(context: &Context<'_>, args: &EditArgs) -> Result<(), CliErro
     }
 }
 
-fn review(context: &Context<'_>, body: &Value) -> Result<(), CliError> {
+pub(super) fn review(context: &Context<'_>, body: &Value) -> Result<(), CliError> {
     if context.quiet() {
         return Ok(());
     }
@@ -90,7 +90,7 @@ fn review(context: &Context<'_>, body: &Value) -> Result<(), CliError> {
     Ok(())
 }
 
-fn confirmed(interactive: bool) -> Result<bool, CliError> {
+pub(super) fn confirmed(interactive: bool) -> Result<bool, CliError> {
     if !interactive {
         return Err(CliError::Local(
             "confirmation required: run on a terminal, or pass --yes to apply without asking"
@@ -100,7 +100,7 @@ fn confirmed(interactive: bool) -> Result<bool, CliError> {
     ask("apply these changes? [y/N] ", false)
 }
 
-fn ask(question: &str, default: bool) -> Result<bool, CliError> {
+pub(super) fn ask(question: &str, default: bool) -> Result<bool, CliError> {
     let mut stderr = io::stderr().lock();
     write!(stderr, "{question}")
         .and_then(|()| stderr.flush())
@@ -113,7 +113,7 @@ fn ask(question: &str, default: bool) -> Result<bool, CliError> {
     })
 }
 
-fn run_editor(path: &Path) -> Result<(), CliError> {
+pub(super) fn run_editor(path: &Path) -> Result<(), CliError> {
     let editor = ["VISUAL", "EDITOR"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())
@@ -133,13 +133,13 @@ fn run_editor(path: &Path) -> Result<(), CliError> {
     }
 }
 
-struct Scratch {
-    path: PathBuf,
+pub(super) struct Scratch {
+    pub(super) path: PathBuf,
     keep: bool,
 }
 
 impl Scratch {
-    fn create(text: &str, extension: &str) -> Result<Self, CliError> {
+    pub(super) fn create(text: &str, extension: &str) -> Result<Self, CliError> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos());
@@ -159,11 +159,11 @@ impl Scratch {
         Ok(Self { path, keep: false })
     }
 
-    fn persist(mut self) {
+    pub(super) fn persist(mut self) {
         self.keep = true;
     }
 
-    fn keep(mut self, error: CliError) -> CliError {
+    pub(super) fn keep(mut self, error: CliError) -> CliError {
         self.keep = true;
         match error {
             CliError::Local(message) => CliError::Local(format!(

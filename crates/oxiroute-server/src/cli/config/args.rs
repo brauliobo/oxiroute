@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Subcommand, ValueEnum};
 use oxiroute_config_source::ConfigFormat;
 
-use super::input::InputFormat;
+use super::{
+    files::{ConfigFilesCommand, ConvertArgs},
+    input::InputFormat,
+    resource::ResourceCommand,
+};
 
 #[derive(Subcommand)]
 pub(crate) enum ConfigCommand {
@@ -12,6 +16,9 @@ pub(crate) enum ConfigCommand {
     Check {
         /// Configuration file in a native or canonical format.
         config: PathBuf,
+        /// Explicit input format (for stdin or files without a recognized extension).
+        #[arg(long, value_enum, value_name = "FORMAT")]
+        input_format: Option<InputFormat>,
         /// Skip listener bind probes when testing offline or while another process binds the ports.
         #[arg(long)]
         no_probe: bool,
@@ -21,6 +28,18 @@ pub(crate) enum ConfigCommand {
         /// Output format for `--dump` (defaults to `kdl`).
         #[arg(long, value_enum, value_name = "FORMAT", requires = "dump")]
         format: Option<ComposeFormat>,
+    },
+    /// Convert a configuration file from any supported format to another format.
+    Convert(ConvertArgs),
+    /// List, show and edit the daemon's root and directory-jailed included configuration files.
+    Files {
+        #[command(subcommand)]
+        command: ConfigFilesCommand,
+    },
+    /// Declarative CRUD over configuration resources (online daemon or offline `--file`).
+    Resource {
+        #[command(subcommand)]
+        command: ResourceCommand,
     },
     /// Compose finalized canonical configurations in the supplied order.
     ///

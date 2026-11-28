@@ -16,19 +16,23 @@ use crate::{
 };
 
 impl Execute for RegistryCommand {
-    fn run(&self, _: &Context<'_>) -> Result<(), CliError> {
-        let Self::Token {
-            command:
-                RegistryTokenCommand::Create {
-                    tokens_file,
-                    id,
-                    pools,
-                    name_prefix,
-                    read,
-                },
-        } = self;
-        let secret = create_token(tokens_file, id, pools, name_prefix.as_deref(), *read)?;
-        render::emit(&format!("{secret}\n"))
+    fn run(&self, context: &Context<'_>) -> Result<(), CliError> {
+        match self {
+            Self::List => context.show("/api/v1/registrations", crate::cli::view::View::Generic),
+            Self::Token {
+                command:
+                    RegistryTokenCommand::Create {
+                        tokens_file,
+                        id,
+                        pools,
+                        name_prefix,
+                        read,
+                    },
+            } => {
+                let secret = create_token(tokens_file, id, pools, name_prefix.as_deref(), *read)?;
+                render::emit(&format!("{secret}\n"))
+            }
+        }
     }
 }
 

@@ -16,17 +16,17 @@ pub(in crate::cli) const ENDPOINT_ENV: &str = "OXIROUTE_ENDPOINT";
 pub(in crate::cli) const MANAGEMENT_TOKEN_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
 pub(in crate::cli) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9900";
 const PACKAGE_ENV_FILE: &str = "/etc/oxiroute/oxiroute.env";
-const PACKAGE_CONFIGS: [&str; 7] = [
-    "/etc/oxiroute/oxiroute.oxi",
-    "/etc/oxiroute/oxiroute.kdl",
-    "/etc/oxiroute/oxiroute.yaml",
-    "/etc/oxiroute/oxiroute.yml",
-    "/etc/oxiroute/oxiroute.toml",
-    "/etc/oxiroute/oxiroute.lua",
-    "/etc/oxiroute/oxiroute.conf",
-];
+const PACKAGE_CONFIG_PREFIX: &str = "/etc/oxiroute/oxiroute.";
 const PACKAGE_TOKEN_FILE: &str = "/etc/oxiroute/management.token";
 const MAX_PACKAGE_ENV_BYTES: usize = 8 * 1024;
+
+fn package_config_paths() -> Vec<PathBuf> {
+    oxiroute_config_source::ALL_FORMATS
+        .iter()
+        .flat_map(|spec| spec.extensions.iter())
+        .map(|ext| PathBuf::from(format!("{PACKAGE_CONFIG_PREFIX}{ext}")))
+        .collect()
+}
 
 /// Where a packaged install keeps the settings a local daemon's clients need.
 pub(in crate::cli) struct Package {
@@ -40,7 +40,7 @@ impl Package {
     pub(in crate::cli) fn installed() -> Self {
         Self::at(
             PACKAGE_ENV_FILE.into(),
-            PACKAGE_CONFIGS.iter().map(PathBuf::from).collect(),
+            package_config_paths(),
             PACKAGE_TOKEN_FILE.into(),
         )
     }

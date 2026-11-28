@@ -51,17 +51,20 @@ impl InputFormat {
         let Some(extension) = path.extension() else {
             return Ok(Self::Kdl);
         };
-        match extension.to_string_lossy().to_ascii_lowercase().as_str() {
-            "kdl" | "kdl2" => Ok(Self::Kdl),
-            "lua" => Ok(Self::Lua),
-            "uci" => Ok(Self::Uci),
-            "hocon" | "conf" => Ok(Self::Hocon),
-            "yaml" | "yml" => Ok(Self::Yaml),
-            "toml" => Ok(Self::Toml),
-            "oxi" => Ok(Self::Oxi),
-            "json" => Ok(Self::Json),
-            other => Err(CliError::Local(format!(
-                "cannot tell the format of {} from the extension `.{other}`: pass --format kdl, \
+        let ext = extension.to_string_lossy().to_ascii_lowercase();
+        if ext == "json" {
+            return Ok(Self::Json);
+        }
+        match ConfigFormat::from_extension(&ext) {
+            Some(ConfigFormat::Kdl) => Ok(Self::Kdl),
+            Some(ConfigFormat::Lua) => Ok(Self::Lua),
+            Some(ConfigFormat::Uci) => Ok(Self::Uci),
+            Some(ConfigFormat::Hocon) => Ok(Self::Hocon),
+            Some(ConfigFormat::Yaml) => Ok(Self::Yaml),
+            Some(ConfigFormat::Toml) => Ok(Self::Toml),
+            Some(ConfigFormat::Oxi) => Ok(Self::Oxi),
+            _ => Err(CliError::Local(format!(
+                "cannot tell the format of {} from the extension `.{ext}`: pass --format kdl, \
                  lua, hocon, uci, yaml, toml, oxi or json",
                 path.display()
             ))),

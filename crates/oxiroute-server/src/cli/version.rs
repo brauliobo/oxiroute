@@ -9,19 +9,26 @@ use super::{
     render,
 };
 
-const FORMATS: [&str; 7] = ["kdl", "oxi", "yaml", "toml", "lua", "hocon", "uci"];
-const PROTOCOLS: [&str; 8] = [
+const PROTOCOLS: [&str; 9] = [
     "http/1.1",
     "http/2",
     "http/3",
     "forward-http1",
     "forward-http2",
+    "forward-http3",
     "rtmp",
     "tcp",
     "udp",
 ];
 const TLS_BACKENDS: [&str; 2] = ["openssl", "rustls"];
 const DATA_PLANES: [&str; 2] = ["tokio", "epoll"];
+
+fn supported_formats() -> Vec<&'static str> {
+    oxiroute_config_source::ALL_FORMATS
+        .iter()
+        .map(|spec| spec.wire_name)
+        .collect()
+}
 
 #[derive(Args)]
 pub(crate) struct VersionArgs {
@@ -37,12 +44,13 @@ impl VersionArgs {
         }
         let target = format!("{}/{}", std::env::consts::ARCH, std::env::consts::OS);
         let cpu_level = oxiroute_cpu::Level::hardware().name();
+        let formats = supported_formats();
         match output {
             Output::Json => {
                 let value = json!({
                     "version": BUILD_VERSION,
                     "target": target,
-                    "formats": FORMATS,
+                    "formats": formats,
                     "protocols": PROTOCOLS,
                     "tls_backends": TLS_BACKENDS,
                     "data_planes": DATA_PLANES,
@@ -59,7 +67,7 @@ impl VersionArgs {
                  tls_backends: {}\n\
                  data_planes: {}\n\
                  cpu_level: {cpu_level}\n",
-                FORMATS.join(", "),
+                formats.join(", "),
                 PROTOCOLS.join(", "),
                 TLS_BACKENDS.join(", "),
                 DATA_PLANES.join(", "),

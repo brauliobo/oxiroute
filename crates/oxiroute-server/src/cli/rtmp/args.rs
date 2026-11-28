@@ -35,6 +35,15 @@ pub(crate) enum RtmpCommand {
         #[command(subcommand)]
         command: RecordingCommand,
     },
+    /// List and disconnect any connected RTMP client session regardless of role.
+    Client {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    /// Show global, live-stream and client RTMP statistics.
+    Stats,
+    /// List configured RTMP token secret fingerprints (never prints raw secrets).
+    Secrets,
 }
 
 #[derive(Subcommand)]

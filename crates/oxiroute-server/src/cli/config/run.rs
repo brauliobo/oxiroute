@@ -1,6 +1,6 @@
 use super::{
-    ConfigCommand, apply::apply, check, compare, compose::compose, edit::edit, fmt::fmt, history,
-    show::show,
+    ConfigCommand, apply::apply, check, compare, compose::compose, edit::edit, files, fmt::fmt,
+    history, resource, show::show,
 };
 use crate::cli::{
     context::{Context, Execute},
@@ -14,13 +14,23 @@ impl Execute for ConfigCommand {
         match self {
             Self::Check {
                 config,
+                input_format,
                 no_probe,
                 dump,
                 format,
             } => {
                 let dump_format = dump.then(|| format.unwrap_or_default().into());
-                render::emit(&check::report(config, !*no_probe, dump_format)?)
+                let explicit_in = input_format.map(super::input::InputFormat::config_format);
+                render::emit(&check::report_with_format(
+                    config,
+                    explicit_in,
+                    !*no_probe,
+                    dump_format,
+                )?)
             }
+            Self::Convert(args) => files::run_convert(context, args),
+            Self::Files { command } => files::run_files(context, command),
+            Self::Resource { command } => resource::run_resource(context, command),
             Self::Compose { format, configs } => render::emit(&compose(configs, (*format).into())?),
             Self::Get => context.show("/api/v1/config", View::Config),
             Self::Show(args) => show(context, args),
