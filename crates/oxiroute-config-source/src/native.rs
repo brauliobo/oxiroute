@@ -75,6 +75,18 @@ pub(crate) struct VarnishSource {
     pub arguments: Vec<String>,
 }
 
+pub(crate) const NATIVE_SERVER_KEYS: [&str; 5] = [
+    "nginx_server",
+    "haproxy_server",
+    "squid_server",
+    "apache_server",
+    "varnish_server",
+];
+
+pub(crate) fn is_native_server_key(key: &str) -> bool {
+    NATIVE_SERVER_KEYS.contains(&key)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum NativeDirective {
     Nginx(NginxSource),
@@ -96,29 +108,20 @@ pub(crate) fn extract_directives(
         return Ok(Vec::new());
     };
     let mut directives = Vec::new();
-    if let Some(value) = root.remove("nginx_server") {
-        for value in one_or_many(value, "nginx_server", format)? {
-            directives.push(NativeDirective::Nginx(decode_nginx(value, format)?));
-        }
-    }
-    if let Some(value) = root.remove("haproxy_server") {
-        for value in one_or_many(value, "haproxy_server", format)? {
-            directives.push(NativeDirective::Haproxy(decode_haproxy(value, format)?));
-        }
-    }
-    if let Some(value) = root.remove("squid_server") {
-        for value in one_or_many(value, "squid_server", format)? {
-            directives.push(NativeDirective::Squid(decode_squid(value, format)?));
-        }
-    }
-    if let Some(value) = root.remove("apache_server") {
-        for value in one_or_many(value, "apache_server", format)? {
-            directives.push(NativeDirective::Apache(decode_apache(value, format)?));
-        }
-    }
-    if let Some(value) = root.remove("varnish_server") {
-        for value in one_or_many(value, "varnish_server", format)? {
-            directives.push(NativeDirective::Varnish(decode_varnish(value, format)?));
+    for key in NATIVE_SERVER_KEYS {
+        let Some(raw) = root.remove(key) else {
+            continue;
+        };
+        for item in one_or_many(raw, key, format)? {
+            let directive = match key {
+                "nginx_server" => NativeDirective::Nginx(decode_nginx(item, format)?),
+                "haproxy_server" => NativeDirective::Haproxy(decode_haproxy(item, format)?),
+                "squid_server" => NativeDirective::Squid(decode_squid(item, format)?),
+                "apache_server" => NativeDirective::Apache(decode_apache(item, format)?),
+                "varnish_server" => NativeDirective::Varnish(decode_varnish(item, format)?),
+                _ => unreachable!("key comes from NATIVE_SERVER_KEYS"),
+            };
+            directives.push(directive);
         }
     }
     Ok(directives)

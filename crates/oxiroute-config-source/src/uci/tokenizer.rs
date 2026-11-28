@@ -103,5 +103,9 @@ fn render_name(value: &str) -> String {
 }
 
 fn uci_parse(line: usize, message: impl Into<String>) -> ConfigSourceError {
-    ConfigSourceError::parse("UCI", format!("line {line}: {}", message.into()))
+    ConfigSourceError::parse_at(
+        "UCI",
+        format!("line {line}: {}", message.into()),
+        u32::try_from(line).ok(),
+    )
 }

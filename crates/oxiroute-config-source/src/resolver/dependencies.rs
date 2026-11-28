@@ -1,20 +1,35 @@
 #[cfg(unix)]
+fn push_graph_dependencies<'a>(
+    sources: impl IntoIterator<Item = &'a Path>,
+    include_base: &Path,
+    patterns: impl IntoIterator<Item = &'a [u8]>,
+    dependencies: &mut Dependencies,
+) -> Result<(), ConfigSourceError> {
+    for path in sources {
+        dependencies.push_with_parent(path)?;
+    }
+    for pattern in patterns {
+        dependencies.push_include_parent(include_base, &path_from_bytes(pattern))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn push_nginx_dependencies(
     graph: &oxiroute_import::nginx::SourceGraph,
     dependencies: &mut Dependencies,
 ) -> Result<(), ConfigSourceError> {
-    for source in &graph.sources {
-        dependencies.push_with_parent(&source.canonical_path)?;
-    }
     let include_base = graph
         .root
         .and_then(|root| graph.source(root))
         .and_then(|source| source.canonical_path.parent())
         .unwrap_or_else(|| Path::new("."));
-    for edge in &graph.includes {
-        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
-    }
-    Ok(())
+    push_graph_dependencies(
+        graph.sources.iter().map(|s| s.canonical_path.as_path()),
+        include_base,
+        graph.includes.iter().map(|e| e.pattern.as_slice()),
+        dependencies,
+    )
 }
 
 #[cfg(unix)]
@@ -22,18 +37,17 @@ fn push_apache_dependencies(
     graph: &oxiroute_import::apache::SourceGraph,
     dependencies: &mut Dependencies,
 ) -> Result<(), ConfigSourceError> {
-    for source in &graph.sources {
-        dependencies.push_with_parent(&source.canonical_path)?;
-    }
     let include_base = graph
         .root
         .and_then(|root| graph.source(root))
         .and_then(|source| source.canonical_path.parent())
         .unwrap_or_else(|| Path::new("."));
-    for edge in &graph.includes {
-        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
-    }
-    Ok(())
+    push_graph_dependencies(
+        graph.sources.iter().map(|s| s.canonical_path.as_path()),
+        include_base,
+        graph.includes.iter().map(|e| e.pattern.as_slice()),
+        dependencies,
+    )
 }
 
 #[cfg(unix)]
@@ -41,21 +55,21 @@ fn push_varnish_dependencies(
     graph: &oxiroute_import::varnish::SourceGraph,
     dependencies: &mut Dependencies,
 ) -> Result<(), ConfigSourceError> {
-    for source in &graph.sources {
-        if let Some(path) = &source.canonical_path {
-            dependencies.push_with_parent(path)?;
-        }
-    }
     let include_base = graph
         .root
         .and_then(|root| graph.source(root))
         .and_then(|source| source.canonical_path.as_deref())
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new("."));
-    for edge in &graph.includes {
-        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
-    }
-    Ok(())
+    push_graph_dependencies(
+        graph
+            .sources
+            .iter()
+            .filter_map(|s| s.canonical_path.as_deref()),
+        include_base,
+        graph.includes.iter().map(|e| e.pattern.as_slice()),
+        dependencies,
+    )
 }
 
 #[cfg(unix)]
@@ -157,18 +171,6 @@ fn resolve_path(parent: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         parent.join(path)
-    }
-}
-
-const fn format_name(format: ConfigFormat) -> &'static str {
-    match format {
-        ConfigFormat::Kdl => "KDL 2",
-        ConfigFormat::Lua => "Lua",
-        ConfigFormat::Uci => "UCI",
-        ConfigFormat::Hocon => "HOCON",
-        ConfigFormat::Yaml => "YAML",
-        ConfigFormat::Toml => "TOML",
-        ConfigFormat::Oxi => "OXI",
     }
 }
 

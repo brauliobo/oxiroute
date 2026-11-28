@@ -4,7 +4,7 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
 }
 pub(crate) fn decode_with_directives(
     source: &str,
-) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
+) -> Result<(Value, Vec<NativeDirective>, bool), ConfigSourceError> {
     let document = parse_uci_document(source.as_bytes())?;
     let mut json_sections = Vec::new();
     let mut main = None;
@@ -58,6 +58,7 @@ pub(crate) fn decode_with_directives(
             sections: json_sections,
         })?
     };
+    let used_main = main.is_some();
     if let Some(main) = main {
         let Value::Object(root) = &mut value else {
             return Err(ConfigSourceError::parse(
@@ -74,7 +75,7 @@ pub(crate) fn decode_with_directives(
             }
         }
     }
-    Ok((value, directives))
+    Ok((value, directives, used_main))
 }
 
 fn decode_squid_section(
@@ -211,7 +212,9 @@ fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, Confi
             "http_data_plane"
             | "connection_scheduling"
             | "worker_scaling"
-            | "http3_congestion_control" => {
+            | "http3_congestion_control"
+            | "log_filter"
+            | "cpu_level" => {
                 Value::String(value.clone())
             }
             _ => {

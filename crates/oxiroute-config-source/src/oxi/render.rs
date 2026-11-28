@@ -318,7 +318,7 @@ fn is_safe_bare_key(key: &str, is_root: bool) -> bool {
         return false;
     }
     if is_root
-        && matches!(
+        && (matches!(
             key,
             "include"
                 | "site"
@@ -337,12 +337,7 @@ fn is_safe_bare_key(key: &str, is_root: bool) -> bool {
                 | "forward_proxy"
                 | "rtmp"
                 | "l4"
-                | "nginx_server"
-                | "haproxy_server"
-                | "squid_server"
-                | "apache_server"
-                | "varnish_server"
-        )
+        ) || crate::native::is_native_server_key(key))
     {
         return false;
     }

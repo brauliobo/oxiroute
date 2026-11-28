@@ -255,12 +255,9 @@ fn reference_node(name: &str, value: &Value, depth: usize, out: &mut String) {
             writeln!(out, "{indent}{name} {scalar}").unwrap();
         }
         Value::String(value) => {
-            writeln!(
-                out,
-                "{indent}{name} {}",
-                serde_json::to_string(value).unwrap()
-            )
-            .unwrap();
+            let mut rendered = crate::limits::BoundedOutput::new();
+            super::write_kdl_string(value, &mut rendered).unwrap();
+            writeln!(out, "{indent}{name} {}", rendered.finish()).unwrap();
         }
     }
 }

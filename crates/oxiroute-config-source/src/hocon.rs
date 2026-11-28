@@ -10,13 +10,17 @@ use crate::limits::{
 };
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
+    decode_with_meta(source).map(|(value, _)| value)
+}
+
+pub(crate) fn decode_with_meta(source: &str) -> Result<(Value, bool), ConfigSourceError> {
     let tokens = hocon::tokenize(source)
         .map_err(|error| ConfigSourceError::parse("HOCON", error.to_string()))?;
     check_token_budget(&tokens)?;
     reject_include_tokens(&tokens)?;
     let ast = hocon::parser::parse_tokens(&tokens)
         .map_err(|error| ConfigSourceError::parse("HOCON", error.to_string()))?;
-    check_ast_budget(&ast)?;
+    let substitutions = check_ast_budget(&ast)?;
     reject_includes(&ast)?;
 
     let config = hocon::parse_with_env(source, &HashMap::new())
@@ -25,7 +29,7 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
         .deserialize::<Value>()
         .map_err(|error| ConfigSourceError::parse("HOCON", error.to_string()))?;
     validate_value(&value)?;
-    Ok(value)
+    Ok((value, substitutions > 0))
 }
 
 fn check_token_budget(tokens: &[Token]) -> Result<(), ConfigSourceError> {
@@ -62,10 +66,11 @@ fn check_token_budget(tokens: &[Token]) -> Result<(), ConfigSourceError> {
     Ok(())
 }
 
-fn check_ast_budget(node: &AstNode) -> Result<(), ConfigSourceError> {
+fn check_ast_budget(node: &AstNode) -> Result<usize, ConfigSourceError> {
     let mut nodes = 0;
     let mut substitutions = 0;
-    check_ast_node(node, 0, &mut nodes, &mut substitutions)
+    check_ast_node(node, 0, &mut nodes, &mut substitutions)?;
+    Ok(substitutions)
 }
 
 fn check_ast_node(
@@ -133,12 +138,13 @@ fn reject_include_tokens(tokens: &[Token]) -> Result<(), ConfigSourceError> {
             && token.kind == TokenKind::Unquoted
             && token.value == "include"
         {
-            return Err(ConfigSourceError::parse(
+            return Err(ConfigSourceError::parse_at(
                 "HOCON",
                 format!(
                     "include directives are forbidden (line {}, column {})",
                     token.line, token.col
                 ),
+                u32::try_from(token.line).ok(),
             ));
         }
         match token.kind {
@@ -164,12 +170,13 @@ fn reject_include_tokens(tokens: &[Token]) -> Result<(), ConfigSourceError> {
 
 fn reject_includes(node: &AstNode) -> Result<(), ConfigSourceError> {
     match node {
-        AstNode::Include { pos, .. } => Err(ConfigSourceError::parse(
+        AstNode::Include { pos, .. } => Err(ConfigSourceError::parse_at(
             "HOCON",
             format!(
                 "include directives are forbidden (line {}, column {})",
                 pos.line, pos.col
             ),
+            u32::try_from(pos.line).ok(),
         )),
         AstNode::Object { fields, .. } => reject_fields(fields),
         AstNode::Array { items, .. } | AstNode::Concat { nodes: items, .. } => {

@@ -1,15 +1,21 @@
 use std::{
     collections::HashSet,
     fs,
-    io::{self, Read as _},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use serde_json::{Map, Value};
 
 use crate::{
-    ConfigSourceError, MAX_DEPENDENCY_PATHS, MAX_SOURCE_BYTES, MAX_STRUCTURAL_DEPTH,
-    limits::validate_value, lua, toml, yaml,
+    ConfigFormat, ConfigSourceError, MAX_DEPENDENCY_PATHS, MAX_SOURCE_BYTES, MAX_STRUCTURAL_DEPTH,
+    SourceOverrides, hocon,
+    jail::{
+        JailCandidate, ReadFileError, ResolvedJailedFile, read_bounded_utf8, resolve_candidate,
+        validate_relative_path,
+    },
+    kdl,
+    limits::validate_value,
+    lua, native, toml, uci, yaml,
 };
 
 use super::{Expr, ParsedDocument, RootItem, parse_err, parser};
@@ -19,35 +25,32 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 pub(super) fn evaluate(
     parsed: ParsedDocument,
     base_dir: Option<&Path>,
-) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
-    let mut evaluator = Evaluator::new(base_dir);
+    overrides: Option<&SourceOverrides>,
+) -> Result<(Value, Vec<PathBuf>, bool), ConfigSourceError> {
+    let mut evaluator = Evaluator::new(base_dir, overrides);
     let root = evaluator.eval_document(parsed)?;
     let value = Value::Object(root);
     validate_value(&value)?;
-    Ok((value, evaluator.dependencies))
+    Ok((
+        value,
+        evaluator.dependencies,
+        evaluator.compositional_syntax,
+    ))
 }
 
-struct Evaluator {
+struct Evaluator<'a> {
     canonical_root: Option<PathBuf>,
+    overrides: Option<&'a SourceOverrides>,
     active_files: Vec<PathBuf>,
     dir_stack: Vec<PathBuf>,
     dependencies: Vec<PathBuf>,
     seen_dependencies: HashSet<PathBuf>,
     vars: Map<String, Value>,
+    compositional_syntax: bool,
 }
 
-struct ResolvedInclude {
-    canonical_path: PathBuf,
-    rel_dir: PathBuf,
-}
-
-enum CandidateResolution {
-    Found(ResolvedInclude),
-    NotFound,
-}
-
-impl Evaluator {
-    fn new(base_dir: Option<&Path>) -> Self {
+impl<'a> Evaluator<'a> {
+    fn new(base_dir: Option<&Path>, overrides: Option<&'a SourceOverrides>) -> Self {
         let canonical_root = base_dir.map(|dir| {
             let effective = if dir.as_os_str().is_empty() {
                 Path::new(".")
@@ -58,11 +61,13 @@ impl Evaluator {
         });
         Self {
             canonical_root,
+            overrides,
             active_files: Vec::new(),
             dir_stack: Vec::new(),
             dependencies: Vec::new(),
             seen_dependencies: HashSet::new(),
             vars: Map::new(),
+            compositional_syntax: false,
         }
     }
 
@@ -165,6 +170,7 @@ impl Evaluator {
                 merge_root_map(root, included, line)
             }
             RootItem::LuaBlock { code, line } => {
+                self.compositional_syntax = true;
                 let lua_val = self.eval_lua_chunk(&code)?;
                 let Value::Object(map) = lua_val else {
                     return Err(parse_err(
@@ -178,10 +184,12 @@ impl Evaluator {
                 merge_root_map(root, map, line)
             }
             RootItem::Site { name, body, line } => {
+                self.compositional_syntax = true;
                 let body_val = self.eval_expr(body, 2)?;
                 insert_named_map_entry(root, "sites", name, body_val, line)
             }
             RootItem::Template { name, body, line } => {
+                self.compositional_syntax = true;
                 let body_val = self.eval_expr(body, 2)?;
                 insert_named_map_entry(root, "templates", name, body_val, line)
             }
@@ -191,6 +199,7 @@ impl Evaluator {
                 body,
                 line,
             } => {
+                self.compositional_syntax = true;
                 let mut map = match self.eval_expr(body, 2)? {
                     Value::Object(map) => map,
                     _ => Map::new(),
@@ -238,15 +247,21 @@ impl Evaluator {
                 }
                 Ok(Value::Object(map))
             }
-            Expr::LuaInline(code) => self.eval_lua_chunk(&format!("return {code}")),
-            Expr::LuaBlock(code) => self.eval_lua_chunk(&code),
+            Expr::LuaInline(code) => {
+                self.compositional_syntax = true;
+                self.eval_lua_chunk(&format!("return {code}"))
+            }
+            Expr::LuaBlock(code) => {
+                self.compositional_syntax = true;
+                self.eval_lua_chunk(&code)
+            }
         }
     }
 
     fn eval_lua_chunk(&mut self, code: &str) -> Result<Value, ConfigSourceError> {
         let base_dir = self.current_lua_base_dir();
         let vars = (!self.vars.is_empty()).then_some(&self.vars);
-        let (value, deps) = lua::eval_embedded(code, vars, base_dir.as_deref())?;
+        let (value, deps) = lua::eval_embedded(code, vars, base_dir.as_deref(), self.overrides)?;
         for dep in deps {
             self.record_dependency(dep)?;
         }
@@ -267,7 +282,8 @@ impl Evaluator {
         let canonical_root = fs::canonicalize(&root).map_err(|err| {
             parse_err(line, format!("failed to resolve OXI base directory: {err}"))
         })?;
-        let normalized = parse_relative_path(rel_path, line)?;
+        let normalized =
+            validate_relative_path(rel_path, "include").map_err(|msg| parse_err(line, msg))?;
         let resolved = self.resolve_include_path(&canonical_root, &normalized, rel_path, line)?;
 
         if self.active_files.contains(&resolved.canonical_path) {
@@ -284,7 +300,18 @@ impl Evaluator {
         }
 
         self.record_dependency(resolved.canonical_path.clone())?;
-        let text = read_bounded_utf8(&resolved.canonical_path, rel_path, line)?;
+        let text = read_bounded_utf8(
+            &resolved.canonical_path,
+            rel_path,
+            "include",
+            MAX_SOURCE_BYTES,
+            self.overrides,
+        )
+        .map_err(|err| match err {
+            ReadFileError::TooLarge => ConfigSourceError::SourceTooLarge,
+            ReadFileError::Utf8(e) => ConfigSourceError::Utf8(e),
+            ReadFileError::Message(msg) => parse_err(line, msg),
+        })?;
         let ext = resolved
             .canonical_path
             .extension()
@@ -314,12 +341,6 @@ impl Evaluator {
         line: u32,
     ) -> Result<Map<String, Value>, ConfigSourceError> {
         let value = match ext {
-            Some("oxi") => {
-                let parsed = parser::parse(text)?;
-                Value::Object(self.eval_document(parsed)?)
-            }
-            Some("yaml" | "yml") => yaml::decode(text)?,
-            Some("toml") => toml::decode(text)?,
             Some("json") => {
                 let val: Value = serde_json::from_str(text).map_err(|err| {
                     parse_err(line, format!("invalid JSON in `{rel_path}`: {err}"))
@@ -327,15 +348,32 @@ impl Evaluator {
                 validate_value(&val)?;
                 val
             }
-            Some("lua") => {
-                let file_dir = canonical_path.parent().unwrap_or_else(|| Path::new("."));
-                let (val, deps) = lua::decode_with_base_dir(text, file_dir)?;
-                for dep in deps {
-                    self.record_dependency(dep)?;
+            Some(other) => match ConfigFormat::from_extension(other) {
+                Some(ConfigFormat::Oxi) => {
+                    let parsed = parser::parse(text)?;
+                    Value::Object(self.eval_document(parsed)?)
                 }
-                val
-            }
-            _ => {
+                Some(ConfigFormat::Kdl) => kdl::decode(text)?,
+                Some(ConfigFormat::Yaml) => yaml::decode(text)?,
+                Some(ConfigFormat::Toml) => toml::decode(text)?,
+                Some(ConfigFormat::Hocon) => hocon::decode(text)?,
+                Some(ConfigFormat::Uci) => uci::decode(text)?,
+                Some(ConfigFormat::Lua) => {
+                    let file_dir = canonical_path.parent().unwrap_or_else(|| Path::new("."));
+                    let (val, deps) = lua::decode_with_base_dir(text, file_dir, self.overrides)?;
+                    for dep in deps {
+                        self.record_dependency(dep)?;
+                    }
+                    val
+                }
+                None => {
+                    return Err(parse_err(
+                        line,
+                        format!("unsupported include file extension for `{rel_path}`"),
+                    ));
+                }
+            },
+            None => {
                 return Err(parse_err(
                     line,
                     format!("unsupported include file extension for `{rel_path}`"),
@@ -358,20 +396,34 @@ impl Evaluator {
         normalized: &Path,
         display_path: &str,
         line: u32,
-    ) -> Result<ResolvedInclude, ConfigSourceError> {
+    ) -> Result<ResolvedJailedFile, ConfigSourceError> {
         if let Some(current_rel_dir) = self.dir_stack.last()
             && !current_rel_dir.as_os_str().is_empty()
         {
             let local_candidate = current_rel_dir.join(normalized);
-            if let CandidateResolution::Found(resolved) =
-                resolve_candidate(canonical_root, &local_candidate, display_path, line)?
+            if let JailCandidate::Found(resolved) = resolve_candidate(
+                canonical_root,
+                &local_candidate,
+                display_path,
+                "include",
+                self.overrides,
+            )
+            .map_err(|msg| parse_err(line, msg))?
             {
                 return Ok(resolved);
             }
         }
-        match resolve_candidate(canonical_root, normalized, display_path, line)? {
-            CandidateResolution::Found(resolved) => Ok(resolved),
-            CandidateResolution::NotFound => Err(parse_err(
+        match resolve_candidate(
+            canonical_root,
+            normalized,
+            display_path,
+            "include",
+            self.overrides,
+        )
+        .map_err(|msg| parse_err(line, msg))?
+        {
+            JailCandidate::Found(resolved) => Ok(resolved),
+            JailCandidate::NotFound => Err(parse_err(
                 line,
                 format!("included file `{display_path}` not found"),
             )),
@@ -473,10 +525,7 @@ fn insert_native_server(
 }
 
 fn is_native_server_key(key: &str) -> bool {
-    matches!(
-        key,
-        "nginx_server" | "haproxy_server" | "squid_server" | "apache_server" | "varnish_server"
-    )
+    native::is_native_server_key(key)
 }
 
 fn merge_root_map(
@@ -534,152 +583,4 @@ fn merge_objects_recursive(target: &mut Map<String, Value>, overlay: Map<String,
             target.insert(key, value);
         }
     }
-}
-
-fn parse_relative_path(rel_path: &str, line: u32) -> Result<PathBuf, ConfigSourceError> {
-    if rel_path.is_empty() {
-        return Err(parse_err(line, "include path must not be empty"));
-    }
-    if rel_path.contains('\0') {
-        return Err(parse_err(line, "include path must not contain NUL bytes"));
-    }
-    let path = Path::new(rel_path);
-    if path.is_absolute() {
-        return Err(parse_err(
-            line,
-            format!("include path `{rel_path}` must be relative"),
-        ));
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(segment) => normalized.push(segment),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(parse_err(
-                    line,
-                    format!("include path `{rel_path}` must not contain `..` traversal"),
-                ));
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(parse_err(
-                    line,
-                    format!("include path `{rel_path}` must be relative"),
-                ));
-            }
-        }
-    }
-    if normalized.as_os_str().is_empty() {
-        return Err(parse_err(
-            line,
-            format!("include path `{rel_path}` must refer to a file"),
-        ));
-    }
-    Ok(normalized)
-}
-
-fn resolve_candidate(
-    canonical_root: &Path,
-    rel_candidate: &Path,
-    display_path: &str,
-    line: u32,
-) -> Result<CandidateResolution, ConfigSourceError> {
-    let mut components = rel_candidate.components().peekable();
-    let mut cursor = canonical_root.to_path_buf();
-
-    while let Some(component) = components.next() {
-        let Component::Normal(segment) = component else {
-            return Err(parse_err(
-                line,
-                format!("include path `{display_path}` contains an invalid component"),
-            ));
-        };
-        cursor.push(segment);
-        let is_last = components.peek().is_none();
-
-        let meta = match fs::symlink_metadata(&cursor) {
-            Ok(meta) => meta,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok(CandidateResolution::NotFound);
-            }
-            Err(err) => {
-                return Err(parse_err(
-                    line,
-                    format!("failed to inspect `{display_path}`: {err}"),
-                ));
-            }
-        };
-        if meta.file_type().is_symlink() {
-            return Err(parse_err(
-                line,
-                format!("symlinks are not allowed in include path `{display_path}`"),
-            ));
-        }
-        if is_last && !meta.file_type().is_file() {
-            return Err(parse_err(
-                line,
-                format!("include path `{display_path}` must be a regular file"),
-            ));
-        }
-        if !is_last && !meta.file_type().is_dir() {
-            return Err(parse_err(
-                line,
-                format!("include path `{display_path}` contains a non-directory component"),
-            ));
-        }
-    }
-
-    let canonical_path = fs::canonicalize(&cursor).map_err(|err| {
-        parse_err(
-            line,
-            format!("failed to canonicalize `{display_path}`: {err}"),
-        )
-    })?;
-    if canonical_path != cursor || !canonical_path.starts_with(canonical_root) {
-        return Err(parse_err(
-            line,
-            format!("include path `{display_path}` escapes the configuration directory"),
-        ));
-    }
-
-    Ok(CandidateResolution::Found(ResolvedInclude {
-        canonical_path,
-        rel_dir: rel_candidate
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default(),
-    }))
-}
-
-fn read_bounded_utf8(
-    path: &Path,
-    display_path: &str,
-    line: u32,
-) -> Result<String, ConfigSourceError> {
-    let file = fs::File::open(path)
-        .map_err(|err| parse_err(line, format!("failed to open `{display_path}`: {err}")))?;
-    let meta = file
-        .metadata()
-        .map_err(|err| parse_err(line, format!("failed to inspect `{display_path}`: {err}")))?;
-    if !meta.is_file() {
-        return Err(parse_err(
-            line,
-            format!("include path `{display_path}` must be a regular file"),
-        ));
-    }
-
-    let max_u64 = u64::try_from(MAX_SOURCE_BYTES).unwrap_or(u64::MAX);
-    if meta.len() > max_u64 {
-        return Err(ConfigSourceError::SourceTooLarge);
-    }
-
-    let mut bytes = Vec::new();
-    file.take(max_u64.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|err| parse_err(line, format!("failed to read `{display_path}`: {err}")))?;
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err(ConfigSourceError::SourceTooLarge);
-    }
-    String::from_utf8(bytes).map_err(|err| ConfigSourceError::Utf8(err.utf8_error()))
 }

@@ -84,50 +84,44 @@ pub(crate) fn decode_with_directives(
     Ok((value, directives))
 }
 
-fn decode_squid_node(
+fn decode_single_path_node<T>(
     node: &KdlNode,
     count: &mut usize,
-) -> Result<NativeDirective, ConfigSourceError> {
+    directive_name: &'static str,
+    decode: fn(Value, &'static str) -> Result<T, ConfigSourceError>,
+) -> Result<T, ConfigSourceError> {
     increment_node_count(count)?;
     let paths = directive_paths(node)?;
     if paths.len() != 1 {
         return Err(ConfigSourceError::parse(
             "KDL 2",
-            "squid_server requires exactly one string path argument",
+            format!("{directive_name} requires exactly one string path argument"),
         ));
     }
     let mut object = decode_option_children(node, count, &[])?;
     if object.contains_key("path") {
         return Err(ConfigSourceError::parse(
             "KDL 2",
-            "squid_server path must be a positional argument",
+            format!("{directive_name} path must be a positional argument"),
         ));
     }
     object.insert("path".to_owned(), Value::String(paths[0].clone()));
-    decode_squid(Value::Object(object), "KDL 2").map(NativeDirective::Squid)
+    decode(Value::Object(object), "KDL 2")
+}
+
+fn decode_squid_node(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<NativeDirective, ConfigSourceError> {
+    decode_single_path_node(node, count, "squid_server", decode_squid).map(NativeDirective::Squid)
 }
 
 fn decode_apache_node(
     node: &KdlNode,
     count: &mut usize,
 ) -> Result<NativeDirective, ConfigSourceError> {
-    increment_node_count(count)?;
-    let paths = directive_paths(node)?;
-    if paths.len() != 1 {
-        return Err(ConfigSourceError::parse(
-            "KDL 2",
-            "apache_server requires exactly one string path argument",
-        ));
-    }
-    let mut object = decode_option_children(node, count, &[])?;
-    if object.contains_key("path") {
-        return Err(ConfigSourceError::parse(
-            "KDL 2",
-            "apache_server path must be a positional argument",
-        ));
-    }
-    object.insert("path".to_owned(), Value::String(paths[0].clone()));
-    decode_apache(Value::Object(object), "KDL 2").map(NativeDirective::Apache)
+    decode_single_path_node(node, count, "apache_server", decode_apache)
+        .map(NativeDirective::Apache)
 }
 
 fn decode_varnish_node(
@@ -714,11 +708,28 @@ fn write_scalar(value: &Value, output: &mut BoundedOutput) -> Result<(), ConfigS
                 write!(output, "{}", KdlValue::Float(value)).map_err(too_large)
             }
         }
-        Value::String(value) => {
-            let text = serde_json::to_string(value)
-                .map_err(|error| ConfigSourceError::render("KDL 2", error.to_string()))?;
-            write_str(output, &text)
-        }
+        Value::String(value) => write_kdl_string(value, output),
         Value::Array(_) | Value::Object(_) => unreachable!("containers are rendered separately"),
     }
+}
+
+fn write_kdl_string(value: &str, output: &mut BoundedOutput) -> Result<(), ConfigSourceError> {
+    let too_large = |_| ConfigSourceError::OutputTooLarge;
+    write_str(output, "\"")?;
+    for ch in value.chars() {
+        match ch {
+            '"' => write_str(output, "\\\"")?,
+            '\\' => write_str(output, "\\\\")?,
+            '\n' => write_str(output, "\\n")?,
+            '\r' => write_str(output, "\\r")?,
+            '\t' => write_str(output, "\\t")?,
+            '\u{08}' => write_str(output, "\\b")?,
+            '\u{0C}' => write_str(output, "\\f")?,
+            c if c.is_control() => {
+                write!(output, "\\u{{{:x}}}", u32::from(c)).map_err(too_large)?;
+            }
+            c => write!(output, "{c}").map_err(too_large)?,
+        }
+    }
+    write_str(output, "\"")
 }

@@ -29,6 +29,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::{
     ConfigSourceError, LuaConfigError, MAX_NODES, MAX_SOURCE_BYTES, MAX_STRUCTURAL_DEPTH,
+    SourceOverrides,
     limits::{check_string, validate_value},
 };
 
@@ -56,7 +57,7 @@ pub fn load_lua(source: &str) -> Result<ValidatedConfig, LuaConfigError> {
     }
 
     let deps = loader::LuaDependencies::default();
-    let lua = sandboxed_lua(None, &deps).map_err(lua_error)?;
+    let lua = sandboxed_lua(None, None, &deps).map_err(lua_error)?;
     let value: LuaValue = lua
         .load(source)
         .set_name("oxiroute.lua")
@@ -69,6 +70,7 @@ pub fn load_lua(source: &str) -> Result<ValidatedConfig, LuaConfigError> {
 
 fn sandboxed_lua(
     base_dir: Option<&Path>,
+    overrides: Option<&SourceOverrides>,
     dependencies: &loader::LuaDependencies,
 ) -> mlua::Result<Lua> {
     let stdlib = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8;
@@ -109,7 +111,7 @@ fn sandboxed_lua(
 
     stdlib::register(&lua)?;
     dsl::register(&lua)?;
-    loader::register(&lua, base_dir, dependencies)?;
+    loader::register(&lua, base_dir, overrides, dependencies)?;
 
     lua.set_memory_limit(lua.used_memory().saturating_add(MAX_LUA_MEMORY_BYTES))?;
 
@@ -135,35 +137,38 @@ fn lua_error(error: mlua::Error) -> LuaConfigError {
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
-    decode_inner(source, None, None).map(|(value, _)| value)
+    decode_inner(source, None, None, None).map(|(value, _)| value)
 }
 
 pub(crate) fn decode_with_base_dir(
     source: &str,
     base_dir: &Path,
+    overrides: Option<&SourceOverrides>,
 ) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
-    decode_inner(source, None, Some(base_dir))
+    decode_inner(source, None, Some(base_dir), overrides)
 }
 
 pub(crate) fn eval_embedded(
     source: &str,
     vars: Option<&Map<String, Value>>,
     base_dir: Option<&Path>,
+    overrides: Option<&SourceOverrides>,
 ) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
-    decode_inner(source, vars, base_dir)
+    decode_inner(source, vars, base_dir, overrides)
 }
 
 fn decode_inner(
     source: &str,
     vars: Option<&Map<String, Value>>,
     base_dir: Option<&Path>,
+    overrides: Option<&SourceOverrides>,
 ) -> Result<(Value, Vec<PathBuf>), ConfigSourceError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ConfigSourceError::SourceTooLarge);
     }
 
     let dependencies = loader::LuaDependencies::default();
-    let lua = sandboxed_lua(base_dir, &dependencies)
+    let lua = sandboxed_lua(base_dir, overrides, &dependencies)
         .map_err(lua_error)
         .map_err(ConfigSourceError::Lua)?;
     if let Some(vars) = vars {

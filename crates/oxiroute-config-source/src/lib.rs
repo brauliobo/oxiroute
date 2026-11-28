@@ -11,6 +11,7 @@
 mod composition;
 mod error;
 mod hocon;
+mod jail;
 mod kdl;
 mod limits;
 mod lua;
@@ -28,6 +29,7 @@ use std::path::Path;
 
 pub use composition::compose_validated_fragments;
 pub use error::{ConfigSourceError, LuaConfigError, NativeDiagnosticCount, NativeDiagnostics};
+pub use jail::{SourceOverrides, resolve_jailed_target, validate_relative_path};
 pub use limits::{
     MAX_DEPENDENCY_PATHS, MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES,
     MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
@@ -35,6 +37,7 @@ pub use limits::{
 pub use lua::load_lua;
 pub use resolver::{
     NativeReferenceMetadata, ResolvedSource, resolve_source, resolve_source_with_format,
+    resolve_source_with_overrides,
 };
 pub use templates::expand_templates;
 pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document};
@@ -42,6 +45,83 @@ pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document};
 use oxiroute_config::ValidatedConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Canonical metadata for one supported configuration format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfigFormatSpec {
+    /// Strongly typed format identifier.
+    pub format: ConfigFormat,
+    /// Lowercase wire and CLI identifier (e.g. `"kdl"`, `"oxi"`).
+    pub wire_name: &'static str,
+    /// Human-readable display label (e.g. `"KDL 2"`, `"OXI"`).
+    pub display_name: &'static str,
+    /// Default file extension emitted by `init` and conversion helpers.
+    pub default_extension: &'static str,
+    /// All lowercase file extensions recognized for this format.
+    pub extensions: &'static [&'static str],
+    /// Whether this format can serialize explicit JSON `null` values.
+    pub supports_null: bool,
+}
+
+/// Authoritative registry of all supported configuration formats, ordered by discovery preference.
+pub const ALL_FORMATS: &[ConfigFormatSpec] = &[
+    ConfigFormatSpec {
+        format: ConfigFormat::Oxi,
+        wire_name: "oxi",
+        display_name: "OXI",
+        default_extension: "oxi",
+        extensions: &["oxi"],
+        supports_null: true,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Kdl,
+        wire_name: "kdl",
+        display_name: "KDL 2",
+        default_extension: "kdl",
+        extensions: &["kdl", "kdl2"],
+        supports_null: true,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Yaml,
+        wire_name: "yaml",
+        display_name: "YAML",
+        default_extension: "yaml",
+        extensions: &["yaml", "yml"],
+        supports_null: true,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Toml,
+        wire_name: "toml",
+        display_name: "TOML",
+        default_extension: "toml",
+        extensions: &["toml"],
+        supports_null: false,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Lua,
+        wire_name: "lua",
+        display_name: "Lua",
+        default_extension: "lua",
+        extensions: &["lua"],
+        supports_null: true,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Hocon,
+        wire_name: "hocon",
+        display_name: "HOCON",
+        default_extension: "conf",
+        extensions: &["conf", "hocon"],
+        supports_null: true,
+    },
+    ConfigFormatSpec {
+        format: ConfigFormat::Uci,
+        wire_name: "uci",
+        display_name: "UCI",
+        default_extension: "uci",
+        extensions: &["uci"],
+        supports_null: true,
+    },
+];
 
 /// A supported configuration source syntax.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +146,83 @@ pub enum ConfigFormat {
 }
 
 impl ConfigFormat {
+    /// Returns the authoritative metadata specification for this format.
+    #[must_use]
+    pub const fn spec(self) -> &'static ConfigFormatSpec {
+        let mut index = 0;
+        while index < ALL_FORMATS.len() {
+            if matches!(
+                (ALL_FORMATS[index].format, self),
+                (Self::Kdl, Self::Kdl)
+                    | (Self::Lua, Self::Lua)
+                    | (Self::Uci, Self::Uci)
+                    | (Self::Hocon, Self::Hocon)
+                    | (Self::Yaml, Self::Yaml)
+                    | (Self::Toml, Self::Toml)
+                    | (Self::Oxi, Self::Oxi)
+            ) {
+                return &ALL_FORMATS[index];
+            }
+            index += 1;
+        }
+        &ALL_FORMATS[1]
+    }
+
+    /// Returns all supported formats in discovery preference order.
+    #[must_use]
+    pub const fn all() -> &'static [ConfigFormatSpec] {
+        ALL_FORMATS
+    }
+
+    /// Returns the lowercase wire/CLI identifier for this format.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        self.spec().wire_name
+    }
+
+    /// Returns the human-readable display name for this format.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        self.spec().display_name
+    }
+
+    /// Returns the default file extension for this format.
+    #[must_use]
+    pub const fn default_extension(self) -> &'static str {
+        self.spec().default_extension
+    }
+
+    /// Returns all recognized lowercase file extensions for this format.
+    #[must_use]
+    pub const fn extensions(self) -> &'static [&'static str] {
+        self.spec().extensions
+    }
+
+    /// Returns whether this format can serialize explicit `null` values.
+    #[must_use]
+    pub const fn supports_null(self) -> bool {
+        self.spec().supports_null
+    }
+
+    /// Parses a lowercase wire name (e.g. `"kdl"`, `"oxi"`, `"yaml"`).
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        ALL_FORMATS
+            .iter()
+            .find(|spec| spec.wire_name.eq_ignore_ascii_case(name))
+            .map(|spec| spec.format)
+    }
+
+    /// Infers a format from a lowercase file extension without leading dot.
+    #[must_use]
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        let lower = extension.to_ascii_lowercase();
+        ALL_FORMATS
+            .iter()
+            .find(|spec| spec.extensions.contains(&lower.as_str()))
+            .map(|spec| spec.format)
+    }
+
     /// Infers a format from a path extension. A path without an extension uses KDL.
     ///
     /// Extensions are matched case-insensitively. Supported values are `kdl`, `kdl2`, `lua`,
@@ -81,16 +238,8 @@ impl ConfigFormat {
         let extension = extension
             .to_str()
             .ok_or_else(|| ConfigSourceError::UnknownExtension("<non-UTF-8>".to_owned()))?;
-        match extension.to_ascii_lowercase().as_str() {
-            "kdl" | "kdl2" => Ok(Self::Kdl),
-            "lua" => Ok(Self::Lua),
-            "uci" => Ok(Self::Uci),
-            "hocon" | "conf" => Ok(Self::Hocon),
-            "yaml" | "yml" => Ok(Self::Yaml),
-            "toml" => Ok(Self::Toml),
-            "oxi" => Ok(Self::Oxi),
-            _ => Err(ConfigSourceError::UnknownExtension(extension.to_owned())),
-        }
+        Self::from_extension(extension)
+            .ok_or_else(|| ConfigSourceError::UnknownExtension(extension.to_owned()))
     }
 }
 
