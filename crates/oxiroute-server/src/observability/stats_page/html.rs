@@ -28,9 +28,11 @@ pub(super) fn render(
 
 fn table(snapshot: &StatsSnapshot, prefix: &str, revision: Option<&str>) -> String {
     let admin = revision.map(|revision| (prefix, revision));
-    let mut body = String::from(
-        "<table><thead><tr><th>Pool</th><th>Server</th><th>Administrative state</th><th>Health</th><th>Active</th>",
-    );
+    let mut body = String::from(if admin.is_some() {
+        "<p>Administrative actions update live routing only (or dynamic server registry state) and do not modify configuration files.</p><table><thead><tr><th>Pool</th><th>Server</th><th>Administrative state</th><th>Health</th><th>Active</th>"
+    } else {
+        "<table><thead><tr><th>Pool</th><th>Server</th><th>Administrative state</th><th>Health</th><th>Active</th>"
+    });
     if admin.is_some() {
         body.push_str("<th>Administration</th>");
     }

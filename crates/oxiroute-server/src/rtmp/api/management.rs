@@ -121,7 +121,6 @@ impl ManagementState {
                 | Route::Servers
                 | Route::Generations
                 | Route::Tls
-                | Route::TlsRenew
                 | Route::Explain(_)
                 | Route::Audit(_)
                 | Route::AuditStatus

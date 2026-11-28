@@ -192,10 +192,23 @@ impl Overlay {
         merged.into_values().collect()
     }
 
-    pub(crate) fn without_max_connections(mut self, covered: &[(String, String)]) -> Self {
+    #[cfg(test)]
+    pub(crate) fn without_max_connections(self, covered: &[(String, String)]) -> Self {
+        self.without_promoted(covered, &[])
+    }
+
+    pub(crate) fn without_promoted(
+        mut self,
+        capacities: &[(String, String)],
+        weights: &[(String, String)],
+    ) -> Self {
         for entry in &mut self.servers {
-            if covered.contains(&(entry.pool.clone(), entry.server.clone())) {
+            let key = (entry.pool.clone(), entry.server.clone());
+            if capacities.contains(&key) {
                 entry.max_connections = None;
+            }
+            if weights.contains(&key) {
+                entry.weight = None;
             }
         }
         self.normalize();

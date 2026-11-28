@@ -307,6 +307,13 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
+        if request.persist {
+            return ApiResponse::error(
+                400,
+                "persist_not_supported",
+                "DNS refresh is runtime-only and cannot be persisted",
+            );
+        }
         let (mutation, selected) = match self.select_servers(&request) {
             Ok(selected) => selected,
             Err(response) => return response,

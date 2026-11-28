@@ -1,23 +1,51 @@
-use oxiroute_config::UpstreamPool;
+use oxiroute_config::{UpstreamAlgorithm, UpstreamPool};
 
 use super::Overlay;
 
+/// Settings promoted from the runtime overlay into the canonical configuration draft.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PromotedSettings {
+    pub(crate) capacities: Vec<(String, String)>,
+    pub(crate) weights: Vec<(String, String)>,
+}
+
+impl PromotedSettings {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.capacities.is_empty() && self.weights.is_empty()
+    }
+}
+
 impl Overlay {
-    pub(crate) fn promote_capacities(&self, pools: &mut [UpstreamPool]) -> Vec<(String, String)> {
-        let mut promoted = Vec::new();
-        for entry in self
-            .servers
-            .iter()
-            .filter(|entry| entry.max_connections.is_some())
-        {
-            let configured = pools
-                .iter_mut()
-                .filter(|pool| pool.name == entry.pool)
-                .flat_map(|pool| pool.servers.iter_mut())
-                .find(|server| server.name == entry.server);
-            if let Some(server) = configured {
-                server.max_connections = entry.max_connections;
-                promoted.push((entry.pool.clone(), entry.server.clone()));
+    /// Promotes persisted static server capacities (`max_connections`) and `weighted_round_robin`
+    /// server weights into `pools`. Operational states (`drain`, `maintenance`, health overrides,
+    /// check toggles) are never promoted to configuration files.
+    pub(crate) fn promote_to_draft(&self, pools: &mut [UpstreamPool]) -> PromotedSettings {
+        let mut promoted = PromotedSettings::default();
+        for entry in &self.servers {
+            let Some(pool) = pools.iter_mut().find(|pool| pool.name == entry.pool) else {
+                continue;
+            };
+            let Some(index) = pool
+                .servers
+                .iter()
+                .position(|server| server.name == entry.server)
+            else {
+                continue;
+            };
+            if let Some(limit) = entry.max_connections {
+                pool.servers[index].max_connections = Some(limit);
+                promoted
+                    .capacities
+                    .push((entry.pool.clone(), entry.server.clone()));
+            }
+            if let Some(weight) = entry.weight
+                && let UpstreamAlgorithm::WeightedRoundRobin { weights } = &mut pool.algorithm
+                && index < weights.len()
+            {
+                weights[index] = weight;
+                promoted
+                    .weights
+                    .push((entry.pool.clone(), entry.server.clone()));
             }
         }
         promoted

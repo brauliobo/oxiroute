@@ -173,9 +173,13 @@ impl HaproxyStatsPage {
         else {
             return ApiResponse::error(404, "pool_not_found", "upstream pool was not found");
         };
-        if pool
-            .set_server_administrative_state(&target.server, state)
-            .is_err()
+        if crate::observability::stats::apply_stats_server_state(
+            &self.generations,
+            pool,
+            &target.server,
+            state,
+        )
+        .is_err()
         {
             return ApiResponse::error(404, "server_not_found", "upstream server was not found");
         }

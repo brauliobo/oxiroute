@@ -265,14 +265,39 @@ impl HaproxyStatsApi {
         else {
             return ApiResponse::error(404, "pool_not_found", "upstream pool was not found");
         };
-        if pool
-            .set_server_administrative_state(&target.server, state)
-            .is_err()
-        {
+        if apply_stats_server_state(&self.generations, pool, &target.server, state).is_err() {
             return ApiResponse::error(404, "server_not_found", "upstream server was not found");
         }
         ApiResponse::bytes(204, Vec::new(), "text/plain; charset=utf-8")
     }
+}
+
+/// Shared runtime-state mutation path for both the `HAProxy` stats API and stats page.
+///
+/// Dynamic servers are updated through `RegistryService::set_operator_state` so registry heartbeats
+/// do not silently revert the operator's drain/maintenance action; static servers update the live
+/// pool atomic directly without touching configuration files or `.overlay.json`.
+pub(super) fn apply_stats_server_state(
+    generations: &GenerationManager,
+    pool: &Arc<crate::RoundRobinPool>,
+    server: &str,
+    state: crate::AdministrativeState,
+) -> Result<(), ()> {
+    if matches!(pool.member(server), Some((crate::ServerOrigin::Dynamic, _)))
+        && let Some(registry) = generations.registry()
+    {
+        return registry
+            .set_operator_state(
+                &crate::registry::auth::Principal::admin("stats"),
+                pool.name(),
+                server,
+                state,
+            )
+            .map(|_| ())
+            .map_err(|_| ());
+    }
+    pool.set_server_administrative_state(server, state)
+        .map_err(|_| ())
 }
 
 #[async_trait]

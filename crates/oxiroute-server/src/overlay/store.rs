@@ -71,6 +71,21 @@ impl OverlayStore {
         Ok(overlay)
     }
 
+    /// Runs `action` while holding the overlay writer lock so load → persist → prune cannot race
+    /// with concurrent `--persist` updates.
+    pub(crate) fn with_exclusive_overlay<T>(
+        &self,
+        action: impl FnOnce(Overlay) -> (T, Option<Overlay>),
+    ) -> Result<T, OverlayError> {
+        let _writer = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+        let overlay = self.load()?;
+        let (result, updated) = action(overlay);
+        if let Some(updated) = updated {
+            self.write(&updated)?;
+        }
+        Ok(result)
+    }
+
     pub(crate) fn clear(&self) -> io::Result<bool> {
         let _writer = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
         self.remove()

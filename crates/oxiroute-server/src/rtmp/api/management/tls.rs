@@ -158,6 +158,7 @@ impl ManagementState {
         dto_response(200, &TlsReconcileResponse::new(outcomes))
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn tls_renew(
         &self,
         session: &mut ServerSession,
@@ -171,69 +172,97 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(response) => return response,
         };
-        let reconciler = {
+        let reconcilers = {
             let active = mutation.generation();
             active
                 .tls()
                 .acme_reconcilers()
                 .iter()
-                .find(|reconciler| {
+                .filter(|reconciler| {
                     request
                         .certificate
                         .as_deref()
                         .is_none_or(|name| name == reconciler.status().certificate)
                 })
                 .cloned()
+                .collect::<Vec<_>>()
         };
-        let Some(reconciler) = reconciler else {
+        if reconcilers.is_empty() {
             return ApiResponse::error(
                 404,
                 "managed_certificate_not_found",
                 "managed ACME certificate was not found",
             );
-        };
-        let certificate_name = reconciler.status().certificate;
-        crate::observability::operational_event::emit_certificate_with_context(
-            "certificate_renewal",
-            "requested",
-            &certificate_name,
-            context,
-        );
-        let worker_reconciler = Arc::clone(&reconciler);
+        }
+        for reconciler in &reconcilers {
+            let certificate_name = reconciler.status().certificate;
+            crate::observability::operational_event::emit_certificate_with_context(
+                "certificate_renewal",
+                "requested",
+                &certificate_name,
+                context,
+            );
+        }
+        let worker_reconcilers = reconcilers.clone();
         let correlation_id = context.correlation_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let result = worker_reconciler.renew_now_with_correlation(correlation_id);
+            let mut outcomes = Vec::with_capacity(worker_reconcilers.len());
+            for reconciler in &worker_reconcilers {
+                outcomes.push((
+                    reconciler.status().certificate,
+                    reconciler.renew_now_with_correlation(correlation_id.clone()),
+                ));
+            }
             drop(mutation);
-            result
+            outcomes
         })
         .await;
         match result {
-            Ok(Ok(outcome)) => {
-                let status = reconciler.status();
-                crate::observability::operational_event::emit_certificate_with_context(
-                    if outcome == crate::AcmeManagedOutcome::Activated {
-                        "certificate_activated"
-                    } else {
-                        "certificate_renewal"
-                    },
-                    if outcome == crate::AcmeManagedOutcome::Activated {
-                        "activated"
-                    } else {
-                        "applied"
-                    },
-                    &status.certificate,
-                    context,
-                );
-                dto_response(200, &TlsRenewResponse::new(status, outcome.code()))
-            }
-            Ok(Err(error)) => {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_renewal",
-                    "failed",
-                    &certificate_name,
-                    context,
-                );
-                ApiResponse::error(503, error.code(), "managed ACME renewal failed")
+            Ok(outcomes) => {
+                let mut first_ok = None;
+                let mut first_err = None;
+                for (reconciler, (certificate_name, outcome)) in reconcilers.iter().zip(outcomes) {
+                    match outcome {
+                        Ok(outcome) => {
+                            let status = reconciler.status();
+                            crate::observability::operational_event::emit_certificate_with_context(
+                                if outcome == crate::AcmeManagedOutcome::Activated {
+                                    "certificate_activated"
+                                } else {
+                                    "certificate_renewal"
+                                },
+                                if outcome == crate::AcmeManagedOutcome::Activated {
+                                    "activated"
+                                } else {
+                                    "applied"
+                                },
+                                &status.certificate,
+                                context,
+                            );
+                            if first_ok.is_none() {
+                                first_ok = Some((status, outcome));
+                            }
+                        }
+                        Err(error) => {
+                            crate::observability::operational_event::emit_certificate_with_context(
+                                "certificate_renewal",
+                                "failed",
+                                &certificate_name,
+                                context,
+                            );
+                            if first_err.is_none() {
+                                first_err = Some(error);
+                            }
+                        }
+                    }
+                }
+                if let Some(error) = first_err {
+                    ApiResponse::error(503, error.code(), "managed ACME renewal failed")
+                } else if let Some((status, outcome)) = first_ok {
+                    dto_response(200, &TlsRenewResponse::new(status, outcome.code()))
+                } else {
+                    ApiResponse::error(503, "renewal_worker_failed", "renewal worker failed")
+                }
             }
             Err(_) => ApiResponse::error(503, "renewal_worker_failed", "renewal worker failed"),
         }
@@ -403,6 +432,7 @@ impl ManagementState {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn tls_account_rollover(
         &self,
         session: &mut ServerSession,
@@ -416,63 +446,95 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(response) => return response,
         };
-        let reconciler = {
+        let reconcilers = {
             let active = mutation.generation();
             active
                 .tls()
                 .acme_reconcilers()
                 .iter()
-                .find(|reconciler| {
+                .filter(|reconciler| {
                     request
                         .certificate
                         .as_deref()
                         .is_none_or(|name| name == reconciler.status().certificate)
                 })
                 .cloned()
+                .collect::<Vec<_>>()
         };
-        let Some(reconciler) = reconciler else {
+        if reconcilers.is_empty() {
             return ApiResponse::error(
                 404,
                 "managed_certificate_not_found",
                 "managed ACME certificate was not found",
             );
-        };
-        let certificate = reconciler.status().certificate;
-        crate::observability::operational_event::emit_certificate_with_context(
-            "certificate_account_rollover",
-            "requested",
-            &certificate,
-            context,
-        );
-        let worker_reconciler = Arc::clone(&reconciler);
+        }
+        for reconciler in &reconcilers {
+            let certificate = reconciler.status().certificate;
+            crate::observability::operational_event::emit_certificate_with_context(
+                "certificate_account_rollover",
+                "requested",
+                &certificate,
+                context,
+            );
+        }
+        let worker_reconcilers = reconcilers.clone();
         let correlation_id = context.correlation_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let result = worker_reconciler.rollover_account_key_with_correlation(correlation_id);
+            let mut outcomes = Vec::with_capacity(worker_reconcilers.len());
+            for reconciler in &worker_reconcilers {
+                outcomes.push((
+                    reconciler.status().certificate,
+                    reconciler.rollover_account_key_with_correlation(correlation_id.clone()),
+                ));
+            }
             drop(mutation);
-            result
+            outcomes
         })
         .await;
         match result {
-            Ok(Ok((outcome, job_id))) => {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_account_rollover",
-                    "applied",
-                    &certificate,
-                    context,
-                );
-                dto_response(
-                    200,
-                    &TlsActionResponse::new(certificate, outcome.code(), Some(job_id)),
-                )
-            }
-            Ok(Err(error)) => {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_account_rollover",
-                    "failed",
-                    &certificate,
-                    context,
-                );
-                managed_error_response(error, "managed ACME account rollover failed")
+            Ok(outcomes) => {
+                let mut first_ok = None;
+                let mut first_err = None;
+                for (certificate, outcome) in outcomes {
+                    match outcome {
+                        Ok((outcome, job_id)) => {
+                            crate::observability::operational_event::emit_certificate_with_context(
+                                "certificate_account_rollover",
+                                "applied",
+                                &certificate,
+                                context,
+                            );
+                            if first_ok.is_none() {
+                                first_ok = Some((certificate, outcome, job_id));
+                            }
+                        }
+                        Err(error) => {
+                            crate::observability::operational_event::emit_certificate_with_context(
+                                "certificate_account_rollover",
+                                "failed",
+                                &certificate,
+                                context,
+                            );
+                            if first_err.is_none() {
+                                first_err = Some(error);
+                            }
+                        }
+                    }
+                }
+                if let Some(error) = first_err {
+                    managed_error_response(error, "managed ACME account rollover failed")
+                } else if let Some((certificate, outcome, job_id)) = first_ok {
+                    dto_response(
+                        200,
+                        &TlsActionResponse::new(certificate, outcome.code(), Some(job_id)),
+                    )
+                } else {
+                    ApiResponse::error(
+                        503,
+                        "account_rollover_worker_failed",
+                        "account rollover worker failed",
+                    )
+                }
             }
             Err(_) => ApiResponse::error(
                 503,
@@ -496,61 +558,74 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(response) => return response,
         };
-        let reconciler = {
+        let reconcilers = {
             let active = mutation.generation();
             active
                 .tls()
                 .acme_reconcilers()
                 .iter()
-                .find(|reconciler| {
+                .filter(|reconciler| {
                     request
                         .certificate
                         .as_deref()
                         .is_none_or(|name| name == reconciler.status().certificate)
                 })
                 .cloned()
+                .collect::<Vec<_>>()
         };
         drop(mutation);
-        let Some(reconciler) = reconciler else {
+        if reconcilers.is_empty() {
             return ApiResponse::error(
                 404,
                 "managed_certificate_not_found",
                 "managed ACME certificate was not found",
             );
-        };
-        let certificate = reconciler.status().certificate;
-        let result = match control {
-            JobControl::Cancel => reconciler.cancel_job().map(|job_id| {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_job_control",
-                    "requested",
-                    &certificate,
-                    context,
-                );
-                TlsJobControlResponse::cancellation(certificate.clone(), job_id)
-            }),
-            JobControl::Pause => reconciler.pause().map(|job_id| {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_job_control",
-                    "applied",
-                    &certificate,
-                    context,
-                );
-                TlsJobControlResponse::paused(certificate.clone(), job_id)
-            }),
-            JobControl::Resume => reconciler.resume().map(|()| {
-                crate::observability::operational_event::emit_certificate_with_context(
-                    "certificate_job_control",
-                    "applied",
-                    &certificate,
-                    context,
-                );
-                TlsJobControlResponse::resumed(certificate.clone())
-            }),
-        };
-        match result {
-            Ok(response) => dto_response(202, &response),
-            Err(error) => managed_error_response(error, "managed ACME job control failed"),
+        }
+        let mut first_ok = None;
+        let mut first_err = None;
+        for reconciler in reconcilers {
+            let certificate = reconciler.status().certificate;
+            let result = match control {
+                JobControl::Cancel => reconciler.cancel_job().map(|job_id| {
+                    crate::observability::operational_event::emit_certificate_with_context(
+                        "certificate_job_control",
+                        "requested",
+                        &certificate,
+                        context,
+                    );
+                    TlsJobControlResponse::cancellation(certificate.clone(), job_id)
+                }),
+                JobControl::Pause => reconciler.pause().map(|job_id| {
+                    crate::observability::operational_event::emit_certificate_with_context(
+                        "certificate_job_control",
+                        "applied",
+                        &certificate,
+                        context,
+                    );
+                    TlsJobControlResponse::paused(certificate.clone(), job_id)
+                }),
+                JobControl::Resume => reconciler.resume().map(|()| {
+                    crate::observability::operational_event::emit_certificate_with_context(
+                        "certificate_job_control",
+                        "applied",
+                        &certificate,
+                        context,
+                    );
+                    TlsJobControlResponse::resumed(certificate.clone())
+                }),
+            };
+            match result {
+                Ok(response) if first_ok.is_none() => first_ok = Some(response),
+                Err(error) if first_err.is_none() => first_err = Some(error),
+                Ok(_) | Err(_) => {}
+            }
+        }
+        if let Some(error) = first_err {
+            managed_error_response(error, "managed ACME job control failed")
+        } else if let Some(response) = first_ok {
+            dto_response(202, &response)
+        } else {
+            ApiResponse::error(503, "job_control_failed", "managed ACME job control failed")
         }
     }
 }
