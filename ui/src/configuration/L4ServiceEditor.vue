@@ -17,6 +17,8 @@ header.cfg-form-heading
     NumberInput(min="1" step="1" v-model="service.idle_timeout_ms")
   ConfigField(path="l4_services[].lifetime_timeout_ms" label="Lifetime timeout (ms)")
     NumberInput(min="1" step="1" :model-value="service.lifetime_timeout_ms ?? ''" placeholder="No limit" @input="setLifetimeTimeout")
+  ConfigField(path="l4_services[].drain_deadline_ms" label="Drain deadline (ms)")
+    NumberInput(min="1" step="1" :model-value="service.drain_deadline_ms ?? ''" placeholder="Inherit retirement deadline" @update:model-value="service.drain_deadline_ms = $event === '' ? null : Number($event)")
 ConfigGroup.object-block(path="l4_services[].proxy_protocol" legend="Outbound PROXY protocol")
   Checkbox.enable-row(:model-value="service.proxy_protocol != null" @change="toggleProxyProtocol") Send the selected client address upstream
   .field-grid(v-if="service.proxy_protocol")

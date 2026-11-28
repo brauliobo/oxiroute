@@ -42,7 +42,7 @@
           ConfigField(path="http_services[].routes[].action.policy.request_headers[].operation" label="Operation")
             Select(
               :model-value="mutation.operation" @change="changeRequestOperation(mutationIndex, $event)"
-              :options="[{ value: 'set', label: 'Set' }, { value: 'add', label: 'Add' }, { value: 'remove', label: 'Remove' }]"
+              :options="[{ value: 'set', label: 'Set' }, { value: 'remove', label: 'Remove' }]"
             )
           ConfigField(path="http_services[].routes[].action.policy.request_headers[].name" label="Header name")
             Input(v-model="mutation.name" placeholder="x-forwarded-for")
@@ -51,12 +51,16 @@
               ConfigField(path="http_services[].routes[].action.policy.request_headers[].value.type" label="Source type")
                 Select(
                   :model-value="mutation.value.type" @change="changeRequestValue(mutationIndex, $event)"
-                  :options="[{ value: 'literal', label: 'Literal' }, { value: 'incoming_authority', label: 'Incoming authority' }, { value: 'normalized_host', label: 'Normalized host' }, { value: 'nginx_host', label: 'nginx $host with fallback' }, { value: 'client_ip', label: 'Client IP' }, { value: 'appended_x_forwarded_for', label: 'Append client IP to X-Forwarded-For' }, { value: 'downstream_scheme', label: 'Downstream scheme' }, { value: 'selected_upstream_host', label: 'Selected upstream Host' }]"
+                  :options="[{ value: 'literal', label: 'Literal' }, { value: 'incoming_authority', label: 'Incoming authority' }, { value: 'normalized_host', label: 'Normalized host' }, { value: 'nginx_host', label: 'nginx $host with fallback' }, { value: 'client_ip', label: 'Client IP' }, { value: 'appended_x_forwarded_for', label: 'Append client IP to X-Forwarded-For' }, { value: 'downstream_scheme', label: 'Downstream scheme' }, { value: 'incoming_header', label: 'Incoming request header' }, { value: 'selected_upstream_host', label: 'Selected upstream Host' }]"
                 )
               ConfigField(v-if="mutation.value.type === 'literal'" path="http_services[].routes[].action.policy.request_headers[].value.value" label="Literal value")
                 Input(v-model="mutation.value.value")
               ConfigField(v-if="mutation.value.type === 'nginx_host'" path="http_services[].routes[].action.policy.request_headers[].value.fallback" label="Missing-Host fallback")
                 Input(v-model="mutation.value.fallback" placeholder="localhost")
+              ConfigField(v-if="mutation.value.type === 'incoming_header'" path="http_services[].routes[].action.policy.request_headers[].value.name" label="Source header name")
+                Input(v-model="mutation.value.name" placeholder="x-request-id")
+              ConfigField(v-if="mutation.value.type === 'incoming_header'" path="http_services[].routes[].action.policy.request_headers[].value.max_bytes" label="Maximum header bytes")
+                NumberInput(min="1" step="1" v-model="mutation.value.max_bytes")
               ConfigField(v-if="mutation.value.type === 'appended_x_forwarded_for'" path="http_services[].routes[].action.policy.request_headers[].value.max_bytes" label="Maximum header bytes")
                 NumberInput(min="1" step="1" v-model="mutation.value.max_bytes")
             ConfigGroup.route-list(v-if="mutation.value.type === 'appended_x_forwarded_for'" path="http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs")
@@ -85,7 +89,7 @@
           ConfigField(path="http_services[].routes[].action.policy.response_headers[].operation" label="Operation")
             Select(
               :model-value="mutation.operation" @change="changeResponseOperation(mutationIndex, $event)"
-              :options="[{ value: 'set', label: 'Set' }, { value: 'remove', label: 'Remove' }]"
+              :options="[{ value: 'set', label: 'Set' }, { value: 'add', label: 'Add' }, { value: 'remove', label: 'Remove' }]"
             )
           ConfigField(path="http_services[].routes[].action.policy.response_headers[].name" label="Header name")
             Input(v-model="mutation.name")
@@ -111,6 +115,34 @@
             Select(
               :model-value="rewrite.mode ?? 'exact'" @change="setCookieRewriteMode(rewrite, $event)"
               :options="[{ value: 'exact', label: 'Exact path' }, { value: 'nginx_prefix', label: 'nginx prefix (verbatim replacement)' }]"
+            )
+
+    ConfigGroup.route-list(path="http_services[].routes[].action.policy.response_cookie_attributes")
+      template(#legend)
+        .cfg-route-heading
+          legend Response cookie attributes
+          Button.add-row(:disabled="action.policy.response_cookie_attributes.length >= 16" @click="addCookieAttribute") + Add cookie policy
+      ItemScope.route-card(v-for="(cookieAttr, attrIndex) in action.policy.response_cookie_attributes" :key="attrIndex" :index="attrIndex")
+        header.cfg-route-card-heading
+          strong Cookie policy {{ attrIndex + 1 }}
+          Button.danger-link(variant="danger" small @click="removeCookieAttribute(attrIndex)") Remove
+        .field-grid
+          ConfigField(path="http_services[].routes[].action.policy.response_cookie_attributes[].name" label="Cookie name")
+            Input(v-model="cookieAttr.name" placeholder="session_id")
+          ConfigField(path="http_services[].routes[].action.policy.response_cookie_attributes[].secure" label="Secure flag")
+            Select(
+              :model-value="triState(cookieAttr.secure)" @update:model-value="cookieAttr.secure = parseTriState($event)"
+              :options="[{ value: 'inherit', label: 'Unchanged' }, { value: 'true', label: 'Force true' }, { value: 'false', label: 'Force false' }]"
+            )
+          ConfigField(path="http_services[].routes[].action.policy.response_cookie_attributes[].http_only" label="HttpOnly flag")
+            Select(
+              :model-value="triState(cookieAttr.http_only)" @update:model-value="cookieAttr.http_only = parseTriState($event)"
+              :options="[{ value: 'inherit', label: 'Unchanged' }, { value: 'true', label: 'Force true' }, { value: 'false', label: 'Force false' }]"
+            )
+          ConfigField(path="http_services[].routes[].action.policy.response_cookie_attributes[].same_site" label="SameSite")
+            Select(
+              :model-value="cookieAttr.same_site ?? 'inherit'" @update:model-value="setCookieSameSite(cookieAttr, $event)"
+              :options="[{ value: 'inherit', label: 'Unchanged' }, { value: 'strict', label: 'Strict' }, { value: 'lax', label: 'Lax' }, { value: 'none', label: 'None' }]"
             )
 
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.retry" legend="Retry policy")
@@ -187,9 +219,72 @@
         ConfigField(path="http_services[].routes[].action.policy.timeouts.total_ms" label="Total request deadline (ms)")
           NumberInput(min="1" max="86400000" step="1" placeholder="inherit" :model-value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
 
+    .field-grid
+      ConfigField(path="http_services[].routes[].action.policy.queue_class" label="Queue class override")
+        Input(:model-value="action.policy.queue_class ?? ''" placeholder="Inherit pool default or header" @input="setQueueClass")
     ConfigField(path="http_services[].routes[].action.policy.queue_headers" label="Tell clients that waited for capacity their queue position and wait time" check v-model="action.policy.queue_headers")
     small.field-hint
       | Adds x-oxiroute-queue-position and x-oxiroute-queue-wait-ms to those responses. Off by default because it reveals pool load.
+
+    ConfigGroup.object-block(path="http_services[].routes[].action.policy.affinity" legend="Session affinity")
+      Checkbox.enable-row(:model-value="action.policy.affinity != null" @change="toggleAffinity") Stick client requests to a preferred backend server
+      .field-grid(v-if="action.policy.affinity")
+        ConfigField(path="http_services[].routes[].action.policy.affinity.type" label="Affinity mode")
+          Select(
+            :model-value="action.policy.affinity.type" @update:model-value="changeAffinityType($event)"
+            :options="[{ value: 'cookie', label: 'Managed cookie' }, { value: 'hash', label: 'Consistent hash' }, { value: 'header', label: 'Request header' }]"
+          )
+        template(v-if="action.policy.affinity.type === 'cookie'")
+          ConfigField(path="http_services[].routes[].action.policy.affinity.name" label="Cookie name")
+            Input(v-model="action.policy.affinity.name" placeholder="ox_srv")
+          ConfigField(path="http_services[].routes[].action.policy.affinity.ttl_s" label="Cookie TTL (s)")
+            NumberInput(min="1" step="1" v-model="action.policy.affinity.ttl_s")
+          ConfigField(path="http_services[].routes[].action.policy.affinity.same_site" label="SameSite")
+            Select(
+              v-model="action.policy.affinity.same_site"
+              :options="[{ value: 'lax', label: 'Lax' }, { value: 'strict', label: 'Strict' }, { value: 'none', label: 'None' }]"
+            )
+          ConfigField(path="http_services[].routes[].action.policy.affinity.secure" label="Secure cookie" check v-model="action.policy.affinity.secure")
+          ConfigField(path="http_services[].routes[].action.policy.affinity.http_only" label="HttpOnly cookie" check v-model="action.policy.affinity.http_only")
+        ConfigField(v-else-if="action.policy.affinity.type === 'hash'" path="http_services[].routes[].action.policy.affinity.key" label="Hash key expression")
+          Input(v-model="action.policy.affinity.key" placeholder="client_ip")
+        ConfigField(v-else path="http_services[].routes[].action.policy.affinity.name" label="Header name")
+          Input(v-model="action.policy.affinity.name" placeholder="x-tenant-id")
+
+    ConfigGroup.object-block(path="http_services[].routes[].action.policy.select" legend="Header-based pool selection")
+      Checkbox.enable-row(:model-value="action.policy.select != null" @change="togglePoolSelect") Route requests to alternate pools based on a numeric header
+      template(v-if="action.policy.select")
+        .field-grid
+          ConfigField(path="http_services[].routes[].action.policy.select.header" label="Selector header")
+            Input(v-model="action.policy.select.header" placeholder="x-priority")
+          ConfigField(path="http_services[].routes[].action.policy.select.on_invalid" label="On missing/invalid header")
+            Select(
+              v-model="action.policy.select.on_invalid"
+              :options="[{ value: 'default', label: 'Use default pool' }, { value: 'reject', label: 'Reject request' }]"
+            )
+          ConfigField(path="http_services[].routes[].action.policy.select.spill" label="Capacity spill")
+            Select(
+              v-model="action.policy.select.spill"
+              :options="[{ value: 'none', label: 'None' }, { value: 'up', label: 'Spill up to next pool' }]"
+            )
+          ConfigField(path="http_services[].routes[].action.policy.select.forward" label="Forward selector header upstream" check v-model="action.policy.select.forward")
+        ConfigGroup.route-list(path="http_services[].routes[].action.policy.select.rules")
+          template(#legend)
+            .cfg-route-heading
+              legend Selection rules
+              Button.add-row(@click="addSelectRule") + Add rule
+          ItemScope.route-card(v-for="(rule, ruleIndex) in action.policy.select.rules" :key="ruleIndex" :index="ruleIndex")
+            header.cfg-route-card-heading
+              strong Rule {{ ruleIndex + 1 }}
+              Button.danger-link(variant="danger" small @click="removeSelectRule(ruleIndex)") Remove
+            .field-grid
+              ConfigField(path="http_services[].routes[].action.policy.select.rules[].at_most" label="At most")
+                NumberInput(min="0" step="1" v-model="rule.at_most")
+              ConfigField(path="http_services[].routes[].action.policy.select.rules[].pool" label="Target pool")
+                Select(
+                  v-model="rule.pool"
+                  :options="poolNames.map((name) => ({ value: name, label: name }))"
+                )
     ConfigGroup.object-block(path="http_services[].routes[].action.policy.rescue" legend="Status rescue")
       Checkbox.enable-row(:model-value="action.policy.rescue !== null" @change="toggleRescue") Replay a request on another server when the backend answers a listed status
       template(v-if="action.policy.rescue")
@@ -452,6 +547,70 @@ function setCookieRewriteMode(rewrite: HttpCookiePathRewriteConfig, event: Event
 
 function removeCookieRewrite(index: number): void {
   props.action.policy.response_cookie_path_rewrites.splice(index, 1)
+  emit('changed')
+}
+
+function addCookieAttribute(): void {
+  if (props.action.policy.response_cookie_attributes.length >= 16) return
+  props.action.policy.response_cookie_attributes.push({ name: '', secure: null, http_only: null, same_site: null })
+  emit('changed')
+}
+
+function removeCookieAttribute(index: number): void {
+  props.action.policy.response_cookie_attributes.splice(index, 1)
+  emit('changed')
+}
+
+function triState(value: boolean | null): string {
+  return value === null ? 'inherit' : value ? 'true' : 'false'
+}
+
+function parseTriState(value: string): boolean | null {
+  return value === 'inherit' ? null : value === 'true'
+}
+
+function setCookieSameSite(
+  cookieAttr: HttpProxyActionConfig['policy']['response_cookie_attributes'][number],
+  value: string,
+): void {
+  cookieAttr.same_site = value === 'strict' || value === 'lax' || value === 'none' ? value : null
+}
+
+function setQueueClass(event: Event): void {
+  props.action.policy.queue_class = (event.target as HTMLInputElement).value || null
+}
+
+function toggleAffinity(event: Event): void {
+  props.action.policy.affinity = (event.target as HTMLInputElement).checked
+    ? { type: 'cookie', name: 'ox_srv', ttl_s: 3600, same_site: 'lax', secure: true, http_only: true }
+    : null
+}
+
+function changeAffinityType(type: string): void {
+  if (type === 'hash') props.action.policy.affinity = { type: 'hash', key: 'client_ip' }
+  else if (type === 'header') props.action.policy.affinity = { type: 'header', name: 'x-tenant-id' }
+  else props.action.policy.affinity = { type: 'cookie', name: 'ox_srv', ttl_s: 3600, same_site: 'lax', secure: true, http_only: true }
+}
+
+function togglePoolSelect(event: Event): void {
+  props.action.policy.select = (event.target as HTMLInputElement).checked
+    ? {
+        header: 'x-priority',
+        rules: [{ at_most: 10, pool: props.poolNames[0] ?? props.action.upstream_pool }],
+        on_invalid: 'default',
+        forward: false,
+        spill: 'none',
+      }
+    : null
+}
+
+function addSelectRule(): void {
+  props.action.policy.select?.rules.push({ at_most: 100, pool: props.poolNames[0] ?? props.action.upstream_pool })
+  emit('changed')
+}
+
+function removeSelectRule(index: number): void {
+  props.action.policy.select?.rules.splice(index, 1)
   emit('changed')
 }
 

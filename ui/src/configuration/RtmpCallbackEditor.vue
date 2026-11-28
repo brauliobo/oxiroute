@@ -1,22 +1,23 @@
 <template lang="pug">
 ConfigGroup.object-block(:path="fieldPath" :legend="legend")
+  small.field-hint Leave empty to disable a callback. Redacted URL query parameters show &lt;redacted&gt; and stay intact on save unless replaced.
   .field-grid
     ConfigField(:path="`${fieldPath}.on_connect`" label="Connect callback")
-      Input(:model-value="callbacks.on_connect ?? ''" @update:model-value="callbacks.on_connect = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_connect ?? ''" @update:model-value="callbacks.on_connect = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_disconnect`" label="Disconnect callback")
-      Input(:model-value="callbacks.on_disconnect ?? ''" @update:model-value="callbacks.on_disconnect = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_disconnect ?? ''" @update:model-value="callbacks.on_disconnect = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_publish`" label="Publish callback")
-      Input(:model-value="callbacks.on_publish ?? ''" @update:model-value="callbacks.on_publish = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_publish ?? ''" @update:model-value="callbacks.on_publish = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_publish_done`" label="Publish done callback")
-      Input(:model-value="callbacks.on_publish_done ?? ''" @update:model-value="callbacks.on_publish_done = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_publish_done ?? ''" @update:model-value="callbacks.on_publish_done = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_play`" label="Play callback")
-      Input(:model-value="callbacks.on_play ?? ''" @update:model-value="callbacks.on_play = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_play ?? ''" @update:model-value="callbacks.on_play = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_play_done`" label="Play done callback")
-      Input(:model-value="callbacks.on_play_done ?? ''" @update:model-value="callbacks.on_play_done = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_play_done ?? ''" @update:model-value="callbacks.on_play_done = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_done`" label="Done callback")
-      Input(:model-value="callbacks.on_done ?? ''" @update:model-value="callbacks.on_done = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_done ?? ''" @update:model-value="callbacks.on_done = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.on_update`" label="Update callback")
-      Input(:model-value="callbacks.on_update ?? ''" @update:model-value="callbacks.on_update = $event" autocomplete="off")
+      Input(:model-value="callbacks.on_update ?? ''" @update:model-value="callbacks.on_update = $event || null" autocomplete="off")
     ConfigField(:path="`${fieldPath}.notify_method`" label="Callback method")
       Select(
         v-model="callbacks.notify_method"

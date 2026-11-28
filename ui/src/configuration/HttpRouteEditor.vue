@@ -12,7 +12,7 @@ ItemScope.route-card.http-route-card(:index="index")
       ConfigField(path="http_services[].routes[].host.kind" label="Host match kind")
         Select(
           v-model="route.host.kind"
-          :options="[{ value: 'normalized_host', label: 'Normalized host' }, { value: 'exact_authority', label: 'Exact authority' }, { value: 'ascii_case_insensitive_exact_authority', label: 'ASCII case-insensitive exact authority' }]"
+          :options="[{ value: 'normalized_host', label: 'Normalized host' }, { value: 'exact_authority', label: 'Exact authority' }, { value: 'ascii_case_insensitive_exact_authority', label: 'ASCII case-insensitive exact authority' }, { value: 'nginx_leading_wildcard', label: 'Leading wildcard (*.example.com)' }, { value: 'nginx_leading_dot', label: 'Leading dot (.example.com)' }]"
         )
       ConfigField(path="http_services[].routes[].host.value" :label="`${route.host.kind.includes('authority') ? 'Authority' : 'Host'} value`")
         Input(v-model="route.host.value" :placeholder="route.host.kind === 'ascii_case_insensitive_exact_authority' ? 'API.Example.Test:8443' : route.host.kind === 'exact_authority' ? 'api.example.test:8443' : '*.example.test'")
@@ -22,7 +22,7 @@ ItemScope.route-card.http-route-card(:index="index")
       ConfigField(path="http_services[].routes[].path.kind" label="Path match kind")
         Select(
           v-model="route.path.kind"
-          :options="[{ value: 'segment_prefix', label: 'Segment prefix' }, { value: 'raw_prefix', label: 'Raw prefix' }, { value: 'exact', label: 'Exact path' }]"
+          :options="[{ value: 'segment_prefix', label: 'Segment prefix' }, { value: 'raw_prefix', label: 'Raw prefix' }, { value: 'exact', label: 'Exact path' }, { value: 'ascii_case_insensitive_exact', label: 'ASCII case-insensitive exact path' }]"
         )
       ConfigField(path="http_services[].routes[].path.value" label="Absolute path")
         Input(v-model="route.path.value" placeholder="/api")
@@ -39,20 +39,41 @@ ItemScope.route-card.http-route-card(:index="index")
   )
 
   ConfigGroup.object-block(path="http_services[].routes[].access_policy" legend="Access policy")
-    Checkbox.enable-row(:model-value="route.access_policy !== null" @change="toggleAccess") Require a bearer token loaded from a server file
-    .field-grid(v-if="bearerPolicy")
+    Checkbox.enable-row(:model-value="route.access_policy !== null" @change="toggleAccess") Require authentication credentials loaded from a server file
+    .field-grid(v-if="route.access_policy")
       ConfigField(path="http_services[].routes[].access_policy.type" label="Policy type")
         Select(
-          :model-value="bearerPolicy.type" disabled title="Bearer token file is the only supported route access policy."
-          :options="[{ value: 'bearer_token_file', label: 'Bearer token file' }]"
+          :model-value="route.access_policy.type"
+          @update:model-value="changeAccessType($event)"
+          :options="[{ value: 'bearer_token_file', label: 'Bearer token file' }, { value: 'basic_htpasswd_file', label: 'HTTP Basic (htpasswd file)' }]"
         )
-      ConfigField(path="http_services[].routes[].access_policy.token_file_path" label="Token file path")
-        Input(v-model="bearerPolicy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
-        small Authenticated configuration only; this path is suppressed from topology views.
-      ConfigField(path="http_services[].routes[].access_policy.header_name" label="Request header name")
-        Input(v-model="bearerPolicy.header_name" placeholder="authorization")
-      ConfigField(path="http_services[].routes[].access_policy.realm" label="Bearer realm")
-        Input(:model-value="bearerPolicy.realm ?? ''" placeholder="Optional" @input="setRealm")
+      template(v-if="route.access_policy.type === 'bearer_token_file'")
+        ConfigField(path="http_services[].routes[].access_policy.token_file_path" label="Token file path")
+          Input(v-model="route.access_policy.token_file_path" autocomplete="off" placeholder="/run/secrets/api-token")
+          small Authenticated configuration only; this path is suppressed from topology views.
+        ConfigField(path="http_services[].routes[].access_policy.header_name" label="Request header name")
+          Input(v-model="route.access_policy.header_name" placeholder="authorization")
+        ConfigField(path="http_services[].routes[].access_policy.realm" label="Bearer realm")
+          Input(:model-value="route.access_policy.realm ?? ''" placeholder="Optional" @input="setRealm")
+      template(v-else)
+        ConfigField(path="http_services[].routes[].access_policy.htpasswd_file_path" label="htpasswd file path")
+          Input(v-model="route.access_policy.htpasswd_file_path" autocomplete="off" placeholder="/etc/oxiroute/users.htpasswd")
+          small Authenticated configuration only; this path is suppressed from topology views.
+        ConfigField(path="http_services[].routes[].access_policy.realm" label="Basic auth realm")
+          Input(v-model="route.access_policy.realm" placeholder="Restricted")
+
+  ConfigGroup.object-block(path="http_services[].routes[].policy" legend="Route policy")
+    .field-grid
+      ConfigField(path="http_services[].routes[].policy.max_request_body_bytes" label="Max request body (bytes)")
+        NumberInput(min="0" step="1" :model-value="route.policy.max_request_body_bytes ?? ''" placeholder="Inherit service limit" @update:model-value="route.policy.max_request_body_bytes = $event === '' ? null : Number($event)")
+      ConfigField(path="http_services[].routes[].policy.connect_timeout_ms" label="Connect timeout (ms)")
+        NumberInput(min="1" step="1" v-model="route.policy.connect_timeout_ms")
+      ConfigField(path="http_services[].routes[].policy.read_timeout_ms" label="Read timeout (ms)")
+        NumberInput(min="1" step="1" v-model="route.policy.read_timeout_ms")
+      ConfigField(path="http_services[].routes[].policy.write_timeout_ms" label="Write timeout (ms)")
+        NumberInput(min="1" step="1" v-model="route.policy.write_timeout_ms")
+      ConfigField(path="http_services[].routes[].policy.request_buffering" label="Buffer request body" check v-model="route.policy.request_buffering")
+      ConfigField(path="http_services[].routes[].policy.response_buffering" label="Buffer response body" check v-model="route.policy.response_buffering")
 
   ConfigGroup.object-block(path="http_services[].routes[].action" legend="Route action")
     ConfigField(path="http_services[].routes[].action.type" label="Action type")
@@ -70,6 +91,7 @@ ItemScope.route-card.http-route-card(:index="index")
 <script setup lang="ts" vapor>
 import Checkbox from '#design/field/Checkbox.vue'
 import Input from '#design/field/Input.vue'
+import NumberInput from '#design/field/NumberInput.vue'
 import Select from '#design/field/Select.vue'
 import Button from '#design/button/Button.vue'
 import { computed } from 'vue'
@@ -105,8 +127,6 @@ const routeSummary = computed(() => {
   return `${host} ${props.route.path.value} / ${props.route.action.type.replaceAll('_', ' ')}${cache}`
 })
 
-const bearerPolicy = computed(() => (props.route.access_policy?.type === 'bearer_token_file' ? props.route.access_policy : null))
-
 function toggleHost(event: Event): void {
   props.route.host = (event.target as HTMLInputElement).checked
     ? { kind: 'normalized_host', value: '' }
@@ -119,8 +139,16 @@ function toggleAccess(event: Event): void {
     : null
 }
 
+function changeAccessType(type: string): void {
+  props.route.access_policy = type === 'basic_htpasswd_file'
+    ? { type: 'basic_htpasswd_file', htpasswd_file_path: '', realm: 'Restricted' }
+    : defaultHttpAccessPolicy()
+}
+
 function setRealm(event: Event): void {
-  if (bearerPolicy.value) bearerPolicy.value.realm = (event.target as HTMLInputElement).value || null
+  if (props.route.access_policy?.type === 'bearer_token_file') {
+    props.route.access_policy.realm = (event.target as HTMLInputElement).value || null
+  }
 }
 
 function changeAction(event: Event): void {

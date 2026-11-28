@@ -10,7 +10,7 @@ header.cfg-form-heading
   ConfigField(path="listeners[].protocol" label="Protocol")
     Select(
       v-model="listener.protocol" @change="normalizeReferences"
-      :options="[{ value: 'http', label: 'HTTP' }, { value: 'tcp', label: 'TCP' }, { value: 'rtmp', label: 'RTMP' }, { value: 'forward_http1', label: 'Forward HTTP/1.1' }, { value: 'forward_http2', label: 'Forward HTTP/2' }, { value: 'forward_http3', label: 'Forward HTTP/3' }]"
+      :options="[{ value: 'http', label: 'HTTP (1.1 / 2)' }, { value: 'http3', label: 'HTTP/3 (QUIC)' }, { value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }, { value: 'rtmp', label: 'RTMP' }, { value: 'forward_http1', label: 'Forward HTTP/1.1' }, { value: 'forward_http2', label: 'Forward HTTP/2' }, { value: 'forward_http3', label: 'Forward HTTP/3' }]"
     )
   ConfigField(path="listeners[].service" label="Service reference")
     select.ox-input(v-model="listener.service" required @change="normalizeReferences")
@@ -20,7 +20,7 @@ header.cfg-form-heading
     select.ox-input(
       v-model="listener.tls_profile"
       :disabled="tlsDisabled"
-      :title="tlsDisabled ? 'TLS profiles are supported only by HTTP and forward HTTP network listeners.' : undefined"
+      :title="tlsDisabled ? 'TLS profiles are supported only by HTTP, HTTP/3, and forward HTTP network listeners.' : undefined"
     )
       option(:value="null" :disabled="tlsRequired") None
       option(v-for="name in tlsProfileNames" :key="name" :value="name") {{ name }}
@@ -28,9 +28,9 @@ ConfigGroup.object-block(path="listeners[].bind" legend="Bind identity")
   .field-grid
     ConfigField(path="listeners[].bind.type" label="Bind type")
       select.ox-input(:value="listener.bind.type" @change="changeBind")
-        option(value="socket" :disabled="listener.protocol === 'forward_http3'") Network socket
-        option(value="udp" :disabled="listener.protocol !== 'forward_http3'") UDP datagram
-        option(value="unix" :disabled="listener.protocol === 'forward_http3' || (listener.protocol.startsWith('forward_') && forwardService?.tls_required)") Unix socket
+        option(value="socket" :disabled="udpOnlyProtocol") Network socket
+        option(value="udp" :disabled="!udpOnlyProtocol") UDP datagram
+        option(value="unix" :disabled="udpOnlyProtocol || (listener.protocol.startsWith('forward_') && forwardService?.tls_required)") Unix socket
     ConfigField(v-if="listener.bind.type !== 'unix'" path="listeners[].bind.address" label="Socket address")
       Input(v-model="listener.bind.address" placeholder="0.0.0.0:443")
     ConfigField(v-else path="listeners[].bind.path" label="Unix socket path")
@@ -55,6 +55,18 @@ ConfigGroup.object-block(path="listeners[].proxy_protocol" legend="Inbound PROXY
       )
     ConfigField(path="listeners[].proxy_protocol.timeout_ms" label="Header timeout (ms)")
       NumberInput(min="1" max="60000" step="1" v-model="listener.proxy_protocol.timeout_ms")
+ConfigGroup.object-block(path="listeners[].downstream_timeouts" legend="Downstream timeouts and HTTP/2 windows")
+  .field-grid
+    ConfigField(path="listeners[].downstream_timeouts.client_timeout_ms" label="Client idle timeout (ms)")
+      NumberInput(min="1" step="1" :model-value="listener.downstream_timeouts.client_timeout_ms ?? ''" placeholder="Default" @update:model-value="listener.downstream_timeouts.client_timeout_ms = $event === '' ? null : Number($event)")
+    ConfigField(path="listeners[].downstream_timeouts.request_timeout_ms" label="Request header timeout (ms)")
+      NumberInput(min="1" step="1" :model-value="listener.downstream_timeouts.request_timeout_ms ?? ''" placeholder="Default" @update:model-value="listener.downstream_timeouts.request_timeout_ms = $event === '' ? null : Number($event)")
+    ConfigField(path="listeners[].downstream_timeouts.keepalive_timeout_ms" label="Keep-alive timeout (ms)")
+      NumberInput(min="1" step="1" :model-value="listener.downstream_timeouts.keepalive_timeout_ms ?? ''" placeholder="Default" @update:model-value="listener.downstream_timeouts.keepalive_timeout_ms = $event === '' ? null : Number($event)")
+    ConfigField(v-if="listener.protocol === 'http'" path="listeners[].h2_initial_stream_window" label="HTTP/2 initial stream window (bytes)")
+      NumberInput(min="65535" step="1" :model-value="listener.h2_initial_stream_window ?? ''" placeholder="Default" @update:model-value="listener.h2_initial_stream_window = $event === '' ? undefined : Number($event)")
+    ConfigField(v-if="listener.protocol === 'http'" path="listeners[].h2_initial_connection_window" label="HTTP/2 initial connection window (bytes)")
+      NumberInput(min="65535" step="1" :model-value="listener.h2_initial_connection_window ?? ''" placeholder="Default" @update:model-value="listener.h2_initial_connection_window = $event === '' ? undefined : Number($event)")
 </template>
 
 <script setup lang="ts" vapor>
@@ -83,21 +95,27 @@ const emit = defineEmits<{ remove: [] }>()
 
 const serviceNames = computed(() => {
   switch (props.listener.protocol) {
-    case 'http': return props.httpServiceNames
+    case 'http':
+    case 'http3': return props.httpServiceNames
     case 'rtmp': return props.rtmpServiceNames
-    case 'tcp': return props.l4ServiceNames
+    case 'tcp':
+    case 'udp': return props.l4ServiceNames
     case 'forward_http1': return forwardServiceNames('h1')
     case 'forward_http2': return forwardServiceNames('h2')
     case 'forward_http3': return forwardServiceNames('h3')
   }
 })
 
+const udpOnlyProtocol = computed(() =>
+  props.listener.protocol === 'udp' || props.listener.protocol === 'http3' || props.listener.protocol === 'forward_http3',
+)
+
 const tlsProfileNames = computed(() => props.tlsProfiles
   .filter((profile) => {
     if (props.listener.protocol === 'forward_http1') return profile.alpn.includes('http/1.1')
     if (props.listener.protocol === 'forward_http2') return profile.alpn.includes('h2')
-    if (props.listener.protocol === 'forward_http3') {
-      return profile.min_version === '1.3' && profile.alpn.length === 1 && profile.alpn[0] === 'h3'
+    if (props.listener.protocol === 'http3' || props.listener.protocol === 'forward_http3') {
+      return profile.min_version === '1.3' && profile.alpn.includes('h3')
     }
     return true
   })
@@ -105,11 +123,11 @@ const tlsProfileNames = computed(() => props.tlsProfiles
 
 const forwardService = computed(() => props.forwardProxyServices
   .find(({ name }) => name === props.listener.service))
-const tlsRequired = computed(() => props.listener.protocol === 'forward_http3' ||
+const tlsRequired = computed(() => props.listener.protocol === 'http3' || props.listener.protocol === 'forward_http3' ||
   (props.listener.protocol.startsWith('forward_') && props.listener.bind.type !== 'unix' &&
     forwardService.value?.tls_required === true))
 const tlsDisabled = computed(
-  () => !['http', 'forward_http1', 'forward_http2', 'forward_http3'].includes(props.listener.protocol) ||
+  () => !['http', 'http3', 'forward_http1', 'forward_http2', 'forward_http3'].includes(props.listener.protocol) ||
     props.listener.bind.type === 'unix',
 )
 
@@ -123,9 +141,9 @@ function normalizeReferences(): void {
   if (!serviceNames.value.includes(props.listener.service ?? '')) {
     props.listener.service = serviceNames.value[0] ?? null
   }
-  if (props.listener.protocol === 'forward_http3' && props.listener.bind.type !== 'udp') {
-    props.listener.bind = { type: 'udp', address: '0.0.0.0:443' }
-  } else if (props.listener.protocol !== 'forward_http3' && props.listener.bind.type === 'udp') {
+  if (udpOnlyProtocol.value && props.listener.bind.type !== 'udp') {
+    props.listener.bind = { type: 'udp', address: props.listener.protocol === 'udp' ? '0.0.0.0:5353' : '0.0.0.0:443' }
+  } else if (!udpOnlyProtocol.value && props.listener.bind.type === 'udp') {
     props.listener.bind = { type: 'socket', address: '0.0.0.0:8080' }
   }
   if (tlsDisabled.value) props.listener.tls_profile = null

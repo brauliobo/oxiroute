@@ -411,7 +411,11 @@ function addApplication(): void {
 
 function setAccessLog(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
-  props.service.access_log = value === 'disabled' ? { type: 'disabled' } : null
+  props.service.access_log = value === 'disabled'
+    ? { type: 'disabled' }
+    : value === 'file'
+      ? { type: 'file', path: '/var/log/oxiroute/rtmp-access.log' }
+      : null
   emit('changed')
 }
 

@@ -211,6 +211,8 @@ fieldset.object-block
       NumberInput(min="8192" max="1048576" step="1" v-model="service.max_header_bytes")
     ConfigField(path="forward_proxy_services[].max_connections" label="Maximum connections")
       NumberInput(min="1" max="1000000" step="1" v-model="service.max_connections")
+    ConfigField(path="forward_proxy_services[].drain_deadline_ms" label="Drain deadline (ms)")
+      NumberInput(min="1" step="1" :model-value="service.drain_deadline_ms ?? ''" placeholder="Inherit retirement deadline" @update:model-value="service.drain_deadline_ms = $event === '' ? null : Number($event)")
 
 ConfigGroup.object-block(path="forward_proxy_services[].resolver" legend="Bounded DNS resolver")
   StringListField(v-model="service.resolver.nameservers" label="Nameservers" item-label="IP address" field-path="forward_proxy_services[].resolver.nameservers" :max-items="8")

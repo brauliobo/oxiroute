@@ -1,17 +1,21 @@
+import type { ConfigFormat } from './formats'
 import type { RtmpServiceConfig } from './rtmp'
 
+export type { ConfigFormat } from './formats'
 export * from './rtmp'
 
 export type ListenerProtocol =
   | 'http'
+  | 'http3'
   | 'tcp'
+  | 'udp'
   | 'rtmp'
   | 'forward_http1'
   | 'forward_http2'
   | 'forward_http3'
 export type TlsVersion = '1.2' | '1.3'
 export type AlpnProtocol = 'h3' | 'h2' | 'http/1.1'
-export type HttpVersion = '1.1' | '2'
+export type HttpVersion = '1.1' | '2' | '3'
 export type HealthCheckType = 'http' | 'tcp'
 export const UPSTREAM_WEIGHT_MIN = 1
 export const UPSTREAM_WEIGHT_MAX = 100
@@ -229,6 +233,35 @@ export interface HealthCheckConfig {
   http_version: '1.0' | '1.1' | null
 }
 
+export interface ReadmissionProbeConfig {
+  path: string
+  host: string | null
+  expected_status: number | null
+}
+
+export interface ReadmissionConfig {
+  successes: number
+  interval_ms: number
+  timeout_ms: number
+  probe: ReadmissionProbeConfig | null
+}
+
+export interface CircuitBreakerConfig {
+  window_ms: number
+  min_requests: number
+  failure_ratio_percent: number
+  open_ms: number
+  half_open_max: number
+  half_open_successes: number
+}
+
+export interface OutlierDetectionConfig {
+  factor_percent: number
+  min_samples: number
+  interval_ms: number
+  max_ejected_percent: number
+}
+
 export interface PassiveHealthConfig {
   observe: 'layer4' | 'layer7'
   on_error: 'count' | 'immediately' | 'mark_down'
@@ -238,6 +271,9 @@ export interface PassiveHealthConfig {
   initial_backoff_ms: number
   max_backoff_ms: number
   recovery_threshold: number
+  readmission?: ReadmissionConfig | null
+  circuit_breaker?: CircuitBreakerConfig | null
+  outlier_detection?: OutlierDetectionConfig | null
 }
 
 export interface PoolResilienceConfig {
@@ -353,7 +389,7 @@ export type HttpHostKind =
   | 'ascii_case_insensitive_exact_authority'
   | 'nginx_leading_wildcard'
   | 'nginx_leading_dot'
-export type HttpPathKind = 'segment_prefix' | 'raw_prefix' | 'exact'
+export type HttpPathKind = 'segment_prefix' | 'raw_prefix' | 'exact' | 'ascii_case_insensitive_exact'
 export const HTTP_RETRY_TRIGGERS = [
   'connect_failure',
   'connect_timeout',
@@ -495,6 +531,7 @@ export interface HttpProxyPolicyConfig {
   cache: HttpCachePolicyConfig | null
   select?: HttpPoolSelectConfig | null
   affinity?: HttpAffinityConfig | null
+  queue_class?: string | null
   queue_headers?: boolean
 }
 
@@ -881,8 +918,6 @@ export interface ConfigDiagnostic {
   detail?: string
   line?: number
 }
-
-export type ConfigFormat = 'kdl' | 'lua' | 'uci' | 'hocon'
 
 export interface ConfigSnapshot {
   schemaVersion: 1

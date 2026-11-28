@@ -236,7 +236,7 @@ function isTlsProfile(value: unknown): value is TlsProfileConfig {
 
 function isListener(value: unknown): value is ListenerConfig {
   return isRecord(value) && typeof value.name === 'string' && isListenerBind(value.bind) &&
-    ['http', 'tcp', 'rtmp', 'forward_http1', 'forward_http2', 'forward_http3']
+    ['http', 'http3', 'tcp', 'udp', 'rtmp', 'forward_http1', 'forward_http2', 'forward_http3']
       .includes(String(value.protocol)) && nullableString(value.service) &&
     nullableString(value.tls_profile) &&
     (value.proxy_protocol === undefined || value.proxy_protocol === null || isProxyProtocolPolicy(value.proxy_protocol)) &&
@@ -279,8 +279,8 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     (value.tls === null || (isRecord(value.tls) && nullableString(value.tls.server_name) &&
       (value.tls.verify === undefined || ['full', 'none'].includes(String(value.tls.verify))) &&
       nullableString(value.tls.ca_certificate_path))) && isRecord(value.http_versions) &&
-    ['1.1', '2'].includes(String(value.http_versions.min)) &&
-    ['1.1', '2'].includes(String(value.http_versions.max)) &&
+    ['1.1', '2', '3'].includes(String(value.http_versions.min)) &&
+    ['1.1', '2', '3'].includes(String(value.http_versions.max)) &&
     nullableSafeInteger(value.queue_timeout_ms) && nullableSafeInteger(value.connect_timeout_ms) &&
     nullableSafeInteger(value.server_timeout_ms) &&
     ['never', 'safe', 'always'].includes(String(value.connection_reuse)) &&
@@ -400,7 +400,8 @@ function isHttpHost(value: unknown): value is HttpHostSelectorConfig {
 }
 
 function isHttpPath(value: unknown): value is HttpPathSelectorConfig {
-  return isRecord(value) && ['segment_prefix', 'raw_prefix', 'exact'].includes(String(value.kind)) &&
+  return isRecord(value) &&
+    ['segment_prefix', 'raw_prefix', 'exact', 'ascii_case_insensitive_exact'].includes(String(value.kind)) &&
     typeof value.value === 'string'
 }
 

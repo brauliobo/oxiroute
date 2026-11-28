@@ -7,7 +7,7 @@ import type {
   ConfigSnapshot,
   StartupOnlyChange,
 } from '../../config'
-import { isCanonicalConfig } from '../../config'
+import { isCanonicalConfig, isConfigFormat } from '../../config'
 import { isRecord, safeInteger } from '../../valueGuards'
 import { request } from '../transport'
 import { authorizationHeader, diagnostics, invalidPayload, restartReasons } from './shared'
@@ -137,7 +137,7 @@ function configurationSource(value: Record<string, unknown>): value is Record<st
   configPreview: string
   luaPreview?: string
 } {
-  return ['kdl', 'lua', 'uci', 'hocon'].includes(String(value.configFormat)) &&
+  return isConfigFormat(value.configFormat) &&
     typeof value.compositional === 'boolean' && safeInteger(value.dependencyCount) &&
     typeof value.configPreview === 'string' &&
     (value.luaPreview === undefined || typeof value.luaPreview === 'string')

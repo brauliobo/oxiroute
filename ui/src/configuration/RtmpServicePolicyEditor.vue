@@ -4,18 +4,26 @@
     Input(v-model="service.name")
   ConfigField(path="rtmp_services[].outbound_chunk_size" label="Outbound chunk size (bytes)")
     NumberInput(min="1" max="1048576" step="1" v-model="service.outbound_chunk_size")
+  ConfigField(path="rtmp_services[].max_inbound_message_size" label="Max inbound message size (bytes)")
+    NumberInput(min="1" step="1" :model-value="service.max_inbound_message_size ?? ''" placeholder="Default" @update:model-value="service.max_inbound_message_size = $event === '' ? undefined : Number($event)")
+  ConfigField(path="rtmp_services[].ack_window_size" label="Acknowledgement window (bytes)")
+    NumberInput(min="1" step="1" :model-value="service.ack_window_size ?? ''" placeholder="Default" @update:model-value="service.ack_window_size = $event === '' ? undefined : Number($event)")
+  ConfigField(path="rtmp_services[].drain_deadline_ms" label="Drain deadline (ms)")
+    NumberInput(min="1" step="1" :model-value="service.drain_deadline_ms ?? ''" placeholder="Inherit retirement deadline" @update:model-value="service.drain_deadline_ms = $event === '' ? null : Number($event)")
   ConfigField(path="rtmp_services[].access_log.type" label="Session access log")
     Select(
       :model-value="service.access_log?.type ?? 'default'" @change="emit('set-access-log', $event)"
-      :options="[{ value: 'default', label: 'Runtime default' }, { value: 'disabled', label: 'Disabled' }]"
+      :options="[{ value: 'default', label: 'Runtime default' }, { value: 'disabled', label: 'Disabled' }, { value: 'file', label: 'File' }]"
     )
+  ConfigField(v-if="service.access_log?.type === 'file'" path="rtmp_services[].access_log.path" label="Access log file path")
+    Input(v-model="service.access_log.path" placeholder="/var/log/oxiroute/rtmp-access.log")
 ConfigGroup.object-block(path="rtmp_services[].auto_push" legend="Same-daemon worker auto-push")
   .field-grid
     ConfigField.compact-enable(path="rtmp_services[].auto_push.enabled" label="Enable worker coordination" check v-model="service.auto_push.enabled")
     ConfigField(path="rtmp_services[].auto_push.socket_dir" label="Worker socket directory")
       Input(:model-value="service.auto_push.socket_dir ?? ''" @update:model-value="service.auto_push.socket_dir = $event")
     ConfigField(path="rtmp_services[].auto_push.secret_file" label="Shared secret file")
-      Input(:model-value="service.auto_push.secret_file ?? ''" @update:model-value="service.auto_push.secret_file = $event")
+      Input(:model-value="service.auto_push.secret_file ?? ''" @update:model-value="service.auto_push.secret_file = $event || null")
     ConfigField(path="rtmp_services[].auto_push.reconnect_ms" label="Reconnect interval (ms)")
       NumberInput(min="1" max="300000" step="1" v-model="service.auto_push.reconnect_ms")
     ConfigField(path="rtmp_services[].auto_push.connect_timeout_ms" label="Connect timeout (ms)")

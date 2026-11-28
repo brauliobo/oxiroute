@@ -44,6 +44,7 @@ ConfigGroup.object-block(:path="basePath" :legend="`${operation === 'publish' ? 
           Input(v-model="policy.token.parameter" maxlength="32" autocomplete="off")
         ConfigField(path="rtmp_services[].applications[].publish.token.secret" label="Token secret")
           input.ox-input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
+          small Redacted secrets stay unchanged on save unless you type a replacement.
       template(v-else)
         ConfigField(path="rtmp_services[].applications[].play.token.source" label="Token source")
           Select(
@@ -54,6 +55,7 @@ ConfigGroup.object-block(:path="basePath" :legend="`${operation === 'publish' ? 
           Input(v-model="policy.token.parameter" maxlength="32" autocomplete="off")
         ConfigField(path="rtmp_services[].applications[].play.token.secret" label="Token secret")
           input.ox-input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
+          small Redacted secrets stay unchanged on save unless you type a replacement.
 </template>
 
 <script setup lang="ts" vapor>

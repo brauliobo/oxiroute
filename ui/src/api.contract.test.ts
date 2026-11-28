@@ -57,7 +57,7 @@ describe('API contracts over HTTP', () => {
     ])
   })
 
-  it.each(['kdl', 'lua', 'uci', 'hocon'] as const)(
+  it.each(['oxi', 'kdl', 'yaml', 'toml', 'lua', 'hocon', 'uci'] as const)(
     'parses %s configuration source metadata without exposing native source paths',
     async (configFormat) => {
       const snapshotPayload = {

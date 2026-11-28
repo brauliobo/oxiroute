@@ -1,5 +1,5 @@
 import type { CanonicalConfig, ConfigDiagnostic, ConfigFormat } from '../../config'
-import { isCanonicalConfig } from '../../config'
+import { isCanonicalConfig, isConfigFormat } from '../../config'
 import { isRecord, nullableSafeInteger, nullableString, safeInteger } from '../../valueGuards'
 import { request } from '../transport'
 import { authorizationHeader, diagnostics, invalidPayload } from './shared'
@@ -406,10 +406,6 @@ function isImportReportDiagnostic(value: unknown): value is ImportReportDiagnost
 
 function isRelatedImportSpan(value: unknown): value is { span: ImportReportSpan; message: string } {
   return isRecord(value) && isImportReportSpan(value.span) && typeof value.message === 'string'
-}
-
-function isConfigFormat(value: unknown): value is ConfigFormat {
-  return ['kdl', 'lua', 'uci', 'hocon'].includes(String(value))
 }
 
 function boundedArray<T>(value: unknown, predicate: (entry: unknown) => entry is T, limit = MAX_IMPORT_REPORT_ITEMS): value is T[] {
