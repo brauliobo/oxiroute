@@ -71,7 +71,7 @@ fn ui_registry_and_controls_cover_the_authoritative_schema() {
     );
 }
 
-const NONINTEGRATED_CONTROL_PREFIXES: [&str; 73] = [
+const NONINTEGRATED_CONTROL_PREFIXES: [&str; 71] = [
     "cache_stores",
     "http_services[].routes[].action.policy.cache",
     "http_services[].routes[].action.policy.select",
@@ -137,8 +137,6 @@ const NONINTEGRATED_CONTROL_PREFIXES: [&str; 73] = [
     "http_services[].gzip",
     "http_services[].access_log",
     "rtmp_services[].outbound_chunk_size",
-    "rtmp_services[].max_inbound_message_size",
-    "rtmp_services[].ack_window_size",
     "rtmp_services[].access_log",
     "rtmp_services[].applications[].push_targets",
     "rtmp_services[].applications[].fanout",
@@ -148,7 +146,7 @@ const NONINTEGRATED_CONTROL_PREFIXES: [&str; 73] = [
 ];
 
 fn exclude_nonintegrated_component_controls(
-    schema_fields: &mut BTreeSet<String>,
+    _schema_fields: &mut BTreeSet<String>,
     editable_fields: &mut BTreeSet<String>,
 ) {
     let components: ComponentManifest = read_manifest("components.json");
@@ -172,13 +170,6 @@ fn exclude_nonintegrated_component_controls(
                 .any(|path| path_has_prefix(path, prefix)),
             "non-integrated UI prefix `{prefix}` has no editable schema fields"
         );
-        editable_fields.retain(|path| !path_has_prefix(path, prefix));
-    }
-    for prefix in [
-        "rtmp_services[].max_inbound_message_size",
-        "rtmp_services[].ack_window_size",
-    ] {
-        schema_fields.retain(|path| !path_has_prefix(path, prefix));
         editable_fields.retain(|path| !path_has_prefix(path, prefix));
     }
 }

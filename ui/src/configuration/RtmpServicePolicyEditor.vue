@@ -8,8 +8,6 @@
     NumberInput(min="1" step="1" :model-value="service.max_inbound_message_size ?? ''" placeholder="Default" @update:model-value="service.max_inbound_message_size = $event === '' ? undefined : Number($event)")
   ConfigField(path="rtmp_services[].ack_window_size" label="Acknowledgement window (bytes)")
     NumberInput(min="1" step="1" :model-value="service.ack_window_size ?? ''" placeholder="Default" @update:model-value="service.ack_window_size = $event === '' ? undefined : Number($event)")
-  ConfigField(path="rtmp_services[].drain_deadline_ms" label="Drain deadline (ms)")
-    NumberInput(min="1" step="1" :model-value="service.drain_deadline_ms ?? ''" placeholder="Inherit retirement deadline" @update:model-value="service.drain_deadline_ms = $event === '' ? null : Number($event)")
   ConfigField(path="rtmp_services[].access_log.type" label="Session access log")
     Select(
       :model-value="service.access_log?.type ?? 'default'" @change="emit('set-access-log', $event)"

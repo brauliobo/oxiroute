@@ -246,7 +246,6 @@ export interface RtmpAutoPushConfig {
 
 export interface RtmpServiceConfig {
   name: string
-  drain_deadline_ms?: number | null
   outbound_chunk_size: number
   max_inbound_message_size?: number
   ack_window_size?: number

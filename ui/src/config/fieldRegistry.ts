@@ -677,7 +677,6 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].outbound_chunk_size', kind: 'integer' },
   { path: 'rtmp_services[].max_inbound_message_size', kind: 'integer' },
   { path: 'rtmp_services[].ack_window_size', kind: 'integer' },
-  { path: 'rtmp_services[].drain_deadline_ms', kind: 'integer' },
   { path: 'rtmp_services[].access_log', kind: 'object' },
   { path: 'rtmp_services[].access_log.type', kind: 'enum' },
   { path: 'rtmp_services[].access_log.path', kind: 'string' },
