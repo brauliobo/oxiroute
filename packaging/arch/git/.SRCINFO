@@ -1,0 +1,26 @@
+pkgbase = oxiroute-git
+	pkgdesc = Pingora-based HTTP, TCP, UDP, and RTMP proxy runtime (git main)
+	pkgver = 7.3.0.r0.g321f246
+	pkgrel = 1
+	url = https://github.com/brauliobo/oxiroute
+	install = oxiroute.install
+	arch = x86_64
+	license = Apache-2.0
+	makedepends = rust>=1.97
+	makedepends = git
+	depends = ca-certificates
+	depends = gcc-libs
+	depends = glibc
+	depends = openssl
+	depends = systemd>=257
+	optdepends = certbot: provide certificate lineages consumed by configured Certbot sources
+	provides = oxiroute
+	conflicts = oxiroute
+	conflicts = oxiroute-bin
+	backup = etc/oxiroute/oxiroute.env
+	backup = etc/oxiroute/oxiroute.kdl
+	backup = etc/oxiroute/oxiroute.lua
+	source = oxiroute-git::git+https://github.com/brauliobo/oxiroute.git
+	sha256sums = SKIP
+
+pkgname = oxiroute-git

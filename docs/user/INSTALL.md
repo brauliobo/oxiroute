@@ -1,10 +1,45 @@
 # Install a release package
 
-Every release attaches Debian, RPM and Arch Linux packages and per-architecture binary tarballs to its
-[GitHub release](https://github.com/brauliobo/oxiroute/releases), with one `SHA256SUMS` for all assets.
-There is no hosted apt, yum or pacman repository: download the file, verify it, install it from disk.
+OxiRoute publishes hosted **APT** and **RPM** package repositories on GitHub Pages
+([`brauliobo.github.io/oxiroute/repos`](https://brauliobo.github.io/oxiroute/repos/)), AUR recipes (`oxiroute-bin`,
+`oxiroute`, `oxiroute-git`), a Fedora COPR spec (`packaging/copr/oxiroute.spec`), and direct `.deb`, `.rpm`,
+`.pkg.tar.zst`, and tarball assets with one `SHA256SUMS` on every
+[GitHub release](https://github.com/brauliobo/oxiroute/releases).
 
-## Choose an asset
+## Hosted repositories
+
+### Debian and Ubuntu (APT — `amd64` & `arm64`)
+
+```sh
+echo "deb [trusted=yes] https://brauliobo.github.io/oxiroute/apt ./" | sudo tee /etc/apt/sources.list.d/oxiroute.list
+sudo apt update && sudo apt install oxiroute
+```
+
+### Fedora, RHEL, AlmaLinux, Rocky Linux, Amazon Linux 2023, and openSUSE (RPM — `x86_64` & `aarch64`)
+
+```sh
+# Fedora / RHEL / AlmaLinux / Rocky Linux
+curl -fsSL https://brauliobo.github.io/oxiroute/rpm/oxiroute.repo | sudo tee /etc/yum.repos.d/oxiroute.repo
+sudo dnf install oxiroute
+
+# Amazon Linux 2023
+curl -fsSL https://brauliobo.github.io/oxiroute/rpm/amzn2023/oxiroute.repo | sudo tee /etc/yum.repos.d/oxiroute.repo
+sudo dnf install oxiroute
+
+# openSUSE
+sudo zypper addrepo --no-gpgcheck https://brauliobo.github.io/oxiroute/rpm oxiroute
+sudo zypper refresh && sudo zypper install --allow-unsigned-rpm oxiroute
+```
+
+### Arch Linux / CachyOS (AUR)
+
+```sh
+paru -S oxiroute-bin     # prebuilt PGO binary
+paru -S oxiroute         # build from release source
+paru -S oxiroute-git     # build from main
+```
+
+## Choose a direct release asset
 
 | Platform | Asset | Architectures |
 | --- | --- | --- |

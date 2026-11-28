@@ -1,0 +1,90 @@
+# Maintainer: OxiRoute maintainers <https://github.com/brauliobo/oxiroute/issues>
+
+pkgname=oxiroute-git
+pkgver=7.3.0.r0.g321f246
+pkgrel=1
+pkgdesc='Pingora-based HTTP, TCP, UDP, and RTMP proxy runtime (git main)'
+arch=('x86_64')
+url='https://github.com/brauliobo/oxiroute'
+license=('Apache-2.0')
+depends=('ca-certificates' 'gcc-libs' 'glibc' 'openssl' 'systemd>=257')
+makedepends=('rust>=1.97' 'git')
+optdepends=('certbot: provide certificate lineages consumed by configured Certbot sources')
+provides=('oxiroute')
+conflicts=('oxiroute' 'oxiroute-bin')
+backup=('etc/oxiroute/oxiroute.env'
+        'etc/oxiroute/oxiroute.kdl'
+        'etc/oxiroute/oxiroute.lua')
+install=oxiroute.install
+_target='x86_64-unknown-linux-gnu'
+source=("${pkgname}::git+${url}.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/${pkgname}"
+  git describe --long --tags --abbrev=7 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' ||
+    printf "7.3.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "${srcdir}/${pkgname}"
+  cargo fetch --locked --target "${_target}"
+}
+
+build() {
+  cd "${srcdir}/${pkgname}"
+  export CARGO_NET_OFFLINE=true
+  export OPENSSL_NO_VENDOR=1
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname} --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/usr/src/debug/${pkgname}/cargo"
+  cargo build --frozen --release \
+    --package oxiroute \
+    --package oxiroute-supervisor-process \
+    --target "${_target}" \
+    --jobs 3
+}
+
+package() {
+  cd "${srcdir}/${pkgname}"
+
+  install -Dm755 "target/${_target}/release/oxiroute" \
+    "${pkgdir}/usr/bin/oxiroute"
+  ln -s oxiroute "${pkgdir}/usr/bin/oxr"
+  install -d -m755 \
+    "${pkgdir}/usr/share/bash-completion/completions" \
+    "${pkgdir}/usr/share/zsh/site-functions" \
+    "${pkgdir}/usr/share/fish/vendor_completions.d" \
+    "${pkgdir}/usr/share/man/man1"
+  local name
+  for name in oxiroute oxr; do
+    "${pkgdir}/usr/bin/oxiroute" completions bash --name "${name}" >"${pkgdir}/usr/share/bash-completion/completions/${name}"
+    "${pkgdir}/usr/bin/oxiroute" completions zsh --name "${name}" >"${pkgdir}/usr/share/zsh/site-functions/_${name}"
+    "${pkgdir}/usr/bin/oxiroute" completions fish --name "${name}" >"${pkgdir}/usr/share/fish/vendor_completions.d/${name}.fish"
+    "${pkgdir}/usr/bin/oxiroute" man --name "${name}" >"${pkgdir}/usr/share/man/man1/${name}.1"
+  done
+  install -d -m755 "${pkgdir}/usr/lib/oxiroute"
+  install -m755 "target/${_target}/release/oxiroute-worker-launcher" \
+    "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
+  install -m755 "packaging/arch/oxiroute.ensure-token" \
+    "${pkgdir}/usr/lib/oxiroute/ensure-management-token"
+  install -Dm644 LICENSE \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+  install -Dm644 "packaging/arch/oxiroute.service" \
+    "${pkgdir}/usr/lib/systemd/system/oxiroute.service"
+  install -Dm644 "packaging/arch/oxiroute.sysusers" \
+    "${pkgdir}/usr/lib/sysusers.d/oxiroute.conf"
+  install -Dm644 "packaging/arch/oxiroute.tmpfiles" \
+    "${pkgdir}/usr/lib/tmpfiles.d/oxiroute.conf"
+  install -Dm644 "packaging/arch/oxiroute.modules" \
+    "${pkgdir}/usr/lib/modules-load.d/oxiroute.conf"
+  install -Dm644 "packaging/arch/oxiroute.env" \
+    "${pkgdir}/etc/oxiroute/oxiroute.env"
+  install -Dm644 "packaging/arch/oxiroute.kdl" \
+    "${pkgdir}/etc/oxiroute/oxiroute.kdl"
+  install -Dm644 "packaging/arch/oxiroute.lua" \
+    "${pkgdir}/etc/oxiroute/oxiroute.lua"
+  install -Dm644 "packaging/arch/README.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/arch-packaging.md"
+  install -Dm644 "docs/MANAGEMENT_CLI.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/management-cli.md"
+}

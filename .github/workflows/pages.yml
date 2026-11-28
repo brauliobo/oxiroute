@@ -1,9 +1,19 @@
-name: Deploy documentation site
+name: Deploy site & APT/RPM repositories
 
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
+  workflow_run:
+    workflows: ["Release archive, binaries and packages"]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag to include (defaults to latest 3 published releases)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -12,17 +22,18 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify static site
         run: |
@@ -32,10 +43,28 @@ jobs:
           test -f website/assets/admin-overview.gif
           test -f website/assets/admin-configuration.gif
 
+      - name: Install repository metadata tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            apt-utils \
+            createrepo-c
+
+      - name: Build static site and APT/RPM repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: bash scripts/package/build-repos.sh site
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: website
+          path: site
 
       - name: Deploy to GitHub Pages
         id: deployment

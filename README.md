@@ -1,5 +1,10 @@
 # OxiRoute
 
+[![CI](https://img.shields.io/github/actions/workflow/status/brauliobo/oxiroute/ci.yml?branch=main&label=CI)](https://github.com/brauliobo/oxiroute/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/brauliobo/oxiroute?label=release)](https://github.com/brauliobo/oxiroute/releases)
+[![AUR oxiroute-bin](https://img.shields.io/aur/version/oxiroute-bin?label=AUR%20oxiroute-bin)](https://aur.archlinux.org/packages/oxiroute-bin)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A Rust proxy and control plane for routing HTTP, TCP, UDP, and RTMP services from one typed configuration.
 Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora), with a CLI and browser dashboard for
 inspecting traffic, managing backends, and applying configuration changes.
@@ -68,22 +73,44 @@ and the management dashboard; the guide explains the ports, token, verification,
 Source builds use **Rust 1.97.1**, **Node.js 22**, **pnpm 11.3.0**, a C toolchain, and the platform build
 prerequisites described in the guide. Linux provides the fullest monitoring and supervision support.
 
-## Install a release
+## Install
 
-Each [GitHub release](https://github.com/brauliobo/oxiroute/releases) attaches Debian, RPM and Arch Linux packages,
-binary tarballs for `x86_64` and `aarch64`, and one `SHA256SUMS`. There is no hosted apt, yum or pacman repository yet; install the
-file you downloaded, after `sha256sum --check --ignore-missing SHA256SUMS`:
+Packages create the `oxiroute` user, state directory, and `/etc/oxiroute/management.token` (`0600`) without enabling or starting the service until you opt in (`sudo systemctl enable --now oxiroute.service`).
 
-```sh
-sudo apt install ./oxiroute_<version>_amd64.deb                   # Debian 12/13, Ubuntu 22.04/24.04
-sudo dnf install ./oxiroute-<version>-1.el9.x86_64.rpm            # AlmaLinux and Rocky Linux 9
-sudo dnf install ./oxiroute-<version>-1.amzn2023.x86_64.rpm       # Amazon Linux 2023
-sudo pacman -U ./oxiroute-<version>-1-x86_64.pkg.tar.zst          # Arch Linux
+### Arch Linux / CachyOS (AUR)
+
+```bash
+paru -S oxiroute-bin     # prebuilt PGO binary
+paru -S oxiroute         # build from release source
+paru -S oxiroute-git     # build from main
 ```
 
-The packages enable and start nothing; [Install a release package](docs/user/INSTALL.md) has the aarch64 names, the
-tarball, the service opt-in, and upgrade, remove and purge behavior. For Arch Linux, see the
-[Arch packaging guide](packaging/arch/README.md).
+### Debian / Ubuntu (APT Repo — amd64 & arm64)
+
+```bash
+echo "deb [trusted=yes] https://brauliobo.github.io/oxiroute/apt ./" | sudo tee /etc/apt/sources.list.d/oxiroute.list
+sudo apt update && sudo apt install oxiroute
+```
+
+### Fedora / RHEL / Amazon Linux / openSUSE (RPM Repo — x86_64 & aarch64)
+
+```bash
+# Fedora / RHEL / AlmaLinux / Rocky Linux
+curl -fsSL https://brauliobo.github.io/oxiroute/rpm/oxiroute.repo | sudo tee /etc/yum.repos.d/oxiroute.repo
+sudo dnf install oxiroute
+
+# Amazon Linux 2023
+curl -fsSL https://brauliobo.github.io/oxiroute/rpm/amzn2023/oxiroute.repo | sudo tee /etc/yum.repos.d/oxiroute.repo
+sudo dnf install oxiroute
+
+# openSUSE
+sudo zypper addrepo --no-gpgcheck https://brauliobo.github.io/oxiroute/rpm oxiroute
+sudo zypper refresh && sudo zypper install --allow-unsigned-rpm oxiroute
+```
+
+### Direct Packages, COPR & Source
+
+Direct `.deb`, `.rpm`, `.pkg.tar.zst`, binary tarballs (`x86_64`, `aarch64`), and `SHA256SUMS` are on [GitHub Releases](https://github.com/brauliobo/oxiroute/releases) (repo index at [`brauliobo.github.io/oxiroute/repos`](https://brauliobo.github.io/oxiroute/repos/)); a Fedora COPR spec is in [`packaging/copr/oxiroute.spec`](packaging/copr/oxiroute.spec). See [Install a release package](docs/user/INSTALL.md) for checksum/attestation verification, service opt-in, and upgrade/purge behavior, or [Arch packaging guide](packaging/arch/README.md).
 
 ## How configuration changes work
 
