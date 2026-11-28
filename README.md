@@ -10,6 +10,18 @@ Start with a local evaluation. Protocol support and migration coverage vary by f
 [compatibility matrix](docs/COMPATIBILITY.md) defines the current boundaries. Broad production readiness
 and complete compatibility with other proxies have not been established.
 
+### Live TUI (`oxiroute top`)
+
+<p align="center">
+  <img src="docs/assets/oxiroute-top.gif" alt="oxiroute top live TUI monitoring listeners, upstreams, detail drawer, clients, connections, and generations" width="820" />
+</p>
+
+### Management Web UI & Stats Page
+
+<p align="center">
+  <img src="docs/assets/oxiroute-webui.gif" alt="OxiRoute management Web UI observatory, topology, statistics, operations, multi-file configuration editor, history diff, and standalone stats page" width="820" />
+</p>
+
 ## Start here
 
 | Your task | Guide |
