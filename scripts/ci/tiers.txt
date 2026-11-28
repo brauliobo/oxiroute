@@ -49,6 +49,7 @@ oxiroute-config-source::lua_scripts                   core
 oxiroute-config-source::lua_stdlib                    core
 oxiroute-config-source::nginx_overlays                core
 oxiroute-config-source::oxi                           core
+oxiroute-config-source::parity_and_overrides          core
 oxiroute-config-source::proxy_protocol                core
 oxiroute-config-source::registry                      core
 oxiroute-config-source::resolver                      core
