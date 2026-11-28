@@ -62,7 +62,11 @@ pub(super) fn audited_api_operation(
         return Some(("recording_delete", AuditCategory::Control));
     }
     let (operation, category) = match path {
-        "/api/v1/config" | "/api/v1/config/source" => {
+        "/api/v1/config"
+        | "/api/v1/config/source"
+        | "/api/v1/config/patch"
+        | "/api/v1/overlay/promote" => ("configuration_reload", AuditCategory::Reload),
+        _ if method == "PUT" && path.starts_with("/api/v1/config/files/") => {
             ("configuration_reload", AuditCategory::Reload)
         }
         "/api/v1/generations/reload" => ("generation_reload", AuditCategory::Reload),

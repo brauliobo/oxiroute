@@ -55,7 +55,7 @@ const LAST_EVENT_ID: HeaderName = HeaderName::from_static("last-event-id");
 const CORRELATION_ID: HeaderName = HeaderName::from_static("x-correlation-id");
 
 enum ApiRoute<'a> {
-    Config(ConfigRoute),
+    Config(ConfigRoute<'a>),
     Observability(ObservabilityRoute),
     Recordings(RecordingsRoute<'a>),
     Rtmp(RtmpRoute<'a>),

@@ -28,11 +28,11 @@ mod redaction;
 
 pub(super) use history::{HistoryRoute, history_route};
 
-const REDACTION_POLICY: &str = "rtmp_inline_secrets";
+pub(super) const REDACTION_POLICY: &str = "rtmp_inline_secrets";
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum SourceFormat {
+pub(super) enum SourceFormat {
     Kdl,
     Lua,
     Hocon,
@@ -44,7 +44,7 @@ enum SourceFormat {
 }
 
 impl SourceFormat {
-    const fn config_format(self) -> ConfigFormat {
+    pub(super) const fn config_format(self) -> ConfigFormat {
         match self {
             Self::Kdl => ConfigFormat::Kdl,
             Self::Lua => ConfigFormat::Lua,
@@ -73,9 +73,9 @@ enum SourceView {
     Active,
 }
 
-struct Authority {
-    disk: Result<Arc<ResolvedConfigDocument>, ConfigLoadRejection>,
-    active: Option<Arc<RuntimeGeneration>>,
+pub(super) struct Authority {
+    pub(super) disk: Result<Arc<ResolvedConfigDocument>, ConfigLoadRejection>,
+    pub(super) active: Option<Arc<RuntimeGeneration>>,
 }
 
 impl Authority {
@@ -92,11 +92,11 @@ impl Authority {
         disk.into_iter().chain(active).collect()
     }
 
-    fn secrets(&self) -> SourceSecrets {
+    pub(super) fn secrets(&self) -> SourceSecrets {
         SourceSecrets::of(&self.drafts())
     }
 
-    fn secrets_with(&self, candidate: &ConfigDraft) -> SourceSecrets {
+    pub(super) fn secrets_with(&self, candidate: &ConfigDraft) -> SourceSecrets {
         let mut drafts = self.drafts();
         drafts.push(candidate);
         SourceSecrets::of(&drafts)
@@ -108,7 +108,7 @@ impl Authority {
         SourceSecrets::of(&drafts)
     }
 
-    fn restored(&self, text: &str) -> Result<String, ApiResponse> {
+    pub(super) fn restored(&self, text: &str) -> Result<String, ApiResponse> {
         self.secrets().restore(text).map_err(|_| {
             ApiResponse::error(
                 422,
@@ -122,7 +122,7 @@ impl Authority {
 impl ConfigApiState {
     pub(super) async fn handle_source(
         &self,
-        route: Route,
+        route: Route<'_>,
         method: &str,
         session: &mut ServerSession,
     ) -> ApiResponse {
@@ -150,7 +150,7 @@ impl ConfigApiState {
         }
     }
 
-    fn authority(&self) -> Authority {
+    pub(super) fn authority(&self) -> Authority {
         Authority {
             disk: self.coordinator.load_shared(),
             active: self
@@ -292,17 +292,7 @@ impl ConfigApiState {
         text: &str,
         text_diff: bool,
     ) -> Value {
-        let mut diagnostics = diagnostics_json(prepared.draft.diagnostics(), false);
-        if !prepared.startup_only.is_empty() {
-            diagnostics.extend(
-                prepared
-                    .startup_only
-                    .iter()
-                    .map(restart_required_diagnostic),
-            );
-        } else if let Some(changes) = &prepared.listener_changes {
-            diagnostics.push(listener_changes_diagnostic(self.mode, changes));
-        }
+        let diagnostics = validation_diagnostics(prepared, self.mode);
         let matches_disk = prepared.draft.format() == self.coordinator.format();
         json!({
             "schemaVersion": 1,
@@ -334,13 +324,34 @@ impl ConfigApiState {
     ) -> Option<String> {
         let disk = self.coordinator.read_source().ok()?;
         let secrets = authority.secrets_with(candidate.as_draft());
+        if !secrets.can_redact() {
+            return None;
+        }
         let old = secrets.redact(&disk.text).text;
         let new = secrets.redact(text).text;
         Some(unified(&old, &new, "disk", "candidate"))
     }
 }
 
-fn comparisons(authority: &Authority, candidate: &ValidatedConfig) -> Value {
+pub(super) fn validation_diagnostics(
+    prepared: &PreparedCandidate,
+    mode: crate::RuntimeMode,
+) -> Vec<Value> {
+    let mut diagnostics = diagnostics_json(prepared.draft.diagnostics(), false);
+    if !prepared.startup_only.is_empty() {
+        diagnostics.extend(
+            prepared
+                .startup_only
+                .iter()
+                .map(restart_required_diagnostic),
+        );
+    } else if let Some(changes) = &prepared.listener_changes {
+        diagnostics.push(listener_changes_diagnostic(mode, changes));
+    }
+    diagnostics
+}
+
+pub(super) fn comparisons(authority: &Authority, candidate: &ValidatedConfig) -> Value {
     let candidate = config_value(candidate);
     let disk = authority
         .disk

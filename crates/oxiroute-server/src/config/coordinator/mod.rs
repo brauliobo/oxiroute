@@ -28,7 +28,7 @@ use super::history::{ConfigHistory, HistoryLimits, now_unix_ms};
 use crate::encoding::lower_hex;
 use cache::LoadCache;
 pub use candidate::PersistableConfigCandidate;
-pub use source::AuthoredSource;
+pub use source::{AuthoredSource, WorkspaceFileContent, WorkspaceFileEntry, WorkspaceFileError};
 pub use storage::ConfigWriteBlock;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
@@ -111,7 +111,7 @@ impl EffectiveRevision {
         Self(lower_hex(&digest))
     }
 
-    fn of(canonical_kdl: &str, config: &ValidatedConfig) -> Self {
+    pub(crate) fn of(canonical_kdl: &str, config: &ValidatedConfig) -> Self {
         external::revision(sha256(canonical_kdl.as_bytes()), external::digest(config))
     }
 
@@ -505,9 +505,18 @@ impl CanonicalConfigCoordinator {
         let config_preview = if resolved.format == ConfigFormat::Kdl {
             resolved.canonical_kdl.clone()
         } else {
-            render_config(resolved.format, &resolved.config).map_err(|error| {
-                rejection(Some(disk_revision.clone()), source_error_diagnostic(&error))
-            })?
+            match render_config(resolved.format, &resolved.config) {
+                Ok(rendered) => rendered,
+                Err(_) if resolved.compositional && !resolved.format.supports_null() => {
+                    resolved.canonical_kdl.clone()
+                }
+                Err(error) => {
+                    return Err(rejection(
+                        Some(disk_revision.clone()),
+                        source_error_diagnostic(&error),
+                    ));
+                }
+            }
         };
         let canonical_digest = sha256(resolved.canonical_kdl.as_bytes());
         let external = external::digest(&resolved.config);

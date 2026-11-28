@@ -31,6 +31,7 @@ use crate::{
     service_plan::validation_plan,
 };
 
+mod files;
 mod promote;
 mod snapshot;
 mod source;
@@ -43,11 +44,14 @@ const MAX_IMPORT_REPORTS: usize = 64;
 const MAX_IMPORT_REPORT_RESPONSE_BYTES: usize = MAX_CONFIG_REQUEST_BYTES * 2;
 
 #[derive(Clone, Copy)]
-pub(super) enum Route {
+pub(super) enum Route<'a> {
     Config,
     Validate,
     Source,
     SourceValidate,
+    Files(files::FilesRoute<'a>),
+    Convert,
+    Patch,
     History(source::HistoryRoute),
     OverlayPromote,
     ImportReports(Option<usize>),
@@ -87,27 +91,50 @@ impl ConfigApiState {
             .unwrap_or_else(|| self.active_revision.clone())
     }
 
-    pub(super) fn unauthenticated_response(route: Route, method: &str) -> ApiResponse {
+    pub(super) fn unauthenticated_response(route: Route<'_>, method: &str) -> ApiResponse {
         match (route, method) {
-            (Route::Config | Route::Source, "GET" | "PUT")
-            | (Route::Validate | Route::SourceValidate | Route::OverlayPromote, "POST")
-            | (Route::ImportReports(_), "GET") => ApiResponse::unauthorized(),
+            (
+                Route::Config | Route::Source | Route::Files(files::FilesRoute::Item(_)),
+                "GET" | "PUT",
+            )
+            | (
+                Route::Validate
+                | Route::SourceValidate
+                | Route::Files(files::FilesRoute::Validate)
+                | Route::Convert
+                | Route::Patch
+                | Route::OverlayPromote,
+                "POST",
+            )
+            | (Route::ImportReports(_) | Route::Files(files::FilesRoute::List), "GET") => {
+                ApiResponse::unauthorized()
+            }
             (Route::History(history), method) if method == history.method() => {
                 ApiResponse::unauthorized()
             }
             (Route::History(history), _) => ApiResponse::method_not_allowed(history.method()),
-            (Route::Config | Route::Source, _) => ApiResponse::method_not_allowed("GET, PUT"),
-            (Route::Validate | Route::SourceValidate | Route::OverlayPromote, _) => {
-                ApiResponse::method_not_allowed("POST")
+            (Route::Config | Route::Source | Route::Files(files::FilesRoute::Item(_)), _) => {
+                ApiResponse::method_not_allowed("GET, PUT")
             }
-            (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
+            (
+                Route::Validate
+                | Route::SourceValidate
+                | Route::Files(files::FilesRoute::Validate)
+                | Route::Convert
+                | Route::Patch
+                | Route::OverlayPromote,
+                _,
+            ) => ApiResponse::method_not_allowed("POST"),
+            (Route::ImportReports(_) | Route::Files(files::FilesRoute::List), _) => {
+                ApiResponse::method_not_allowed("GET")
+            }
         }
     }
 
     pub(super) async fn handle_http(
         &self,
         auth: &ManagementAuth,
-        route: Route,
+        route: Route<'_>,
         method: &str,
         session: &mut ServerSession,
     ) -> ApiResponse {
@@ -170,6 +197,9 @@ impl ConfigApiState {
             (Route::Source | Route::SourceValidate, _) => {
                 self.handle_source(route, method, session).await
             }
+            (Route::Files(files_route), _) => self.handle_files(files_route, method, session).await,
+            (Route::Convert, _) => self.handle_convert(method, session).await,
+            (Route::Patch, _) => self.handle_patch(method, session).await,
             (Route::History(history), _) => self.handle_history(history, method, session),
             (Route::ImportReports(index), "GET") => self.import_reports_response(index),
             (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
@@ -633,13 +663,18 @@ impl ConfigApiState {
     }
 }
 
-pub(super) fn match_route(path: &str) -> Option<Route> {
+pub(super) fn match_route(path: &str) -> Option<Route<'_>> {
     match path {
         "/api/v1/config" => Some(Route::Config),
         "/api/v1/config/validate" => Some(Route::Validate),
         "/api/v1/config/source" => Some(Route::Source),
         "/api/v1/config/source/validate" => Some(Route::SourceValidate),
+        "/api/v1/config/convert" => Some(Route::Convert),
+        "/api/v1/config/patch" => Some(Route::Patch),
         "/api/v1/overlay/promote" => Some(Route::OverlayPromote),
+        path if path.starts_with("/api/v1/config/files") => {
+            files::match_files_route(path).map(Route::Files)
+        }
         path if path.starts_with("/api/v1/config/history") => {
             source::history_route(path).map(Route::History)
         }

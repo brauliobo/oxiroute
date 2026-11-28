@@ -66,8 +66,14 @@ impl RedactedConfigView {
         let config = config
             .validate()
             .expect("normalized configuration remains valid after token redaction");
-        let preview = render_config(format, &config)
-            .expect("normalized configuration remains renderable after token redaction");
+        let preview = match render_config(format, &config) {
+            Ok(rendered) => rendered,
+            Err(_) if !format.supports_null() => render_config(ConfigFormat::Kdl, &config)
+                .expect("normalized configuration remains renderable to KDL after token redaction"),
+            Err(error) => {
+                panic!("normalized configuration remains renderable after token redaction: {error}")
+            }
+        };
         let lua_preview = (format == ConfigFormat::Lua).then(|| preview.clone());
         Self {
             config,

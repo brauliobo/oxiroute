@@ -12,14 +12,14 @@ const CALLBACK_PLACEHOLDER: &str = "<redacted>";
 /// that holds it, and a callback URL by the redacted form the typed API uses. Restoring reverses
 /// both against the stored configuration, so a text that comes back with its placeholders keeps
 /// the secrets it had.
-pub(super) struct SourceSecrets {
+pub(in crate::rtmp::api::config) struct SourceSecrets {
     tokens: Vec<(String, String)>,
     urls: Vec<(String, String)>,
 }
 
-pub(super) struct Redacted {
-    pub(super) text: String,
-    pub(super) replaced: usize,
+pub(in crate::rtmp::api::config) struct Redacted {
+    pub(in crate::rtmp::api::config) text: String,
+    pub(in crate::rtmp::api::config) replaced: usize,
 }
 
 pub(super) struct UnresolvedPlaceholder;
@@ -48,15 +48,17 @@ impl SourceSecrets {
         Self { tokens, urls }
     }
 
-    pub(super) fn can_redact(&self) -> bool {
+    pub(in crate::rtmp::api::config) fn can_redact(&self) -> bool {
         self.tokens
             .iter()
             .map(|(_, secret)| secret)
             .chain(self.urls.iter().map(|(url, _)| url))
-            .all(|secret| secret.len() >= MIN_REDACTABLE_BYTES && !secret.contains(['"', '\\']))
+            .all(|secret| {
+                secret.len() >= MIN_REDACTABLE_BYTES && !secret.contains(['"', '\'', '\\'])
+            })
     }
 
-    pub(super) fn redact(&self, text: &str) -> Redacted {
+    pub(in crate::rtmp::api::config) fn redact(&self, text: &str) -> Redacted {
         let mut text = text.to_owned();
         let mut replaced = 0;
         for (url, redacted) in longest_first(&self.urls, |(url, _)| url) {
