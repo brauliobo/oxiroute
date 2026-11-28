@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-acme"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "base64 0.23.1",
  "hickory-resolver",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-aged-executor"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "atomic-waker",
  "oxiroute-aged-order",
@@ -2547,11 +2547,11 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-aged-order"
-version = "7.2.0"
+version = "7.3.0"
 
 [[package]]
 name = "oxiroute-allocator"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cache"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2575,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-compress"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "brotli",
  "http",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "http",
  "jiff",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "base64 0.23.1",
  "hocon-parser",
@@ -2615,11 +2615,11 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cpu"
-version = "7.2.0"
+version = "7.3.0"
 
 [[package]]
 name = "oxiroute-epoll-h1"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "oxiroute-aged-order",
  "oxiroute-h1-head",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-forward-proxy"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h1-head"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "arrayvec",
  "oxiroute-cpu",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h2"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "bytes",
  "http",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h3"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "http",
  "openssl",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "bytes",
  "http",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
@@ -2773,14 +2773,14 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-tls-client"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "openssl",
 ]
 
 [[package]]
 name = "oxiroute-tls-rustls"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -2796,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-uring"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "io-uring",
  "libc",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-worker-scaling"
-version = "7.2.0"
+version = "7.3.0"
 
 [[package]]
 name = "palette"

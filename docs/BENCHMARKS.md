@@ -15,6 +15,7 @@ holds the earlier pass on the 7.0.0 binary.
 OxiRoute 7.1.1 changes no hot path beyond per-client tracking, which costs about 1.9% of the connect-per-request
 throughput (HTTP/1 keep-alive and HTTP/2 are unchanged within noise), so these 7.1.0 figures were not repeated for it.
 OxiRoute 7.2.0 changes no data-plane hot path, so the 7.1 figures stay.
+OxiRoute 7.3.0 changes no data-plane hot path, so the 7.1 figures stay.
 
 The underlying research notes, raw run records and harness are local development material, not part of this public
 checkout. Treat the tables as **reported observations**, not an accepted release baseline.

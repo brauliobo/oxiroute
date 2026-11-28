@@ -117,6 +117,9 @@ See [operations](OPERATING.md) for reloads and drains and [security](SECURITY.md
 - **Upgrading from 7.1.1** to 7.2.0 needs no configuration change. YAML 1.2, TOML, and sandboxed Lua 5.4 scripting are
   available, and the package creates `/etc/oxiroute/management.token` (`0600 oxiroute:oxiroute`) when missing; read the
   [upgrade notes](../RELEASE_NOTES_7.2.0.md#upgrading).
+- **Upgrading from 7.2.0** to 7.3.0 needs no configuration change. Multi-file workspace editing, format conversion,
+  declarative CLI resource CRUD, and full 7-format UI/API parity are additive; read the
+  [upgrade notes](../RELEASE_NOTES_7.3.0.md#upgrading).
 - **Remove** (`apt remove oxiroute`, `dnf remove oxiroute`) deletes the program and keeps your
   configuration (rpm keeps a modified file as `<file>.rpmsave`) and `/var/lib/oxiroute`.
 - **Purge** (`apt purge oxiroute`) also deletes `/etc/oxiroute`, `/var/lib/oxiroute` and `/run/oxiroute`. The
